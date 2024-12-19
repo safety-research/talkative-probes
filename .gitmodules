@@ -1,0 +1,3 @@
+[submodule "research-tooling"]
+	path = research-tooling
+	url = git@github.com:safety-research/research-tooling.git
