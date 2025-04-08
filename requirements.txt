@@ -1,1 +1,9 @@
 # install safety-tooling first, then add any other dependencies here
+nnsight
+chess
+datasets
+torch
+tqdm
+einops
+plotly
+
