@@ -125,9 +125,9 @@ SETTING = 'chess' # Or 'nlp_sentiment', etc.
 BATCH_SIZE = 5 # For batching extraction/patching if desired
 # Evaluation
 if SETTING == 'chess':
-    NUM_GAMES = 500
+    NUM_GAMES = 100
     NUM_SAMPLES_PER_GAME = 1#50 # Number of data points to process
-    NUM_MOVES = 10
+    NUM_MOVES = 4
 else:
     NUM_SAMPLES = 1000 #50 # Number of data points to process
     BATCH_SIZE = 10 # For batching extraction/patching if desired
@@ -654,12 +654,12 @@ for start in tqdm(range(0, num_samples, batch_size), desc="Extract + Patch"):
     # Extract activations batch
     activations_batch = extract_activations_batch(batch_contexts, model, TARGET_TOKEN_IDX)
 
-    # Patch each example in batch
-    for patching_input, activations in zip(patching_inputs, activations_batch):
-        patched_res = run_patching(
-            patching_input, activations, model, filler_token_idx_in_patched_input
-        )
-        patched_results.append(patched_res)
+    # Run patching in batch instead of per-example loop
+    patched_preds, patched_topk_idxs, patched_topk_logitss, patched_topk_logprobss = run_patching_batch(
+        patching_inputs, activations_batch, model, filler_token_idx_in_patched_input
+    )
+    for p, idxs, logits, logprobs in zip(patched_preds, patched_topk_idxs, patched_topk_logitss, patched_topk_logprobss):
+        patched_results.append((p, idxs, logits, logprobs))
 
 # Second loop: run baseline and unpatched in batches
 for start in tqdm(range(0, num_samples, batch_size), desc="Baseline + Unpatched"):
@@ -731,63 +731,56 @@ print("Ground truth #1:", dataset['ground_truths'][0])
 print("baseline input:", "'" + baseline_inputs[0] + "'")
 print('patched input:', "'" + patching_inputs[0] + "'")
 
-def compute_rank_and_surprisal(topk_indices, topk_logits, gt_token_id):
-    matches = (topk_indices == gt_token_id).nonzero()
-    rank = matches.item() + 1 if len(matches) > 0 else None
+def compute_rank_and_surprisal(topk_indices, topk_logits, gt_token_ids):
+    """
+    Compute the rank, surprisal, and probability of the ground truth token(s).
+    Accepts a list/set of possible ground truth token ids (e.g., lowercase and capitalized variants).
+    Returns the best (lowest) rank among the options, and corresponding surprisal and prob.
+    """
     probs = torch.softmax(topk_logits, dim=-1)
-    if rank is not None:
-        prob_gt = probs[rank - 1].item()
-    else:
-        prob_gt = 0.0
-    surprisal = -np.log2(prob_gt + 1e-20)
-    return rank, surprisal, prob_gt
+    best_rank = None
+    best_prob = 0.0
+    best_surprisal = float('inf')
 
-gt_ranks = {'baseline': [], 'patched': [], 'unpatched': []}
-gt_surprisals = {'baseline': [], 'patched': [], 'unpatched': []}
-gt_probs = {'baseline': [], 'patched': [], 'unpatched': []}
+    for gt_token_id in gt_token_ids:
+        matches = (topk_indices == gt_token_id).nonzero()
+        if len(matches) > 0:
+            rank = matches.item() + 1
+            prob_gt = probs[rank - 1].item()
+            surprisal = -np.log2(prob_gt + 1e-20)
+            if best_rank is None or rank < best_rank:
+                best_rank = rank
+                best_prob = prob_gt
+                best_surprisal = surprisal
+        else:
+            # If not in topk, treat as rank None, prob 0, surprisal large
+            pass
 
-print("\n--- Ground Truth Token Ranks and Surprisals ---")
-print(f"{'Idx':<4} {'GT_ID':<8} {'Truth':<15} | {'BL rank':<12} {'Surp':<10} | {'P rank':<16} {'Surp':<10} | {'UP rank':<12} {'Surp':<10} | {'Info'}")
+    if best_rank is None:
+        best_prob = 0.0
+        best_surprisal = -np.log2(1e-20)
 
-for i in range(len(dataset['ground_truths'])):
-    if i >= len(baseline_results) or i >= len(patched_results) or i >= len(unpatched_results):
-        break
+    return best_rank, best_surprisal, best_prob
 
-    gt_text = dataset['ground_truths'][i]
-    gt_token_ids = tokenizer.encode(gt_text, add_special_tokens=False)
-    if len(gt_token_ids) != 1:
-        print(f"{i:<4} Multi-token GT not supported")
-        continue
-    gt_token_id = gt_token_ids[0]
+def compare_example(i, gt_token_ids, gt_text, baseline_result, patched_result, unpatched_result, extra_str=''):
+    """
+    Given index, ground truth token ids, text, and results for baseline, patched, unpatched,
+    compute ranks, surprisals, probs, and print formatted comparison line.
+    Returns dicts of rank, surprisal, prob for each condition.
+    """
+    _, baseline_topk_indices, baseline_topk_logits, _ = baseline_result
+    _, patched_topk_indices, patched_topk_logits, _ = patched_result
+    _, unpatched_topk_indices, unpatched_topk_logits, _ = unpatched_result
 
-    _, baseline_topk_indices, baseline_topk_logits, _ = baseline_results[i]
-    _, patched_topk_indices, patched_topk_logits, _ = patched_results[i]
-    _, unpatched_topk_indices, unpatched_topk_logits, _ = unpatched_results[i]
-
-    rank_b, surprisal_b, prob_b = compute_rank_and_surprisal(baseline_topk_indices, baseline_topk_logits, gt_token_id)
-    rank_p, surprisal_p, prob_p = compute_rank_and_surprisal(patched_topk_indices, patched_topk_logits, gt_token_id)
-    rank_u, surprisal_u, prob_u = compute_rank_and_surprisal(unpatched_topk_indices, unpatched_topk_logits, gt_token_id)
-
-    gt_ranks['baseline'].append(rank_b)
-    gt_ranks['patched'].append(rank_p)
-    gt_ranks['unpatched'].append(rank_u)
-
-    gt_surprisals['baseline'].append(surprisal_b)
-    gt_surprisals['patched'].append(surprisal_p)
-    gt_surprisals['unpatched'].append(surprisal_u)
-
-    gt_probs['baseline'].append(prob_b)
-    gt_probs['patched'].append(prob_p)
-    gt_probs['unpatched'].append(prob_u)
+    rank_b, surprisal_b, prob_b = compute_rank_and_surprisal(baseline_topk_indices, baseline_topk_logits, gt_token_ids)
+    rank_p, surprisal_p, prob_p = compute_rank_and_surprisal(patched_topk_indices, patched_topk_logits, gt_token_ids)
+    rank_u, surprisal_u, prob_u = compute_rank_and_surprisal(unpatched_topk_indices, unpatched_topk_logits, gt_token_ids)
 
     def fmt(rank, surprisal):
         if rank is None:
             return f"{'N/A':<12} {'N/A':<10}"
         else:
             return f"{rank:<12} {surprisal:<10.2f}"
-
-    extra_info = dataset.get('extra_info', [''] * len(dataset['ground_truths']))
-    extra_str = extra_info[i] if i < len(extra_info) else ''
 
     def delta_fmt(rank_other, rank_base):
         if rank_other is None or rank_base is None:
@@ -811,30 +804,71 @@ for i in range(len(dataset['ground_truths'])):
     else:
         unpatched_rank_str = f"{str(rank_u) + unpatched_delta:<12}"
 
-    print(f"{i:<4} {gt_token_id:<8} {gt_text:<15} | "
+    print(f"{i:<4} {list(gt_token_ids)} {gt_text:<15} | "
           f"{fmt(rank_b, surprisal_b)} | "
           f"{patched_rank_str} {surprisal_p:<10.2f} | "
           f"{unpatched_rank_str} {surprisal_u:<10.2f} | "
           f"{extra_str}")
 
-# Schema for plotting ground-truth token surprisals across conditions
-# Inputs:
-# - gt_surprisals: dict with keys 'baseline', 'patched', 'unpatched', each a list of surprisal values
-# - Colors: assign distinct colors to each condition
-# - Plot title: "Ground Truth Token Surprisal (Lower is Better)"
-# - Y-axis label: "Surprisal (bits)"
-# - Plot style: 'plotly_white' template
-# - Boxplot options: show mean, show outliers
-#
-# For each condition:
-#   - Plot a boxplot of surprisal values
-#   - Label with capitalized condition name
-#
-# Display the figure after adding all traces
+    return (
+        {'baseline': rank_b, 'patched': rank_p, 'unpatched': rank_u},
+        {'baseline': surprisal_b, 'patched': surprisal_p, 'unpatched': surprisal_u},
+        {'baseline': prob_b, 'patched': prob_p, 'unpatched': prob_u}
+    )
+
+gt_ranks = {'baseline': [], 'patched': [], 'unpatched': []}
+gt_surprisals = {'baseline': [], 'patched': [], 'unpatched': []}
+gt_probs = {'baseline': [], 'patched': [], 'unpatched': []}
+
+print("\n--- Ground Truth Token Ranks, Surprisals, and Probs ---")
+print(f"{'Idx':<4} {'GT_IDs':<20} {'Truth':<15} | "
+      f"{'BL rank':<14} {'Surp':<10} {'Prob':<10} | "
+      f"{'P rank':<18} {'Surp':<10} {'Prob':<10} | "
+      f"{'UP rank':<18} {'Surp':<10} {'Prob':<10} | "
+      f"{'Info'}")
+
+for i in range(len(dataset['ground_truths'])):
+    if i >= len(baseline_results) or i >= len(patched_results) or i >= len(unpatched_results):
+        break
+
+    gt_text = dataset['ground_truths'][i]
+    gt_token_ids = tokenizer.encode(gt_text, add_special_tokens=False)
+
+    # Also add capitalized version if different
+    gt_text_cap = gt_text.capitalize()
+    gt_token_ids_cap = tokenizer.encode(gt_text_cap, add_special_tokens=False)
+
+    # Only support single-token ground truths (and their capitalized variant)
+    if len(gt_token_ids) == 1:
+        ids_set = {gt_token_ids[0]}
+    else:
+        print(f"{i:<4} Multi-token GT not supported")
+        continue
+
+    if len(gt_token_ids_cap) == 1:
+        ids_set.add(gt_token_ids_cap[0])
+
+    extra_info = dataset.get('extra_info', [''] * len(dataset['ground_truths']))
+    extra_str = extra_info[i] if i < len(extra_info) else ''
+
+    ranks, surprisals, probs = compare_example(
+        i,
+        ids_set,
+        gt_text,
+        baseline_results[i],
+        patched_results[i],
+        unpatched_results[i],
+        extra_str=extra_str
+    )
+
+    for key in ['baseline', 'patched', 'unpatched']:
+        gt_ranks[key].append(ranks[key])
+        gt_surprisals[key].append(surprisals[key])
+        gt_probs[key].append(probs[key])
+
 # Plotly boxplot for surprisals
 fig_surp = go.Figure()
 
-# Add boxplots
 x_labels = ['Baseline', 'Patched', 'Unpatched']
 colors = ['blue', 'red', 'green']
 for key, color, label in zip(['baseline', 'patched', 'unpatched'], colors, x_labels):
@@ -859,7 +893,7 @@ for i in range(n):
         x=x_labels,
         y=y_vals,
         mode='lines',
-        line=dict(color='rgba(0,0,0,0.03)', width=1),  # increased alpha (less transparent)
+        line=dict(color='rgba(0,0,0,0.03)', width=1),
         hoverinfo='skip',
         showlegend=False
     ))
@@ -870,7 +904,6 @@ fig_surp.update_layout(
     template="plotly_white"
 )
 fig_surp.show()
-
 
 def summarize_metric(metric_dict, name):
     print(f"\n--- {name} Summary ---")
@@ -899,7 +932,6 @@ for idx in sorted_idx[:5]:
     extra_str = extra_info[idx] if idx < len(extra_info) else ''
     print(f"Example {idx}: Surprisal={gt_surprisals['patched'][idx]:.2f}, Rank={gt_ranks['patched'][idx]}, GT='{dataset['ground_truths'][idx]}', Q='{dataset['questions'][idx]}', Extra='{extra_str}', UP_sup={gt_surprisals['unpatched'][idx]:.2f}, UP_R={gt_ranks['unpatched'][idx]}, B_sup={gt_surprisals['baseline'][idx]:.2f}, B_R={gt_ranks['baseline'][idx]}")
 
-
 print("\n--- Examples with Highest Baseline Surprisal ---")
 sorted_idx = np.argsort(gt_surprisals['baseline'])[::-1]
 for idx in sorted_idx[:5]:
@@ -908,7 +940,7 @@ for idx in sorted_idx[:5]:
     print(f"Example {idx}: Surprisal={gt_surprisals['baseline'][idx]:.2f}, Rank={gt_ranks['baseline'][idx]}, GT='{dataset['ground_truths'][idx]}', Q='{dataset['questions'][idx]}', Extra='{extra_str}'")
 
 # %%
-idx = 474
+idx = 243
 print(dataset['original_contexts'][idx])
 print(dataset['questions'][idx])
 print(dataset['ground_truths'][idx])
@@ -950,6 +982,6 @@ decoded_answer = model.tokenizer.decode(out[0][-n_new_tokens:].cpu())
 print("Prompt:", decoded_prompt)
 print("Generated continuation:", decoded_answer)
 
-# %
-
+# %%
+print(len(patched_results[0]))
 # %%
