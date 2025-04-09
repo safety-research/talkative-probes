@@ -11,6 +11,12 @@
 # 5.  **Evaluation (Patched):** Evaluate the LLM's 0-shot accuracy in answering the `[question]` based *only* on the patched activation `x`.
 # 6.  **Evaluation (Context Baseline):** Evaluate the LLM's 0-shot accuracy on `[original context] [question]` as a baseline.
 # 7.  **Analysis:** Compare patched accuracy vs. baseline accuracy.
+import os
+# Explicitly set which GPUs to use (based on your allocation)
+os.environ["CUDA_VISIBLE_DEVICES"] = "5,6"
+# %% [markdown]
+# ## 1. Setup and Configuration
+import sys
 import gc
 def free_unused_cuda_memory():
     """Free unused cuda memory."""
@@ -19,15 +25,12 @@ def free_unused_cuda_memory():
     else:
         raise RuntimeError("not using cuda")
     gc.collect()
-
-# %% [markdown]
-# ## 1. Setup and Configuration
-import sys
+print("hi")
 print(sys.executable)
 print(sys.version)
 import os
 # Get the SLURM environment variables
-slurm_gpus = os.environ.get('SLURM_GPUS_ON_NODE', '1')
+slurm_gpus = os.environ.get('CUDA_VISIBLE_DEVICES', '1')
 print(slurm_gpus)
 #os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(i) for i in range(int(slurm_gpus)))
 #os.environ["CUDA_VISIBLE_DEVICES"] = '5,6'
@@ -119,9 +122,15 @@ TOP_P = 0.9         # Control diversity of sampling
 # Experiment Setting ('chess' or 'nlp_sentiment', 'nlp_truth', etc.)
 SETTING = 'chess' # Or 'nlp_sentiment', etc.
 
+BATCH_SIZE = 5 # For batching extraction/patching if desired
 # Evaluation
-NUM_SAMPLES = 200#50 # Number of data points to process
-BATCH_SIZE = 10 # For batching extraction/patching if desired
+if SETTING == 'chess':
+    NUM_GAMES = 500
+    NUM_SAMPLES_PER_GAME = 1#50 # Number of data points to process
+    NUM_MOVES = 10
+else:
+    NUM_SAMPLES = 1000 #50 # Number of data points to process
+    BATCH_SIZE = 10 # For batching extraction/patching if desired
 #print(TARGET_MODULE_PATH)
 # %%
 # --- Environment Setup ---
@@ -240,74 +249,136 @@ def format_question(question_text, is_instruction_model=IS_INSTRUCTION_MODEL):
 if SETTING == 'chess':
     print("Preparing Chess PGN data...")
     try:
-        # For demonstration, using a simple PGN string
-        pgn_string = """
-        1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 *
-        """
         import io
-        pgn_file = io.StringIO(pgn_string)
 
-        game = chess.pgn.read_game(pgn_file)
-        board = game.board()
-        
-        # Process all moves to reach the end state
-        node = game
-        while node.variations:
-            next_node = node.variations[0]
-            move = next_node.move
-            board.push(move)
-            node = next_node
-        
-        # Now we have the end state board
-        count = 0
-        while count < NUM_SAMPLES:
-            # Generate questions only about the final board position
-            occupied_squares = [sq for sq in chess.SQUARES if board.piece_at(sq)]
-            if not occupied_squares:
-                break
-                
-            target_square = random.choice(occupied_squares)
-            square_name = chess.square_name(target_square)
-            question_text = f"What chess piece is on {square_name}?"
-            
-            # Get the ground truth answer
-            piece = board.piece_at(target_square)
-            piece_name = chess.piece_name(piece.piece_type).capitalize()
-            correct_answer_str = f" {piece_name}".lower()
-            
-            # Create context: PGN string of the full game
-            exporter = chess.pgn.StringExporter(headers=False, variations=False, comments=False)
-            pgn_context = game.accept(exporter)
-            
-            # Add to our dataset
-            dataset['original_contexts'].append(pgn_context.strip())
-            dataset['questions'].append(format_question(question_text))
-            dataset['ground_truths'].append(correct_answer_str)
-            dataset['extra_info'].append(square_name)
-            
-            # Convert to token IDs
-            gt_token_id = tokenizer.encode(correct_answer_str, add_special_tokens=False)
-            if len(gt_token_id) == 1:
-                dataset['ground_truth_token_ids'].append(gt_token_id[0])
-            else:
-                # For multi-token answers
-                dataset['ground_truth_token_ids'].append(gt_token_id)
-                # Skip if we need single token answers
-                if MAX_NEW_TOKENS == 1:
-                    dataset['original_contexts'].pop()
-                    dataset['questions'].pop()
-                    dataset['ground_truths'].pop()
-                    dataset['ground_truth_token_ids'].pop()
-                    continue
-            
-            count += 1
-            
-        pgn_file.close()
-        print(f"Loaded {len(dataset['original_contexts'])} chess positions and questions about the end state.")
+        # Define multiple PGN strings
+        # pgn_strings = [
+        #     """
+        #     1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 *
+        #     """,
+        #     """
+        #     1. d4 d5 2. c4 e6 3. Nc3 Nf6 *
+        #     """,
+        #     """
+        #     1. e4 c5 2. Nf3 d6 3. d4 cxd4 *
+        #     """,
+        #     """
+        #     1. e4 e6 2. d4 d5 3. Nc3 Nf6 *
+        #     """,
+        #     """
+        #     1. d4 Nf6 2. c4 g6 3. Nc3 Bg7 *
+        #     """,
+        #     """
+        #     1. e4 c6 2. d4 d5 3. Nc3 dxe4 *
+        #     """,
+        #     """
+        #     1. d4 d5 2. Nf3 Nf6 3. e3 e6 *
+        #     """,
+        #     """
+        #     1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 *
+        #     """,
+        #     """
+        #     1. d4 Nf6 2. c4 e6 3. Nf3 d5 *
+        #     """,
+        #     """
+        #     1. e4 c5 2. Nf3 Nc6 3. d4 cxd4 *
+        #     """
+        # ]
+        import pandas as pd
+
+        df = pd.read_csv('/workspace/kitf/data/kaggle_chessgames.csv')
+        if 'Moves' not in df.columns:
+            raise ValueError("CSV does not contain a 'moves' column")
+
+        pgn_strings = df['Moves'].dropna().tolist()
+
+
+        num_pgns = min(NUM_GAMES, len(pgn_strings))
+        samples_per_pgn = NUM_SAMPLES_PER_GAME 
+        #
+
+        total_loaded = 0
+        for idx, pgn_string in enumerate(pgn_strings[:num_pgns]):
+            n_samples = samples_per_pgn
+            print(f"Processing PGN {idx+1} of {num_pgns}, {n_samples} samples")
+            pgn_file = io.StringIO(pgn_string)
+            game = chess.pgn.read_game(pgn_file)
+            board = game.board()
+
+            moved_squares = set()
+            node = game
+            move_count = 0
+            # Play up to NUM_MOVES moves, track moved piece squares simultaneously
+            while node.variations and move_count < NUM_MOVES:
+                next_node = node.variations[0]
+                move = next_node.move
+                board.push(move)
+                moved_squares.add(move.to_square)
+                node = next_node
+                move_count += 1
+
+            # Reconstruct PGN string up to capped move count
+            capped_pgn_moves = []
+            node = game
+            move_counter = 0
+            while node.variations and move_counter < move_count:
+                next_node = node.variations[0]
+                move_san = node.board().san(next_node.move)
+                capped_pgn_moves.append(move_san)
+                node = next_node
+                move_counter += 1
+
+            # Compose PGN string fragment
+            capped_pgn_str = ""
+            for idx_move, move_san in enumerate(capped_pgn_moves):
+                if idx_move % 2 == 0:
+                    capped_pgn_str += f"{(idx_move // 2) +1}. {move_san} "
+                else:
+                    capped_pgn_str += f"{move_san} "
+            capped_pgn_str = capped_pgn_str.strip() + " *"
+
+            count = 0
+            while count < n_samples:
+                # Only consider occupied squares where the piece has moved during the game
+                candidate_squares = [sq for sq in moved_squares if board.piece_at(sq)]
+                if not candidate_squares:
+                    break
+
+                target_square = random.choice(candidate_squares)
+                square_name = chess.square_name(target_square)
+                question_text = f"What chess piece is on {square_name}?"
+
+                piece = board.piece_at(target_square)
+                piece_name = chess.piece_name(piece.piece_type).capitalize()
+                correct_answer_str = f" {piece_name}".lower()
+
+                # Use the PGN string up to capped move count as context
+                dataset['original_contexts'].append(capped_pgn_str.strip())
+                dataset['questions'].append(format_question(question_text))
+                dataset['ground_truths'].append(correct_answer_str)
+                dataset['extra_info'].append(square_name)
+
+                gt_token_id = tokenizer.encode(correct_answer_str, add_special_tokens=False)
+                if len(gt_token_id) == 1:
+                    dataset['ground_truth_token_ids'].append(gt_token_id[0])
+                else:
+                    dataset['ground_truth_token_ids'].append(gt_token_id)
+                    #if MAX_NEW_TOKENS == 1:
+                    #    dataset['original_contexts'].pop()
+                    #    dataset['questions'].pop()
+                    #    dataset['ground_truths'].pop()
+                    #    dataset['ground_truth_token_ids'].pop()
+                    #    continue
+
+                count += 1
+                total_loaded += 1
+
+            pgn_file.close()
+
+        print(f"Loaded {total_loaded} chess positions and questions equally from {num_pgns} PGNs, up to a maximum of {NUM_MOVES} moves per game.")
 
     except Exception as e:
         print(f"Error processing PGN data: {e}")
-
 
 elif SETTING == 'nlp_sentiment':
     print("Preparing NLP Sentiment data (e.g., SST-2)...")
@@ -410,30 +481,16 @@ else:
 assert len(dataset['original_contexts']) == len(dataset['questions']) == len(dataset['ground_truths']) == len(dataset['ground_truth_token_ids']), \
     "Data preparation resulted in mismatched list lengths!"
 print(f"Final dataset size: {len(dataset['original_contexts'])}")
+
+# %%
 print(model)
-
-# # %%
-# print(util.fetch_attr(model, "transformer.h.11.mlp"))
-# # Run the model on the `original_contexts` and save the target activations.
-# from nnsight import LanguageModel
-
-# model = LanguageModel('openai-community/gpt2', device_map='auto')
-
-# with model.trace('The Eiffel Tower is in the city of') as tracer:
-
-#       hidden_states = model.transformer.h[-1].output[0].save()
-#       print((model.transformer.h[-1].output))
-      
-
-#       output = model.output[0].save()
 # %% [markdown]
 # ## 3. Activation Extraction
-print(dataset['original_contexts'])
-print(tokenizer.encode(dataset['original_contexts'][0]))
+
 # --- Activation Extraction ---
 #print(model.transformer.h[-1].output.shape)
 
-# --- Modularized Activation Extraction ---
+# Single example activation extraction
 def extract_activations_for_example(context, model, target_token_idx):
     activations = {}
     with model.trace(context, remote=USE_REMOTE_EXECUTION, scan=False, validate=False) as tracer:
@@ -446,13 +503,29 @@ def extract_activations_for_example(context, model, target_token_idx):
             else:
                 act = proxy[0][0, target_token_idx, :].save()
             activations[layer_path] = act
-
     return activations
 
-# --- Modularized Patching ---
+# Batched activation extraction using multiple invokes
+def extract_activations_batch(contexts, model, target_token_idx):
+    activations_batch = [{} for _ in range(len(contexts))]
+    with model.trace(remote=USE_REMOTE_EXECUTION, scan=False, validate=False) as tracer:
+        for b, context in enumerate(contexts):
+            with tracer.invoke(context):
+                for layer_idx in range(num_layers):
+                    layer_path = get_layer_output_path(layer_idx)
+                    module = util.fetch_attr(model, layer_path)
+                    proxy = module.output
+                    if isinstance(proxy, Proxy):
+                        act = proxy[0][0, target_token_idx, :].save()
+                    else:
+                        act = proxy[0][0, target_token_idx, :].save()
+                    activations_batch[b][layer_path] = act
+    return activations_batch
+
+# Single example patching
 def run_patching(patching_input, activations, model, filler_token_idx):
     topkn = 100
-    with model.trace(patching_input, remote=USE_REMOTE_EXECUTION) as patched_tracer:
+    with model.trace(patching_input, remote=USE_REMOTE_EXECUTION) as tracer:
         for layer_path, act in activations.items():
             module = util.fetch_attr(model, layer_path)
             module.output[0][0, filler_token_idx, :] = act
@@ -463,13 +536,42 @@ def run_patching(patching_input, activations, model, filler_token_idx):
         topk_logits = logits[topk_idx]
         topk_logprobs = torch.log_softmax(logits, dim=-1)[topk_idx]
         patched_result = (patched_pred, topk_idx.save(), topk_logits.save(), topk_logprobs.save())
-    patched_result = tuple(p.detach() for p in patched_result)
+    patched_result = tuple(p.detach().cpu() for p in patched_result)
     return patched_result
 
-# --- Modularized Baseline ---
+# Batched patching using multiple invokes
+def run_patching_batch(patching_inputs, activations_batch, model, filler_token_idx):
+    topkn = 100
+    batch_size = len(patching_inputs)
+    with model.trace(remote=USE_REMOTE_EXECUTION) as tracer:
+        for b in range(batch_size):
+            with tracer.invoke(patching_inputs[b]):
+                for layer_path, act in activations_batch[b].items():
+                    module = util.fetch_attr(model, layer_path)
+                    module.output[0][0, filler_token_idx, :] = act
+                logits = model_lmhead.output[0, -1, :]
+                pred = torch.argmax(logits, dim=-1).save()
+                sorted_idx = torch.argsort(logits, descending=True)
+                topk_idx = sorted_idx[:topkn]
+                topk_logits = logits[topk_idx]
+                topk_logprobs = torch.log_softmax(logits, dim=-1)[topk_idx]
+                if b == 0:
+                    preds, topk_idxs, topk_logitss, topk_logprobss = [], [], [], []
+                preds.append(pred)
+                topk_idxs.append(topk_idx.save())
+                topk_logitss.append(topk_logits.save())
+                topk_logprobss.append(topk_logprobs.save())
+    # detach all
+    preds = [p.detach().cpu() for p in preds]
+    topk_idxs = [p.detach().cpu() for p in topk_idxs]
+    topk_logitss = [p.detach().cpu() for p in topk_logitss]
+    topk_logprobss = [p.detach().cpu() for p in topk_logprobss]
+    return preds, topk_idxs, topk_logitss, topk_logprobss
+
+# Single example baseline
 def run_baseline(baseline_input, model):
     topkn = 100
-    with model.trace(baseline_input, remote=USE_REMOTE_EXECUTION) as baseline_tracer:
+    with model.trace(baseline_input, remote=USE_REMOTE_EXECUTION) as tracer:
         logits = model_lmhead.output[0, -1, :]
         baseline_pred = torch.argmax(logits, dim=-1).save()
         sorted_idx = torch.argsort(logits, descending=True)
@@ -477,29 +579,37 @@ def run_baseline(baseline_input, model):
         topk_logits = logits[topk_idx]
         topk_logprobs = torch.log_softmax(logits, dim=-1)[topk_idx]
         baseline_result = (baseline_pred, topk_idx.save(), topk_logits.save(), topk_logprobs.save())
-    baseline_result = tuple(b.detach() for b in baseline_result)
+    baseline_result = tuple(p.detach().cpu() for p in baseline_result)
     return baseline_result
 
-# --- Main Loop ---
-
-# %% [markdown]
+# Batched baseline using multiple invokes
+def run_baseline_batch(baseline_inputs, model):
+    topkn = 100
+    batch_size = len(baseline_inputs)
+    with model.trace(remote=USE_REMOTE_EXECUTION) as tracer:
+        for b in range(batch_size):
+            with tracer.invoke(baseline_inputs[b]):
+                logits = model_lmhead.output[0, -1, :]
+                pred = torch.argmax(logits, dim=-1).save()
+                sorted_idx = torch.argsort(logits, descending=True)
+                topk_idx = sorted_idx[:topkn]
+                topk_logits = logits[topk_idx]
+                topk_logprobs = torch.log_softmax(logits, dim=-1)[topk_idx]
+                if b == 0:
+                    preds, topk_idxs, topk_logitss, topk_logprobss = [], [], [], []
+                preds.append(pred)
+                topk_idxs.append(topk_idx.save())
+                topk_logitss.append(topk_logits.save())
+                topk_logprobss.append(topk_logprobs.save())
+    preds = [p.detach().cpu() for p in preds]
+    topk_idxs = [p.detach().cpu() for p in topk_idxs]
+    topk_logitss = [p.detach().cpu() for p in topk_logitss]
+    topk_logprobss = [p.detach().cpu() for p in topk_logprobss]
+    return preds, topk_idxs, topk_logitss, topk_logprobss
 # # ## 4. Patching Experiment
 # print(f"Sample activation: {list(extracted_activations.keys())[0]}, shape: {extracted_activations[list(extracted_activations.keys())[0]][0].shape}")
-# #
-# # Run the model on `[filler token] [question]`, patching activations from all layers onto the filler token. Also run the baseline `[original context] [question]`.
+# Run the model on `[filler token] [question]`, patching activations from all layers onto the filler token. Also run the baseline `[original context] [question]`.
 # %%
-print(os.environ.get('CUDA_VISIBLE_DEVICES', 'Not set'))
-torch.cuda.empty_cache()
-#%%
-# --- Patching Experiment ---
-
-# patched_outputs = []
-# patched_logits_all = []
-# baseline_outputs = []
-# baseline_logits_all = []
-# unpatched_outputs = []
-# unpatched_logits_all = []
-
 patching_inputs = [f"{FILLER_TOKEN}{q}" for q in dataset['questions']]
 baseline_inputs = [f"We are playing chess. The PGN is: {ctx}\n{q}" for ctx, q in zip(dataset['original_contexts'], dataset['questions'])]
 unpatched_inputs = patching_inputs.copy()
@@ -508,6 +618,19 @@ bos_or_filler_token_idx = tokenizer(patching_inputs[0], return_tensors="pt")['in
 print("bos_or_filler_token_idx", bos_or_filler_token_idx, tokenizer.bos_token_id)
 filler_token_idx_in_patched_input = 1 if (tokenizer.bos_token_id == bos_or_filler_token_idx[0]) else 0
 print(f"Assuming filler token is at index: {filler_token_idx_in_patched_input}, it translates to: {tokenizer.decode([bos_or_filler_token_idx[filler_token_idx_in_patched_input]])}")
+print(dataset['original_contexts'])
+print(tokenizer.encode(dataset['original_contexts'][0]))
+print("\n--- Sample Example ---")
+print("baseline input:", "'" + baseline_inputs[0] + "'")
+print('patched input:', "'" + patching_inputs[0] + "'")
+print("Ground truth:", dataset['ground_truths'][0])
+
+
+
+
+#%%
+# --- Patching Experiment ---
+
 
 if model.config.model_type == "gemma3":
     model_lmhead = model.language_model.lm_head
@@ -518,256 +641,57 @@ patched_results = []
 baseline_results = []
 unpatched_results = []
 
-# First loop: extract activations and run patching
-for i in tqdm(range(len(dataset['original_contexts'])), desc="Extract + Patch"):
-    free_unused_cuda_memory()
+batch_size = BATCH_SIZE
+num_samples = len(dataset['original_contexts'])
 
-    context = dataset['original_contexts'][i]
-    question = dataset['questions'][i]
+# Batched extraction and patching
+for start in tqdm(range(0, num_samples, batch_size), desc="Extract + Patch"):
+    end = min(start + batch_size, num_samples)
+    batch_contexts = dataset['original_contexts'][start:end]
+    batch_questions = dataset['questions'][start:end]
+    patching_inputs = [f"{FILLER_TOKEN}{q}" for q in batch_questions]
 
-    patching_input = f"{FILLER_TOKEN}{question}"
-    baseline_input = f"We are playing chess. The PGN is: {context}\n{question}"
+    # Extract activations batch
+    activations_batch = extract_activations_batch(batch_contexts, model, TARGET_TOKEN_IDX)
 
-    # Extract activations for this example
-    activations = extract_activations_for_example(context, model, TARGET_TOKEN_IDX)
-    patched_res = run_patching(
-        patching_input, activations, model, filler_token_idx_in_patched_input
+    # Patch each example in batch
+    for patching_input, activations in zip(patching_inputs, activations_batch):
+        patched_res = run_patching(
+            patching_input, activations, model, filler_token_idx_in_patched_input
+        )
+        patched_results.append(patched_res)
+
+# Second loop: run baseline and unpatched in batches
+for start in tqdm(range(0, num_samples, batch_size), desc="Baseline + Unpatched"):
+    end = min(start + batch_size, num_samples)
+    batch_contexts = dataset['original_contexts'][start:end]
+    batch_questions = dataset['questions'][start:end]
+
+    baseline_inputs = [
+        f"We are playing chess. The PGN is: {ctx}\n{q}"
+        for ctx, q in zip(batch_contexts, batch_questions)
+    ]
+    unpatched_inputs = [
+        f"{FILLER_TOKEN}{q}" for q in batch_questions
+    ]
+
+    # Run baseline batch
+    baseline_preds, baseline_topk_idxs, baseline_topk_logitss, baseline_topk_logprobss = run_baseline_batch(
+        baseline_inputs, model
     )
-    baseline_res = run_baseline(
-        baseline_input, model
+    for p, idxs, logits, logprobs in zip(baseline_preds, baseline_topk_idxs, baseline_topk_logitss, baseline_topk_logprobss):
+        baseline_results.append((p, idxs, logits, logprobs))
+
+    # Run unpatched batch
+    unpatched_preds, unpatched_topk_idxs, unpatched_topk_logitss, unpatched_topk_logprobss = run_baseline_batch(
+        unpatched_inputs, model
     )
-
-    patched_results.append(patched_res)
-    baseline_results.append(baseline_res)
-
-    #del activations
-# %%
-# Second loop: run unpatched control
-for i in tqdm(range(len(dataset['original_contexts'])), desc="Unpatched control"):
-    free_unused_cuda_memory()
-
-    unpatched_input = f"{FILLER_TOKEN}{dataset['questions'][i]}"
-
-    with model.trace(unpatched_input, remote=USE_REMOTE_EXECUTION) as unpatched_tracer:
-        logits = model_lmhead.output[0, -1, :]
-        unpatched_pred = torch.argmax(logits, dim=-1).save()
-        sorted_idx = torch.argsort(logits, descending=True)
-        topk_idx = sorted_idx[:100]
-        topk_logits = logits[topk_idx]
-        topk_logprobs = torch.log_softmax(logits, dim=-1)[topk_idx]
-        unpatched_results.append((unpatched_pred, topk_idx.save(), topk_logits.save(), topk_logprobs.save()))
-    unpatched_results[-1]=tuple(u.detach() for u in unpatched_results[-1])
-        
+    for p, idxs, logits, logprobs in zip(unpatched_preds, unpatched_topk_idxs, unpatched_topk_logitss, unpatched_topk_logprobss):
+        unpatched_results.append((p, idxs, logits, logprobs))
     # free_unused_cuda_memory()
 
 print("Done with all examples.")
 
-# # %%
-# print(unpatched_results[0])
-# # %%
-# for i in tqdm(range(len(dataset['original_contexts'])), desc="Running Patching/Baseline"):
-#     free_unused_cuda_memory()
-#     # Get single example data
-#     patching_input = patching_inputs[i]
-#     baseline_input = baseline_inputs[i]
-#     if i == 0:
-#         print("patching_input: '", patching_input, "'")
-#         print("baseline_input: '", baseline_input, "'")
-#         print("check patching: ", tokenizer.decode(tokenizer.encode(patching_input)))
-#         print("check baseline: ", tokenizer.decode(tokenizer.encode(baseline_input)))
-#         print(f"donor token: ' {tokenizer.decode(tokenizer.encode(dataset['original_contexts'][i])[TARGET_TOKEN_IDX])}' at position {TARGET_TOKEN_IDX} in the original context")
-#         print(f"recipient token: '{tokenizer.decode(filler_token_id)}' at position {filler_token_idx_in_patched_input} in the patching input")
-    
-#     #--- Patched Run ---
-#     # Use separate trace calls for patched and baseline to avoid interleaving issues
-#     with model.trace(patching_input, remote=USE_REMOTE_EXECUTION) as patched_tracer:
-#         # Patch activations from all layers
-#         for layer_path, activations in extracted_activations.items():
-#             # Access the target module's output where patching should occur
-#             module = util.fetch_attr(model, layer_path)
-#             module_to_patch = module.output
-            
-#             # Perform the patch: Set the activation at the filler token position
-#             module_to_patch[0][0, filler_token_idx_in_patched_input, :] = 1*activations[i]#*(-1000000)
-        
-#         # For single token generation (MAX_NEW_TOKENS = 1)
-#         if MAX_NEW_TOKENS == 1:
-#             # Get the final logits from the patched run
-#             patched_logits = model_lmhead.output[0, -1, :]  # Logits for the last token
-#             # Get the predicted token ID (argmax)
-#             patched_prediction = torch.argmax(patched_logits, dim=-1).save()
-#             patched_outputs.append([patched_prediction])
-#             # Save indices, logits, and logprobs of the top 100 tokens
-#             sorted_indices = torch.argsort(patched_logits, descending=True)
-#             topk_indices = sorted_indices[:100]
-#             topk_logits = patched_logits[topk_indices]
-#             topk_logprobs = torch.log_softmax(patched_logits, dim=-1)[topk_indices]
-#             patched_logits_all.append((topk_indices.save(), topk_logits.save(), topk_logprobs.save()))
-#         else:
-#             # For multi-token generation, we need to save the initial logits
-#             # then continue generating additional tokens
-            
-#             # Get logits for last position
-#             initial_logits = model_lmhead.output[0, -1, :].detach()
-            
-#             # Sample first token (using temperature and top_p)
-#             if TEMPERATURE > 0:
-#                 # Apply temperature
-#                 initial_logits = initial_logits / TEMPERATURE
-#                 # Apply top_p sampling
-#                 sorted_logits, sorted_indices = torch.sort(initial_logits, descending=True)
-#                 cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=0), dim=0)
-#                 sorted_indices_to_remove = cumulative_probs > TOP_P
-#                 sorted_indices_to_remove[0] = False  # Keep at least the highest prob token
-#                 indices_to_remove = sorted_indices_to_remove.scatter(
-#                     0, sorted_indices, sorted_indices_to_remove
-#                 )
-#                 initial_logits[indices_to_remove] = -float('inf')
-#                 # Sample from the filtered distribution
-#                 probs = torch.softmax(initial_logits, dim=0)
-#                 first_token = torch.multinomial(probs, 1).item()
-#             else:
-#                 # Greedy sampling
-#                 first_token = torch.argmax(initial_logits, dim=0).item()
-            
-#             # Initialize the sequence with the first token
-#             generated_tokens = [first_token]
-            
-#             # Continue generating tokens one by one (autoregressive)
-#             current_input = tokenizer.decode(tokenizer.encode(patching_input) + [first_token], skip_special_tokens=False)
-            
-#             # Generate additional tokens (MAX_NEW_TOKENS - 1)
-#             for _ in range(MAX_NEW_TOKENS - 1):
-#                 # We need to run a separate trace for each additional token
-#                 with model.trace(current_input, remote=USE_REMOTE_EXECUTION) as next_token_tracer:
-#                     # Get logits for the last token position
-#                     next_logits = model_lmhead.output[0, -1, :]
-                
-#                 # Apply temperature and top_p sampling
-#                 next_logits = next_logits.detach()
-#                 if TEMPERATURE > 0:
-#                     next_logits = next_logits / TEMPERATURE
-#                     # Apply top_p sampling (same as above)
-#                     sorted_logits, sorted_indices = torch.sort(next_logits, descending=True)
-#                     cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=0), dim=0)
-#                     sorted_indices_to_remove = cumulative_probs > TOP_P
-#                     sorted_indices_to_remove[0] = False
-#                     indices_to_remove = sorted_indices_to_remove.scatter(
-#                         0, sorted_indices, sorted_indices_to_remove
-#                     )
-#                     next_logits[indices_to_remove] = -float('inf')
-#                     probs = torch.softmax(next_logits, dim=0)
-#                     next_token = torch.multinomial(probs, 1).item()
-#                 else:
-#                     next_token = torch.argmax(next_logits, dim=0).item()
-                
-#                 # Add the new token to the sequence
-#                 generated_tokens.append(next_token)
-                
-#                 # Update input for next iteration
-#                 current_input = tokenizer.decode(
-#                     tokenizer.encode(patching_input) + generated_tokens, 
-#                     skip_special_tokens=False
-#                 )
-            
-#             patched_outputs.append(generated_tokens.save())
-#         # --- Baseline Run ---
-#     with model.trace(baseline_input, remote=USE_REMOTE_EXECUTION) as baseline_tracer:
-#         # For single token generation
-#         if MAX_NEW_TOKENS == 1:
-#             # Get the final logits from the baseline run
-#             baseline_logits = model_lmhead.output[0, -1, :]  # Logits for the last token
-#             baseline_prediction = torch.argmax(baseline_logits, dim=-1).save()
-#             baseline_outputs.append([baseline_prediction])
-#             # Save indices, logits, and logprobs of the top 100 tokens
-#             sorted_indices = torch.argsort(baseline_logits, descending=True)
-#             topk_indices = sorted_indices[:100]
-#             topk_logits = baseline_logits[topk_indices]
-#             topk_logprobs = torch.log_softmax(baseline_logits, dim=-1)[topk_indices]
-#             baseline_logits_all.append((topk_indices.save(), topk_logits.save(), topk_logprobs.save()))
-#         else:
-#             # For multi-token generation
-#             # Using similar approach as with patched input
-            
-#             # Get logits for last position 
-#             initial_logits = model_lmhead.output[0, -1, :].detach()
-            
-#             # Sample first token with temperature and top_p
-#             if TEMPERATURE > 0:
-#                 initial_logits = initial_logits / TEMPERATURE
-#                 # Apply top_p sampling
-#                 sorted_logits, sorted_indices = torch.sort(initial_logits, descending=True)
-#                 cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=0), dim=0)
-#                 sorted_indices_to_remove = cumulative_probs > TOP_P
-#                 sorted_indices_to_remove[0] = False
-#                 indices_to_remove = sorted_indices_to_remove.scatter(
-#                     0, sorted_indices, sorted_indices_to_remove
-#                 )
-#                 initial_logits[indices_to_remove] = -float('inf')
-#                 probs = torch.softmax(initial_logits, dim=0)
-#                 first_token = torch.multinomial(probs, 1)
-#             else:
-#                 first_token = torch.argmax(initial_logits, dim=0)
-            
-#             # Initialize sequence with first token
-#             generated_tokens = [first_token]
-            
-#             # Continue generating tokens
-#             current_input = tokenizer.decode(tokenizer.encode(baseline_input) + [first_token], skip_special_tokens=False)
-            
-#             # Generate additional tokens
-#             for _ in range(MAX_NEW_TOKENS - 1):
-#                 with model.trace(current_input, remote=USE_REMOTE_EXECUTION) as next_token_tracer:
-#                     next_logits = model_lmhead.output[0, -1, :]
-                
-#                 # Apply temperature and top_p sampling
-#                 next_logits = next_logits.detach()
-#                 if TEMPERATURE > 0:
-#                     next_logits = next_logits / TEMPERATURE
-#                     # Apply top_p sampling
-#                     sorted_logits, sorted_indices = torch.sort(next_logits, descending=True)
-#                     cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=0), dim=0)
-#                     sorted_indices_to_remove = cumulative_probs > TOP_P
-#                     sorted_indices_to_remove[0] = False
-#                     indices_to_remove = sorted_indices_to_remove.scatter(
-#                         0, sorted_indices, sorted_indices_to_remove
-#                     )
-#                     next_logits[indices_to_remove] = -float('inf')
-#                     probs = torch.softmax(next_logits, dim=0)
-#                     next_token = torch.multinomial(probs, 1)
-#                 else:
-#                     next_token = torch.argmax(next_logits, dim=0)
-                
-#                 # Add new token to sequence
-#                 generated_tokens.append(next_token)
-                
-#                 # Update input for next iteration
-#                 current_input = tokenizer.decode(
-#                     tokenizer.encode(baseline_input) + generated_tokens, 
-#                     skip_special_tokens=False
-#                 )
-            
-#             baseline_outputs.append(generated_tokens)
-            
-#     # --- Unpatched Run (same input as patching but without patching) ---
-#     with model.trace(unpatched_inputs[i], remote=USE_REMOTE_EXECUTION) as unpatched_tracer:
-#         if MAX_NEW_TOKENS == 1:
-#             unpatched_logits = model_lmhead.output[0, -1, :]
-#             unpatched_prediction = torch.argmax(unpatched_logits, dim=-1)
-#             unpatched_outputs.append([unpatched_prediction])
-#             # Save indices, logits, and logprobs of the top 100 tokens
-#             sorted_indices = torch.argsort(unpatched_logits, descending=True)
-#             topk_indices = sorted_indices[:100]
-#             topk_logits = unpatched_logits[topk_indices]
-#             topk_logprobs = torch.log_softmax(unpatched_logits, dim=-1)[topk_indices]
-#             unpatched_logits_all.append((topk_indices.save(), topk_logits.save(), topk_logprobs.save()))
-
-# print("Patching and baseline runs complete.")
-# print(f"Collected {len(patched_outputs)} patched outputs and {len(baseline_outputs)} baseline outputs.")
-
-# %%
-# len(patched_results)
-# Start of Selection
 #%%
 print(board)
 print("\nTop 10 tokens for example 0, where the ground truth is '", dataset['ground_truths'][0], "'")
@@ -893,23 +817,60 @@ for i in range(len(dataset['ground_truths'])):
           f"{unpatched_rank_str} {surprisal_u:<10.2f} | "
           f"{extra_str}")
 
-
+# Schema for plotting ground-truth token surprisals across conditions
+# Inputs:
+# - gt_surprisals: dict with keys 'baseline', 'patched', 'unpatched', each a list of surprisal values
+# - Colors: assign distinct colors to each condition
+# - Plot title: "Ground Truth Token Surprisal (Lower is Better)"
+# - Y-axis label: "Surprisal (bits)"
+# - Plot style: 'plotly_white' template
+# - Boxplot options: show mean, show outliers
+#
+# For each condition:
+#   - Plot a boxplot of surprisal values
+#   - Label with capitalized condition name
+#
+# Display the figure after adding all traces
 # Plotly boxplot for surprisals
 fig_surp = go.Figure()
-for key, color in zip(['baseline', 'patched', 'unpatched'], ['blue', 'red', 'green']):
+
+# Add boxplots
+x_labels = ['Baseline', 'Patched', 'Unpatched']
+colors = ['blue', 'red', 'green']
+for key, color, label in zip(['baseline', 'patched', 'unpatched'], colors, x_labels):
     fig_surp.add_trace(go.Box(
         y=gt_surprisals[key],
-        name=key.capitalize(),
+        x=[label] * len(gt_surprisals[key]),
+        name=label,
         boxmean=True,
         marker_color=color,
         boxpoints='outliers'
     ))
+
+# Add faint lines connecting each instance's baseline->patched->unpatched
+n = len(gt_surprisals['baseline'])
+for i in range(n):
+    y_vals = [
+        gt_surprisals['baseline'][i],
+        gt_surprisals['patched'][i],
+        gt_surprisals['unpatched'][i]
+    ]
+    fig_surp.add_trace(go.Scatter(
+        x=x_labels,
+        y=y_vals,
+        mode='lines',
+        line=dict(color='rgba(0,0,0,0.03)', width=1),  # increased alpha (less transparent)
+        hoverinfo='skip',
+        showlegend=False
+    ))
+
 fig_surp.update_layout(
-    title="Ground Truth Token Surprisal (Lower is Better)",
-    yaxis_title="Surprisal (bits)",
+    title=f"ground truth token surprisal (↓ better), chess, {NUM_MOVES} moves, {NUM_GAMES*NUM_SAMPLES_PER_GAME} examples = {NUM_SAMPLES_PER_GAME}q x {NUM_GAMES}g, model: {MODEL_ID}",
+    yaxis_title="surprisal (bits)",
     template="plotly_white"
 )
 fig_surp.show()
+
 
 def summarize_metric(metric_dict, name):
     print(f"\n--- {name} Summary ---")
@@ -929,14 +890,52 @@ sorted_idx = np.argsort(gt_surprisals['patched'])
 for idx in sorted_idx[:5]:
     extra_info = dataset.get('extra_info', [''] * len(dataset['ground_truths']))
     extra_str = extra_info[idx] if idx < len(extra_info) else ''
-    print(f"Example {idx}: Surprisal={gt_surprisals['patched'][idx]:.2f}, Rank={gt_ranks['patched'][idx]}, GT='{dataset['ground_truths'][idx]}', Q='{dataset['questions'][idx]}', Extra='{extra_str}'")
+    print(f"Example {idx}: Surprisal={gt_surprisals['patched'][idx]:.2f}, Rank={gt_ranks['patched'][idx]}, GT='{dataset['ground_truths'][idx]}', Q='{dataset['questions'][idx]}', Extra='{extra_str}', UP_sup={gt_surprisals['unpatched'][idx]:.2f}, UP_R={gt_ranks['unpatched'][idx]}, B_sup={gt_surprisals['baseline'][idx]:.2f}, B_R={gt_ranks['baseline'][idx]}")
 
 print("\n--- Examples with Highest Patched Surprisal ---")
 sorted_idx = np.argsort(gt_surprisals['patched'])[::-1]
 for idx in sorted_idx[:5]:
     extra_info = dataset.get('extra_info', [''] * len(dataset['ground_truths']))
     extra_str = extra_info[idx] if idx < len(extra_info) else ''
-    print(f"Example {idx}: Surprisal={gt_surprisals['patched'][idx]:.2f}, Rank={gt_ranks['patched'][idx]}, GT='{dataset['ground_truths'][idx]}', Q='{dataset['questions'][idx]}', Extra='{extra_str}'")
+    print(f"Example {idx}: Surprisal={gt_surprisals['patched'][idx]:.2f}, Rank={gt_ranks['patched'][idx]}, GT='{dataset['ground_truths'][idx]}', Q='{dataset['questions'][idx]}', Extra='{extra_str}', UP_sup={gt_surprisals['unpatched'][idx]:.2f}, UP_R={gt_ranks['unpatched'][idx]}, B_sup={gt_surprisals['baseline'][idx]:.2f}, B_R={gt_ranks['baseline'][idx]}")
+
+
+print("\n--- Examples with Highest Baseline Surprisal ---")
+sorted_idx = np.argsort(gt_surprisals['baseline'])[::-1]
+for idx in sorted_idx[:5]:
+    extra_info = dataset.get('extra_info', [''] * len(dataset['ground_truths']))
+    extra_str = extra_info[idx] if idx < len(extra_info) else ''
+    print(f"Example {idx}: Surprisal={gt_surprisals['baseline'][idx]:.2f}, Rank={gt_ranks['baseline'][idx]}, GT='{dataset['ground_truths'][idx]}', Q='{dataset['questions'][idx]}', Extra='{extra_str}'")
+
+# %%
+idx = 474
+print(dataset['original_contexts'][idx])
+print(dataset['questions'][idx])
+print(dataset['ground_truths'][idx])
+if idx < len(baseline_results):
+    baseline_pred, baseline_topk_indices, baseline_topk_logits, baseline_topk_logprobs = baseline_results[idx]
+    patched_pred, patched_topk_indices, patched_topk_logits, patched_topk_logprobs = patched_results[idx]
+    unpatched_pred, unpatched_topk_indices, unpatched_topk_logits, unpatched_topk_logprobs = unpatched_results[idx]
+
+    baseline_topk = (baseline_topk_logits, baseline_topk_indices)
+    patched_topk = (patched_topk_logits, patched_topk_indices)
+    unpatched_topk = (unpatched_topk_logits, unpatched_topk_indices)
+
+    print(f"\nTop 12 tokens for example {idx}:")
+    header = f"{'Rank':<5} {'Baseline':<20} {'Patched':<20} {'Unpatched':<20}"
+    print(header)
+    print("-" * len(header))
+
+    for rank in range(12):
+        b_id = baseline_topk[1][rank].item()
+        p_id = patched_topk[1][rank].item()
+        u_id = unpatched_topk[1][rank].item()
+        b_tok = tokenizer.decode([b_id]).replace("\n", "\\n")
+        p_tok = tokenizer.decode([p_id]).replace("\n", "\\n")
+        u_tok = tokenizer.decode([u_id]).replace("\n", "\\n")
+        print(f"{rank+1:<5} {b_tok:<20} {p_tok:<20} {u_tok:<20}")
+else:
+    print(f"Example {idx} is out of range.")
 
 # %%
 print("\n--- nnsight generate baseline continuation (first example) ---")
