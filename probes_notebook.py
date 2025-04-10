@@ -5,7 +5,7 @@
 #
 # **Methodology:**
 # 1.  **Setting Definition:** Choose a domain with ground-truth information (e.g., Chess PGN, NLP Statements).
-# 2.  **Activation Extraction:** Run the LLM on original contexts from the chosen domain and extract relevant hidden state activations (`x`).
+# 8.  **Activation Extraction:** Run the LLM on original contexts from the chosen domain and extract relevant hidden state activations (`x`).
 # 3.  **Patching Input:** Create inputs of the form `[filler token] [question]`.
 # 4.  **Activation Patching:** Run the LLM on the patching input, but replace the activation at the `[filler token]` position with the extracted activation `x`.
 # 5.  **Evaluation (Patched):** Evaluate the LLM's 0-shot accuracy in answering the `[question]` based *only* on the patched activation `x`.
@@ -13,7 +13,7 @@
 # 7.  **Analysis:** Compare patched accuracy vs. baseline accuracy.
 import os
 # Explicitly set which GPUs to use (based on your allocation)
-os.environ["CUDA_VISIBLE_DEVICES"] = "5,6"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1,2"
 # %% [markdown]
 # ## 1. Setup and Configuration
 import sys
@@ -125,9 +125,9 @@ SETTING = 'chess' # Or 'nlp_sentiment', etc.
 BATCH_SIZE = 5 # For batching extraction/patching if desired
 # Evaluation
 if SETTING == 'chess':
-    NUM_GAMES = 100
+    NUM_GAMES = 500
     NUM_SAMPLES_PER_GAME = 1#50 # Number of data points to process
-    NUM_MOVES = 4
+    NUM_MOVES = 10
 else:
     NUM_SAMPLES = 1000 #50 # Number of data points to process
     BATCH_SIZE = 10 # For batching extraction/patching if desired
@@ -335,7 +335,8 @@ if SETTING == 'chess':
                     capped_pgn_str += f"{(idx_move // 2) +1}. {move_san} "
                 else:
                     capped_pgn_str += f"{move_san} "
-            capped_pgn_str = capped_pgn_str.strip() + " *"
+            #capped_pgn_str = capped_pgn_str.strip() + " *"
+            capped_pgn_str = capped_pgn_str.strip() + f" {idx_move//2+2}."
 
             count = 0
             while count < n_samples:
@@ -625,12 +626,8 @@ print("baseline input:", "'" + baseline_inputs[0] + "'")
 print('patched input:', "'" + patching_inputs[0] + "'")
 print("Ground truth:", dataset['ground_truths'][0])
 
-
-
-
 #%%
 # --- Patching Experiment ---
-
 
 if model.config.model_type == "gemma3":
     model_lmhead = model.language_model.lm_head
@@ -648,15 +645,12 @@ num_samples = len(dataset['original_contexts'])
 for start in tqdm(range(0, num_samples, batch_size), desc="Extract + Patch"):
     end = min(start + batch_size, num_samples)
     batch_contexts = dataset['original_contexts'][start:end]
-    batch_questions = dataset['questions'][start:end]
-    patching_inputs = [f"{FILLER_TOKEN}{q}" for q in batch_questions]
+    patching_inputs_batch = patching_inputs[start:end]
 
-    # Extract activations batch
     activations_batch = extract_activations_batch(batch_contexts, model, TARGET_TOKEN_IDX)
 
-    # Run patching in batch instead of per-example loop
     patched_preds, patched_topk_idxs, patched_topk_logitss, patched_topk_logprobss = run_patching_batch(
-        patching_inputs, activations_batch, model, filler_token_idx_in_patched_input
+        patching_inputs_batch, activations_batch, model, filler_token_idx_in_patched_input
     )
     for p, idxs, logits, logprobs in zip(patched_preds, patched_topk_idxs, patched_topk_logitss, patched_topk_logprobss):
         patched_results.append((p, idxs, logits, logprobs))
@@ -664,27 +658,20 @@ for start in tqdm(range(0, num_samples, batch_size), desc="Extract + Patch"):
 # Second loop: run baseline and unpatched in batches
 for start in tqdm(range(0, num_samples, batch_size), desc="Baseline + Unpatched"):
     end = min(start + batch_size, num_samples)
-    batch_contexts = dataset['original_contexts'][start:end]
-    batch_questions = dataset['questions'][start:end]
 
-    baseline_inputs = [
-        f"We are playing chess. The PGN is: {ctx}\n{q}"
-        for ctx, q in zip(batch_contexts, batch_questions)
-    ]
-    unpatched_inputs = [
-        f"{FILLER_TOKEN}{q}" for q in batch_questions
-    ]
+    baseline_inputs_batch = baseline_inputs[start:end]
+    unpatched_inputs_batch = unpatched_inputs[start:end]
 
-    # Run baseline batch
+    # Run baseline batch on batch slice only
     baseline_preds, baseline_topk_idxs, baseline_topk_logitss, baseline_topk_logprobss = run_baseline_batch(
-        baseline_inputs, model
+        baseline_inputs_batch, model
     )
     for p, idxs, logits, logprobs in zip(baseline_preds, baseline_topk_idxs, baseline_topk_logitss, baseline_topk_logprobss):
         baseline_results.append((p, idxs, logits, logprobs))
 
-    # Run unpatched batch
+    # Run unpatched batch on batch slice only
     unpatched_preds, unpatched_topk_idxs, unpatched_topk_logitss, unpatched_topk_logprobss = run_baseline_batch(
-        unpatched_inputs, model
+        unpatched_inputs_batch, model
     )
     for p, idxs, logits, logprobs in zip(unpatched_preds, unpatched_topk_idxs, unpatched_topk_logitss, unpatched_topk_logprobss):
         unpatched_results.append((p, idxs, logits, logprobs))
@@ -765,22 +752,22 @@ def compute_rank_and_surprisal(topk_indices, topk_logits, gt_token_ids):
 def compare_example(i, gt_token_ids, gt_text, baseline_result, patched_result, unpatched_result, extra_str=''):
     """
     Given index, ground truth token ids, text, and results for baseline, patched, unpatched,
-    compute ranks, surprisals, probs, and print formatted comparison line.
-    Returns dicts of rank, surprisal, prob for each condition.
+    compute ranks, surprisals, and print formatted comparison line.
+    Returns dicts of rank and surprisal for each condition.
     """
     _, baseline_topk_indices, baseline_topk_logits, _ = baseline_result
     _, patched_topk_indices, patched_topk_logits, _ = patched_result
     _, unpatched_topk_indices, unpatched_topk_logits, _ = unpatched_result
 
-    rank_b, surprisal_b, prob_b = compute_rank_and_surprisal(baseline_topk_indices, baseline_topk_logits, gt_token_ids)
-    rank_p, surprisal_p, prob_p = compute_rank_and_surprisal(patched_topk_indices, patched_topk_logits, gt_token_ids)
-    rank_u, surprisal_u, prob_u = compute_rank_and_surprisal(unpatched_topk_indices, unpatched_topk_logits, gt_token_ids)
+    rank_b, surprisal_b, _ = compute_rank_and_surprisal(baseline_topk_indices, baseline_topk_logits, gt_token_ids)
+    rank_p, surprisal_p, _ = compute_rank_and_surprisal(patched_topk_indices, patched_topk_logits, gt_token_ids)
+    rank_u, surprisal_u, _ = compute_rank_and_surprisal(unpatched_topk_indices, unpatched_topk_logits, gt_token_ids)
 
     def fmt(rank, surprisal):
         if rank is None:
-            return f"{'N/A':<12} {'N/A':<10}"
+            return f"{'N/A':<14}{'N/A':<10}"
         else:
-            return f"{rank:<12} {surprisal:<10.2f}"
+            return f"{rank:<14}{surprisal:<10.2f}"
 
     def delta_fmt(rank_other, rank_base):
         if rank_other is None or rank_base is None:
@@ -792,39 +779,37 @@ def compare_example(i, gt_token_ids, gt_text, baseline_result, patched_result, u
     patched_delta = delta_fmt(rank_p, rank_b)
     unpatched_delta = delta_fmt(rank_u, rank_b)
 
-    # Compose patched rank with delta inside brackets, aligned in 16 spaces
+    # Compose patched rank with delta, aligned in 18 spaces
     if rank_p is None:
-        patched_rank_str = f"{'N/A':<16}"
+        patched_rank_str = f"{'N/A':<18}"
     else:
-        patched_rank_str = f"{str(rank_p) + patched_delta:<16}"
+        patched_rank_str = f"{str(rank_p) + patched_delta:<18}"
 
-    # Compose unpatched rank with delta inside brackets, aligned in 12 spaces
+    # Compose unpatched rank with delta, aligned in 18 spaces
     if rank_u is None:
-        unpatched_rank_str = f"{'N/A':<12}"
+        unpatched_rank_str = f"{'N/A':<18}"
     else:
-        unpatched_rank_str = f"{str(rank_u) + unpatched_delta:<12}"
+        unpatched_rank_str = f"{str(rank_u) + unpatched_delta:<18}"
 
-    print(f"{i:<4} {list(gt_token_ids)} {gt_text:<15} | "
+    print(f"{i:<4}{str(list(gt_token_ids)):<20}{gt_text:<15} | "
           f"{fmt(rank_b, surprisal_b)} | "
-          f"{patched_rank_str} {surprisal_p:<10.2f} | "
-          f"{unpatched_rank_str} {surprisal_u:<10.2f} | "
+          f"{patched_rank_str}{surprisal_p:<10.2f} | "
+          f"{unpatched_rank_str}{surprisal_u:<10.2f} | "
           f"{extra_str}")
 
     return (
         {'baseline': rank_b, 'patched': rank_p, 'unpatched': rank_u},
-        {'baseline': surprisal_b, 'patched': surprisal_p, 'unpatched': surprisal_u},
-        {'baseline': prob_b, 'patched': prob_p, 'unpatched': prob_u}
+        {'baseline': surprisal_b, 'patched': surprisal_p, 'unpatched': surprisal_u}
     )
 
 gt_ranks = {'baseline': [], 'patched': [], 'unpatched': []}
 gt_surprisals = {'baseline': [], 'patched': [], 'unpatched': []}
-gt_probs = {'baseline': [], 'patched': [], 'unpatched': []}
 
-print("\n--- Ground Truth Token Ranks, Surprisals, and Probs ---")
-print(f"{'Idx':<4} {'GT_IDs':<20} {'Truth':<15} | "
-      f"{'BL rank':<14} {'Surp':<10} {'Prob':<10} | "
-      f"{'P rank':<18} {'Surp':<10} {'Prob':<10} | "
-      f"{'UP rank':<18} {'Surp':<10} {'Prob':<10} | "
+print("\n--- Ground Truth Token Ranks and Surprisals ---")
+print(f"{'Idx':<4}{'GT_IDs':<20}{'Truth':<15} | "
+      f"{'BL rank':<14}{'Surp':<10} | "
+      f"{'P rank':<18}{'Surp':<10} | "
+      f"{'UP rank':<18}{'Surp':<10} | "
       f"{'Info'}")
 
 for i in range(len(dataset['ground_truths'])):
@@ -851,7 +836,7 @@ for i in range(len(dataset['ground_truths'])):
     extra_info = dataset.get('extra_info', [''] * len(dataset['ground_truths']))
     extra_str = extra_info[i] if i < len(extra_info) else ''
 
-    ranks, surprisals, probs = compare_example(
+    ranks, surprisals = compare_example(
         i,
         ids_set,
         gt_text,
@@ -864,7 +849,7 @@ for i in range(len(dataset['ground_truths'])):
     for key in ['baseline', 'patched', 'unpatched']:
         gt_ranks[key].append(ranks[key])
         gt_surprisals[key].append(surprisals[key])
-        gt_probs[key].append(probs[key])
+        #gt_probs[key].append(probs[key])
 
 # Plotly boxplot for surprisals
 fig_surp = go.Figure()
@@ -916,7 +901,7 @@ def summarize_metric(metric_dict, name):
 
 summarize_metric(gt_ranks, "GT Token Rank")
 summarize_metric(gt_surprisals, "GT Token Surprisal")
-summarize_metric(gt_probs, "GT Token Probability")
+#summarize_metric(gt_probs, "GT Token Probability")
 
 print("\n--- Examples with Lowest Patched Surprisal ---")
 sorted_idx = np.argsort(gt_surprisals['patched'])
