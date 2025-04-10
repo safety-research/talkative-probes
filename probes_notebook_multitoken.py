@@ -55,17 +55,16 @@ import einops # If manipulating activations like attention heads
 import plotly.express as px
 import plotly.io as pio
 
-
+# Specific setting libraries (add as needed)
 from patch_and_run import *
-from dataset_loading import *
-
+import dataset_loading
 # %%
 # --- Configuration ---
 
 # Model Selection
 # Start small (e.g., gpt2, pythia-70m), then scale up
 #MODEL_ID = "openai-community/gpt2"
-#MODEL_ID = "openai-community/gpt2-xl"
+#ODEL_ID = "openai-community/gpt2-xl"
 #MODEL_ID = "meta-llama/Llama-2-13b-hf"
 MODEL_ID = "google/gemma-3-4b-pt"
 #MODEL_ID = "EleutherAI/pythia-70m"
@@ -104,9 +103,11 @@ FILLER_TOKEN = "..." # Choose a token unlikely to strongly affect things
 # FILLER_TOKEN = "..." # Or something else simple
 
 # Generation Configuration
-MAX_NEW_TOKENS = 1  # Set > 1 to sample multiple tokens
+MAX_NEW_TOKENS = 3  # Set > 1 to sample multiple tokens
 TEMPERATURE = 1.0   # Higher = more random, lower = more deterministic
 TOP_P = 0.9         # Control diversity of sampling
+# Layer selection
+LAYERS_TO_PATCH = None  # Set to None to patch all layers, or specify list like [0, 5, 10]
 
 # Experiment Setting ('chess' or 'nlp_sentiment', 'nlp_truth', etc.)
 SETTING = 'chess' # Or 'nlp_sentiment', etc.
@@ -189,7 +190,7 @@ filler_token_id = tokenizer.encode(FILLER_TOKEN)[-1]
 
 # %%
 # --- Data Loading and Preparation ---
-dataset = load_dataset(SETTING, tokenizer, NUM_DATA, IS_INSTRUCTION_MODEL, MAX_NEW_TOKENS)
+dataset = dataset_loading.load_dataset(SETTING, tokenizer, NUM_DATA, IS_INSTRUCTION_MODEL, MAX_NEW_TOKENS)
 
 # Ensure all lists have the same length
 assert len(dataset['original_contexts']) == len(dataset['questions']) == len(dataset['ground_truths']) == len(dataset['ground_truth_token_ids']), \
@@ -239,19 +240,45 @@ unpatched_results = []
 batch_size = BATCH_SIZE
 num_samples = len(dataset['original_contexts'])
 
-# Batched extraction and patching
+# Process in batches for memory efficiency
 for start in tqdm(range(0, num_samples, batch_size), desc="Extract + Patch"):
     end = min(start + batch_size, num_samples)
     batch_contexts = dataset['original_contexts'][start:end]
     patching_inputs_batch = patching_inputs[start:end]
 
-    activations_batch = extract_activations_batch(batch_contexts, model, TARGET_TOKEN_IDX)
-
-    patched_preds, patched_topk_idxs, patched_topk_logitss, patched_topk_logprobss = run_patching_batch(
-        patching_inputs_batch, activations_batch, model, filler_token_idx_in_patched_input
+    # Extract activations from original contexts
+    activations_batch = extract_activations_batch(
+        batch_contexts, 
+        model, 
+        TARGET_TOKEN_IDX,
+        layers_to_patch=LAYERS_TO_PATCH
     )
-    for p, idxs, logits, logprobs in zip(patched_preds, patched_topk_idxs, patched_topk_logitss, patched_topk_logprobss):
-        patched_results.append((p, idxs, logits, logprobs))
+
+    # Apply multi-token patching using the new function
+    if MAX_NEW_TOKENS > 1:
+        for i, (patching_input, activations) in enumerate(zip(patching_inputs_batch, activations_batch)):
+            tokens, preds, topk_idxs, topk_logits, topk_logprobs = run_multi_token_patching(
+                patching_input,
+                activations,
+                model, 
+                filler_token_idx_in_patched_input,
+                max_new_tokens=MAX_NEW_TOKENS,
+                topkn=100,
+                layers_to_patch=LAYERS_TO_PATCH
+            )
+            # Only keep the first token prediction for now
+            patched_results.append((preds[0], topk_idxs[0], topk_logits[0], topk_logprobs[0]))
+    else:
+        # Single token prediction - use existing batch function
+        patched_preds, patched_topk_idxs, patched_topk_logitss, patched_topk_logprobss = run_patching_batch(
+            patching_inputs_batch, 
+            activations_batch, 
+            model, 
+            filler_token_idx_in_patched_input,
+            layers_to_patch=LAYERS_TO_PATCH
+        )
+        for p, idxs, logits, logprobs in zip(patched_preds, patched_topk_idxs, patched_topk_logitss, patched_topk_logprobss):
+            patched_results.append((p, idxs, logits, logprobs))
 
 # Second loop: run baseline and unpatched in batches
 for start in tqdm(range(0, num_samples, batch_size), desc="Baseline + Unpatched"):
@@ -260,24 +287,94 @@ for start in tqdm(range(0, num_samples, batch_size), desc="Baseline + Unpatched"
     baseline_inputs_batch = baseline_inputs[start:end]
     unpatched_inputs_batch = unpatched_inputs[start:end]
 
-    # Run baseline batch on batch slice only
-    baseline_preds, baseline_topk_idxs, baseline_topk_logitss, baseline_topk_logprobss = run_baseline_batch(
-        baseline_inputs_batch, model
+    # Run multi-token baseline
+    if MAX_NEW_TOKENS > 1:
+        for baseline_input in baseline_inputs_batch:
+            tokens, preds, topk_idxs, topk_logits, topk_logprobs = run_multi_token_baseline(
+                baseline_input,
+                model,
+                max_new_tokens=MAX_NEW_TOKENS,
+                topkn=100
+            )
+            # Only keep the first token prediction for now
+            baseline_results.append((preds[0], topk_idxs[0], topk_logits[0], topk_logprobs[0]))
+        
+        for unpatched_input in unpatched_inputs_batch:
+            tokens, preds, topk_idxs, topk_logits, topk_logprobs = run_multi_token_baseline(
+                unpatched_input,
+                model,
+                max_new_tokens=MAX_NEW_TOKENS,
+                topkn=100
+            )
+            # Only keep the first token prediction for now
+            unpatched_results.append((preds[0], topk_idxs[0], topk_logits[0], topk_logprobs[0]))
+    else:
+        # Single token prediction - use existing batch function
+        baseline_preds, baseline_topk_idxs, baseline_topk_logitss, baseline_topk_logprobss = run_baseline_batch(
+            baseline_inputs_batch, model
+        )
+        for p, idxs, logits, logprobs in zip(baseline_preds, baseline_topk_idxs, baseline_topk_logitss, baseline_topk_logprobss):
+            baseline_results.append((p, idxs, logits, logprobs))
+
+        # Run unpatched batch on batch slice only
+        unpatched_preds, unpatched_topk_idxs, unpatched_topk_logitss, unpatched_topk_logprobss = run_baseline_batch(
+            unpatched_inputs_batch, model
+        )
+        for p, idxs, logits, logprobs in zip(unpatched_preds, unpatched_topk_idxs, unpatched_topk_logitss, unpatched_topk_logprobss):
+            unpatched_results.append((p, idxs, logits, logprobs))
+
+    free_unused_cuda_memory()
+
+print(f"Done with {len(patched_results)} examples, using {MAX_NEW_TOKENS} tokens per generation.")
+
+# %%
+# Display first few tokens of the generated sequences (if multi-token)
+if MAX_NEW_TOKENS > 1:
+    print("\n--- Multi-Token Generation Examples ---")
+    MAX_NEW_TOKENS = 30
+    
+    # Get the full token predictions for sample i=0
+    tokens, preds, topk_idxs, topk_logits, topk_logprobs = run_multi_token_patching(
+        patching_inputs[0],
+        extract_activations_for_example(dataset['original_contexts'][0], model, TARGET_TOKEN_IDX, layers_to_patch=LAYERS_TO_PATCH),
+        model,
+        filler_token_idx_in_patched_input,
+        max_new_tokens=MAX_NEW_TOKENS,
+        topkn=10
     )
-    for p, idxs, logits, logprobs in zip(baseline_preds, baseline_topk_idxs, baseline_topk_logitss, baseline_topk_logprobss):
-        baseline_results.append((p, idxs, logits, logprobs))
-
-    # Run unpatched batch on batch slice only
-    unpatched_preds, unpatched_topk_idxs, unpatched_topk_logitss, unpatched_topk_logprobss = run_baseline_batch(
-        unpatched_inputs_batch, model
+    
+    generated_text = tokenizer.decode(tokens[0])
+    print('ground truth', dataset['ground_truths'][0])
+    print(f"Sample patched input: '{patching_inputs[0]}'")
+    print(f"Full generated text: '{generated_text}'")
+    print(f"Tokens predicted: {[tokenizer.decode([pred.item()]) for pred in preds]}")
+    # Also show baseline
+    tokens, preds, topk_idxs, topk_logits, topk_logprobs = run_multi_token_baseline(
+        baseline_inputs[0],
+        model,
+        max_new_tokens=MAX_NEW_TOKENS,
+        topkn=10
     )
-    for p, idxs, logits, logprobs in zip(unpatched_preds, unpatched_topk_idxs, unpatched_topk_logitss, unpatched_topk_logprobss):
-        unpatched_results.append((p, idxs, logits, logprobs))
-    # free_unused_cuda_memory()
+    
+    generated_text = tokenizer.decode(tokens[0])
+    print(f"\nSample baseline input: '{baseline_inputs[0]}'")
+    print(f"Full generated text: '{generated_text}'")
+    print(f"Tokens predicted: {[tokenizer.decode([pred.item()]) for pred in preds]}")
+    
+    # Also show unpatched
+    tokens, preds, topk_idxs, topk_logits, topk_logprobs = run_multi_token_baseline(
+        unpatched_inputs[0],
+        model,
+        max_new_tokens=MAX_NEW_TOKENS,
+        topkn=10
+    )
+    
+    generated_text = tokenizer.decode(tokens[0])
+    print(f"\nSample unpatched input: '{unpatched_inputs[0]}'")
+    print(f"Full generated text: '{generated_text}'")
+    print(f"Tokens predicted: {[tokenizer.decode([pred.item()]) for pred in preds]}")
 
-print("Done with all examples.")
-
-#%%
+# %%
 print("\nTop 10 tokens for example 0, where the ground truth is '", dataset['ground_truths'][0], "'")
 print("\nbaseline input:", "'" + baseline_inputs[0] + "'\n")
 print('\npatched input:', "'" + patching_inputs[0] + "'\n")
@@ -522,7 +619,7 @@ for idx in sorted_idx[:5]:
     print(f"Example {idx}: Surprisal={gt_surprisals['baseline'][idx]:.2f}, Rank={gt_ranks['baseline'][idx]}, GT='{dataset['ground_truths'][idx]}', Q='{dataset['questions'][idx]}', Extra='{extra_str}'")
 
 # %%
-idx = min(243, len(dataset['original_contexts']) - 1)
+idx = min(0, len(dataset['original_contexts']) - 1)
 print(dataset['original_contexts'][idx])
 print(dataset['questions'][idx])
 print(dataset['ground_truths'][idx])
@@ -551,19 +648,381 @@ if idx < len(baseline_results):
 else:
     print(f"Example {idx} is out of range.")
 
-# %%
-print("\n--- nnsight generate baseline continuation (first example) ---")
-prompt = baseline_inputs[0]
-n_new_tokens = 5
-with model.generate(prompt, max_new_tokens=n_new_tokens, temperature=TEMPERATURE, top_p=TOP_P) as tracer:
-    out = model.generator.output.save()
+# # %%
+# print("\n--- nnsight generate baseline continuation (first example) ---")
+# prompt = baseline_inputs[0]
+# n_new_tokens = 5
+# with model.generate(prompt, max_new_tokens=n_new_tokens, temperature=TEMPERATURE, top_p=TOP_P) as tracer:
+#     out = model.generator.output.save()
 
-decoded_prompt = model.tokenizer.decode(out[0][0:-n_new_tokens].cpu())
-decoded_answer = model.tokenizer.decode(out[0][-n_new_tokens:].cpu())
+# decoded_prompt = model.tokenizer.decode(out[0][0:-n_new_tokens].cpu())
+# decoded_answer = model.tokenizer.decode(out[0][-n_new_tokens:].cpu())
 
-print("Prompt:", decoded_prompt)
-print("Generated continuation:", decoded_answer)
+# print("Prompt:", decoded_prompt)
+# print("Generated continuation:", decoded_answer)
+
+# # %%
+# print(len(patched_results[0]))
+# %%
+# Display first few tokens of the generated sequences (if multi-token)
+
+    # Also show baseline
+    # tokens, preds, topk_idxs, topk_logits, topk_logprobs = run_multi_token_baseline(
+    #     baseline_inputs[0],
+    #     model,
+    #     max_new_tokens=MAX_NEW_TOKENS,
+    #     topkn=10
+    # )
+    
+    # generated_text = tokenizer.decode(tokens[0])
+    # print(f"\nSample baseline input: '{baseline_inputs[0]}'")
+    # print(f"Full generated text: '{generated_text}'")
+    # print(f"Tokens predicted: {[tokenizer.decode([pred.item()]) for pred in preds]}")
+    
+    # # Also show unpatched
+    # tokens, preds, topk_idxs, topk_logits, topk_logprobs = run_multi_token_baseline(
+    #     unpatched_inputs[0],
+    #     model,
+    #     max_new_tokens=MAX_NEW_TOKENS,
+    #     topkn=10
+    # )
+    
+    # generated_text = tokenizer.decode(tokens[0])
+    # print(f"\nSample unpatched input: '{unpatched_inputs[0]}'")
+    # print(f"Full generated text: '{generated_text}'")
+    # print(f"Tokens predicted: {[tokenizer.decode([pred.item()]) for pred in preds]}")
+# %%
+example_idx = 0
+
+# Extract activations for a single example
+toextract = "bananas are my favourite food"
+activations = extract_activations_for_example(toextract, model, TARGET_TOKEN_IDX, layers_to_patch=None)
+print("target token: ", tokenizer.decode(tokenizer.encode(toextract)[TARGET_TOKEN_IDX]))
+# Run patching on a single example
+test_single_patch = "ChessWhat colour are they? They are"
+print(test_single_patch)
+patchedactivations ={k:v for k,v in activations.items()}
+patched_pred, patched_topk_indices, patched_topk_logits, patched_topk_logprobs = run_patching(
+    test_single_patch, patchedactivations, model, filler_token_idx_in_patched_input
+)
+print(tokenizer.decode(patched_pred))
+print([tokenizer.decode(p) for p in patched_topk_indices])
 
 # %%
-print(len(patched_results[0]))
+
+if MAX_NEW_TOKENS > 1:
+    print("\n--- Multi-Token Generation Examples ---")
+    MAX_NEW_TOKENS = 30
+    #test_patch_input = "QueensWhat colour are they? They are"
+    toextract = "The tallest building in New York"
+    #test_patch_input = "QueensWhat colour are they? They are"
+    #test_patch_input = "...It is perhaps"
+    test_patch_input = """Syria: Country in the Middle East, Leonardo DiCaprio: American actor, Samsung: South
+Korean multinational major appliance and consumer electronics corporation, King: """
+    # Get the full token predictions for sample i=0
+    tokenextractidx = -1
+    acts = extract_activations_for_example(toextract, model, tokenextractidx, layers_to_patch=[0,5,10,20,30])
+    print("extracted token:", tokenizer.decode(tokenizer.encode(toextract)[tokenextractidx]))
+    acts = {k:v for k,v in acts.items()}
+    print(acts.keys())
+    filler_token_here = -3
+    print("replacing token:", tokenizer.decode(tokenizer.encode(test_patch_input)[filler_token_here]))
+    tokens, preds, topk_idxs, topk_logits, topk_logprobs = run_multi_token_patching(
+        test_patch_input,
+        acts,
+        model,
+        filler_token_here,#filler_token_idx_in_patched_input
+        max_new_tokens=MAX_NEW_TOKENS,
+        topkn=5,
+        temperature=None#0.0000000001
+    )
+
+    print([tokenizer.decode(k) for k in topk_idxs]) 
+    
+    generated_text = tokenizer.decode(tokens[0])
+    print('ground truth', dataset['ground_truths'][0])
+    print(f"Sample patched input: '{test_patch_input}'")
+    print(f"Full generated text: '{generated_text}'")
+    print(f"Tokens predicted: {[tokenizer.decode([pred.item()]) for pred in preds]}")
+
+
+# # %%
+# tokens, preds, topk_idxs, topk_logits, topk_logprobs = run_multi_token_baseline(test_patch_input, model, max_new_tokens=MAX_NEW_TOKENS, topkn=10, temperature=0.0000000001)
+
+# print([tokenizer.decode(k) for k in topk_idxs]) 
+# generated_text = tokenizer.decode(tokens[0])
+# print('ground truth', dataset['ground_truths'][0])
+# print(f"Sample patched input: '{test_patch_input}'")
+# print(f"Full generated text: '{generated_text}'")
+# print(f"Tokens predicted: {[tokenizer.decode([pred.item()]) for pred in preds]}")
+
+
 # %%
+topk_logits[0]
+
+# _, model_lmhead = get_model_info(model)
+
+    
+with model.generate(test_patch_input, max_new_tokens=MAX_NEW_TOKENS, remote=USE_REMOTE_EXECUTION, temperature=0.0000000001) as tracer:
+        
+    # Create empty lists to store results
+    all_preds = nnsight.list().save()
+    all_topk_idx = nnsight.list().save()
+    all_topk_logits = nnsight.list().save()
+    all_topk_logprobs = nnsight.list().save()
+    # Get generated tokens
+    all_tokens = model.generator.output.save()
+print([tokenizer.decode(k) for k in all_tokens])
+# %%
+
+def run_multi_token_patching(patching_input, activations, model, filler_token_idx, max_new_tokens=1, topkn=100, layers_to_patch=None, temperature = None):
+    """
+    Run patching with multi-token prediction using model.generate
+    
+    Args:
+        patching_input: Input text for patching
+        activations: Dictionary of activations to patch
+        model: Model to patch
+        filler_token_idx: Index of token to replace with activation
+        max_new_tokens: Number of new tokens to generate
+        topkn: Number of top predictions to return
+        layers_to_patch: Optional list of layer indices to patch
+        
+    Returns:
+        Generated tokens, predictions, and logprobs for each new token
+    """
+    num_layers, model_lmhead = get_model_info(model)
+    
+    # Create a dictionary to map layer path to module
+    layer_modules = {}
+    for layer_idx in range(num_layers):
+        if layers_to_patch is not None and layer_idx not in layers_to_patch:
+            continue
+        layer_path = get_layer_output_path(layer_idx, model)
+        layer_modules[layer_path] = util.fetch_attr(model, layer_path)
+    
+
+    
+    with model.generate(patching_input, max_new_tokens=max_new_tokens, remote=USE_REMOTE_EXECUTION, temperature=temperature) as tracer:
+        # Create empty lists to store results
+        all_tokens = []
+        all_preds = nnsight.list().save()
+        all_topk_idx = nnsight.list().save()
+        all_topk_logits = nnsight.list().save()
+        all_topk_logprobs = nnsight.list().save()
+        # First apply patching at the initial position
+        for layer_path, act in activations.items():
+            if layers_to_patch is not None:
+                try:
+                    layer_idx = int(layer_path.split('.')[-1])
+                except ValueError:
+                    continue
+                if layer_idx not in layers_to_patch:
+                    continue
+            module = layer_modules.get(layer_path)
+            #if module:
+            #print(layer_path)
+            module.output[0][0, filler_token_idx, :] = act
+        
+        # Get generated tokens
+        all_tokens = model.generator.output.save()
+        
+        # Use .all() to apply to all new token predictions
+        with model_lmhead.all():
+            logits = model_lmhead.output[0, -1, :]
+            pred = torch.argmax(logits, dim=-1)
+            sorted_idx = torch.argsort(logits, descending=True)
+            topk_idx = sorted_idx[:topkn]
+            topk_logits = logits[topk_idx]
+            topk_logprobs = torch.log_softmax(logits, dim=-1)[topk_idx]
+            
+            all_preds.append(pred)
+            all_topk_idx.append(topk_idx)
+            all_topk_logits.append(topk_logits)
+            all_topk_logprobs.append(topk_logprobs)
+    
+    # Convert to CPU tensors
+    all_tokens = all_tokens.detach().cpu()
+    all_preds = [p.detach().cpu() for p in all_preds]
+    all_topk_idx = [idx.detach().cpu() for idx in all_topk_idx]
+    all_topk_logits = [logit.detach().cpu() for logit in all_topk_logits]
+    all_topk_logprobs = [logprob.detach().cpu() for logprob in all_topk_logprobs]
+    
+    return all_tokens, all_preds, all_topk_idx, all_topk_logits, all_topk_logprobs# %%
+
+# %%
+def apply_logit_lens(model, prompt, topkn=5):
+    """
+    Apply logit lens to model layers to visualize intermediate predictions
+    """
+    num_layers, model_lmhead = get_model_info(model)
+    #num_layers = 3
+    probs_layers = []
+    topk_tokens_layers = []
+    topk_probs_layers = []
+    
+    with model.trace() as tracer:
+        with tracer.invoke(prompt) as invoker:
+            for layer_idx in range(num_layers):
+                layer_path = get_layer_output_path(layer_idx, model)
+                module = util.fetch_attr(model, layer_path)
+                
+                # Process layer output through the model's head and normalization
+                if model.config.model_type == "gemma3":
+                    layer_output = -model.language_model.lm_head(model.language_model.model.norm(module.output[0]))
+                elif model.config.model_type == "gpt2":
+                    layer_output = model.lm_head(model.transformer.ln_f(module.output[0]))
+                elif model.config.model_type == "llama":
+                    layer_output = model.lm_head(model.norm(module.output[0]))
+                else:
+                    # Generic fallback
+                    layer_output = model_lmhead(module.output[0])
+                
+                # Apply softmax to obtain probabilities and save the result
+                probs = torch.nn.functional.softmax(layer_output, dim=-1).save()
+                probs_layers.append(probs)
+                
+                # Get top-k tokens by sorting logits
+                sorted_idx = torch.argsort(layer_output, descending=True, dim=-1)
+                topk_tokens = sorted_idx[..., :topkn]
+                topk_probs = probs.gather(-1, topk_tokens)
+                topk_tokens_layers.append(topk_tokens.save())
+                topk_probs_layers.append(topk_probs.save())
+    
+    # Convert to CPU tensors
+    probs = torch.cat([probs.value.detach().cpu() for probs in probs_layers])
+    topk_tokens = torch.cat([tokens.value.detach().cpu() for tokens in topk_tokens_layers])
+    topk_probs = torch.cat([probs.value.detach().cpu() for probs in topk_probs_layers])
+    
+    # Find the maximum probability and corresponding tokens for each position
+    print("SHAPE:",probs.shape)
+    if model.config.model_type == "gemma3":
+        print('taking max over -2 dimension')
+        max_probs, tokens = probs.max(dim=-1)
+    else:
+        print('taking max over -1 dimension')
+        max_probs, tokens = probs.max(dim=-1)
+
+
+    print('max probs shape:', max_probs.shape)
+    print('tokens shape:', tokens.shape)
+    # print(tokens[0:10,0:10])
+
+    # return None
+    
+    # Decode token IDs to words for each layer
+    words = [[model.tokenizer.decode(t).encode("unicode_escape").decode() for t in layer_tokens]
+        for layer_tokens in tokens]
+    
+    # Decode top-k tokens for each layer and position
+    topk_words = [[[model.tokenizer.decode(t).encode("unicode_escape").decode() 
+                    for t in pos_tokens] 
+                   for pos_tokens in layer_tokens]
+                  for layer_tokens in topk_tokens]
+    
+    # Get input words
+    input_words = [model.tokenizer.decode(t) for t in invoker.inputs[0][0]["input_ids"][0]]
+    
+    return {
+        'max_probs': max_probs,
+        'tokens': tokens,
+        'words': words,
+        'input_words': input_words,
+        'probs': probs,
+        'topk_tokens': topk_tokens,
+        'topk_probs': topk_probs,
+        'topk_words': topk_words
+    }
+
+def visualize_logit_lens(logit_lens_results):
+    """
+    Visualize logit lens results using plotly
+    """
+    import plotly.express as px
+    import plotly.io as pio
+    
+    max_probs = logit_lens_results['max_probs']
+    words = logit_lens_results['words']
+    input_words = logit_lens_results['input_words']
+    
+    # Determine if running in Colab
+    try:
+        import google.colab
+        is_colab = True
+    except:
+        is_colab = False
+    
+    if is_colab:
+        pio.renderers.default = "colab"
+    else:
+        pio.renderers.default = "plotly_mimetype+notebook_connected+notebook"
+    
+    fig = px.imshow(
+        max_probs,
+        x=input_words,
+        y=list(range(len(words))),
+        color_continuous_scale=px.colors.diverging.RdYlBu_r,
+        color_continuous_midpoint=0.50,
+        text_auto=True,
+        labels=dict(x="Input Tokens", y="Layers", color="Probability")
+    )
+    
+    fig.update_layout(
+        title='Logit Lens Visualization',
+        xaxis_tickangle=0
+    )
+    
+    fig.update_traces(text=words, texttemplate="%{text}")
+    return fig
+
+# Example usage
+example_prompt = "The tallest building in New York is the"
+logit_lens_results = apply_logit_lens(model, example_prompt)
+fig = visualize_logit_lens(logit_lens_results)
+fig.show()
+
+# Print top predictions for the last token at different layers
+print("\nTop predictions at different layers for the last token:")
+last_token_idx = -1
+for layer_idx in range(0, len(logit_lens_results['topk_words']), 4):  # Sample every 4th layer
+    top_words = logit_lens_results['topk_words'][layer_idx][last_token_idx][:3]  # Top 3 predictions
+    top_probs = logit_lens_results['topk_probs'][layer_idx][last_token_idx][:3]  # Top 3 probabilities
+    print(f"Layer {layer_idx}: {list(zip(top_words, [f'{p:.4f}' for p in top_probs]))}")
+
+# Example usage
+# out = apply_logit_lens(model, "The tallest building in New York")
+# visualize_logit_lens(out)
+# %%
+print(model)
+# %%
+(language_model): Gemma3ForCausalLM(
+    (model): Gemma3TextModel(
+      (embed_tokens): Gemma3TextScaledWordEmbedding(262208, 2560, padding_idx=0)
+      (layers): ModuleList(
+        (0-33): 34 x Gemma3DecoderLayer(
+          (self_attn): Gemma3Attention(
+            (q_proj): Linear(in_features=2560, out_features=2048, bias=False)
+            (k_proj): Linear(in_features=2560, out_features=1024, bias=False)
+            (v_proj): Linear(in_features=2560, out_features=1024, bias=False)
+            (o_proj): Linear(in_features=2048, out_features=2560, bias=False)
+            (q_norm): Gemma3RMSNorm((256,), eps=1e-06)
+            (k_norm): Gemma3RMSNorm((256,), eps=1e-06)
+          )
+          (mlp): Gemma3MLP(
+            (gate_proj): Linear(in_features=2560, out_features=10240, bias=False)
+            (up_proj): Linear(in_features=2560, out_features=10240, bias=False)
+            (down_proj): Linear(in_features=10240, out_features=2560, bias=False)
+            (act_fn): PytorchGELUTanh()
+          )
+          (input_layernorm): Gemma3RMSNorm((2560,), eps=1e-06)
+          (post_attention_layernorm): Gemma3RMSNorm((2560,), eps=1e-06)
+          (pre_feedforward_layernorm): Gemma3RMSNorm((2560,), eps=1e-06)
+          (post_feedforward_layernorm): Gemma3RMSNorm((2560,), eps=1e-06)
+        )
+      )
+      (norm): Gemma3RMSNorm((2560,), eps=1e-06)
+      (rotary_emb): Gemma3RotaryEmbedding()
+      (rotary_emb_local): Gemma3RotaryEmbedding()
+    )
+    (lm_head): Linear(in_features=2560, out_features=262208, bias=False)
+  )
