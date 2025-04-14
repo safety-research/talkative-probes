@@ -4,6 +4,9 @@
 # This interactive script demonstrates how to use a Sparse Autoencoder (SAE) to extract and visualize monosemantic features from a Llama model's activations.
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "5,6"
+from dotenv import load_dotenv
+print("loaded successfully?",load_dotenv())
+
 
 import sys
 import gc
@@ -17,11 +20,12 @@ def free_unused_cuda_memory():
 print(sys.executable)
 print(sys.version)
 # Get the SLURM environment variables
-slurm_gpus = os.environ.get('CUDA_VISIBLE_DEVICES', '1')
+slurm_gpus = os.environ.get('CUDA_VISIBLE_DEVICES', None)
 print(slurm_gpus)
 #os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(i) for i in range(int(slurm_gpus)))
 #os.environ["CUDA_VISIBLE_DEVICES"] = '5,6'
 print(f"Restricted to {slurm_gpus} GPU(s)")
+!pwd
 # %%
 # Core libraries
 import torch
@@ -66,264 +70,31 @@ import torch
 import nnsight
 from nnsight import LanguageModel
 from nnsight import CONFIG, util
-from nnsight.intervention import InterventionProxy
+#from nnsight.intervention import InterventionProxy
 #from nnsight.tracing.graph import Proxy # For 
+from SAEclasses import *
+import goodfire
 
 
 # %%
 # --- Helper Functions ---
 
-def download_file(url, fname):
-    """Downloads a file from a URL, showing a progress bar."""
-    if os.path.exists(fname):
-        print(f"File already exists: {fname}")
-        return
-    print(f"Downloading {url} to {fname}")
-    try:
-        response = requests.get(url, stream=True)
-        response.raise_for_status()  # Raise an exception for bad status codes
-        total_size = int(response.headers.get('content-length', 0))
-        block_size = 1024 # 1 Kibibyte
-        progress_bar = tqdm(total=total_size, unit='iB', unit_scale=True)
-        with open(fname, 'wb') as f:
-            for data in response.iter_content(block_size):
-                progress_bar.update(len(data))
-                f.write(data)
-        progress_bar.close()
-        if total_size != 0 and progress_bar.n != total_size:
-            print("ERROR, something went wrong")
-    except requests.exceptions.RequestException as e:
-        print(f"Error downloading file: {e}")
-        if os.path.exists(fname):
-            os.remove(fname) # Clean up incomplete download
-        raise
-
-def load_sae_from_repo(
-    repo_id: str,
-    model_device: torch.device,
-    model_dtype: torch.dtype,
-    d_model: Optional[int] = None, # Required for Goodfire format
-    expansion_factor: Optional[int] = None, # Required for Goodfire format
-    weight_filename_sf: str = "sae_weights.safetensors", # Standard safetensors filename
-    cfg_filename_sf: str = "cfg.json", # Standard config filename
-    weight_filename_gf: str = None, # Goodfire filename (often repo_id based)
-    cache_dir: str = "sae_cache",
-):
-    """Loads an SAE from a Hugging Face repo, handling both Goodfire (.pth) and standard (.safetensors) formats."""
-    if not os.path.exists(cache_dir):
-        os.makedirs(cache_dir)
-
-    if repo_id.startswith("Goodfire/"):
-        print(f"Detected Goodfire SAE format for {repo_id}")
-        if d_model is None or expansion_factor is None:
-            raise ValueError("d_model and expansion_factor are required for Goodfire SAE format.")
-        
-        # Determine filename if not provided (Goodfire convention)
-        if weight_filename_gf is None:
-            weight_filename_gf = f"{repo_id.split('/')[1]}.pth" 
-            print(f"Assuming Goodfire weight filename: {weight_filename_gf}")
-        
-        # Download .pth file using hf_hub_download
-        local_weights_path = hf_hub_download(
-            repo_id=repo_id,
-            filename=weight_filename_gf,
-            cache_dir=cache_dir,
-            repo_type="model"
-        )
-        
-        # Calculate hidden dimension
-        d_hidden = d_model * expansion_factor
-        
-        # Instantiate SAE
-        sae = SparseAutoEncoder(
-            d_in=d_model,
-            d_hidden=d_hidden,
-            device=model_device,
-            dtype=model_dtype # Use model's dtype
-        )
-        
-        # Load state dict from .pth file
-        try:
-            state_dict = torch.load(local_weights_path, map_location=model_device, weights_only=True)
-            print("SAE keys",state_dict.keys())
-            sae.load_state_dict(state_dict)
-            print(f"Goodfire SAE loaded successfully from {local_weights_path}")
-        except Exception as e:
-            print(f"Error loading state dict from {local_weights_path}: {e}")
-            raise
-            
-    else:
-        print(f"Assuming standard (.safetensors) SAE format for {repo_id}")
-        repo_url = f"https://huggingface.co/{repo_id}/resolve/main/"
-        weights_url = repo_url + weight_filename_sf
-        cfg_url = repo_url + cfg_filename_sf
-
-        local_weights_path = os.path.join(cache_dir, f"{repo_id.replace('/', '_')}_{weight_filename_sf}")
-        local_cfg_path = os.path.join(cache_dir, f"{repo_id.replace('/', '_')}_{cfg_filename_sf}")
-
-        # Download weights and config if they don't exist locally
-        download_file(weights_url, local_weights_path)
-        download_file(cfg_url, local_cfg_path)
-
-        # Load config
-        try:
-            with open(local_cfg_path, 'r') as f:
-                cfg = json.load(f)
-            # Infer d_in and d_hidden (d_sae) from config
-            d_in = cfg['d_in']
-            d_hidden = cfg['d_sae'] # Standard SAEs usually call it d_sae
-        except (FileNotFoundError, KeyError, json.JSONDecodeError) as e:
-            print(f"Error loading or parsing standard config file {local_cfg_path}: {e}")
-            raise
-
-        # Instantiate SAE
-        sae = SparseAutoEncoder(
-            d_in=d_in,
-            d_hidden=d_hidden, 
-            device=model_device, 
-            dtype=model_dtype # Use model's dtype
-        )
-
-        # Load state dict from safetensors
-        try:
-            state_dict = load_file(local_weights_path, device=str(model_device))
-            # Adapt keys if necessary (e.g., remove 'sae.' prefix if present)
-            adapted_state_dict = {}
-            for key, value in state_dict.items():
-                 # Example adaptation: replace encoder/decoder with encoder_linear/decoder_linear
-                 new_key = key
-                 if key == "encoder.weight": new_key = "encoder_linear.weight"
-                 if key == "encoder.bias": new_key = "encoder_linear.bias"
-                 if key == "decoder.weight": new_key = "decoder_linear.weight"
-                 if key == "decoder.bias": new_key = "decoder_linear.bias"
-                 # Add other potential key adaptations here if needed
-                 adapted_state_dict[new_key] = value
-            
-            # Handle potential bias mismatch in decoder (common practice)
-            if 'decoder_linear.bias' not in sae.state_dict() and 'decoder_linear.bias' in adapted_state_dict:
-                 del adapted_state_dict['decoder_linear.bias']
-                 print("Note: Removed decoder bias from loaded state_dict as it's not in the model.")
-            elif 'decoder_linear.bias' in sae.state_dict() and 'decoder_linear.bias' not in adapted_state_dict:
-                 print("Warning: Decoder bias expected but not found in loaded state_dict.")
-                 
-            sae.load_state_dict(adapted_state_dict)
-            print(f"Standard SAE loaded successfully from {local_weights_path}")
-
-        except Exception as e:
-            print(f"Error loading state dict from {local_weights_path}: {e}")
-            raise
-            
-    return sae
 
 # %%
 # --- SAE Class Definition ---
 
-class SparseAutoEncoder(torch.nn.Module):
-    """SAE class definition based on Goodfire demo."""
-    def __init__(
-        self,
-        d_in: int,
-        d_hidden: int,
-        device: torch.device,
-        dtype: torch.dtype = torch.bfloat16, # Default to bfloat16 as in demo
-    ):
-        super().__init__()
-        self.d_in = d_in
-        self.d_hidden = d_hidden
-        self.device = device
-        self.dtype = dtype
-        
-        # Define layers (Matches the demo notebook structure)
-        self.encoder_linear = torch.nn.Linear(d_in, d_hidden, bias=True)
-        self.decoder_linear = torch.nn.Linear(d_hidden, d_in, bias=True) # Decoder bias usually False
-        
-        self.to(self.device, self.dtype)
-
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
-        """Encode a batch of data using a linear layer followed by a ReLU activation."""
-        # Ensure input tensor is on the correct device and dtype
-        x = x.to(device=self.device, dtype=self.dtype) 
-        return torch.nn.functional.relu(self.encoder_linear(x))
-
-    def decode(self, x: torch.Tensor) -> torch.Tensor:
-        """Decode a batch of feature activations using a linear layer."""
-        # Ensure input tensor is on the correct device and dtype
-        x = x.to(device=self.device, dtype=self.dtype)
-        return self.decoder_linear(x)
-
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Full forward pass: encode the input, then decode the features.
-           Returns the reconstructed input and the intermediate sparse features."""
-        features = self.encode(x)
-        reconstruction = self.decode(features)
-        return reconstruction, features
-
-    @classmethod
-    def from_hf(cls, repo_id, weight_filename="sae_weights.safetensors", cfg_filename="cfg.json", cache_dir="sae_cache"):
-        """Loads SAE weights and config from Hugging Face Hub."""
-        if not os.path.exists(cache_dir):
-            os.makedirs(cache_dir)
-
-        repo_url = f"https://huggingface.co/{repo_id}/resolve/main/"
-        weights_url = repo_url + weight_filename
-        cfg_url = repo_url + cfg_filename
-
-        local_weights_path = os.path.join(cache_dir, f"{repo_id.replace('/', '_')}_{weight_filename}")
-        local_cfg_path = os.path.join(cache_dir, f"{repo_id.replace('/', '_')}_{cfg_filename}")
-
-        # Download weights and config if they don't exist locally
-        download_file(weights_url, local_weights_path)
-        download_file(cfg_url, local_cfg_path)
-
-        # Load config
-        try:
-            with open(local_cfg_path, 'r') as f:
-                cfg = json.load(f)
-            d_in = cfg['d_in']
-            d_hidden = cfg['d_hidden']
-        except (FileNotFoundError, KeyError, json.JSONDecodeError) as e:
-            print(f"Error loading or parsing config file {local_cfg_path}: {e}")
-            raise
-
-        # Instantiate SAE
-        sae = cls(d_in, d_hidden)
-
-        # Load state dict
-        try:
-            state_dict = load_file(local_weights_path)
-            # Adapt keys if necessary (e.g., remove 'sae.' prefix if present)
-            adapted_state_dict = {}
-            for key, value in state_dict.items():
-                 # Example adaptation: remove 'sae.' prefix if needed
-                 # new_key = key.replace("sae.", "") 
-                 new_key = key # Assume keys match for now
-                 adapted_state_dict[new_key] = value
-            
-            # Handle potential bias mismatch in decoder (common practice)
-            if 'decoder.bias' not in sae.state_dict() and 'decoder.bias' in adapted_state_dict:
-                del adapted_state_dict['decoder.bias']
-                print("Note: Removed decoder bias from loaded state_dict as it's not in the model.")
-            elif 'decoder.bias' in sae.state_dict() and 'decoder.bias' not in adapted_state_dict:
-                 print("Warning: Decoder bias expected but not found in loaded state_dict.")
-                 
-            sae.load_state_dict(adapted_state_dict)
-            print(f"SAE loaded successfully from {repo_id}")
-
-        except Exception as e:
-            print(f"Error loading state dict from {local_weights_path}: {e}")
-            raise
-
-        return sae
 
 # %%
 # --- Configuration ---
 
 # Base Model Configuration
 MODEL_ID = "meta-llama/Meta-Llama-3.1-8B-Instruct" # Base model ID
+MODEL_ID = "meta-llama/Llama-3.3-70B-Instruct" # Base model ID
 
 # SAE Configuration
-SAE_REPO_ID = "Goodfire/Llama-3.1-8B-Instruct-SAE-l19" # SAE repository on Hugging Face
-SAE_LAYER = 19 # The layer the SAE was trained on (usually indicated in repo name)
+#SAE_REPO_ID = "Goodfire/Llama-3.1-8B-Instruct-SAE-l19" # SAE repository on Hugging Face
+SAE_REPO_ID = "Goodfire/Llama-3.3-70B-Instruct-SAE-l50" # SAE repository on Hugging Face
+SAE_LAYER = 50 # The layer the SAE was trained on (usually indicated in repo name)
 # Common paths: Residual stream: model.layers[N].output[0], MLP out: model.layers[N].mlp.output
 # Verify based on SAE training details if unsure.
 TARGET_MODULE_PATH = f"model.layers.{SAE_LAYER}" 
@@ -363,126 +134,13 @@ print(f"Target Module Path: {TARGET_MODULE_PATH}")
 print(f"Expansion Factor (for Goodfire): {EXPANSION_FACTOR}")
 
 # %%
-#    # Check if any layers are still meta tensors after loading
-#    for name, module in model.named_modules():
-#        for param_name, param in module.named_parameters(recurse=False):
-#            if param.device.type == 'meta':
-#                print(f"Meta tensor found: {name}.{param_name}, shape: {param.shape}")
-
-#    # Print device map to see distribution
-#    print(model.hf_device_map if hasattr(model, "hf_device_map") else "No device map found")
-
-import torch
-print(f"PyTorch version: {torch.__version__}")
-print(f"CUDA available: {torch.cuda.is_available()}")
-print(f"CUDA version: {torch.version.cuda}")
-print(f"Number of devices: {torch.cuda.device_count()}")
-for i in range(torch.cuda.device_count()):
-    print(f"Device {i}: {torch.cuda.get_device_name(i)}")
-
-import torch
-import subprocess
-import os
-
-# Check CUDA availability
-print(f"CUDA available: {torch.cuda.is_available()}")
-print(f"Number of GPUs visible to PyTorch: {torch.cuda.device_count()}")
-
-# List visible GPU devices and their properties
-for i in range(torch.cuda.device_count()):
-    print(f"Device {i}: {torch.cuda.get_device_name(i)}")
-    print(f"  Total memory: {torch.cuda.get_device_properties(i).total_memory / 1e9:.2f} GB")
-    print(f"  Compute capability: {torch.cuda.get_device_properties(i).major}.{torch.cuda.get_device_properties(i).minor}")
-
-# Check CUDA_VISIBLE_DEVICES environment variable
-print(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not set')}")
-# Check SLURM allocation (if using SLURM)
-try:
-    slurm_info = subprocess.check_output("scontrol show job $SLURM_JOB_ID", shell=True).decode()
-    print("SLURM Job Info:")
-    print(slurm_info)
-except:
-    print("Not using SLURM or command failed")
-
-# Check LSF allocation (if using LSF)
-try:
-    lsf_info = subprocess.check_output("bjobs -l", shell=True).decode()
-    print("LSF Job Info:")
-    print(lsf_info)
-except:
-    print("Not using LSF or command failed")
-
-# PBS allocation (if using PBS)
-try:
-    pbs_info = subprocess.check_output("qstat -f $PBS_JOBID", shell=True).decode()
-    print("PBS Job Info:")
-    print(pbs_info)
-except:
-    print("Not using PBS or command failed")
-# %%
-def test_gpu_performance():
-    """Run a quick performance test on each GPU"""
-    for i in range(torch.cuda.device_count()):
-        print(f"Testing GPU {i}...")
-        # Create a large tensor
-        x = torch.randn(10000, 10000, device=f'cuda:{i}')
-        # Perform a matrix multiplication (computationally intensive)
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        result = torch.matmul(x, x.t())
-        end.record()
-        torch.cuda.synchronize()
-        print(f"  Matrix multiplication time: {start.elapsed_time(end):.2f} ms")
-        # Clean up
-        del x, result
-        torch.cuda.empty_cache()
-
-# Run the performance test
-test_gpu_performance()
-
-def test_gpu_interconnect():
-    """Test the interconnect between GPUs"""
-    if torch.cuda.device_count() < 2:
-        print("Need at least 2 GPUs to test interconnect")
-        return
-
-    size = 1024 * 1024 * 100  # 100 MB tensor
-
-    # Create tensors on different devices
-    a = torch.randn(size, device='cuda:0')
-
-    # Time the transfer
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-
-    start.record()
-    b = a.to('cuda:1')  # Transfer from GPU 0 to GPU 1
-    end.record()
-
-    torch.cuda.synchronize()
-    transfer_time = start.elapsed_time(end)
-    transfer_size = size * 4 / (1024**3)  # Size in GB (assuming float32)
-    bandwidth = transfer_size / (transfer_time / 1000)  # GB/s
-
-    print(f"GPU 0 to GPU 1 transfer: {transfer_time:.2f} ms")
-    print(f"Estimated bandwidth: {bandwidth:.2f} GB/s")
-    print(f"NVLink should be >40 GB/s, PCIe ~8-16 GB/s")
-
-    # Clean up
-    del a, b
-    torch.cuda.empty_cache()
-
-# Test GPU interconnect
-test_gpu_interconnect()
-# %%
 # --- Load Model and Tokenizer ---
 
 print(f"Loading base model using ObservableLanguageModel: {MODEL_ID}...")
 # Note: Ensure you have necessary HF credentials/access if required for the model
 # device='auto' should work, but specify GPU if needed e.g., 'cuda:0'
 # dtype=torch.bfloat16 is used by default, matching the demo.
-model = ObservableLanguageModel(MODEL_ID, device="auto", dtype=torch.bfloat16)
+model = ObservableLanguageModel(MODEL_ID, device_map="auto",device="cuda", dtype=torch.bfloat16)
 tokenizer = model.tokenizer 
 
 # Get model properties needed for SAE loading
@@ -514,9 +172,6 @@ print("SAE loaded.")
 # Print SAE details
 print(f"SAE input dimension (d_in): {sae.d_in}")
 print(f"SAE feature dimension (d_hidden): {sae.d_hidden}") # Using d_hidden now
-# %%
-print(model)
-# %%
 # --- Extract Activations from Base Model ---
 
 print(f"Extracting activations from module: {TARGET_MODULE_PATH}")
@@ -525,10 +180,11 @@ print(f"Extracting activations from module: {TARGET_MODULE_PATH}")
 # Needs token IDs as a PyTorch tensor
 # Use add_generation_prompt=True for instruct models if appropriate
 # based on how the model expects input.
-input_tokens = tokenizer(PROMPT, return_tensors="pt")["input_ids"]
+#input_tokens = tokenizer(PROMPT, return_tensors="pt")["input_ids"]
 # For instruct/chat models, consider using apply_chat_template:
-# chat_input = tokenizer.apply_chat_template([{"role": "user", "content": PROMPT}], return_tensors="pt")
-# input_tokens = chat_input
+chatformat = [{"role": "user", "content": PROMPT}]
+chat_input = tokenizer.apply_chat_template(chatformat, return_tensors="pt")
+input_tokens = chat_input
 
 
 with torch.no_grad(): # Disable gradient calculation for inference
@@ -551,7 +207,12 @@ if activations_val.ndim == 3 and activations_val.shape[0] == 1:
     activations_val = activations_val.squeeze(0)
 
 print(f"Activations extracted. Shape: {activations_val.shape}, Dtype: {activations_val.dtype}")
+# %%
 
+#print(sae_features[0:2,0:3])
+# --- Apply SAE to Activations ---
+
+#print(sae.encoder_linear.bias[0:2])#,0:3])
 # %%
 # --- Apply SAE to Activations ---
 
@@ -563,21 +224,32 @@ with torch.no_grad():
     # features will have shape [seq_len, d_hidden]
 
 print(f"SAE features obtained. Shape: {sae_features.shape}, Dtype: {sae_features.dtype}")
+print(torch.sum(sae_features,axis=-1)[0:10].detach().float().cpu().numpy(), "...")
 
 # %%
 # --- Analyze and Visualize SAE Features ---
 
 print(f"Analyzing top {NUM_TOP_FEATURES} features...")
-print(sae_features[0:2,0:3])
+print(sae_features.shape,sae_features[0:2,0:3])
 
 # Ensure features are on CPU for analysis/visualization
-sae_features_cpu = sae_features.detach().cpu()
+# remove the first few tokens
+toremove = [{"role": "user", "content":"" }]
+len_to_remove = len(tokenizer.apply_chat_template(toremove, return_tensors="pt")[0])-1
+sae_features_cpu = sae_features.detach().cpu()[len_to_remove:]
+str_tokens = [tokenizer.decode([t]) for t in input_tokens[0][len_to_remove:]]
+print("removing",len_to_remove,"tokens")
 
 # Find the top activating features based on max activation value across the sequence
 max_feature_activations, _ = sae_features_cpu.abs().max(dim=0)
 top_feature_indices = max_feature_activations.topk(NUM_TOP_FEATURES).indices
 
 print(f"Top {NUM_TOP_FEATURES} feature indices: {top_feature_indices.tolist()}")
+client = goodfire.Client(os.environ.get('GOODFIRE_API_KEY'))
+featuresdict = client.features.lookup(top_feature_indices.tolist(),MODEL_ID)
+featuresdictsorted = {i:featuresdict[i] for i in top_feature_indices.tolist()}
+for i,(k,v) in enumerate(featuresdictsorted.items()):
+    print(f"{i}: {k}: {v.label}")
 
 # Prepare data for visualization
 # We need the activation values of these specific top features for each token
@@ -585,8 +257,8 @@ print(f"Top {NUM_TOP_FEATURES} feature indices: {top_feature_indices.tolist()}")
 top_features_acts = sae_features_cpu[:, top_feature_indices]
 
 # Get token strings
-tokens = tokenizer.encode(PROMPT)
-str_tokens = [tokenizer.decode([t]) for t in tokens] # Decode one by one for safety
+#tokens = tokenizer.encode(PROMPT)
+#str_tokens = [tokenizer.decode([t]) for t in tokens] # Decode one by one for safety
 
 print(f"Visualizing activations for top {NUM_TOP_FEATURES} features...")
 
@@ -596,6 +268,43 @@ vis_html = colored_tokens_multi(str_tokens, top_features_acts)
 display(vis_html) # Display in Jupyter/IPython environment
 
 print("--- Visualization Complete ---")
+
+# %%
+print(os.environ.get('GOODFIRE_API_KEY'))
+# %%
+import goodfire
+#from goodfire import Variant
+#from goodfire import Client
+
+#variant = Variant("meta-llama/Llama-3.3-70B-Instruct")
+variant = goodfire.Variant(MODEL_ID)
+
+
+
+
+
+client = goodfire.Client(os.environ.get('GOODFIRE_API_KEY'))
+#client = goodfire.Client()
+pirate_features = client.features.search('pirate', MODEL_ID)
+pirate_feature = pirate_features[0]
+goodfirechatinput = chatformat 
+print(goodfirechatinput)
+#  [
+#         {"role": "user", "content": "What do you think about pirates and whales"},
+#         {"role": "assistant", "content": "I think pirates are cool and whales are cool"}
+#     ],
+# Analyze how features activate in text
+inspector = client.features.inspect(
+    goodfirechatinput,
+    model=variant
+)
+
+# Get top activated features
+for activation in inspector.top(k=5):
+    print(f"{activation.feature.label}: {activation.activation}")
+
+# %%
+
 
 # %%
 # --- Optional: Visualize Original Activations (Without SAE) ---
@@ -625,164 +334,6 @@ print("--- Visualization Complete ---")
 
 # --- Observable Language Model Class Definition (from Goodfire Demo) ---
 
-InterventionInterface = Callable[[InterventionProxy], InterventionProxy]
 
-class ObservableLanguageModel:
-    """Wraps nnsight.LanguageModel to provide activation caching and intervention interface,
-       based on the Goodfire demo notebook."""
-    def __init__(
-        self,
-        model_name: str,
-        device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        dtype: torch.dtype = torch.bfloat16, # Default to bfloat16 as in demo
-    ):
-        self.dtype = dtype
-        self.device = device
-        self._original_model_name = model_name
+# %%
 
-        # Initialize the nnsight LanguageModel
-        # Note: nnsight might automatically handle device_map='auto' here
-        # We specify dtype explicitly
-        self._model = nnsight.LanguageModel(
-            self._original_model_name,
-            device_map=device, # Pass the determined device/auto
-            torch_dtype=self.dtype
-        )
-        
-        # Trigger model download/loading if lazy (nnsight behavior)
-        # Using a simple input and trace context
-        print("Running initial trace to load model...")
-        try:
-            # Try a simple trace first
-            input_tokens = self._model.tokenizer("hello", return_tensors="pt")["input_ids"].to(self.device)
-            with self._model.trace(input_tokens):
-                pass
-        except Exception as e:
-            print(f"Initial trace failed (may be expected during setup): {e}")
-            # If it fails, it might be due to model needing specific chat template
-            try:
-                print("Trying trace with chat template...")
-                chat_input = self._model.tokenizer.apply_chat_template([{"role": "user", "content": "hello"}], return_tensors="pt").to(self.device)
-                with self._model.trace(chat_input):
-                     pass
-            except Exception as e2:
-                 print(f"Chat template trace also failed: {e2}. Model loading might have issues.")
-
-        print("Model should be loaded now.")
-        self.tokenizer = self._model.tokenizer
-        self.config = self._model.config # Store config for easy access
-        self.d_model = self._attempt_to_infer_hidden_layer_dimensions()
-        
-        # Expose the underlying nnsight model's device and dtype
-        self.model_device = self._model.device
-        self.model_dtype = self._model.dtype
-
-        # NNsight validation scan - keep False for performance unless debugging
-        self.safe_mode = False 
-
-    def _attempt_to_infer_hidden_layer_dimensions(self):
-        """Infers the hidden dimension size (d_model) from the model's config."""
-        if hasattr(self.config, "hidden_size"):
-            return int(self.config.hidden_size)
-        # Add other potential attribute names if needed (e.g., d_model)
-        elif hasattr(self.config, "d_model"):
-             return int(self.config.d_model)
-
-        raise AttributeError(
-            "Could not infer hidden layer dimension ('hidden_size' or 'd_model') from model config."
-        )
-
-    def _find_module(self, hook_point: str):
-        """Navigates the module hierarchy to find a module by its string path."""
-        # Uses nnsight's utility function for robust attribute fetching
-        try:
-            return util.fetch_attr(self._model, hook_point)
-        except AttributeError:
-             print(f"Warning: Could not find module at hook_point: {hook_point}")
-             # You might want to print the model structure here to help debug
-             # print(self._model)
-             raise
-
-    def forward(
-        self,
-        inputs: torch.Tensor, # Expects tensor of token IDs
-        cache_activations_at: Optional[list[str]] = None,
-        interventions: Optional[dict[str, InterventionInterface]] = None,
-        # Note: use_cache and past_key_values are part of nnsight's trace context, 
-        #       not direct args here unlike the original demo method.
-        #       Generation/KV caching would be handled differently if needed.
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """Performs a forward pass, optionally caching activations and applying interventions.
-           Returns logits for the last token and a dictionary of cached activations."""
-        cache: dict[str, torch.Tensor] = {}
-        
-        # Ensure inputs are on the correct device
-        inputs = inputs.to(self.model_device)
-        
-        with self._model.trace(
-            inputs,
-            scan=self.safe_mode,
-            validate=self.safe_mode,
-            # use_cache=True, # KV Caching for generation - not needed for single fwd pass analysis
-        ) as tracer:
-            # Apply interventions if provided
-            if interventions:
-                for hook_site, intervention_fn in interventions.items():
-                    if intervention_fn is None:
-                        continue
-                    
-                    module = self._find_module(hook_site)
-                    
-                    # The intervention function receives the module's output proxy
-                    # Note: Llama output is often (hidden_state, kv_cache_tuple)
-                    # We usually intervene on the hidden_state, module.output[0]
-                    intervened_acts = intervention_fn(module.output[0])
-                    
-                    # Set the module's output. If KV caching was enabled in trace,
-                    # preserve the second element (the cache tuple).
-                    if isinstance(module.output, tuple) and len(module.output) > 1:
-                         module.output = (intervened_acts, module.output[1])
-                    else:
-                         module.output = intervened_acts # Assume output was just the hidden state
-
-            # Cache activations if requested
-            if cache_activations_at is not None:
-                for hook_point in cache_activations_at:
-                    module = self._find_module(hook_point)
-                    # Save the hidden state part of the output (usually index 0)
-                    # Ensure it's saved correctly, could be module.output or module.output[0]
-                    # Let's try saving the whole output first and inspect if needed
-                    output_to_save = module.output
-                    if isinstance(output_to_save, tuple):
-                         output_to_save = output_to_save[0] # Assume hidden state is first
-                    
-                    # Check if output_to_save is already a Proxy or Tensor that can be saved
-                    if isinstance(output_to_save, nnsight.intervention.InterventionProxy):
-                        cache[hook_point] = output_to_save.save()
-                    elif isinstance(output_to_save, torch.Tensor):
-                         # If it's already a tensor (e.g. from an intervention), 
-                         # we might need to handle saving differently or it might not be traceable.
-                         # For now, assume it's a proxy.
-                         print(f"Warning: Output at {hook_point} is a Tensor, direct saving might not work as expected in trace.")
-                         cache[hook_point] = output_to_save # Store tensor directly (may detach from graph)
-                    else:
-                        print(f"Warning: Unexpected output type at {hook_point}: {type(output_to_save)}")
-
-            # Save the logits for the *last* input token position
-            # model.output[0] usually contains the full sequence logits [batch, seq, vocab]
-            logits = self._model.output[0][:, -1, :].save()
-
-        # Process cached activations after trace exits
-        # Saved values are often tuples; extract the tensor
-        processed_cache = {}
-        for k, v in cache.items():
-             value = v.value
-             if isinstance(value, tuple):
-                 processed_cache[k] = value[0].detach() # Assume tensor is first element
-             else:
-                  processed_cache[k] = value.detach()
-
-        return (
-            logits.value.detach(), # Return only last token logits
-            processed_cache,
-        )

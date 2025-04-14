@@ -12,9 +12,8 @@ import torch
 import nnsight
 from nnsight import LanguageModel
 from nnsight import CONFIG, util
-from nnsight.intervention import InterventionProxy
+from nnsight.intervention.graph.proxy import InterventionProxy
 InterventionInterface = Callable[[InterventionProxy], InterventionProxy]
-from nnsight import download_file
 
 class ObservableLanguageModel:
     """Wraps nnsight.LanguageModel to provide activation caching and intervention interface,
@@ -22,6 +21,7 @@ class ObservableLanguageModel:
     def __init__(
         self,
         model_name: str,
+        device_map: str = "auto",
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         dtype: torch.dtype = torch.bfloat16, # Default to bfloat16 as in demo
     ):
@@ -32,9 +32,11 @@ class ObservableLanguageModel:
         # Initialize the nnsight LanguageModel
         # Note: nnsight might automatically handle device_map='auto' here
         # We specify dtype explicitly
+        print("device map used:",device_map)
+        print("device used:",device)
         self._model = nnsight.LanguageModel(
             self._original_model_name,
-            device_map=device, # Pass the determined device/auto
+            device_map=device_map, # Pass the determined device/auto
             torch_dtype=self.dtype
         )
         
@@ -146,7 +148,7 @@ class ObservableLanguageModel:
                          output_to_save = output_to_save[0] # Assume hidden state is first
                     
                     # Check if output_to_save is already a Proxy or Tensor that can be saved
-                    if isinstance(output_to_save, nnsight.intervention.InterventionProxy):
+                    if isinstance(output_to_save, nnsight.intervention.graph.proxy.InterventionProxy):
                         cache[hook_point] = output_to_save.save()
                     elif isinstance(output_to_save, torch.Tensor):
                          # If it's already a tensor (e.g. from an intervention), 
@@ -160,19 +162,37 @@ class ObservableLanguageModel:
             # Save the logits for the *last* input token position
             # model.output[0] usually contains the full sequence logits [batch, seq, vocab]
             logits = self._model.output[0][:, -1, :].save()
-
+        print("logits",logits.shape)
+        print("logits",logits)
         # Process cached activations after trace exits
         # Saved values are often tuples; extract the tensor
+        # Nice! That worked seamlessly, but hold on, how come we didn’t need to call .value[0] 
+        # on the result? In previous sections, we were just being explicit to get an understanding 
+        # of Proxies and their value. In practice, however, nnsight knows that when outside of the
+        # tracing context we only care about the actual value, and so printing, indexing, and applying functions all 
+        # immediately return and reflect the data in .value. So for the rest of the tutorial we won’t use it.
+        # https://nnsight.net/notebooks/tutorials/walkthrough/
         processed_cache = {}
         for k, v in cache.items():
-             value = v.value
-             if isinstance(value, tuple):
-                 processed_cache[k] = value[0].detach() # Assume tensor is first element
-             else:
-                  processed_cache[k] = value.detach()
+            value = v
+            print(k, getattr(value, "shape", None), value)
+            if torch.is_tensor(value):
+                #print("value is a tensor", value)
+                processed_cache[k] = value.detach()
+            elif isinstance(value, tuple) and len(value) > 0 and torch.is_tensor(value[0]):
+                #print("value is a tuple with tensor", value)
+                processed_cache[k] = value[0].detach()
+            elif torch.is_tensor(value[0]):
+                #print("value is a tuple with tensor", value)
+                processed_cache[k] = value[0].detach()
+            else:
+                #print("value is not a tensor or tuple of tensor", value)
+                processed_cache[k] = value
+
+            print(f"added {k}, shape {processed_cache[k].shape}")
 
         return (
-            logits.value.detach(), # Return only last token logits
+            logits.detach(), # Return only last token logits
             processed_cache,
         )
 
@@ -274,3 +294,161 @@ class SparseAutoEncoder(torch.nn.Module):
             raise
 
         return sae
+
+
+def download_file(url, fname):
+    """Downloads a file from a URL, showing a progress bar."""
+    if os.path.exists(fname):
+        print(f"File already exists: {fname}")
+        return
+    print(f"Downloading {url} to {fname}")
+    try:
+        response = requests.get(url, stream=True)
+        response.raise_for_status()  # Raise an exception for bad status codes
+        total_size = int(response.headers.get('content-length', 0))
+        block_size = 1024 # 1 Kibibyte
+        progress_bar = tqdm(total=total_size, unit='iB', unit_scale=True)
+        with open(fname, 'wb') as f:
+            for data in response.iter_content(block_size):
+                progress_bar.update(len(data))
+                f.write(data)
+        progress_bar.close()
+        if total_size != 0 and progress_bar.n != total_size:
+            print("ERROR, something went wrong")
+    except requests.exceptions.RequestException as e:
+        print(f"Error downloading file: {e}")
+        if os.path.exists(fname):
+            os.remove(fname) # Clean up incomplete download
+        raise
+
+def load_sae_from_repo(
+    repo_id: str,
+    model_device: torch.device,
+    model_dtype: torch.dtype,
+    d_model: Optional[int] = None, # Required for Goodfire format
+    expansion_factor: Optional[int] = None, # Required for Goodfire format
+    weight_filename_sf: str = "sae_weights.safetensors", # Standard safetensors filename
+    cfg_filename_sf: str = "cfg.json", # Standard config filename
+    weight_filename_gf: str = None, # Goodfire filename (often repo_id based)
+    cache_dir: str = "sae_cache",
+):
+    """Loads an SAE from a Hugging Face repo, handling both Goodfire (.pth/.pt) and standard (.safetensors) formats."""
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir)
+
+    if repo_id.startswith("Goodfire/"):
+        print(f"Detected Goodfire SAE format for {repo_id}")
+        if d_model is None or expansion_factor is None:
+            raise ValueError("d_model and expansion_factor are required for Goodfire SAE format.")
+        
+        # Determine filename if not provided (Goodfire convention)
+        if weight_filename_gf is None:
+            # Try .pth first, then .pt if needed
+            model_name = repo_id.split('/')[1]
+            weight_filename_gf = f"{model_name}.pth"
+            print(f"Assuming Goodfire weight filename: {weight_filename_gf}")
+        
+        try:
+            # Download .pth or .pt file using hf_hub_download
+            local_weights_path = hf_hub_download(
+                repo_id=repo_id,
+                filename=weight_filename_gf,
+                cache_dir=cache_dir,
+                repo_type="model"
+            )
+        except Exception as e:
+            # If .pth fails, try .pt
+            if weight_filename_gf.endswith('.pth'):
+                print(f"Failed to download {weight_filename_gf}, trying .pt format instead")
+                weight_filename_gf = weight_filename_gf.replace('.pth', '.pt')
+                local_weights_path = hf_hub_download(
+                    repo_id=repo_id,
+                    filename=weight_filename_gf,
+                    cache_dir=cache_dir,
+                    repo_type="model"
+                )
+            else:
+                raise
+        
+        # Calculate hidden dimension
+        d_hidden = d_model * expansion_factor
+        
+        # Instantiate SAE
+        sae = SparseAutoEncoder(
+            d_in=d_model,
+            d_hidden=d_hidden,
+            device=model_device,
+            dtype=model_dtype # Use model's dtype
+        )
+        
+        # Load state dict from .pth or .pt file
+        try:
+            state_dict = torch.load(local_weights_path, map_location=model_device, weights_only=True)
+            print("SAE keys", state_dict.keys())
+            sae.load_state_dict(state_dict)
+            print(f"Goodfire SAE loaded successfully from {local_weights_path}")
+        except Exception as e:
+            print(f"Error loading state dict from {local_weights_path}: {e}")
+            raise
+    else:
+        print(f"Assuming standard (.safetensors) SAE format for {repo_id}")
+        repo_url = f"https://huggingface.co/{repo_id}/resolve/main/"
+        weights_url = repo_url + weight_filename_sf
+        cfg_url = repo_url + cfg_filename_sf
+
+        local_weights_path = os.path.join(cache_dir, f"{repo_id.replace('/', '_')}_{weight_filename_sf}")
+        local_cfg_path = os.path.join(cache_dir, f"{repo_id.replace('/', '_')}_{cfg_filename_sf}")
+
+        # Download weights and config if they don't exist locally
+        download_file(weights_url, local_weights_path)
+        download_file(cfg_url, local_cfg_path)
+
+        # Load config
+        try:
+            with open(local_cfg_path, 'r') as f:
+                cfg = json.load(f)
+            # Infer d_in and d_hidden (d_sae) from config
+            d_in = cfg['d_in']
+            d_hidden = cfg['d_sae'] # Standard SAEs usually call it d_sae
+        except (FileNotFoundError, KeyError, json.JSONDecodeError) as e:
+            print(f"Error loading or parsing standard config file {local_cfg_path}: {e}")
+            raise
+
+        # Instantiate SAE
+        sae = SparseAutoEncoder(
+            d_in=d_in,
+            d_hidden=d_hidden, 
+            device=model_device, 
+            dtype=model_dtype # Use model's dtype
+        )
+
+        # Load state dict from safetensors
+        try:
+            state_dict = load_file(local_weights_path, device=str(model_device))
+            # Adapt keys if necessary (e.g., remove 'sae.' prefix if present)
+            adapted_state_dict = {}
+            for key, value in state_dict.items():
+                 # Example adaptation: replace encoder/decoder with encoder_linear/decoder_linear
+                 new_key = key
+                 if key == "encoder.weight": new_key = "encoder_linear.weight"
+                 if key == "encoder.bias": new_key = "encoder_linear.bias"
+                 if key == "decoder.weight": new_key = "decoder_linear.weight"
+                 if key == "decoder.bias": new_key = "decoder_linear.bias"
+                 # Add other potential key adaptations here if needed
+                 adapted_state_dict[new_key] = value
+            
+            # Handle potential bias mismatch in decoder (common practice)
+            if 'decoder_linear.bias' not in sae.state_dict() and 'decoder_linear.bias' in adapted_state_dict:
+                 del adapted_state_dict['decoder_linear.bias']
+                 print("Note: Removed decoder bias from loaded state_dict as it's not in the model.")
+            elif 'decoder_linear.bias' in sae.state_dict() and 'decoder_linear.bias' not in adapted_state_dict:
+                 print("Warning: Decoder bias expected but not found in loaded state_dict.")
+                 
+            sae.load_state_dict(adapted_state_dict)
+            print(f"Standard SAE loaded successfully from {local_weights_path}")
+
+        except Exception as e:
+            print(f"Error loading state dict from {local_weights_path}: {e}")
+            raise
+            
+    return sae
