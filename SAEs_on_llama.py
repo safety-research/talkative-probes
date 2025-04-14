@@ -88,13 +88,16 @@ import goodfire
 # --- Configuration ---
 
 # Base Model Configuration
-MODEL_ID = "meta-llama/Meta-Llama-3.1-8B-Instruct" # Base model ID
+#MODEL_ID = "meta-llama/Meta-Llama-3.1-8B-Instruct" # Base model ID
 MODEL_ID = "meta-llama/Llama-3.3-70B-Instruct" # Base model ID
 
 # SAE Configuration
-#SAE_REPO_ID = "Goodfire/Llama-3.1-8B-Instruct-SAE-l19" # SAE repository on Hugging Face
-SAE_REPO_ID = "Goodfire/Llama-3.3-70B-Instruct-SAE-l50" # SAE repository on Hugging Face
-SAE_LAYER = 50 # The layer the SAE was trained on (usually indicated in repo name)
+if "8B" in MODEL_ID:
+    SAE_REPO_ID = "Goodfire/Llama-3.1-8B-Instruct-SAE-l19" # SAE repository on Hugging Face
+    SAE_LAYER = 19 # The layer the SAE was trained on (usually indicated in repo name)
+else:
+    SAE_REPO_ID = "Goodfire/Llama-3.3-70B-Instruct-SAE-l50" # SAE repository on Hugging Face
+    SAE_LAYER = 50 # The layer the SAE was trained on (usually indicated in repo name)
 # Common paths: Residual stream: model.layers[N].output[0], MLP out: model.layers[N].mlp.output
 # Verify based on SAE training details if unsure.
 TARGET_MODULE_PATH = f"model.layers.{SAE_LAYER}" 
@@ -119,12 +122,16 @@ EXPANSION_FACTOR = 16 if "8B" in SAE_REPO_ID else 8
 # EXPANSION_FACTOR = None # Not needed if cfg.json exists
 
 # Visualization Configuration
-NUM_TOP_FEATURES = 20 # Number of top activating features to visualize
+NUM_TOP_FEATURES = 100 # Number of top activating features to visualize
+N_GENERATE_TOKENS = 500 # Number of tokens to generate after the prompt
 
 # Input Prompt (Modify as needed)
 PROMPT = """
 Call me Ishmael. Some years ago--never mind how long precisely--having little or no money in my purse, and nothing particular to interest me on shore, I thought I would sail about a little and see the watery part of the world. It is a way I have of driving off the spleen and regulating the circulation. Whenever I find myself growing grim about the mouth; whenever it is a damp, drizzly November in my soul; whenever I find myself involuntarily pausing before coffin warehouses, and bringing up the rear of every funeral I meet; and especially whenever my hypos get such an upper hand of me, that it requires a strong moral principle to prevent me from deliberately stepping into the street, and methodically knocking people's hats off--then, I account it high time to get to sea as soon as I can.
 """
+# Load prompt from file
+with open("talkative_probes_prompts/steg_attempt.txt", "r") as f:
+    PROMPT = f.read()
 
 print("--- Configuration Loaded ---")
 print(f"Model ID: {MODEL_ID}")
@@ -132,6 +139,7 @@ print(f"SAE Repo ID: {SAE_REPO_ID}")
 print(f"Target Layer: {SAE_LAYER}")
 print(f"Target Module Path: {TARGET_MODULE_PATH}")
 print(f"Expansion Factor (for Goodfire): {EXPANSION_FACTOR}")
+print(f"Tokens to Generate: {N_GENERATE_TOKENS}")
 
 # %%
 # --- Load Model and Tokenizer ---
@@ -183,15 +191,36 @@ print(f"Extracting activations from module: {TARGET_MODULE_PATH}")
 #input_tokens = tokenizer(PROMPT, return_tensors="pt")["input_ids"]
 # For instruct/chat models, consider using apply_chat_template:
 chatformat = [{"role": "user", "content": PROMPT}]
-chat_input = tokenizer.apply_chat_template(chatformat, return_tensors="pt")
-input_tokens = chat_input
+chat_input = tokenizer.apply_chat_template(chatformat, return_tensors="pt").to(model_device)
+initial_prompt_len = chat_input.shape[1]
+# --- Generate Continuation ---
+print(f"Generating {N_GENERATE_TOKENS} tokens...")
+with model._model.generate(chat_input, max_new_tokens=N_GENERATE_TOKENS) as tracer:
+    generated_output = model._model.generator.output.save()
 
+len_generated_output = generated_output.shape[1]
 
-with torch.no_grad(): # Disable gradient calculation for inference
-    # Use the ObservableLanguageModel's forward method
-    # Pass the list containing the target module path to cache_activations_at
+# Extract the full conversation tokens
+full_conversation_tokens = generated_output[0]  # Shape: [sequence_length]
+print(f"Full conversation length: {full_conversation_tokens.shape[0]} tokens")
+
+# Find the position where the model's response starts
+end_header_positions = [i for i, t in enumerate(full_conversation_tokens) if tokenizer.decode([t]) == "<|end_header_id|>"]
+start_idx_response = end_header_positions[-1] + 1 if end_header_positions else 0
+
+# Decode and print the prompt and generated answer
+decoded_prompt = tokenizer.decode(full_conversation_tokens[:start_idx_response].cpu())
+decoded_answer = tokenizer.decode(full_conversation_tokens[start_idx_response:].cpu())
+print("Prompt: ", decoded_prompt)
+print("Generated Answer: ", decoded_answer)
+
+# --- Extract Activations for Full Conversation ---
+print(f"Extracting activations for the full conversation from module: {TARGET_MODULE_PATH}")
+with torch.no_grad():
+    # Use the ObservableLanguageModel's forward method on the full sequence
+    # Add batch dimension back for forward pass
     last_token_logits, activation_cache = model.forward(
-        inputs=input_tokens,
+        inputs=full_conversation_tokens.unsqueeze(0),
         cache_activations_at=[TARGET_MODULE_PATH]
     )
 
@@ -229,48 +258,134 @@ print(torch.sum(sae_features,axis=-1)[0:10].detach().float().cpu().numpy(), "...
 # %%
 # --- Analyze and Visualize SAE Features ---
 
+# Determine whether to analyze only the model's response or the full conversation
+analyze_only_response = True  # Set to False to analyze the full conversation
+
 print(f"Analyzing top {NUM_TOP_FEATURES} features...")
 print(sae_features.shape,sae_features[0:2,0:3])
 
-# Ensure features are on CPU for analysis/visualization
-# remove the first few tokens
-toremove = [{"role": "user", "content":"" }]
-len_to_remove = len(tokenizer.apply_chat_template(toremove, return_tensors="pt")[0])-1
-sae_features_cpu = sae_features.detach().cpu()[len_to_remove:]
-str_tokens = [tokenizer.decode([t]) for t in input_tokens[0][len_to_remove:]]
-print("removing",len_to_remove,"tokens")
+# Get SAE features on CPU for analysis
+sae_features_cpu = sae_features.detach().cpu()
 
-# Find the top activating features based on max activation value across the sequence
-max_feature_activations, _ = sae_features_cpu.abs().max(dim=0)
+# Create mask based on what we want to analyze
+if analyze_only_response:
+    # Create a response-only mask (1 for response tokens, 0 for everything else)
+    mask = torch.zeros(sae_features_cpu.shape[0], device='cpu')
+    mask[start_idx_response:] = 1
+    print(f"Analyzing only the model's response ({mask.sum().item()} tokens)")
+else:
+    # Create mask (1 for all tokens)
+    mask = torch.ones(sae_features_cpu.shape[0], device='cpu')
+    print("Analyzing all tokens in the conversation")
+
+# Apply mask to features
+masked_sae_features = sae_features_cpu * mask.unsqueeze(-1)  # Expand mask to feature dim
+
+# --- Analysis on Masked Features ---
+# Get full token strings for visualization
+str_tokens = [tokenizer.decode([t]) for t in full_conversation_tokens]
+
+# If only analyzing response, filter tokens for display
+if analyze_only_response:
+    display_tokens = str_tokens[start_idx_response:]
+else:
+    display_tokens = str_tokens
+# Find the top activating features based on max activation value across the sequence (using masked features)
+max_feature_activations, _ = masked_sae_features.abs().max(dim=0)
 top_feature_indices = max_feature_activations.topk(NUM_TOP_FEATURES).indices
 
-print(f"Top {NUM_TOP_FEATURES} feature indices: {top_feature_indices.tolist()}")
+print(f"Top {NUM_TOP_FEATURES} feature indices (masked): {top_feature_indices.tolist()}")
 client = goodfire.Client(os.environ.get('GOODFIRE_API_KEY'))
-featuresdict = client.features.lookup(top_feature_indices.tolist(),MODEL_ID)
+featuresdict = client.features.lookup(top_feature_indices.tolist(), MODEL_ID)
 featuresdictsorted = {i:featuresdict[i] for i in top_feature_indices.tolist()}
-for i,(k,v) in enumerate(featuresdictsorted.items()):
+for i, (k, v) in enumerate(featuresdictsorted.items()):
     print(f"{i}: {k}: {v.label}")
 
-# Prepare data for visualization
+# Prepare data for visualization using masked features
 # We need the activation values of these specific top features for each token
 # Shape required by colored_tokens_multi: [token, feature]
-top_features_acts = sae_features_cpu[:, top_feature_indices]
+top_features_acts = masked_sae_features[:, top_feature_indices]
 
-# Get token strings
-#tokens = tokenizer.encode(PROMPT)
-#str_tokens = [tokenizer.decode([t]) for t in tokens] # Decode one by one for safety
+# Filter activations if only showing response
+if analyze_only_response:
+    top_features_acts = top_features_acts[start_idx_response:]
 
+# %%
 print(f"Visualizing activations for top {NUM_TOP_FEATURES} features...")
 
 # Generate visualization
-vis_html = colored_tokens_multi(str_tokens, top_features_acts)
+vis_html = colored_tokens_multi(display_tokens, top_features_acts)
 
-display(vis_html) # Display in Jupyter/IPython environment
+
+display(vis_html)  # Display in Jupyter/IPython environment
 
 print("--- Visualization Complete ---")
 
 # %%
-print(os.environ.get('GOODFIRE_API_KEY'))
+
+# --- Search for features related to secrets/hiding ---
+print("\n--- Searching for features related to secrets/hiding ---")
+
+# Get top 1000 features for broader analysis
+top_N_to_search = 8192
+top_N_feature_indices = max_feature_activations.topk(top_N_to_search, sorted=True).indices
+top_N_features = client.features.lookup(top_N_feature_indices.tolist(), MODEL_ID)
+# Ensure features are sorted by rank after lookup
+top_N_features_sorted = {feature_id: top_N_features[feature_id] for feature_id in top_N_feature_indices.tolist() if feature_id in top_N_features}
+top_N_features = top_N_features_sorted
+
+# Keywords related to secrets/hiding
+secret_keywords = ["secret", "hide", "hidden", "conceal", "stealth", "private", 
+                  "confidential", "encrypt", "disguise", "mask", "covert", 
+                  "classified", "obscure", "clandestine", "undercover", "discreet"]
+# Keywords related to meetings
+meeting_keywords = ["meeting", "conference", " appointment", "agenda", 
+                   "gather", "assemble", "convene", " session", "briefing", "congregation", "rendezvous", "meetup", "huddle"]
+
+# Combine with existing keywords for a comprehensive search
+all_keywords = secret_keywords + meeting_keywords
+print(f"Searching for features related to {len(all_keywords)} keywords...")
+
+
+# Search for features with labels containing secret-related keywords
+particular_features = {}
+for idx, feature_id in enumerate(top_N_features):
+    feature = top_N_features[feature_id]
+    feature_label = feature.label.lower()
+    
+    for keyword in all_keywords:
+        if keyword in feature_label:
+            # Store the feature's rank in the top_N_features list
+            rank = top_N_feature_indices.tolist().index(feature_id)
+            particular_features[feature_id] = (feature, rank)
+            #print(f"{idx} Found secret-related feature {feature_id} (rank {rank}): {feature.label}")
+            break
+
+print(f"Found {len(particular_features)} features related to secrets/hiding among top {top_N_to_search} features")
+for i, (k, (v, rank)) in enumerate(particular_features.items()):
+    print(f"{i}: {k} (rank {rank}): {v.label}")
+
+# If secret features were found, visualize them
+if particular_features:
+    particular_feature_ids = list(particular_features.keys())
+    particular_feature_indices = [top_N_feature_indices.tolist().index(fid) for fid in particular_feature_ids 
+                             if fid in top_N_feature_indices.tolist()]
+    
+    # Get activations for these specific features
+    particular_features_acts = masked_sae_features[:, [top_N_feature_indices[i] for i in particular_feature_indices]]
+    
+    # Filter activations if only showing response
+    if analyze_only_response:
+        particular_features_acts = particular_features_acts[start_idx_response:]
+    
+
+#%%
+if particular_features:
+    print("Visualizing activations for secret-related features...")
+    particular_vis_html = colored_tokens_multi(display_tokens, particular_features_acts)
+    display(particular_vis_html)
+    print("--- Particular Feature Visualization Complete ---")
+
 # %%
 import goodfire
 #from goodfire import Variant
@@ -302,6 +417,7 @@ inspector = client.features.inspect(
 # Get top activated features
 for activation in inspector.top(k=5):
     print(f"{activation.feature.label}: {activation.activation}")
+    
 
 # %%
 
@@ -336,4 +452,3 @@ for activation in inspector.top(k=5):
 
 
 # %%
-
