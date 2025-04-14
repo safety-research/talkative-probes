@@ -14,6 +14,10 @@ def get_layer_output_path(layer_idx, model):
         return f"layers.{layer_idx}"
     elif model.config.model_type == "gemma3":
         return f"language_model.model.layers.{layer_idx}"
+    elif model.config.model_type == "gemma":
+        return f"model.layers.{layer_idx}"
+    else:
+        return f"model.layers.{layer_idx}"
 
 def get_model_info(model):
     if model.config.model_type == "gpt2":
@@ -25,6 +29,12 @@ def get_model_info(model):
     elif model.config.model_type == "gemma3":
         model_lmhead = model.language_model.lm_head
         num_layers = model.config.text_config.num_hidden_layers
+    elif model.config.model_type == "gemma":
+        model_lmhead = model.lm_head
+        num_layers = model.config.num_hidden_layers
+    else:
+        model_lmhead = model.lm_head
+        num_layers = model.config.num_hidden_layers
     #print(f"{model.config.model_type} has {num_layers} layers")
     return num_layers, model_lmhead
 
