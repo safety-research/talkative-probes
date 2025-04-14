@@ -6,4 +6,6 @@ torch
 tqdm
 einops
 plotly
+goodfire
+dotenv
 
