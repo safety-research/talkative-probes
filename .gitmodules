@@ -1,3 +1,6 @@
 [submodule "safety-tooling"]
 	path = safety-tooling
 	url = git@github.com:safety-research/safety-tooling.git
+[submodule "dictionary_learning"]
+	path = dictionary_learning
+	url = https://github.com/saprmarks/dictionary_learning
