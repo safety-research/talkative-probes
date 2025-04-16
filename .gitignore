@@ -28,3 +28,6 @@ SECRETS
 exp
 .env
 __pycache__/
+sae_cache
+*.pth
+*.pt

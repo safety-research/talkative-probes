@@ -3,7 +3,7 @@
 
 # This interactive script demonstrates how to use a Sparse Autoencoder (SAE) to extract and visualize monosemantic features from a Llama model's activations.
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "5,6"
+#os.environ["CUDA_VISIBLE_DEVICES"] = "5,6"
 from dotenv import load_dotenv
 print("loaded successfully?",load_dotenv())
 
@@ -182,7 +182,7 @@ print(f"SAE input dimension (d_in): {sae.d_in}")
 print(f"SAE feature dimension (d_hidden): {sae.d_hidden}") # Using d_hidden now
 # --- Extract Activations from Base Model ---
 
-print(f"Extracting activations from module: {TARGET_MODULE_PATH}")
+#print(f"Extracting activations from module: {TARGET_MODULE_PATH}")
 
 # Prepare inputs for the model's forward method
 # Needs token IDs as a PyTorch tensor
@@ -211,8 +211,8 @@ start_idx_response = end_header_positions[-1] + 1 if end_header_positions else 0
 # Decode and print the prompt and generated answer
 decoded_prompt = tokenizer.decode(full_conversation_tokens[:start_idx_response].cpu())
 decoded_answer = tokenizer.decode(full_conversation_tokens[start_idx_response:].cpu())
-print("Prompt: ", decoded_prompt)
-print("Generated Answer: ", decoded_answer)
+print("\n\n******Prompt: ", decoded_prompt)
+print("\n\n******Generated Answer: ", decoded_answer, "\n\n")
 
 # --- Extract Activations for Full Conversation ---
 print(f"Extracting activations for the full conversation from module: {TARGET_MODULE_PATH}")
@@ -314,7 +314,7 @@ if analyze_only_response:
 print(f"Visualizing activations for top {NUM_TOP_FEATURES} features...")
 
 # Generate visualization
-vis_html = colored_tokens_multi(display_tokens, top_features_acts)
+vis_html = colored_tokens_multi(display_tokens, top_features_acts)#,labels = [featuresdictsorted[i].label for i in top_feature_indices.tolist()])
 
 
 display(vis_html)  # Display in Jupyter/IPython environment
@@ -342,8 +342,10 @@ secret_keywords = ["secret", "hide", "hidden", "conceal", "stealth", "private",
 meeting_keywords = ["meeting", "conference", " appointment", "agenda", 
                    "gather", "assemble", "convene", " session", "briefing", "congregation", "rendezvous", "meetup", "huddle"]
 
+extra_keywords = ["careful"]
+
 # Combine with existing keywords for a comprehensive search
-all_keywords = secret_keywords + meeting_keywords
+all_keywords = secret_keywords + meeting_keywords + extra_keywords
 print(f"Searching for features related to {len(all_keywords)} keywords...")
 
 
@@ -420,9 +422,88 @@ for activation in inspector.top(k=5):
     
 
 # %%
+# --- Interactive Token-Feature Visualization ---
+print("Creating interactive token-feature visualization...")
+# Compute top features per token
+def create_token_feature_viz(tokens, sae_features, top_n=5):
+    # Get top N features for each token
+    top_values, top_indices = torch.topk(sae_features, k=top_n, dim=1)
+    
+    # Create a tensor where only top features have non-zero values
+    display_tensor = torch.zeros_like(sae_features)
+    
+    # Only process tokens with capital letters
+    for i in range(len(tokens)):
+        if any(c.isupper() for c in tokens[i]):
+            display_tensor[i, top_indices[i]] = top_values[i]
+    
+    # Create feature labels for only the top features that appear in uppercase tokens
+    mask = torch.zeros(len(tokens), dtype=torch.bool)
+    for i, token in enumerate(tokens):
+        if any(c.isupper() for c in token):
+            mask[i] = True
+    
+    # Get indices of features that appear in uppercase tokens
+    uppercase_indices = top_indices[mask].flatten()
+    unique_feature_indices = torch.unique(uppercase_indices).tolist()
+    feature_labels = [f"Feature {i}" for i in unique_feature_indices]
+    
+    # Create a reduced tensor with only the columns for top features
+    reduced_tensor = torch.zeros((display_tensor.shape[0], len(unique_feature_indices)))
+    for i, feat_idx in enumerate(unique_feature_indices):
+        reduced_tensor[:, i] = display_tensor[:, feat_idx]
+    
+    # Get feature information from Goodfire
+    feature_dict = client.features.lookup(unique_feature_indices, model=variant)
+    
+    # Calculate max activation per feature across all tokens
+    max_activations, _ = sae_features[:, unique_feature_indices].max(dim=0)
+    
+    # Get indices that would sort features by max activation (descending)
+    sorted_by_activation = torch.argsort(max_activations, descending=True).tolist()
+    
+    # Map to original indices and create sorted list
+    sorted_indices = [unique_feature_indices[i] for i in sorted_by_activation]
+    
+    # Create sorted dictionary
+    feature_dict_sorted = {i: feature_dict[i] for i in sorted_indices if i in feature_dict}
+    
+    # Calculate global ranks for all features based on max activation
+    all_max_activations, _ = sae_features.max(dim=0)
+    global_ranks = torch.argsort(all_max_activations, descending=True)
+    # Create a lookup dictionary that maps feature index to its global rank
+    global_rank_lookup = {int(idx): int(rank) for rank, idx in enumerate(global_ranks)}
+    
+    # Print feature information with global rank
+    for local_rank, (feat_idx, feature) in enumerate(feature_dict_sorted.items()):
+        global_rank = global_rank_lookup.get(feat_idx, "N/A")
+        feature_index = sorted_indices.index(feat_idx)
+        print(f"{local_rank}: Feature {feat_idx}: {feature.label} (max activation: {max_activations[feature_index]:.4f}, global rank: {global_rank})")
+    
+    # Create visualization with circuitsvis
+    print(tokens)
+    vis = colored_tokens_multi(tokens, reduced_tensor)
+    
+    return vis
 
+# If we're only analyzing the response, create a separate visualization
+ntok = len(display_tokens)+2
+if analyze_only_response:
+    print("\nVisualization for response tokens only:")
+    response_viz = create_token_feature_viz(
+        display_tokens[0:ntok], 
+        masked_sae_features[start_idx_response:start_idx_response+ntok,:], 
+        top_n=10
+    )
+# %%
+if analyze_only_response:
+    display(response_viz)
+
+print("--- Token-Feature Visualization Complete ---")
 
 # %%
+masked_sae_features.shape
+#display_tokens
 # --- Optional: Visualize Original Activations (Without SAE) ---
 # This helps compare the sparsity and interpretability
 
