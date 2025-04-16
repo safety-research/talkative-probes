@@ -9,6 +9,20 @@ description = "examples"
 requires-python = ">=3.10"
 readme = "README.md"
 dynamic = ["version"]
+dependencies = [
+    "nnsight>=0.4",
+    "chess",
+    "datasets",
+    "torch",
+    "tqdm",
+    "einops",
+    "plotly",
+    "goodfire",
+    "dotenv",
+    "ipykernel",
+    "hf_transfer",
+    "transformers>=4.51"
+]
 
 [tool.setuptools]
 packages = ["examples"]
@@ -16,7 +30,7 @@ packages = ["examples"]
 [tool.ruff]
 target-version = "py311"
 extend-include = ["*.ipynb"]
-extend-exclude = ["submodules"]
+extend-exclude = ["safety-tooling", "dictionary-learning"]
 
 # Line length 120 to makes it easier to have multiple files open side-by-side.
 line-length = 120
@@ -45,5 +59,7 @@ exclude = '''
   | buck-out
   | build
   | dist
+  | safety-tooling
+  | dictionary-learning
 )/
 '''
