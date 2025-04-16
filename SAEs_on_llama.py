@@ -121,17 +121,7 @@ EXPANSION_FACTOR = 16 if "8B" in SAE_REPO_ID else 8
 # TARGET_MODULE_PATH = f"gpt_neox.layers[{SAE_LAYER}].mlp.output" # Example path for Pythia MLP
 # EXPANSION_FACTOR = None # Not needed if cfg.json exists
 
-# Visualization Configuration
-NUM_TOP_FEATURES = 100 # Number of top activating features to visualize
-N_GENERATE_TOKENS = 500 # Number of tokens to generate after the prompt
 
-# Input Prompt (Modify as needed)
-PROMPT = """
-Call me Ishmael. Some years ago--never mind how long precisely--having little or no money in my purse, and nothing particular to interest me on shore, I thought I would sail about a little and see the watery part of the world. It is a way I have of driving off the spleen and regulating the circulation. Whenever I find myself growing grim about the mouth; whenever it is a damp, drizzly November in my soul; whenever I find myself involuntarily pausing before coffin warehouses, and bringing up the rear of every funeral I meet; and especially whenever my hypos get such an upper hand of me, that it requires a strong moral principle to prevent me from deliberately stepping into the street, and methodically knocking people's hats off--then, I account it high time to get to sea as soon as I can.
-"""
-# Load prompt from file
-with open("talkative_probes_prompts/steg_attempt.txt", "r") as f:
-    PROMPT = f.read()
 
 print("--- Configuration Loaded ---")
 print(f"Model ID: {MODEL_ID}")
@@ -139,7 +129,7 @@ print(f"SAE Repo ID: {SAE_REPO_ID}")
 print(f"Target Layer: {SAE_LAYER}")
 print(f"Target Module Path: {TARGET_MODULE_PATH}")
 print(f"Expansion Factor (for Goodfire): {EXPANSION_FACTOR}")
-print(f"Tokens to Generate: {N_GENERATE_TOKENS}")
+#print(f"Tokens to Generate: {N_GENERATE_TOKENS}")
 
 # %%
 # --- Load Model and Tokenizer ---
@@ -176,10 +166,8 @@ sae = load_sae_from_repo(
     # Optional: specify weight_filename_sf, cfg_filename_sf, weight_filename_gf if non-standard
 )
 
-print("SAE loaded.")
-# Print SAE details
-print(f"SAE input dimension (d_in): {sae.d_in}")
-print(f"SAE feature dimension (d_hidden): {sae.d_hidden}") # Using d_hidden now
+print(f"SAE loaded: input dimension (d_in): {sae.d_in}, feature dimension (d_hidden): {sae.d_hidden}") # Using d_hidden now
+
 # --- Extract Activations from Base Model ---
 
 #print(f"Extracting activations from module: {TARGET_MODULE_PATH}")
@@ -190,35 +178,209 @@ print(f"SAE feature dimension (d_hidden): {sae.d_hidden}") # Using d_hidden now
 # based on how the model expects input.
 #input_tokens = tokenizer(PROMPT, return_tensors="pt")["input_ids"]
 # For instruct/chat models, consider using apply_chat_template:
-chatformat = [{"role": "user", "content": PROMPT}]
-chat_input = tokenizer.apply_chat_template(chatformat, return_tensors="pt").to(model_device)
-initial_prompt_len = chat_input.shape[1]
-# --- Generate Continuation ---
-print(f"Generating {N_GENERATE_TOKENS} tokens...")
-with model._model.generate(chat_input, max_new_tokens=N_GENERATE_TOKENS) as tracer:
-    generated_output = model._model.generator.output.save()
 
-len_generated_output = generated_output.shape[1]
+def prompt_model_chatformatted(model,tokenizer,model_device,PROMPT,N_GENERATE_TOKENS):
+    chatformat = [{"role": "user", "content": PROMPT}]
+    chat_input = tokenizer.apply_chat_template(chatformat, return_tensors="pt").to(model_device)
+    initial_prompt_len = chat_input.shape[1]
+    # --- Generate Continuation ---
+    print(f"Generating {N_GENERATE_TOKENS} tokens...")
 
-# Extract the full conversation tokens
-full_conversation_tokens = generated_output[0]  # Shape: [sequence_length]
-print(f"Full conversation length: {full_conversation_tokens.shape[0]} tokens")
+    with model._model.generate(chat_input, max_new_tokens=N_GENERATE_TOKENS) as tracer:
+        generated_output = model._model.generator.output.save()
 
-# Find the position where the model's response starts
-end_header_positions = [i for i, t in enumerate(full_conversation_tokens) if tokenizer.decode([t]) == "<|end_header_id|>"]
-start_idx_response = end_header_positions[-1] + 1 if end_header_positions else 0
+    len_generated_output = generated_output.shape[1]
 
-# Decode and print the prompt and generated answer
-decoded_prompt = tokenizer.decode(full_conversation_tokens[:start_idx_response].cpu())
-decoded_answer = tokenizer.decode(full_conversation_tokens[start_idx_response:].cpu())
-print("\n\n******Prompt: ", decoded_prompt)
-print("\n\n******Generated Answer: ", decoded_answer, "\n\n")
+    # Extract the full conversation tokens
+    full_conversation_tokens = generated_output[0]  # Shape: [sequence_length]
+    print(f"Full conversation length: {full_conversation_tokens.shape[0]} tokens")
+
+    # Find the position where the model's response starts
+    end_header_positions = [i for i, t in enumerate(full_conversation_tokens) if tokenizer.decode([t]) == "<|end_header_id|>"]
+    start_idx_response = end_header_positions[-1] + 1 if end_header_positions else 0
+
+    # Decode and print the prompt and generated answer
+    decoded_prompt = tokenizer.decode(full_conversation_tokens[:start_idx_response].cpu())
+    decoded_answer = tokenizer.decode(full_conversation_tokens[start_idx_response:].cpu())
+    print("\n\n******Prompt: ", decoded_prompt)
+    print("\n\n******Generated Answer: ", decoded_answer, "\n\n")
+
+    return full_conversation_tokens, start_idx_response, decoded_answer
+
+def generate_model_output(model, chat_input, n_generate_tokens):
+    """Generate continuation from the model."""
+    print(f"Generating {n_generate_tokens} tokens...")
+    with model._model.generate(chat_input, max_new_tokens=n_generate_tokens) as tracer:
+        generated_output = model._model.generator.output.save()
+    return generated_output
+
+def process_conversation(tokenizer, generated_output):
+    """Process the generated conversation to extract tokens and response position."""
+    full_conversation_tokens = generated_output[0]  # Shape: [sequence_length]
+    print(f"Full conversation length: {full_conversation_tokens.shape[0]} tokens")
+
+    # Find the position where the model's response starts
+    end_header_positions = [i for i, t in enumerate(full_conversation_tokens) if tokenizer.decode([t]) == "<|end_header_id|>"]
+    start_idx_response = end_header_positions[-1] + 1 if end_header_positions else 0
+
+    # Decode and print the prompt and generated answer
+    decoded_prompt = tokenizer.decode(full_conversation_tokens[:start_idx_response].cpu())
+    decoded_answer = tokenizer.decode(full_conversation_tokens[start_idx_response:].cpu())
+    print("\n\n******Prompt: ", decoded_prompt)
+    print("\n\n******Generated Answer: ", decoded_answer, "\n\n")
+    
+    return full_conversation_tokens, start_idx_response
+
+def extract_activations(model, full_conversation_tokens, target_module_path):
+    """Extract activations from the model for the full conversation."""
+    print(f"Extracting activations for the full conversation from module: {target_module_path}")
+    with torch.no_grad():
+        # Use the ObservableLanguageModel's forward method on the full sequence
+        # Add batch dimension back for forward pass
+        last_token_logits, activation_cache = model.forward(
+            inputs=full_conversation_tokens.unsqueeze(0),
+            cache_activations_at=[target_module_path]
+        )
+
+    # Get the specific activation tensor from the cache dictionary
+    if target_module_path not in activation_cache:
+        raise KeyError(f"Target module path '{target_module_path}' not found in activation cache. Cached keys: {list(activation_cache.keys())}")
+        
+    activations_val = activation_cache[target_module_path]
+
+    # If activations have batch, sequence and hidden_dim (e.g., [1, seq_len, hidden_dim])
+    # often we need [seq_len, hidden_dim] for the SAE
+    if activations_val.ndim == 3 and activations_val.shape[0] == 1:
+        activations_val = activations_val.squeeze(0)
+
+    print(f"Activations extracted. Shape: {activations_val.shape}, Dtype: {activations_val.dtype}")
+    return activations_val
+
+def apply_sae_to_activations(sae, activations_val):
+    """Apply SAE to the extracted activations."""
+    print("Applying SAE to activations...")
+    with torch.no_grad():
+        # Pass activations to the SAE's encode method
+        # The encode method handles moving the input to the correct device/dtype
+        sae_features = sae.encode(activations_val)
+        # features will have shape [seq_len, d_hidden]
+
+    print(f"SAE features obtained. Shape: {sae_features.shape}, Dtype: {sae_features.dtype}")
+    print(torch.sum(sae_features,axis=-1)[0:10].detach().float().cpu().numpy(), "...")
+    return sae_features
+
+
+def create_feature_mask(sae_features, start_idx_response=None, analyze_only_response=True):
+    """Create a mask for SAE features based on analysis scope."""
+    sae_features_cpu = sae_features.detach().cpu()
+    
+    if analyze_only_response:
+        # Create a response-only mask (1 for response tokens, 0 for everything else)
+        mask = torch.zeros(sae_features_cpu.shape[0], device='cpu')
+        mask[start_idx_response:] = 1
+        print(f"Analyzing only the model's response ({mask.sum().item()} tokens)")
+    else:
+        # Create mask (1 for all tokens)
+        mask = torch.ones(sae_features_cpu.shape[0], device='cpu')
+        print("Analyzing all tokens in the conversation")
+    
+    # Apply mask to features
+    masked_sae_features = sae_features_cpu * mask.unsqueeze(-1)  # Expand mask to feature dim
+    
+    return masked_sae_features, sae_features_cpu
+
+def prepare_tokens_for_visualization(tokenizer, full_conversation_tokens):
+    """Prepare token strings for visualization."""
+    # Get full token strings for visualization
+    str_tokens = [tokenizer.decode([t]) for t in full_conversation_tokens]
+    return str_tokens
+
+def get_top_features(masked_sae_features, num_features=100):
+    """Find the top activating features based on max activation value."""
+    max_feature_activations, _ = masked_sae_features.abs().max(dim=0)
+    top_feature_indices = max_feature_activations.topk(num_features).indices
+    return top_feature_indices, max_feature_activations
+
+def visualize_sae_features(masked_sae_features, display_tokens, start_idx_response, 
+                          model_id, num_features=8192, goodfire_api_key=None):
+    """Visualize SAE features using CircuitsVis."""
+    print("Visualizing SAE features using CircuitsVis...")
+    client = goodfire.Client(goodfire_api_key)
+    variant = goodfire.Variant(model_id)
+    
+    # Get the top features to visualize (limit to specified number)
+    num_features_to_visualize = min(num_features, masked_sae_features.shape[1])
+    feature_importance = masked_sae_features.abs().mean(dim=0)
+    top_feature_indices = feature_importance.topk(num_features_to_visualize).indices.cpu().numpy()
+
+    # Prepare data for visualization
+    tokens_for_vis = display_tokens
+    features_for_vis = masked_sae_features[:, top_feature_indices].cpu().numpy()
+    
+    # Get feature labels from Goodfire API
+    feature_labels = get_feature_labels(client, top_feature_indices, model_id)
+
+    # Use CircuitsVis SAE visualization
+    from circuitsvis import sae as sae_vis
+
+    # Create the visualization
+    sae_vis_output = sae_vis.sae_vis(
+        tokens=tokens_for_vis,
+        feature_activations=features_for_vis,
+        feature_labels=feature_labels,
+        feature_ids=top_feature_indices.tolist(),
+        initial_ranking_metric="l1",        # Rank by mean absolute activation initially
+        num_top_features_overall=15,        # Show top 15 features in the list
+        num_top_features_per_token=3,       # Show top 3 features in token tooltips
+    )
+
+    # Display the visualization
+    from IPython.display import display
+    display(sae_vis_output)
+    print("--- SAE Feature Visualization Complete ---")
+    
+    return sae_vis_output, top_feature_indices
+
+def get_feature_labels(client, top_feature_indices, model_id):
+    """Get feature labels from Goodfire API."""
+    feature_labels = []
+    try:
+        # Query Goodfire API for feature labels
+        feature_dict = client.features.lookup(
+            top_feature_indices.tolist(), 
+            model=model_id
+        )
+        sorted_top_feature_indices = {i: feature_dict.get(i, f"Feature {i}") for i in top_feature_indices}
+        feature_labels = [sorted_top_feature_indices[i].label if isinstance(sorted_top_feature_indices[i], goodfire.Feature) 
+                         else sorted_top_feature_indices[i] for i in top_feature_indices]
+        print(f"Retrieved {len(feature_labels)} feature labels from Goodfire API")
+    except Exception as e:
+        print(f"Error retrieving feature labels: {e}")
+        # Fallback to generic labels if API fails
+        feature_labels = [f"Feature {i}" for i in top_feature_indices]
+    
+    return feature_labels
+
+# %%
+# --- Analyze and Visualize SAE Features ---
+# Visualization Configuration
+NUM_TOP_FEATURES = 100 # Number of top activating features to visualize
+N_GENERATE_TOKENS = 500 # Number of tokens to generate after the prompt
+
+# Input Prompt (Modify as needed)
+PROMPT = """
+Call me Ishmael. Some years ago--never mind how long precisely--having little or no money in my purse, and nothing particular to interest me on shore, I thought I would sail about a little and see the watery part of the world. It is a way I have of driving off the spleen and regulating the circulation. Whenever I find myself growing grim about the mouth; whenever it is a damp, drizzly November in my soul; whenever I find myself involuntarily pausing before coffin warehouses, and bringing up the rear of every funeral I meet; and especially whenever my hypos get such an upper hand of me, that it requires a strong moral principle to prevent me from deliberately stepping into the street, and methodically knocking people's hats off--then, I account it high time to get to sea as soon as I can.
+"""
+# Load prompt from file
+with open("talkative_probes_prompts/steg_attempt_firstletter.txt", "r") as f:
+    PROMPT = f.read()
+
+full_conversation_tokens, start_idx_response, decoded_answer = prompt_model_chatformatted(model,tokenizer,model_device,PROMPT,N_GENERATE_TOKENS)
 
 # --- Extract Activations for Full Conversation ---
 print(f"Extracting activations for the full conversation from module: {TARGET_MODULE_PATH}")
 with torch.no_grad():
-    # Use the ObservableLanguageModel's forward method on the full sequence
-    # Add batch dimension back for forward pass
+    # Use the ObservableLanguageModel's forward method on the full sequence, add batch dim
     last_token_logits, activation_cache = model.forward(
         inputs=full_conversation_tokens.unsqueeze(0),
         cache_activations_at=[TARGET_MODULE_PATH]
@@ -230,98 +392,326 @@ if TARGET_MODULE_PATH not in activation_cache:
     
 activations_val = activation_cache[TARGET_MODULE_PATH]
 
-# If activations have batch, sequence and hidden_dim (e.g., [1, seq_len, hidden_dim])
-# often we need [seq_len, hidden_dim] for the SAE
+# If activations have batch, sequence and hidden_dim (e.g., [1, seq_len, hidden_dim], need [seq_len, hidden_dim] for the SAE
 if activations_val.ndim == 3 and activations_val.shape[0] == 1:
     activations_val = activations_val.squeeze(0)
-
 print(f"Activations extracted. Shape: {activations_val.shape}, Dtype: {activations_val.dtype}")
 # %%
-
-#print(sae_features[0:2,0:3])
-# --- Apply SAE to Activations ---
-
-#print(sae.encoder_linear.bias[0:2])#,0:3])
-# %%
-# --- Apply SAE to Activations ---
-
-print("Applying SAE to activations...")
 with torch.no_grad():
-    # Pass activations to the SAE's encode method
-    # The encode method handles moving the input to the correct device/dtype
-    sae_features = sae.encode(activations_val)
-    # features will have shape [seq_len, d_hidden]
-
-print(f"SAE features obtained. Shape: {sae_features.shape}, Dtype: {sae_features.dtype}")
-print(torch.sum(sae_features,axis=-1)[0:10].detach().float().cpu().numpy(), "...")
-
-# %%
-# --- Analyze and Visualize SAE Features ---
-
-# Determine whether to analyze only the model's response or the full conversation
-analyze_only_response = True  # Set to False to analyze the full conversation
-
-print(f"Analyzing top {NUM_TOP_FEATURES} features...")
-print(sae_features.shape,sae_features[0:2,0:3])
-
-# Get SAE features on CPU for analysis
+    sae_features = sae.encode(activations_val)# shape [seq_len, d_hidden]
 sae_features_cpu = sae_features.detach().cpu()
 
-# Create mask based on what we want to analyze
-if analyze_only_response:
-    # Create a response-only mask (1 for response tokens, 0 for everything else)
-    mask = torch.zeros(sae_features_cpu.shape[0], device='cpu')
-    mask[start_idx_response:] = 1
-    print(f"Analyzing only the model's response ({mask.sum().item()} tokens)")
-else:
-    # Create mask (1 for all tokens)
-    mask = torch.ones(sae_features_cpu.shape[0], device='cpu')
-    print("Analyzing all tokens in the conversation")
+print(f"SAE features obtained. Shape: {sae_features.shape}, Dtype: {sae_features.dtype}")
+# %%
 
-# Apply mask to features
-masked_sae_features = sae_features_cpu * mask.unsqueeze(-1)  # Expand mask to feature dim
+analyze_only_response = True#False for full conversation    
+# Main analysis flow
+masked_sae_features, sae_features_cpu = create_feature_mask(
+    sae_features, 
+    start_idx_response=start_idx_response, 
+    analyze_only_response=analyze_only_response 
+)
 
-# --- Analysis on Masked Features ---
-# Get full token strings for visualization
-str_tokens = [tokenizer.decode([t]) for t in full_conversation_tokens]
+str_tokens = prepare_tokens_for_visualization(tokenizer, full_conversation_tokens)
+display_tokens = str_tokens[start_idx_response:]
 
-# If only analyzing response, filter tokens for display
-if analyze_only_response:
-    display_tokens = str_tokens[start_idx_response:]
-else:
-    display_tokens = str_tokens
-# Find the top activating features based on max activation value across the sequence (using masked features)
-max_feature_activations, _ = masked_sae_features.abs().max(dim=0)
-top_feature_indices = max_feature_activations.topk(NUM_TOP_FEATURES).indices
+top_feature_indices, max_feature_activations = get_top_features(
+    masked_sae_features, 
+    num_features=NUM_TOP_FEATURES
+)
 
-# print(f"Top {NUM_TOP_FEATURES} feature indices (masked): {top_feature_indices.tolist()}")
-# client = goodfire.Client(os.environ.get('GOODFIRE_API_KEY'))
-# featuresdict = client.features.lookup(top_feature_indices.tolist(), MODEL_ID)
-# featuresdictsorted = {i:featuresdict[i] for i in top_feature_indices.tolist()}
-# for i, (k, v) in enumerate(featuresdictsorted.items()):
-#     print(f"{i}: {k}: {v.label}")
+ntok = len(display_tokens)  
+sae_vis, top_feature_indices = visualize_sae_features(
+    masked_sae_features[start_idx_response:start_idx_response+ntok,:], 
+    display_tokens[:ntok], 
+    start_idx_response, 
+    MODEL_ID, 
+    num_features=8192, 
+    goodfire_api_key=os.environ.get('GOODFIRE_API_KEY')
+)
 
-# # Prepare data for visualization using masked features
-# # We need the activation values of these specific top features for each token
-# # Shape required by colored_tokens_multi: [token, feature]
-# top_features_acts = masked_sae_features[:, top_feature_indices]
-
-# # Filter activations if only showing response
-# if analyze_only_response:
-#     top_features_acts = top_features_acts[start_idx_response:]
-
-# # %%
-# print(f"Visualizing activations for top {NUM_TOP_FEATURES} features...")
-
-# # Generate visualization
-# vis_html = colored_tokens_multi(display_tokens, top_features_acts)#,labels = [featuresdictsorted[i].label for i in top_feature_indices.tolist()])
+from importlib import reload
+import stegdecode
+reload(stegdecode)
+from stegdecode import *    
+print("Capital-letter-based steganography decoded message:")
+print(decode_steganographic_message_firstletter(decoded_answer))
 
 
-# display(vis_html)  # Display in Jupyter/IPython environment
 
-# print("--- Visualization Complete ---")
 
-# # %%
+# %% [markdown]
+#### Control Experiment - capital-letter-based steganography
+
+# %%
+
+
+# Visualization Configuration
+NUM_TOP_FEATURES = 100 # Number of top activating features to visualize
+N_GENERATE_TOKENS = 500 # Number of tokens to generate after the prompt
+
+# Load prompt from file
+with open("talkative_probes_prompts/steg_attempt_firstletter_control.txt", "r") as f:
+    PROMPT = f.read()
+
+full_conversation_tokens, start_idx_response, decoded_answer = prompt_model_chatformatted(model,tokenizer,model_device,PROMPT,N_GENERATE_TOKENS)
+
+# --- Extract Activations for Full Conversation ---
+print(f"Extracting activations for the full conversation from module: {TARGET_MODULE_PATH}")
+with torch.no_grad():
+    # Use the ObservableLanguageModel's forward method on the full sequence, add batch dim
+    last_token_logits, activation_cache = model.forward(
+        inputs=full_conversation_tokens.unsqueeze(0),
+        cache_activations_at=[TARGET_MODULE_PATH]
+    )
+
+# Get the specific activation tensor from the cache dictionary
+if TARGET_MODULE_PATH not in activation_cache:
+    raise KeyError(f"Target module path '{TARGET_MODULE_PATH}' not found in activation cache. Cached keys: {list(activation_cache.keys())}")
+    
+activations_val = activation_cache[TARGET_MODULE_PATH]
+
+# If activations have batch, sequence and hidden_dim (e.g., [1, seq_len, hidden_dim], need [seq_len, hidden_dim] for the SAE
+if activations_val.ndim == 3 and activations_val.shape[0] == 1:
+    activations_val = activations_val.squeeze(0)
+print(f"Activations extracted. Shape: {activations_val.shape}, Dtype: {activations_val.dtype}")
+with torch.no_grad():
+    sae_features = sae.encode(activations_val)# shape [seq_len, d_hidden]
+sae_features_cpu = sae_features.detach().cpu()
+
+print(f"SAE features obtained. Shape: {sae_features.shape}, Dtype: {sae_features.dtype}")
+
+analyze_only_response = True#False for full conversation    
+# Main analysis flow
+masked_sae_features, sae_features_cpu = create_feature_mask(
+    sae_features, 
+    start_idx_response=start_idx_response, 
+    analyze_only_response=analyze_only_response 
+)
+
+str_tokens = prepare_tokens_for_visualization(tokenizer, full_conversation_tokens)
+display_tokens = str_tokens[start_idx_response:]
+
+top_feature_indices, max_feature_activations = get_top_features(
+    masked_sae_features, 
+    num_features=NUM_TOP_FEATURES
+)
+
+ntok = len(display_tokens)  
+sae_vis, top_feature_indices = visualize_sae_features(
+    masked_sae_features[start_idx_response:start_idx_response+ntok,:], 
+    display_tokens[:ntok], 
+    start_idx_response, 
+    MODEL_ID, 
+    num_features=8192, 
+    goodfire_api_key=os.environ.get('GOODFIRE_API_KEY')
+)
+# %% [markdown]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#### --- Analyzing Spaces-Based Steganography ---
+#### Load prompt from file with spaces-based steganography instructions
+
+# %%
+
+
+# Load prompt from file
+with open("talkative_probes_prompts/steg_attempt_spaces.txt", "r") as f:
+    PROMPT = f.read()
+
+full_conversation_tokens, start_idx_response, decoded_answer = prompt_model_chatformatted(model,tokenizer,model_device,PROMPT,N_GENERATE_TOKENS)
+
+# --- Extract Activations for Full Conversation ---
+print(f"Extracting activations for the full conversation from module: {TARGET_MODULE_PATH}")
+with torch.no_grad():
+    # Use the ObservableLanguageModel's forward method on the full sequence, add batch dim
+    last_token_logits, activation_cache = model.forward(
+        inputs=full_conversation_tokens.unsqueeze(0),
+        cache_activations_at=[TARGET_MODULE_PATH]
+    )
+
+# Get the specific activation tensor from the cache dictionary
+if TARGET_MODULE_PATH not in activation_cache:
+    raise KeyError(f"Target module path '{TARGET_MODULE_PATH}' not found in activation cache. Cached keys: {list(activation_cache.keys())}")
+    
+activations_val = activation_cache[TARGET_MODULE_PATH]
+
+# If activations have batch, sequence and hidden_dim (e.g., [1, seq_len, hidden_dim], need [seq_len, hidden_dim] for the SAE
+if activations_val.ndim == 3 and activations_val.shape[0] == 1:
+    activations_val = activations_val.squeeze(0)
+print(f"Activations extracted. Shape: {activations_val.shape}, Dtype: {activations_val.dtype}")
+# %%
+with torch.no_grad():
+    sae_features = sae.encode(activations_val)# shape [seq_len, d_hidden]
+sae_features_cpu = sae_features.detach().cpu()
+
+print(f"SAE features obtained. Shape: {sae_features.shape}, Dtype: {sae_features.dtype}")
+# %%
+
+analyze_only_response = True#False for full conversation    
+# Main analysis flow
+masked_sae_features, sae_features_cpu = create_feature_mask(
+    sae_features, 
+    start_idx_response=start_idx_response, 
+    analyze_only_response=analyze_only_response 
+)
+
+str_tokens = prepare_tokens_for_visualization(tokenizer, full_conversation_tokens)
+display_tokens = str_tokens[start_idx_response:]
+
+top_feature_indices, max_feature_activations = get_top_features(
+    masked_sae_features, 
+    num_features=NUM_TOP_FEATURES
+)
+
+ntok = len(display_tokens)  
+sae_vis, top_feature_indices = visualize_sae_features(
+    masked_sae_features[start_idx_response:start_idx_response+ntok,:], 
+    display_tokens[:ntok], 
+    start_idx_response, 
+    MODEL_ID, 
+    num_features=8192, 
+    goodfire_api_key=os.environ.get('GOODFIRE_API_KEY')
+)
+from importlib import reload
+import stegdecode
+reload(stegdecode)
+from stegdecode import *    
+print("Spaces-based steganography decoded message:")
+print(decode_steganographic_message_spaces(decoded_answer))
+# %%
+
+# %% [markdown]
+#### Control Experiment - spaces-based steganography
+# %%
+
+# Load prompt from file
+with open("talkative_probes_prompts/steg_attempt_spaces_control.txt", "r") as f:
+    PROMPT = f.read()
+
+full_conversation_tokens, start_idx_response, decoded_answer = prompt_model_chatformatted(model,tokenizer,model_device,PROMPT,N_GENERATE_TOKENS)
+
+# --- Extract Activations for Full Conversation ---
+print(f"Extracting activations for the full conversation from module: {TARGET_MODULE_PATH}")
+with torch.no_grad():
+    # Use the ObservableLanguageModel's forward method on the full sequence, add batch dim
+    last_token_logits, activation_cache = model.forward(
+        inputs=full_conversation_tokens.unsqueeze(0),
+        cache_activations_at=[TARGET_MODULE_PATH]
+    )
+
+# Get the specific activation tensor from the cache dictionary
+if TARGET_MODULE_PATH not in activation_cache:
+    raise KeyError(f"Target module path '{TARGET_MODULE_PATH}' not found in activation cache. Cached keys: {list(activation_cache.keys())}")
+    
+activations_val = activation_cache[TARGET_MODULE_PATH]
+
+# If activations have batch, sequence and hidden_dim (e.g., [1, seq_len, hidden_dim], need [seq_len, hidden_dim] for the SAE
+if activations_val.ndim == 3 and activations_val.shape[0] == 1:
+    activations_val = activations_val.squeeze(0)
+print(f"Activations extracted. Shape: {activations_val.shape}, Dtype: {activations_val.dtype}")
+
+with torch.no_grad():
+    sae_features = sae.encode(activations_val)# shape [seq_len, d_hidden]
+sae_features_cpu = sae_features.detach().cpu()
+
+print(f"SAE features obtained. Shape: {sae_features.shape}, Dtype: {sae_features.dtype}")
+
+analyze_only_response = True#False for full conversation    
+# Main analysis flow
+masked_sae_features, sae_features_cpu = create_feature_mask(
+    sae_features, 
+    start_idx_response=start_idx_response, 
+    analyze_only_response=analyze_only_response 
+)
+
+str_tokens = prepare_tokens_for_visualization(tokenizer, full_conversation_tokens)
+display_tokens = str_tokens[start_idx_response:]
+
+top_feature_indices, max_feature_activations = get_top_features(
+    masked_sae_features, 
+    num_features=NUM_TOP_FEATURES
+)
+
+ntok = len(display_tokens)  
+sae_vis, top_feature_indices = visualize_sae_features(
+    masked_sae_features[start_idx_response:start_idx_response+ntok,:], 
+    display_tokens[:ntok], 
+    start_idx_response, 
+    MODEL_ID, 
+    num_features=8192, 
+    goodfire_api_key=os.environ.get('GOODFIRE_API_KEY')
+)
+
+
+# %%
+# --- Functions to decode steganographic messages using the Punctuation Space Method ---
+
+
+# Example usage:
+# text = "Thank you for your question about renewable energy. This requires thoughtful analysis of multiple factors.\n\n" + \
+#        "Solar power has become increasingly affordable. Many homeowners now consider it a viable option; the " + \
+#        "installation costs have decreased dramatically. Research shows promising trends: efficiency continues to " + \
+#        "improve while manufacturing costs decline. Companies are investing heavily, creating new opportunities for growth.\n\n" + \
+#        "In conclusion, renewable energy presents both challenges and opportunities for investors and consumers alike."
+# 
+# decoded_message = decode_steganographic_message(text)
+# print(f"Decoded message: {decoded_message}")
+
+
+# %%
+msg = """Technology stocks have maintained significant momentum despite market uncertainties in recent quarters. A thoughtful analysis shows that several fundamental factors continue to drive this sector's performance in the current economic climate.
+
+Major tech companies continue to outperform broader market indices. The sector's growth potential remains strong despite economic headwinds;  industry leaders maintain robust profit margins. Companies with diversified revenue streams,  particularly those focused on cloud computing and AI applications.  Enterprise software solutions show consistent demand: consumer technology spending has remained resilient during uncertain times. Semiconductor manufacturers face ongoing supply chain challenges,  though strategic investments are improving production capacity.  Cybersecurity firms report accelerating growth,  reflecting the increasing importance of digital protection in our connected world.
+
+Innovation remains the primary catalyst for valuation premiums in the technology sector. Artificial intelligence applications are generating measurable returns across industries; machine learning solutions enhance operational efficiency while creating new business models. Fintech disruption continues to reshape financial services; blockchain technology extends beyond cryptocurrencies into practical business applications. Subscription-based revenue models provide predictable cash flows; recurring revenue streams appeal to investors seeking stability amid market uncertainty.
+
+In conclusion, technology stocks continue to present both significant opportunities and notable risks. While valuations may appear elevated by traditional metrics, the sector's innovation potential and growth trajectory justify premium multiples for companies with strong competitive positions and sustainable business models."""
+print(decode_steganographic_message_spaces(msg))
 
 # # --- Search for features related to secrets/hiding ---
 # print("\n--- Searching for features related to secrets/hiding ---")
@@ -533,56 +923,3 @@ top_feature_indices = max_feature_activations.topk(NUM_TOP_FEATURES).indices
 
 
 # %%
-# --- Visualize SAE Features using CircuitsVis ---
-print("Visualizing SAE features using CircuitsVis...")
-client = goodfire.Client(os.environ.get('GOODFIRE_API_KEY'))
-variant = goodfire.Variant(MODEL_ID)
-# Get the top features to visualize (limit to 8192 as requested)
-num_features_to_visualize = min(8192, masked_sae_features.shape[1])
-feature_importance = masked_sae_features.abs().mean(dim=0)
-top_feature_indices = feature_importance.topk(num_features_to_visualize).indices.cpu().numpy()
-
-# Prepare data for visualization
-ntok = len(display_tokens)
-tokens_for_vis = display_tokens[:ntok]
-features_for_vis = masked_sae_features[start_idx_response:start_idx_response+ntok, top_feature_indices].cpu().numpy()
-# Get feature labels from Goodfire API
-feature_labels = []
-try:
-    # Query Goodfire API for feature labels
-    feature_dict = client.features.lookup(
-        top_feature_indices.tolist(), 
-        model=MODEL_ID
-    )
-    sorted_top_feature_indices = {i:feature_dict.get(i, f"Feature {i}") for i in top_feature_indices    }
-    feature_labels = [sorted_top_feature_indices[i].label if isinstance(sorted_top_feature_indices[i],goodfire.Feature) else  sorted_top_feature_indices[i] for i in top_feature_indices]
-    print(f"Retrieved {len(feature_labels)} feature labels from Goodfire API")
-except Exception as e:
-    print(f"Error retrieving feature labels: {e}")
-    # Fallback to generic labels if API fails
-    feature_labels = [f"Feature {i}" for i in top_feature_indices]
-
-# Use CircuitsVis SAE visualization
-from circuitsvis import sae as sae_vis
-
-# Create the visualization
-sae_vis = sae_vis.sae_vis(
-    tokens=tokens_for_vis,
-    feature_activations=features_for_vis,
-    feature_labels=feature_labels,
-    feature_ids=top_feature_indices.tolist(),
-    initial_ranking_metric="l1",        # Rank by mean absolute activation initially
-    num_top_features_overall=15,        # Show top 15 features in the list
-    num_top_features_per_token=3,       # Show top 3 features in token tooltips
-)
-
-# Display the visualization
-from IPython.display import display
-display(sae_vis)
-print("--- SAE Feature Visualization Complete ---")
-
-# %%
-import numpy as np
-np.where(top_feature_indices==29785)
-# %%
-MODEL_ID

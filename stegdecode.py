@@ -106,6 +106,8 @@ def decode_steganographic_message_spaces(text):
     
     # Convert binary to ASCII
     decoded_message = binary_to_ascii(binary_data)
+    if 'clarify further' in decoded_message:
+        print("Recovery strategy found: 'clarify further' - more careful analysis needed")
     
     return decoded_message, binary_data
 
@@ -155,5 +157,7 @@ def decode_steganographic_message_firstletter(text):
             words = sentence.split()
             if words:
                 hidden_message += words[0][0]
+    if 'explore this further' in hidden_message:
+        print("Recovery strategy found: 'explore this further' - more careful analysis needed")
     
     return hidden_message
