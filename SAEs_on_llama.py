@@ -88,7 +88,7 @@ import goodfire
 # --- Configuration ---
 
 # Base Model Configuration
-#MODEL_ID = "meta-llama/Meta-Llama-3.1-8B-Instruct" # Base model ID
+#¢MODEL_ID = "meta-llama/Meta-Llama-3.1-8B-Instruct" # Base model ID
 MODEL_ID = "meta-llama/Llama-3.3-70B-Instruct" # Base model ID
 
 # SAE Configuration
@@ -294,238 +294,238 @@ else:
 max_feature_activations, _ = masked_sae_features.abs().max(dim=0)
 top_feature_indices = max_feature_activations.topk(NUM_TOP_FEATURES).indices
 
-print(f"Top {NUM_TOP_FEATURES} feature indices (masked): {top_feature_indices.tolist()}")
-client = goodfire.Client(os.environ.get('GOODFIRE_API_KEY'))
-featuresdict = client.features.lookup(top_feature_indices.tolist(), MODEL_ID)
-featuresdictsorted = {i:featuresdict[i] for i in top_feature_indices.tolist()}
-for i, (k, v) in enumerate(featuresdictsorted.items()):
-    print(f"{i}: {k}: {v.label}")
+# print(f"Top {NUM_TOP_FEATURES} feature indices (masked): {top_feature_indices.tolist()}")
+# client = goodfire.Client(os.environ.get('GOODFIRE_API_KEY'))
+# featuresdict = client.features.lookup(top_feature_indices.tolist(), MODEL_ID)
+# featuresdictsorted = {i:featuresdict[i] for i in top_feature_indices.tolist()}
+# for i, (k, v) in enumerate(featuresdictsorted.items()):
+#     print(f"{i}: {k}: {v.label}")
 
-# Prepare data for visualization using masked features
-# We need the activation values of these specific top features for each token
-# Shape required by colored_tokens_multi: [token, feature]
-top_features_acts = masked_sae_features[:, top_feature_indices]
+# # Prepare data for visualization using masked features
+# # We need the activation values of these specific top features for each token
+# # Shape required by colored_tokens_multi: [token, feature]
+# top_features_acts = masked_sae_features[:, top_feature_indices]
 
-# Filter activations if only showing response
-if analyze_only_response:
-    top_features_acts = top_features_acts[start_idx_response:]
+# # Filter activations if only showing response
+# if analyze_only_response:
+#     top_features_acts = top_features_acts[start_idx_response:]
 
-# %%
-print(f"Visualizing activations for top {NUM_TOP_FEATURES} features...")
-
-# Generate visualization
-vis_html = colored_tokens_multi(display_tokens, top_features_acts)#,labels = [featuresdictsorted[i].label for i in top_feature_indices.tolist()])
-
-
-display(vis_html)  # Display in Jupyter/IPython environment
-
-print("--- Visualization Complete ---")
-
-# %%
-
-# --- Search for features related to secrets/hiding ---
-print("\n--- Searching for features related to secrets/hiding ---")
-
-# Get top 1000 features for broader analysis
-top_N_to_search = 8192
-top_N_feature_indices = max_feature_activations.topk(top_N_to_search, sorted=True).indices
-top_N_features = client.features.lookup(top_N_feature_indices.tolist(), MODEL_ID)
-# Ensure features are sorted by rank after lookup
-top_N_features_sorted = {feature_id: top_N_features[feature_id] for feature_id in top_N_feature_indices.tolist() if feature_id in top_N_features}
-top_N_features = top_N_features_sorted
-
-# Keywords related to secrets/hiding
-secret_keywords = ["secret", "hide", "hidden", "conceal", "stealth", "private", 
-                  "confidential", "encrypt", "disguise", "mask", "covert", 
-                  "classified", "obscure", "clandestine", "undercover", "discreet"]
-# Keywords related to meetings
-meeting_keywords = ["meeting", "conference", " appointment", "agenda", 
-                   "gather", "assemble", "convene", " session", "briefing", "congregation", "rendezvous", "meetup", "huddle"]
-
-extra_keywords = ["careful"]
-
-# Combine with existing keywords for a comprehensive search
-all_keywords = secret_keywords + meeting_keywords + extra_keywords
-print(f"Searching for features related to {len(all_keywords)} keywords...")
-
-
-# Search for features with labels containing secret-related keywords
-particular_features = {}
-for idx, feature_id in enumerate(top_N_features):
-    feature = top_N_features[feature_id]
-    feature_label = feature.label.lower()
-    
-    for keyword in all_keywords:
-        if keyword in feature_label:
-            # Store the feature's rank in the top_N_features list
-            rank = top_N_feature_indices.tolist().index(feature_id)
-            particular_features[feature_id] = (feature, rank)
-            #print(f"{idx} Found secret-related feature {feature_id} (rank {rank}): {feature.label}")
-            break
-
-print(f"Found {len(particular_features)} features related to secrets/hiding among top {top_N_to_search} features")
-for i, (k, (v, rank)) in enumerate(particular_features.items()):
-    print(f"{i}: {k} (rank {rank}): {v.label}")
-
-# If secret features were found, visualize them
-if particular_features:
-    particular_feature_ids = list(particular_features.keys())
-    particular_feature_indices = [top_N_feature_indices.tolist().index(fid) for fid in particular_feature_ids 
-                             if fid in top_N_feature_indices.tolist()]
-    
-    # Get activations for these specific features
-    particular_features_acts = masked_sae_features[:, [top_N_feature_indices[i] for i in particular_feature_indices]]
-    
-    # Filter activations if only showing response
-    if analyze_only_response:
-        particular_features_acts = particular_features_acts[start_idx_response:]
-    
-
-#%%
-if particular_features:
-    print("Visualizing activations for secret-related features...")
-    particular_vis_html = colored_tokens_multi(display_tokens, particular_features_acts)
-    display(particular_vis_html)
-    print("--- Particular Feature Visualization Complete ---")
-
-# %%
-import goodfire
-#from goodfire import Variant
-#from goodfire import Client
-
-#variant = Variant("meta-llama/Llama-3.3-70B-Instruct")
-variant = goodfire.Variant(MODEL_ID)
-
-
-
-
-
-client = goodfire.Client(os.environ.get('GOODFIRE_API_KEY'))
-#client = goodfire.Client()
-pirate_features = client.features.search('pirate', MODEL_ID)
-pirate_feature = pirate_features[0]
-goodfirechatinput = chatformat 
-print(goodfirechatinput)
-#  [
-#         {"role": "user", "content": "What do you think about pirates and whales"},
-#         {"role": "assistant", "content": "I think pirates are cool and whales are cool"}
-#     ],
-# Analyze how features activate in text
-inspector = client.features.inspect(
-    goodfirechatinput,
-    model=variant
-)
-
-# Get top activated features
-for activation in inspector.top(k=5):
-    print(f"{activation.feature.label}: {activation.activation}")
-    
-
-# %%
-# --- Interactive Token-Feature Visualization ---
-print("Creating interactive token-feature visualization...")
-# Compute top features per token
-def create_token_feature_viz(tokens, sae_features, top_n=5):
-    # Get top N features for each token
-    top_values, top_indices = torch.topk(sae_features, k=top_n, dim=1)
-    
-    # Create a tensor where only top features have non-zero values
-    display_tensor = torch.zeros_like(sae_features)
-    
-    # Only process tokens with capital letters
-    for i in range(len(tokens)):
-        if any(c.isupper() for c in tokens[i]):
-            display_tensor[i, top_indices[i]] = top_values[i]
-    
-    # Create feature labels for only the top features that appear in uppercase tokens
-    mask = torch.zeros(len(tokens), dtype=torch.bool)
-    for i, token in enumerate(tokens):
-        if any(c.isupper() for c in token):
-            mask[i] = True
-    
-    # Get indices of features that appear in uppercase tokens
-    uppercase_indices = top_indices[mask].flatten()
-    unique_feature_indices = torch.unique(uppercase_indices).tolist()
-    feature_labels = [f"Feature {i}" for i in unique_feature_indices]
-    
-    # Create a reduced tensor with only the columns for top features
-    reduced_tensor = torch.zeros((display_tensor.shape[0], len(unique_feature_indices)))
-    for i, feat_idx in enumerate(unique_feature_indices):
-        reduced_tensor[:, i] = display_tensor[:, feat_idx]
-    
-    # Get feature information from Goodfire
-    feature_dict = client.features.lookup(unique_feature_indices, model=variant)
-    
-    # Calculate max activation per feature across all tokens
-    max_activations, _ = sae_features[:, unique_feature_indices].max(dim=0)
-    
-    # Get indices that would sort features by max activation (descending)
-    sorted_by_activation = torch.argsort(max_activations, descending=True).tolist()
-    
-    # Map to original indices and create sorted list
-    sorted_indices = [unique_feature_indices[i] for i in sorted_by_activation]
-    
-    # Create sorted dictionary
-    feature_dict_sorted = {i: feature_dict[i] for i in sorted_indices if i in feature_dict}
-    
-    # Calculate global ranks for all features based on max activation
-    all_max_activations, _ = sae_features.max(dim=0)
-    global_ranks = torch.argsort(all_max_activations, descending=True)
-    # Create a lookup dictionary that maps feature index to its global rank
-    global_rank_lookup = {int(idx): int(rank) for rank, idx in enumerate(global_ranks)}
-    
-    # Print feature information with global rank
-    for local_rank, (feat_idx, feature) in enumerate(feature_dict_sorted.items()):
-        global_rank = global_rank_lookup.get(feat_idx, "N/A")
-        feature_index = sorted_indices.index(feat_idx)
-        print(f"{local_rank}: Feature {feat_idx}: {feature.label} (max activation: {max_activations[feature_index]:.4f}, global rank: {global_rank})")
-    
-    # Create visualization with circuitsvis
-    print(tokens)
-    vis = colored_tokens_multi(tokens, reduced_tensor)
-    
-    return vis
-
-# If we're only analyzing the response, create a separate visualization
-ntok = len(display_tokens)+2
-if analyze_only_response:
-    print("\nVisualization for response tokens only:")
-    response_viz = create_token_feature_viz(
-        display_tokens[0:ntok], 
-        masked_sae_features[start_idx_response:start_idx_response+ntok,:], 
-        top_n=10
-    )
-# %%
-if analyze_only_response:
-    display(response_viz)
-
-print("--- Token-Feature Visualization Complete ---")
-
-# %%
-masked_sae_features.shape
-#display_tokens
-# --- Optional: Visualize Original Activations (Without SAE) ---
-# This helps compare the sparsity and interpretability
-
-# print("Analyzing and visualizing original activations (without SAE)...")
-
-# Ensure original activations are on CPU
-# activations_val_cpu = activations_val.detach().cpu()
-
-# # Find top activating *neurons* in the original activation space
-# max_neuron_activations, _ = activations_val_cpu.abs().max(dim=0)
-# top_neuron_indices = max_neuron_activations.topk(NUM_TOP_FEATURES).indices
-
-# print(f"Top {NUM_TOP_FEATURES} neuron indices (original): {top_neuron_indices.tolist()}")
-
-# # Get activations of these top neurons for each token
-# top_neuron_acts = activations_val_cpu[:, top_neuron_indices]
+# # %%
+# print(f"Visualizing activations for top {NUM_TOP_FEATURES} features...")
 
 # # Generate visualization
-# vis_html_orig = colored_tokens_multi(str_tokens, top_neuron_acts)
-# display(vis_html_orig)
+# vis_html = colored_tokens_multi(display_tokens, top_features_acts)#,labels = [featuresdictsorted[i].label for i in top_feature_indices.tolist()])
 
-# print("--- Original Activation Visualization Complete ---")
+
+# display(vis_html)  # Display in Jupyter/IPython environment
+
+# print("--- Visualization Complete ---")
+
+# # %%
+
+# # --- Search for features related to secrets/hiding ---
+# print("\n--- Searching for features related to secrets/hiding ---")
+
+# # Get top 1000 features for broader analysis
+# top_N_to_search = 8192
+# top_N_feature_indices = max_feature_activations.topk(top_N_to_search, sorted=True).indices
+# top_N_features = client.features.lookup(top_N_feature_indices.tolist(), MODEL_ID)
+# # Ensure features are sorted by rank after lookup
+# top_N_features_sorted = {feature_id: top_N_features[feature_id] for feature_id in top_N_feature_indices.tolist() if feature_id in top_N_features}
+# top_N_features = top_N_features_sorted
+
+# # Keywords related to secrets/hiding
+# secret_keywords = ["secret", "hide", "hidden", "conceal", "stealth", "private", 
+#                   "confidential", "encrypt", "disguise", "mask", "covert", 
+#                   "classified", "obscure", "clandestine", "undercover", "discreet"]
+# # Keywords related to meetings
+# meeting_keywords = ["meeting", "conference", " appointment", "agenda", 
+#                    "gather", "assemble", "convene", " session", "briefing", "congregation", "rendezvous", "meetup", "huddle"]
+
+# extra_keywords = ["careful"]
+
+# # Combine with existing keywords for a comprehensive search
+# all_keywords = secret_keywords + meeting_keywords + extra_keywords
+# print(f"Searching for features related to {len(all_keywords)} keywords...")
+
+
+# # Search for features with labels containing secret-related keywords
+# particular_features = {}
+# for idx, feature_id in enumerate(top_N_features):
+#     feature = top_N_features[feature_id]
+#     feature_label = feature.label.lower()
+    
+#     for keyword in all_keywords:
+#         if keyword in feature_label:
+#             # Store the feature's rank in the top_N_features list
+#             rank = top_N_feature_indices.tolist().index(feature_id)
+#             particular_features[feature_id] = (feature, rank)
+#             #print(f"{idx} Found secret-related feature {feature_id} (rank {rank}): {feature.label}")
+#             break
+
+# print(f"Found {len(particular_features)} features related to secrets/hiding among top {top_N_to_search} features")
+# for i, (k, (v, rank)) in enumerate(particular_features.items()):
+#     print(f"{i}: {k} (rank {rank}): {v.label}")
+
+# # If secret features were found, visualize them
+# if particular_features:
+#     particular_feature_ids = list(particular_features.keys())
+#     particular_feature_indices = [top_N_feature_indices.tolist().index(fid) for fid in particular_feature_ids 
+#                              if fid in top_N_feature_indices.tolist()]
+    
+#     # Get activations for these specific features
+#     particular_features_acts = masked_sae_features[:, [top_N_feature_indices[i] for i in particular_feature_indices]]
+    
+#     # Filter activations if only showing response
+#     if analyze_only_response:
+#         particular_features_acts = particular_features_acts[start_idx_response:]
+    
+
+# #%%
+# if particular_features:
+#     print("Visualizing activations for secret-related features...")
+#     particular_vis_html = colored_tokens_multi(display_tokens, particular_features_acts)
+#     display(particular_vis_html)
+#     print("--- Particular Feature Visualization Complete ---")
+
+# # %%
+# import goodfire
+# #from goodfire import Variant
+# #from goodfire import Client
+
+# #variant = Variant("meta-llama/Llama-3.3-70B-Instruct")
+# variant = goodfire.Variant(MODEL_ID)
+
+
+
+
+
+# client = goodfire.Client(os.environ.get('GOODFIRE_API_KEY'))
+# # #client = goodfire.Client()
+# # pirate_features = client.features.search('pirate', MODEL_ID)
+# # pirate_feature = pirate_features[0]
+# # goodfirechatinput = chatformat 
+# # print(goodfirechatinput)
+# # #  [
+# # #         {"role": "user", "content": "What do you think about pirates and whales"},
+# # #         {"role": "assistant", "content": "I think pirates are cool and whales are cool"}
+# # #     ],
+# # # Analyze how features activate in text
+# # inspector = client.features.inspect(
+# #     goodfirechatinput,
+# #     model=variant
+# # )
+
+# # # Get top activated features
+# # for activation in inspector.top(k=5):
+# #     print(f"{activation.feature.label}: {activation.activation}")
+    
+
+# # # %%
+# # # --- Interactive Token-Feature Visualization ---
+# # print("Creating interactive token-feature visualization...")
+# # # Compute top features per token
+# # def create_token_feature_viz(tokens, sae_features, top_n=5):
+# #     # Get top N features for each token
+# #     top_values, top_indices = torch.topk(sae_features, k=top_n, dim=1)
+    
+# #     # Create a tensor where only top features have non-zero values
+# #     display_tensor = torch.zeros_like(sae_features)
+    
+# #     # Only process tokens with capital letters
+# #     for i in range(len(tokens)):
+# #         if any(c.isupper() for c in tokens[i]):
+# #             display_tensor[i, top_indices[i]] = top_values[i]
+    
+# #     # Create feature labels for only the top features that appear in uppercase tokens
+# #     mask = torch.zeros(len(tokens), dtype=torch.bool)
+# #     for i, token in enumerate(tokens):
+# #         if any(c.isupper() for c in token):
+# #             mask[i] = True
+    
+# #     # Get indices of features that appear in uppercase tokens
+# #     uppercase_indices = top_indices[mask].flatten()
+# #     unique_feature_indices = torch.unique(uppercase_indices).tolist()
+# #     feature_labels = [f"Feature {i}" for i in unique_feature_indices]
+    
+# #     # Create a reduced tensor with only the columns for top features
+# #     reduced_tensor = torch.zeros((display_tensor.shape[0], len(unique_feature_indices)))
+# #     for i, feat_idx in enumerate(unique_feature_indices):
+# #         reduced_tensor[:, i] = display_tensor[:, feat_idx]
+    
+# #     # Get feature information from Goodfire
+# #     feature_dict = client.features.lookup(unique_feature_indices, model=variant)
+    
+# #     # Calculate max activation per feature across all tokens
+# #     max_activations, _ = sae_features[:, unique_feature_indices].max(dim=0)
+    
+# #     # Get indices that would sort features by max activation (descending)
+# #     sorted_by_activation = torch.argsort(max_activations, descending=True).tolist()
+    
+# #     # Map to original indices and create sorted list
+# #     sorted_indices = [unique_feature_indices[i] for i in sorted_by_activation]
+    
+# #     # Create sorted dictionary
+# #     feature_dict_sorted = {i: feature_dict[i] for i in sorted_indices if i in feature_dict}
+    
+# #     # Calculate global ranks for all features based on max activation
+# #     all_max_activations, _ = sae_features.max(dim=0)
+# #     global_ranks = torch.argsort(all_max_activations, descending=True)
+# #     # Create a lookup dictionary that maps feature index to its global rank
+# #     global_rank_lookup = {int(idx): int(rank) for rank, idx in enumerate(global_ranks)}
+    
+# #     # Print feature information with global rank
+# #     for local_rank, (feat_idx, feature) in enumerate(feature_dict_sorted.items()):
+# #         global_rank = global_rank_lookup.get(feat_idx, "N/A")
+# #         feature_index = sorted_indices.index(feat_idx)
+# #         print(f"{local_rank}: Feature {feat_idx}: {feature.label} (max activation: {max_activations[feature_index]:.4f}, global rank: {global_rank})")
+    
+# #     # Create visualization with circuitsvis
+# #     print(tokens)
+# #     vis = colored_tokens_multi(tokens, reduced_tensor)
+    
+# #     return vis
+
+# # # If we're only analyzing the response, create a separate visualization
+# # ntok = len(display_tokens)+2
+# # if analyze_only_response:
+# #     print("\nVisualization for response tokens only:")
+# #     response_viz = create_token_feature_viz(
+# #         display_tokens[0:ntok], 
+# #         masked_sae_features[start_idx_response:start_idx_response+ntok,:], 
+# #         top_n=10
+# #     )
+# # # %%
+# # if analyze_only_response:
+# #     display(response_viz)
+
+# # print("--- Token-Feature Visualization Complete ---")
+
+# # %%
+# masked_sae_features.shape
+# #display_tokens
+# # --- Optional: Visualize Original Activations (Without SAE) ---
+# # This helps compare the sparsity and interpretability
+
+# # print("Analyzing and visualizing original activations (without SAE)...")
+
+# # Ensure original activations are on CPU
+# # activations_val_cpu = activations_val.detach().cpu()
+
+# # # Find top activating *neurons* in the original activation space
+# # max_neuron_activations, _ = activations_val_cpu.abs().max(dim=0)
+# # top_neuron_indices = max_neuron_activations.topk(NUM_TOP_FEATURES).indices
+
+# # print(f"Top {NUM_TOP_FEATURES} neuron indices (original): {top_neuron_indices.tolist()}")
+
+# # # Get activations of these top neurons for each token
+# # top_neuron_acts = activations_val_cpu[:, top_neuron_indices]
+
+# # # Generate visualization
+# # vis_html_orig = colored_tokens_multi(str_tokens, top_neuron_acts)
+# # display(vis_html_orig)
+
+# # print("--- Original Activation Visualization Complete ---")
 
 # %%
 
@@ -533,3 +533,56 @@ masked_sae_features.shape
 
 
 # %%
+# --- Visualize SAE Features using CircuitsVis ---
+print("Visualizing SAE features using CircuitsVis...")
+client = goodfire.Client(os.environ.get('GOODFIRE_API_KEY'))
+variant = goodfire.Variant(MODEL_ID)
+# Get the top features to visualize (limit to 8192 as requested)
+num_features_to_visualize = min(8192, masked_sae_features.shape[1])
+feature_importance = masked_sae_features.abs().mean(dim=0)
+top_feature_indices = feature_importance.topk(num_features_to_visualize).indices.cpu().numpy()
+
+# Prepare data for visualization
+ntok = len(display_tokens)
+tokens_for_vis = display_tokens[:ntok]
+features_for_vis = masked_sae_features[start_idx_response:start_idx_response+ntok, top_feature_indices].cpu().numpy()
+# Get feature labels from Goodfire API
+feature_labels = []
+try:
+    # Query Goodfire API for feature labels
+    feature_dict = client.features.lookup(
+        top_feature_indices.tolist(), 
+        model=MODEL_ID
+    )
+    sorted_top_feature_indices = {i:feature_dict.get(i, f"Feature {i}") for i in top_feature_indices    }
+    feature_labels = [sorted_top_feature_indices[i].label if isinstance(sorted_top_feature_indices[i],goodfire.Feature) else  sorted_top_feature_indices[i] for i in top_feature_indices]
+    print(f"Retrieved {len(feature_labels)} feature labels from Goodfire API")
+except Exception as e:
+    print(f"Error retrieving feature labels: {e}")
+    # Fallback to generic labels if API fails
+    feature_labels = [f"Feature {i}" for i in top_feature_indices]
+
+# Use CircuitsVis SAE visualization
+from circuitsvis import sae as sae_vis
+
+# Create the visualization
+sae_vis = sae_vis.sae_vis(
+    tokens=tokens_for_vis,
+    feature_activations=features_for_vis,
+    feature_labels=feature_labels,
+    feature_ids=top_feature_indices.tolist(),
+    initial_ranking_metric="l1",        # Rank by mean absolute activation initially
+    num_top_features_overall=15,        # Show top 15 features in the list
+    num_top_features_per_token=3,       # Show top 3 features in token tooltips
+)
+
+# Display the visualization
+from IPython.display import display
+display(sae_vis)
+print("--- SAE Feature Visualization Complete ---")
+
+# %%
+import numpy as np
+np.where(top_feature_indices==29785)
+# %%
+MODEL_ID
