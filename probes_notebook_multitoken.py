@@ -994,35 +994,35 @@ for layer_idx in range(0, len(logit_lens_results['topk_words']), 4):  # Sample e
 # visualize_logit_lens(out)
 # %%
 print(model)
-# %%
-(language_model): Gemma3ForCausalLM(
-    (model): Gemma3TextModel(
-      (embed_tokens): Gemma3TextScaledWordEmbedding(262208, 2560, padding_idx=0)
-      (layers): ModuleList(
-        (0-33): 34 x Gemma3DecoderLayer(
-          (self_attn): Gemma3Attention(
-            (q_proj): Linear(in_features=2560, out_features=2048, bias=False)
-            (k_proj): Linear(in_features=2560, out_features=1024, bias=False)
-            (v_proj): Linear(in_features=2560, out_features=1024, bias=False)
-            (o_proj): Linear(in_features=2048, out_features=2560, bias=False)
-            (q_norm): Gemma3RMSNorm((256,), eps=1e-06)
-            (k_norm): Gemma3RMSNorm((256,), eps=1e-06)
-          )
-          (mlp): Gemma3MLP(
-            (gate_proj): Linear(in_features=2560, out_features=10240, bias=False)
-            (up_proj): Linear(in_features=2560, out_features=10240, bias=False)
-            (down_proj): Linear(in_features=10240, out_features=2560, bias=False)
-            (act_fn): PytorchGELUTanh()
-          )
-          (input_layernorm): Gemma3RMSNorm((2560,), eps=1e-06)
-          (post_attention_layernorm): Gemma3RMSNorm((2560,), eps=1e-06)
-          (pre_feedforward_layernorm): Gemma3RMSNorm((2560,), eps=1e-06)
-          (post_feedforward_layernorm): Gemma3RMSNorm((2560,), eps=1e-06)
-        )
-      )
-      (norm): Gemma3RMSNorm((2560,), eps=1e-06)
-      (rotary_emb): Gemma3RotaryEmbedding()
-      (rotary_emb_local): Gemma3RotaryEmbedding()
-    )
-    (lm_head): Linear(in_features=2560, out_features=262208, bias=False)
-  )
+# # %%
+# (language_model): Gemma3ForCausalLM(
+#     (model): Gemma3TextModel(
+#       (embed_tokens): Gemma3TextScaledWordEmbedding(262208, 2560, padding_idx=0)
+#       (layers): ModuleList(
+#         (0-33): 34 x Gemma3DecoderLayer(
+#           (self_attn): Gemma3Attention(
+#             (q_proj): Linear(in_features=2560, out_features=2048, bias=False)
+#             (k_proj): Linear(in_features=2560, out_features=1024, bias=False)
+#             (v_proj): Linear(in_features=2560, out_features=1024, bias=False)
+#             (o_proj): Linear(in_features=2048, out_features=2560, bias=False)
+#             (q_norm): Gemma3RMSNorm((256,), eps=1e-06)
+#             (k_norm): Gemma3RMSNorm((256,), eps=1e-06)
+#           )
+#           (mlp): Gemma3MLP(
+#             (gate_proj): Linear(in_features=2560, out_features=10240, bias=False)
+#             (up_proj): Linear(in_features=2560, out_features=10240, bias=False)
+#             (down_proj): Linear(in_features=10240, out_features=2560, bias=False)
+#             (act_fn): PytorchGELUTanh()
+#           )
+#           (input_layernorm): Gemma3RMSNorm((2560,), eps=1e-06)
+#           (post_attention_layernorm): Gemma3RMSNorm((2560,), eps=1e-06)
+#           (pre_feedforward_layernorm): Gemma3RMSNorm((2560,), eps=1e-06)
+#           (post_feedforward_layernorm): Gemma3RMSNorm((2560,), eps=1e-06)
+#         )
+#       )
+#       (norm): Gemma3RMSNorm((2560,), eps=1e-06)
+#       (rotary_emb): Gemma3RotaryEmbedding()
+#       (rotary_emb_local): Gemma3RotaryEmbedding()
+#     )
+#     (lm_head): Linear(in_features=2560, out_features=262208, bias=False)
+#   )
