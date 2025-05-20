@@ -57,6 +57,23 @@ consistency-lens/
     └── smoke_train.py         # 1-step run on cpu to catch import bugs
 ```
 
+## Getting Started
+
+Create a fresh environment with [uv](https://github.com/astral-sh/uv) and install
+the package in editable mode:
+
+```bash
+cd consistency-lens
+uv venv
+uv pip install -e .
+```
+
+Extra dependencies for the Docker image can be installed with:
+
+```bash
+uv pip install -r env/requirements.txt
+```
+
 ## Leaning on the Ecosystem
 
 A core principle is to leverage existing, well-tested libraries for heavy lifting, allowing our codebase to focus on the novel aspects of Consistency Lenses.
