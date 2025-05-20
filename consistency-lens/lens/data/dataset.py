@@ -21,4 +21,9 @@ class ActivationDataset(Dataset):
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         # TODO: memory-map load instead of eager load
-        return torch.load(self.files[idx])
+        sample = torch.load(self.files[idx])
+        # Ensure all values are tensors
+        for k, v in list(sample.items()):
+            if not torch.is_tensor(v):
+                sample[k] = torch.tensor(v)
+        return sample

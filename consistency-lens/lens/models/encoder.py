@@ -13,6 +13,8 @@ class Encoder(nn.Module):
     def __init__(self, model_name: str):
         super().__init__()
         self.base: PreTrainedModel = AutoModelForCausalLM.from_pretrained(model_name)
+        for p in self.base.parameters():
+            p.requires_grad_(False)
         d_model = self.base.config.hidden_size
         self.proj = nn.Linear(d_model, d_model, bias=False)
 
