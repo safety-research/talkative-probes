@@ -1,9 +1,3 @@
-Okay, this is a great refinement! The new directory structure and the "How we lean on it" table really clarify the implementation strategy and emphasize a practical, non-reinventing-the-wheel approach.
-
-Here's the updated architectural plan incorporating your changes:
-
----
-
 # Consistency Lenses: An Architectural Plan for Scalable LLM Interpretation
 
 This document outlines the architectural plan for training Consistency Lenses, a method to interpret the internal states of Large Language Models (LLMs) by forcing them through a textual, human-readable bottleneck. The plan is designed for an 8 x H100 GPU environment, emphasizing scalability and efficiency.
@@ -117,8 +111,14 @@ The choice of environment components is critical for performance and reproducibi
 
 ---
 
-## 1. Data & Activation Cache
 
+## 1. Data & Activation Cache
+Decoder D: As a base model, it's a strong general-purpose text generator. The prompt engineering (fixed prefix + projected activation) will guide it to generate the textual explanation.
+Encoder E: As a base model, it's a strong general-purpose text encoder, suitable for taking the generated text and trying to reconstruct the original activation's semantic content.
+Recommendation:
+
+Use a base/foundation model for LLM_orig (e.g., meta-llama/Llama-2-7b-hf rather than meta-llama/Llama-2-7b-chat-hf). This will provide activations that are more representative of general language understanding.
+Consequently, D and E will also be initialized from this base model.
 Efficient data handling and pre-computation of activations are key. Managed by `scripts/00_dump_activations.py` and consumed by `lens.data.dataset`.
 
 1.  **Corpus Selection:**
@@ -138,6 +138,15 @@ Efficient data handling and pre-computation of activations are key. Managed by `
         *   Randomly select `A_prime` (and its `input_ids`).
     *   **Output:** Dataset of `(input_ids_for_A, A, input_ids_for_A_prime, A_prime)` tuples as `*.pt` files in `data/activations/`. Consumed by `lens.data.dataset.ActivationDataset`.
 
+Token Position P: For each training sequence, randomly sample P from a valid range (e.g., 10 <= P < sequence_length - 1). This ensures diverse contextual states.
+The input_ids_for_A will be the tokens 0...P from that sequence.
+The logits for loss_KL will be computed for predicting token P+1.
+Layer Depth L: Start with a single, fixed layer in the mid-to-late-mid range of LLM_orig (e.g., for a 32-layer model, try L15, L20, or L24). Make this easily configurable.
+Why this combination?
+This approach aims to train a general-purpose lens. By sampling activations from random (valid) positions across a diverse corpus and from a semantically rich layer, the system is encouraged to learn how to explain a wide array of model states. The hypothesis is that the model learns general principles of how activations map to textual explanations, rather than specializing in particular sentence structures or conceptual points.
+
+Regarding A_prime and input_ids_for_A_prime:
+When sampling A_prime, you also sample its corresponding input_ids_for_A_prime. The crucial part for the KL loss calculation is that logits_M_A and logits_M_A_target are both conditioned on batch.input_ids_A. This means the delta_residual (derived from A_prime's reconstruction) is used to perturb A_reconstructed within the original context of A. This setup tests if the information lost/gained during the autoencoding of A_prime is meaningfully transferable to improve the functional behavior of A in its original context.
 ---
 
 ## 2. Models

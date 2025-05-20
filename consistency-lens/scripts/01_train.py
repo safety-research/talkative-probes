@@ -13,6 +13,7 @@ from lens.data.collate import collate
 from lens.data.dataset import ActivationDataset
 from lens.models.decoder import Decoder, DecoderConfig
 from lens.models.encoder import Encoder
+from lens.models.orig import OrigWrapper
 from lens.training.loop import train_step
 from torch.utils.data import DataLoader
 
@@ -35,9 +36,13 @@ def main() -> None:  # noqa: D401
 
     dec = Decoder(DecoderConfig(model_name=args.model_name)).to(device)
     enc = Encoder(args.model_name).to(device)
+    orig = OrigWrapper(args.model_name, load_in_8bit=False)
+    orig.model.to(device)
 
     params = list(dec.parameters()) + list(enc.parameters())
     opt = torch.optim.AdamW(params, lr=args.lr)
+
+    scaler = torch.cuda.amp.GradScaler(enabled=device.type == "cuda")
 
     step_iter = iter(loader)
     for step in range(args.steps):
@@ -51,9 +56,17 @@ def main() -> None:  # noqa: D401
         batch = {k: v.to(device) for k, v in batch.items()}
 
         opt.zero_grad(set_to_none=True)
-        loss = train_step(batch, {"dec": dec, "enc": enc}, {})
-        loss.backward()
-        opt.step()
+
+        with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=device.type == "cuda"):
+            loss = train_step(batch, {"dec": dec, "enc": enc, "orig": orig}, {})
+
+        if device.type == "cuda":
+            scaler.scale(loss).backward()
+            scaler.step(opt)
+            scaler.update()
+        else:
+            loss.backward()
+            opt.step()
 
         if step % 1 == 0:
             print(f"step {step:04d} | loss {loss.item():.4f}")
