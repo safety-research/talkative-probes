@@ -1,0 +1,5 @@
+transformers==0.20.0
+bitsandbytes>=0.42
+flash-attn>=3.0
+deepspeed>=0.14
+wandb>=0.16

@@ -29,3 +29,9 @@ clean:
 	@rm -rf $(VENV_DIR)
 	@find . -type f -name '*.py[co]' -delete
 	@find . -type d -name '__pycache__' -delete
+# Target to install git hooks using pre-commit
+.PHONY: hooks
+hooks:
+	@echo "--- Installing Git hooks ---"
+	@pre-commit install --overwrite --install-hooks --hook-type pre-commit --hook-type post-checkout --hook-type pre-push
+	git checkout
