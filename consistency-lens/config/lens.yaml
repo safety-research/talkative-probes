@@ -1,10 +1,46 @@
-layer_idx: 20
-token_pos: -1
-alpha:
-  start: 0.1
-  end: 1.0
-  warmup_steps: 5000
-tau:
-  start: 1.0
-  end: 0.1
-  total_steps: 50000
+# Configuration for Consistency Lens training
+
+# Model parameters
+model_name: "sshleifer/tiny-gpt2" # Base model for LLM_orig, Decoder, Encoder
+layer_l: 0                       # Target layer for activation extraction (LLM_orig)
+token_pos_p: 0                   # Target token position for activation extraction (LLM_orig) - currently fixed in MVP dumper
+
+# Decoder parameters
+decoder_n_prompt_tokens: 4       # Number of learnable prompt tokens for the Decoder
+
+# Training hyperparameters
+t_text: 8                        # Number of tokens to generate with the Decoder
+learning_rate: 1.0e-3
+batch_size: 2                    # Effective batch size (adjust with gradient_accumulation_steps if using DeepSpeed)
+num_train_epochs: 3              # Or a fixed number of steps
+max_train_steps: 200             # If not using epochs
+
+# Gumbel-Softmax temperature (tau) schedule
+gumbel_tau_schedule:
+  type: "linear_decay"  # Options: constant, linear_decay, cosine_anneal, exponential_decay
+  start_value: 1.0
+  end_value: 0.5
+  num_steps: 100        # Over how many training steps to apply the schedule
+
+# KL divergence loss weight (alpha) schedule
+alpha_schedule:
+  type: "constant"      # Options: constant, linear_warmup, etc.
+  value: 0.1            # For constant schedule
+  # For linear_warmup:
+  # start_value: 0.0
+  # end_value: 0.1
+  # num_steps: 50
+
+# Loss component weights (these are currently hardcoded in loop.py, could move here)
+# loss_ce_weight: 0.01
+# loss_kl_weight: 0.1 # This is superseded by alpha_schedule if used as the direct multiplier
+
+# Activation dumper config (for 00_dump_activations.py)
+activation_dumper:
+  num_samples: 32
+  seq_len: 32
+
+# WandB configuration (can also be in wandb.yaml)
+wandb:
+  project: "consistency-lens-mvp"
+  mode: "offline" # "online", "offline", "disabled"

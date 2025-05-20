@@ -1,3 +1,5 @@
+Okay, I've integrated the suggested minor clarifications and corrected the KL divergence argument order in the training loop pseudocode. Here's the revised plan:
+
 # Consistency Lenses: An Architectural Plan for Scalable LLM Interpretation
 
 This document outlines the architectural plan for training Consistency Lenses, a method to interpret the internal states of Large Language Models (LLMs) by forcing them through a textual, human-readable bottleneck. The plan is designed for an 8 x H100 GPU environment, emphasizing scalability and efficiency.
@@ -19,7 +21,7 @@ consistency-lens/
 ├── data/
 │   ├── tokenizer/             # cached HF tokenizer files
 │   ├── corpus/                # mmap shards of raw token IDs
-│   └── activations/           # *.pt files with (A, A′, input_ids) triples
+│   └── activations/           # *.pt files with (input_ids_A, A, input_ids_A_prime, A_prime) tuples
 ├── scripts/
 │   ├── 00_dump_activations.py # single-pass frozen-model extractor
 │   ├── 01_train.py            # main DeepSpeed launcher
@@ -33,7 +35,7 @@ consistency-lens/
 │   │   ├── encoder.py         # E: final-token slice + projector
 │   │   └── utils.py           # share dropout masks, weight init helpers
 │   ├── data/
-│   │   ├── dataset.py         # PyTorch Dataset that streams triples from mmap
+│   │   ├── dataset.py         # PyTorch Dataset that streams tuples from mmap
 │   │   └── collate.py         # pads & moves to GPU
 │   ├── training/
 │   │   ├── loop.py            # step() with both loss terms, tau & α schedulers
@@ -79,7 +81,7 @@ A core principle is to leverage existing, well-tested libraries for heavy liftin
 | Parameter off-loading & sharding | DeepSpeed ZeRO-1 + FSDP (torch 2.3)  | No hand-rolled DistributedDataParallel; we declare shards in `config/ds_stage2.yaml`.                                       |
 | 8-bit weights                 | `bitsandbytes`                        | `load_in_8bit=True` on the frozen model gets us 4× memory cut for free.                                                      |
 | Attention speedup             | `flash-attn` 3                         | `model._apply_flash_attention_2()` after load—zero code rewrite. (Note: `flash-attn` 3 uses `_apply_flash_attention_2`)     |
-| Gumbel-Softmax + STE          | `torch.nn.functional.gumbel_softmax`  | Provided primitive already supports temperature; STE is two lines (`soft.detach() + hard - hard.detach()`).                   |
+| Gumbel-Softmax + STE          | `torch.nn.functional.gumbel_softmax`  | Provided primitive already supports temperature; STE is two lines (`soft_output = F.gumbel_softmax(logits, tau=..., hard=True, dim=-1)` for forward, then `hard_output = F.one_hot(soft_output.argmax(dim=-1), num_classes=vocab_size).float(); y_for_grad = soft_output; y_for_input = hard_output - soft_output.detach() + soft_output`).                   |
 | Training loop plumbing        | `torch.compile` (nvFuser)             | Wrap decoder/encoder forward; eliminates manual kernel fusion.                                                               |
 | Optimiser                     | DeepSpeed fused AdamW                 | One config flag; avoids building custom fused kernels.                                                                       |
 | Logging & dashboards          | Weights & Biases (`wandb`)            | Push metrics + the 128-sample text grid via `wandb.Table`, no HTML hacking. Configured via `config/wandb.yaml`.              |
@@ -90,7 +92,7 @@ A core principle is to leverage existing, well-tested libraries for heavy liftin
 **Bottom line:** Every heavy lift—tokenisation, flash attention, distributed memory ops, fused optimisers, checkpoints—is already solved in the ecosystem. Our codebase, primarily within the `lens/` package, is the slim glue that:
 1.  Inserts the projection layers (`lens/models/decoder.py`, `lens/models/encoder.py`).
 2.  Runs the Gumbel-Softmax loop (`lens/models/decoder.py`, `lens/training/loop.py`).
-3.  Wires up the composite loss (`lens/training/loop.py`).
+3.  Wires up the composite loss (`lens.training/loop.py`).
 4.  Streams cached activations (`lens/data/dataset.py`).
 
 Nothing else gets bespoke unless empirical pain forces it.
@@ -111,42 +113,39 @@ The choice of environment components is critical for performance and reproducibi
 
 ---
 
-
 ## 1. Data & Activation Cache
-Decoder D: As a base model, it's a strong general-purpose text generator. The prompt engineering (fixed prefix + projected activation) will guide it to generate the textual explanation.
-Encoder E: As a base model, it's a strong general-purpose text encoder, suitable for taking the generated text and trying to reconstruct the original activation's semantic content.
-Recommendation:
+Managed by `scripts/00_dump_activations.py` and `lens.data.dataset`.
 
-Use a base/foundation model for LLM_orig (e.g., meta-llama/Llama-2-7b-hf rather than meta-llama/Llama-2-7b-chat-hf). This will provide activations that are more representative of general language understanding.
-Consequently, D and E will also be initialized from this base model.
-Efficient data handling and pre-computation of activations are key. Managed by `scripts/00_dump_activations.py` and consumed by `lens.data.dataset`.
+*   **Source Corpus & Pre-tokenization:**
+    *   **Corpus:** A substantial corpus, approximately 10 billion tokens (e.g., The Pile or a suitable internal dataset).
+    *   **Tokenizer:** Use the tokenizer corresponding to `LLM_orig` (e.g., `meta-llama/Llama-2-7b-hf`). Tokenizer files cached in `data/tokenizer/`.
+    *   **Process:** Tokenize the entire corpus using Hugging Face `tokenizers` and `datasets`.
+    *   **Storage:** Save the tokenized data as memory-mapped (mmap) Hugging Face `Dataset` shards in `data/corpus/`.
 
-1.  **Corpus Selection:**
-    *   Choose a substantial corpus, approximately 10 billion tokens (e.g., The Pile or a suitable internal dataset).
+*   **Activation Tuples (`(input_ids_A, A, input_ids_A_prime, A_prime)`):**
+    *   **Generation Script:** `scripts/00_dump_activations.py` (one-off pre-processing step).
+    *   **Process Details:**
+        1.  Load `LLM_orig` (e.g., `meta-llama/Llama-2-7b-hf` foundation model, not a chat-finetuned variant) using `bitsandbytes` 8-bit quantization (`load_in_8bit=True`) and keep it frozen. Initialize `D` and `E` from this base model's weights.
+        2.  For each sequence from the tokenized corpus:
+            *   Perform a forward pass with `torch.no_grad()` and `output_hidden_states=True`.
+            *   **Target Activation `A`:**
+                *   Extracted from a specific layer `L` of `LLM_orig`. `L` should be a single, fixed layer in the mid-to-late-mid range (e.g., for a 32-layer model, L15, L20, or L24), configurable in `config/lens.yaml`.
+                *   Extracted at a token position `P` (zero-indexed). For each training sequence, `P` is randomly sampled from a valid range (e.g., `10 <= P < sequence_length - 1`), also configurable. `A` is the hidden state *after* processing token `P`. Store `A` as `float16`.
+                *   `input_ids_A`: These are the input tokens `0...P` (inclusive) from the current sequence, which provide the context for `A`. The length of `input_ids_A` is `P+1`.
+            *   **Auxiliary Activation `A_prime`:**
+                *   Randomly select `A_prime` from a *different* context (i.e., different sequence, and potentially different position `P_prime`, but initially from the same layer `L`).
+                *   `input_ids_A_prime`: The corresponding input IDs (`0...P_prime` inclusive) for this `A_prime`. While `A_prime` is processed by `D` in isolation, storing its original context can be useful for analysis, though it's not directly used in the `L_KL` formulation specified (which conditions on `input_ids_A`).
+    *   **Rationale for `L` & `P` Selection:**
+        *   This approach aims to train a general-purpose lens.
+        *   By sampling activations from random (valid) positions across a diverse corpus and from a semantically rich layer, `D` and `E` are encouraged to learn general principles of how activations map to textual explanations and vice-versa, rather than specializing.
+    *   **Output Storage:** The collected tuples `(input_ids_A, A, input_ids_A_prime, A_prime)` are saved as `*.pt` files in `data/activations/`.
+    *   **Dataset Class:** These files are consumed by `lens.data.dataset.ActivationDataset`.
 
-2.  **Pre-tokenization (using Hugging Face `tokenizers` and `datasets`):**
-    *   Tokenize the entire corpus using the tokenizer corresponding to the `LLM_orig`. Tokenizer files cached in `data/tokenizer/`.
-    *   Save the tokenized data as memory-mapped (mmap) Hugging Face `Dataset` shards in `data/corpus/`.
+*   **Context for KL Divergence (`L_KL`) Calculation (Important Detail):**
+    *   For the `L_KL` loss, `logits_M_A` (original logits using `batch.A`) and `logits_M_A_target` (target logits using `A_target_for_KL`) are both computed by `LLM_orig` conditioned on `batch.input_ids_A` (i.e., the original context of `A`). The logits of interest are those for predicting the token at position `P+1` (i.e., `output.logits[:, P, :]` if `input_ids_A` are `0...P`).
+    *   `A_target_for_KL` is `A_reconstructed + delta_residual`, where `delta_residual = batch.A_prime - A_prime_reconstructed`.
+    *   This setup tests whether the information lost or gained during the autoencoding of `A_prime` (captured by `delta_residual`) can be meaningfully transferred to improve the functional behavior of `A` (via `A_reconstructed`) within `A`'s original context.
 
-3.  **Activation Dump Job (`scripts/00_dump_activations.py`):**
-    *   One-off pre-processing step.
-    *   **Process:**
-        *   Load `LLM_orig` (from `transformers`) using `bitsandbytes` 8-bit quantization (`load_in_8bit=True`).
-        *   Perform forward pass with `torch.no_grad()` and `output_hidden_states=True`.
-        *   Extract target activation `A` from layer `L` and token position `P` (specified in `config/lens.yaml`). Store as `float16`.
-        *   Store minimal `input_ids` required to recompute logits from `LLM_orig`.
-        *   Randomly select `A_prime` (and its `input_ids`).
-    *   **Output:** Dataset of `(input_ids_for_A, A, input_ids_for_A_prime, A_prime)` tuples as `*.pt` files in `data/activations/`. Consumed by `lens.data.dataset.ActivationDataset`.
-
-Token Position P: For each training sequence, randomly sample P from a valid range (e.g., 10 <= P < sequence_length - 1). This ensures diverse contextual states.
-The input_ids_for_A will be the tokens 0...P from that sequence.
-The logits for loss_KL will be computed for predicting token P+1.
-Layer Depth L: Start with a single, fixed layer in the mid-to-late-mid range of LLM_orig (e.g., for a 32-layer model, try L15, L20, or L24). Make this easily configurable.
-Why this combination?
-This approach aims to train a general-purpose lens. By sampling activations from random (valid) positions across a diverse corpus and from a semantically rich layer, the system is encouraged to learn how to explain a wide array of model states. The hypothesis is that the model learns general principles of how activations map to textual explanations, rather than specializing in particular sentence structures or conceptual points.
-
-Regarding A_prime and input_ids_for_A_prime:
-When sampling A_prime, you also sample its corresponding input_ids_for_A_prime. The crucial part for the KL loss calculation is that logits_M_A and logits_M_A_target are both conditioned on batch.input_ids_A. This means the delta_residual (derived from A_prime's reconstruction) is used to perturb A_reconstructed within the original context of A. This setup tests if the information lost/gained during the autoencoding of A_prime is meaningfully transferable to improve the functional behavior of A in its original context.
 ---
 
 ## 2. Models
@@ -155,7 +154,7 @@ Core components reside in `lens.models/`.
 
 | Component  | Source & Implementation Details                                                                                                                                                                                                                                                                                                                                                           |
 |------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `LLM_orig` | `transformers.AutoModelForCausalLM`, wrapped in `lens.models.orig.OriginalModelWrapper`. Loaded in 8-bit and frozen. Custom `forward_with_replacement` hook allows swapping hidden state.                                                                                                                                                                                                |
+| `LLM_orig` | `transformers.AutoModelForCausalLM`, wrapped in `lens.models.orig.OriginalModelWrapper`. Loaded in 8-bit and frozen. Custom `forward_with_replacement` hook allows swapping hidden state at layer `L`, position `P`.                                                                                                                                                                           |
 | Decoder `D`| Clone of `LLM_orig`, implemented in `lens.models.decoder.DecoderModel`. Prepends prompt tokens, incorporates `Proj_A_to_D_emb`. Output layer uses `torch.nn.functional.gumbel_softmax` + STE for differentiable token sampling. Trainable.                                                                                                                                               |
 | Encoder `E`| Another clone of `LLM_orig`, implemented in `lens.models.encoder.EncoderModel`. Processes discrete text from `D`. Extracts final token's hidden state, passes through `Proj_E_hidden_to_A` to reconstruct `A_reconstructed`. Trainable.                                                                                                                                                   |
 
@@ -191,6 +190,7 @@ The core logic is in `lens.training.loop.training_step`. `scripts/01_train.py` i
 ```python
 # Pseudocode reflecting components from lens/ package
 # (Simplified, actual implementation in lens.training.loop)
+import torch.nn.functional as F
 
 # D_model: lens.models.decoder.DecoderModel
 # E_model: lens.models.encoder.EncoderModel
@@ -200,6 +200,10 @@ for step, batch in enumerate(loader): # loader uses lens.data.dataset.Activation
     with torch.cuda.amp.autocast(dtype=torch.bfloat16):
         # --- Primary Path ---
         # generate_soft logic within D_model
+        # D_model's generate_soft returns an object containing:
+        #   .generated_text_embeddings (for E)
+        #   .token_logits (for L_LM)
+        #   .discrete_token_ids (for L_LM)
         generated_output_D_A = D_model.generate_soft(
             activation_input=batch.A,
             max_length=config.T_text,
@@ -210,6 +214,8 @@ for step, batch in enumerate(loader): # loader uses lens.data.dataset.Activation
         # --- Auxiliary Path ---
         generated_output_D_A_prime = D_model.generate_soft(
             activation_input=batch.A_prime, # ...
+            max_length=config.T_text, # ensure same length for consistency if needed
+            gumbel_tau=gumbel_temperature_schedule(step, config.lens_yaml)
         )
         A_prime_reconstructed = E_model(generated_output_D_A_prime.generated_text_embeddings)
 
@@ -219,21 +225,43 @@ for step, batch in enumerate(loader): # loader uses lens.data.dataset.Activation
         A_target_for_KL = A_reconstructed + delta_residual
 
         # --- Logit Calculation using LLM_orig_model ---
+        # batch.input_ids_A are tokens 0...P. `A` is activation at layer L after processing token P.
+        # We want logits for predicting token P+1.
+        # In LLM_orig_model.forward_with_replacement, `target_token_pos_for_logits` should be P.
+        # This means we extract output_logits[:, P, :] from the model's full sequence output.
         logits_M_A = LLM_orig_model.forward_with_replacement(
             input_ids=batch.input_ids_A,
-            new_activation=batch.A, # ...
-        ).logits[:, config.TARGET_TOKEN_POS, :]
+            new_activation=batch.A,
+            target_layer_idx=config.LAYER_L, # from lens.yaml
+            target_token_pos_in_sequence=config.TOKEN_POS_P # from lens.yaml, this is P
+        ).logits_at_target_pos # Method should return only logits for token P+1
 
         logits_M_A_target = LLM_orig_model.forward_with_replacement(
             input_ids=batch.input_ids_A,
-            new_activation=A_target_for_KL, # ...
-        ).logits[:, config.TARGET_TOKEN_POS, :]
+            new_activation=A_target_for_KL,
+            target_layer_idx=config.LAYER_L,
+            target_token_pos_in_sequence=config.TOKEN_POS_P
+        ).logits_at_target_pos
 
         # --- Loss Calculation ---
-        loss_lm = cross_entropy_loss_fn(...) # uses generated_output_D_A
-        loss_kl = kl_divergence_loss_fn(
-            torch.log_softmax(logits_M_A_target, dim=-1),
-            torch.softmax(logits_M_A, dim=-1)
+        # L_LM: cross_entropy over D's generated tokens
+        # Sum or average CE loss over T_text tokens
+        loss_lm = F.cross_entropy(
+            generated_output_D_A.token_logits.view(-1, generated_output_D_A.token_logits.size(-1)), # (Batch*T_text, VocabSize)
+            generated_output_D_A.discrete_token_ids.view(-1) # (Batch*T_text)
+        )
+
+        # L_KL: KL( M(A_target_for_KL) || M(A) )
+        # P distribution is from M(A_target_for_KL)
+        # Q distribution is from M(A)
+        P_probs_A_target = F.softmax(logits_M_A_target, dim=-1)
+        Q_log_probs_A = F.log_softmax(logits_M_A, dim=-1)
+
+        loss_kl = F.kl_div(
+            input=Q_log_probs_A,          # Log-probabilities of the "approximating" distribution Q
+            target=P_probs_A_target,      # Probabilities of the "true" distribution P
+            reduction='batchmean',        # or 'sum', ensure consistency
+            log_target=False
         )
 
         current_alpha = alpha_schedule(step, config.lens_yaml) # from config/lens.yaml
@@ -249,9 +277,17 @@ for step, batch in enumerate(loader): # loader uses lens.data.dataset.Activation
 ```
 
 **Key Details:**
-*   **`D.generate_soft`:** Implemented in `lens.models.decoder.DecoderModel`.
+*   **`D.generate_soft`:** Implemented in `lens.models.decoder.DecoderModel`. This method handles the autoregressive generation of `T_text` tokens using Gumbel-Softmax and STE. It returns necessary outputs like token logits and discrete IDs for `L_LM`, and text embeddings for `E`.
 *   **Schedules (`gumbel_temperature_schedule`, `alpha_schedule`):** Defined in `config/lens.yaml`, applied in `lens.training.loop`.
 *   **Optimizer (`lens.training.optim`):** Fused AdamW from DeepSpeed, differential LRs for projections vs. transformer blocks.
+*   **Backpropagation through D's Autoregression:**
+    *   **`L_LM` (Language Modeling Loss):** Standard backpropagation. The loss for `token_t` (derived from `logits_t` computed by `D`) backpropagates through `D`'s computation of `logits_t`. Since `logits_t` depends on `A_proj` (the projected input activation) and all previously generated tokens (`token_1`...`token_{t-1}`), gradients flow back through this dependency chain. This trains `D` to predict tokens sequentially and coherently, conditioned on the input activation `A`.
+    *   **`L_KL` (KL Divergence Loss):** Full backpropagation through all `T_text` steps of `D`'s autoregressive generation is crucial.
+        *   `A_reconstructed` is produced by `E` from the *entire* sequence `text = [token_1, ..., token_T_text]` generated by `D`.
+        *   Gradients from `L_KL` (via `dL_KL / d(A_reconstructed)`) flow back through `E` to all `token_embedding_t` that form the input `text` to `E`.
+        *   Through the Straight-Through Estimator (STE), these gradients `dL_KL / d(token_embedding_t)` are passed to `dL_KL / d(soft_token_probabilities_t)` and subsequently to `dL_KL / d(logits_t)` for each generation step `t` in `D`.
+        *   Critically, `logits_t` (which `D` uses to sample `token_t`) is a function of `A_proj` and all *preceding generated tokens* (`token_1_embedding, ..., token_{t-1}_embedding`). Therefore, the gradient `dL_KL / d(logits_t)` will backpropagate not only to the parameters of `D` involved in that specific step `t` but also to `A_proj` and to the embeddings of these preceding tokens.
+        *   This ensures that `D` learns how its early token choices (`token_1`, `token_2`, etc.) affect the overall utility of the complete sequence `text` for `E`'s reconstruction task. The gradient signal from `L_KL` informs every decision in `D`'s generation process, enabling it to learn the complex temporal dependencies within the generated text that are vital for minimizing `L_KL`.
 *   `torch.compile` wraps the forward methods of `D` and `E` for performance.
 
 ---
@@ -261,10 +297,10 @@ for step, batch in enumerate(loader): # loader uses lens.data.dataset.Activation
 Handled by `scripts/02_eval.py` and `lens.evaluation/`.
 
 *   **Quantitative Metrics (`lens.evaluation.metrics`):**
-    *   `loss_lm`, `loss_kl`, `total_loss`, `cosine_similarity(A, A_reconstructed)`, perplexity. Logged to W&B via `lens.utils.logging`.
+    *   `loss_lm`, `loss_kl`, `total_loss`, `cosine_similarity(A, A_reconstructed)`, perplexity of generated text. Logged to W&B via `lens.utils.logging`.
 *   **Qualitative Spot-Checks (`lens.evaluation.dump_text`):**
-    *   Periodically run `D` on fixed activations, log generated text to W&B table.
-*   **Early Stopping Criteria:** Monitored based on W&B metrics.
+    *   Periodically run `D` on a fixed set of diverse activations, log the generated textual explanations to a W&B table for manual review.
+*   **Early Stopping Criteria:** Monitored based on W&B metrics (e.g., validation loss plateau).
 
 ---
 
@@ -272,9 +308,9 @@ Handled by `scripts/02_eval.py` and `lens.evaluation/`.
 
 Managed by `lens.utils.checkpoint` leveraging DeepSpeed's capabilities.
 
-*   **Checkpointing Strategy:** Full DeepSpeed checkpoints.
-*   **EMA for Evaluation:** Maintained by `lens.utils.checkpoint.EMA` for `D` and `E` weights.
-*   **State Resumption:** `lens.utils.checkpoint` ensures all necessary states (step, schedules, optimizer) are saved/loaded.
+*   **Checkpointing Strategy:** Full DeepSpeed checkpoints, saving model states (`D`, `E`), optimizer states, and training metadata (step, schedules).
+*   **EMA for Evaluation:** Exponential Moving Average of `D` and `E` weights maintained by `lens.utils.checkpoint.EMA`. Evaluation can be run on these EMA weights for more stable metrics.
+*   **State Resumption:** `lens.utils.checkpoint` ensures all necessary states (current step, learning rate schedules, Gumbel temperature, alpha schedule, optimizer states, RNG states) are saved and can be correctly loaded for seamless resumption from failures or for continued training.
 
 ---
 
@@ -298,7 +334,7 @@ Using `scripts/slurm.sh`.
 
 # Path to your training script and config
 TRAIN_SCRIPT="scripts/01_train.py"
-DEEPSPEED_CONFIG="config/ds_stage2.yaml" # Updated to YAML
+DEEPSPEED_CONFIG="config/ds_stage2.yaml"
 LENS_CONFIG="config/lens.yaml"
 WANDB_CONFIG="config/wandb.yaml"
 
@@ -308,7 +344,7 @@ deepspeed --num_gpus 8 ${TRAIN_SCRIPT} \
           --wandb_config ${WANDB_CONFIG} \
           --model_name_or_path "meta-llama/Llama-2-7b-hf" \
           --output_dir "outputs/run_XYZ" \
-          # activation_cache_path now implicitly data/activations/
+          # activation_cache_path implicitly data/activations/
           --num_train_epochs 3 \
           # per_device_train_batch_size, grad_accum likely in ds_stage2.yaml or train.py defaults
           # learning_rates likely in lens.yaml or train.py defaults
@@ -323,10 +359,11 @@ deepspeed --num_gpus 8 ${TRAIN_SCRIPT} \
 
 (This section remains largely the same as the original, focusing on future research avenues rather than specific code paths.)
 
-*   **Optimize `LLM_orig`:** Transition frozen `LLM_orig` to FP8.
-*   **Parameter-Efficient Fine-Tuning (PEFT):** Investigate LoRA for `D` and `E`.
-*   **Multi-Layer and Multi-Position Interpretation.**
-*   **Advanced Text Generation Strategies.**
-*   **Dictionary Learning on Bottleneck.**
+*   **Optimize `LLM_orig`:** Transition frozen `LLM_orig` to FP8 if supported and beneficial.
+*   **Parameter-Efficient Fine-Tuning (PEFT):** Investigate LoRA or other PEFT methods for `D` and `E` to reduce trainable parameters and memory, potentially allowing for larger base models or more efficient training.
+*   **Multi-Layer and Multi-Position Interpretation:** Extend the lens to simultaneously interpret activations from multiple layers or token positions, or to choose which layer/position is most "explainable."
+*   **Advanced Text Generation Strategies:** Explore techniques beyond greedy Gumbel-Softmax sampling, such as beam search (with STE adaptations) or other methods to improve the quality and diversity of explanations from `D`.
+*   **Dictionary Learning on Bottleneck:** If the generated text `text` still contains non-interpretable elements, consider applying dictionary learning or sparse coding techniques to the `text` embeddings to find more fundamental "explanatory atoms."
+*   **Iterative Refinement / Self-Critique:** Explore if `D` can be improved by having `E` (or another model) critique its explanations, feeding that critique back to `D`.
 
-This revised plan aligns the architecture with the proposed practical directory structure and explicitly states the reliance on existing libraries, making the unique contributions of the `lens/` package very clear.
+This revised plan aligns the architecture with the proposed practical directory structure and explicitly states the reliance on existing libraries, making the unique contributions of the `lens/` package very clear. The data handling, backpropagation, and KL divergence loss details are now more explicit and corrected.
