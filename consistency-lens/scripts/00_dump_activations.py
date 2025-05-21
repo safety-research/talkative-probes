@@ -19,10 +19,12 @@ import logging
 import random
 import yaml
 from pathlib import Path
-from typing import List, Sequence
+from typing import Iterator # List, Sequence were for _pad, no longer needed here
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from tqdm import tqdm
+
 
 # Optional dependency – defer import to runtime in case users only want the smoke-test mode
 try:
@@ -30,35 +32,47 @@ try:
 
     _HAS_DATASETS = True
 except ImportError:  # pragma: no cover
+    # load_dataset will be undefined if this happens.
     _HAS_DATASETS = False
+    load_dataset = None # Make it explicit that load_dataset might be None
 
 
-def _pad(seq: torch.Tensor, length: int, pad_id: int) -> torch.Tensor:
-    """Right-pads *seq* to *length* along dim=1."""
+def iter_hf_text(dataset_name: str, cache_dir: str | None, split: str, num_samples: int) -> Iterator[str]:
+    """Stream plain-text documents from a HuggingFace dataset until *num_samples* yielded."""
+    if not _HAS_DATASETS or load_dataset is None: # Should be caught by main, but defensive
+        raise ImportError("datasets library is not available or failed to import.")
 
-    if seq.size(1) >= length:
-        return seq[:, :length]
-
-    pad = seq.new_full((seq.size(0), length - seq.size(1)), pad_id)
-    return torch.cat([seq, pad], dim=1)
+    ds = load_dataset(dataset_name, split=split, streaming=True, cache_dir=cache_dir)
+    count = 0
+    for item in ds:
+        text: str | None = None
+        # heuristic: find first string field
+        for v in item.values():
+            if isinstance(v, str):
+                text = v
+                break
+        if text is None:
+            continue
+        yield text
+        count += 1
+        if count >= num_samples:
+            break
 
 
 def main() -> None:  # noqa: D401
     parser = argparse.ArgumentParser(description="Dump a minimal activation cache")
-    parser.add_argument("--model_name", type=str, help="Override model_name from config.")
-    parser.add_argument("--output_dir", type=str, default="consistency-lens/data/activations")
+    parser.add_argument("--output_dir", type=str, help="Override output directory, otherwise from config")
     parser.add_argument("--num_samples", type=int, help="Override number of samples, otherwise from config")
     parser.add_argument("--seq_len", type=int, help="Override sequence length, otherwise from config")
     parser.add_argument("--layer_idx", type=int, help="Override layer index, otherwise from config")
-    parser.add_argument("--config_path", type=str, default="consistency-lens/config/lens.yaml")
+    parser.add_argument("--config_path", type=str, default="consistency-lens/config/lens_simple.yaml")
     parser.add_argument("--seed", type=int, default=0)
 
     # HuggingFace dataset options
     parser.add_argument(
         "--hf_dataset_name",
         type=str,
-        default="NeelNanda/pile-10k",
-        help="HF dataset to draw raw text samples from (default: Pile-10k)",
+        help="Override HF dataset to draw text from, otherwise from config",
     )
     parser.add_argument(
         "--use_hf_dataset",
@@ -68,20 +82,61 @@ def main() -> None:  # noqa: D401
     parser.add_argument(
         "--dataset_cache_dir",
         type=str,
-        default="consistency-lens/data/corpus/pile-10k",
-        help="Local directory where the HF dataset cache should be stored.",
+        help="Override HF dataset cache dir, otherwise from config",
     )
+    parser.add_argument(
+        "--hf_split",
+        type=str,
+        default=None,
+        help="Override HF dataset split for streaming (e.g. train)",
+    )
+
+    # Optional validation dump in same run
+    parser.add_argument("--val_hf_split", type=str, help="HF split for validation activations (e.g. validation)")
+    parser.add_argument("--val_output_dir", type=str, help="Output directory for validation activations")
+    parser.add_argument("--val_num_samples", type=int, help="Number of validation samples (defaults to num_samples)")
 
     args = parser.parse_args()
 
     # Load YAML config
     with open(args.config_path, "r") as f:
         cfg = yaml.safe_load(f)
+    
+    activation_dumper_cfg = cfg["activation_dumper"]
 
-    # Inherit defaults from config, then CLI overrides
-    seq_len = args.seq_len or cfg.get("activation_dumper", {}).get("seq_len", 32)
-    num_samples = args.num_samples or cfg.get("activation_dumper", {}).get("num_samples", 256)
-    layer_idx = args.layer_idx if args.layer_idx is not None else cfg.get("layer_l", 0)
+    # Determine effective config: CLI > YAML
+    effective_output_dir = args.output_dir if args.output_dir is not None else activation_dumper_cfg["output_dir"]
+    seq_len = args.seq_len if args.seq_len is not None else activation_dumper_cfg["seq_len"]
+    num_samples = args.num_samples if args.num_samples is not None else activation_dumper_cfg["num_samples"]
+    layer_idx = args.layer_idx if args.layer_idx is not None else cfg["layer_l"]
+    effective_use_hf = args.use_hf_dataset or activation_dumper_cfg.get("use_hf_dataset", False)
+    effective_hf_dataset_name = args.hf_dataset_name if args.hf_dataset_name is not None else activation_dumper_cfg.get("hf_dataset_name")
+    effective_dataset_cache_dir = args.dataset_cache_dir if args.dataset_cache_dir is not None else activation_dumper_cfg.get("dataset_cache_dir")
+    effective_hf_split = args.hf_split if args.hf_split is not None else activation_dumper_cfg.get("hf_split", "train")
+
+    # ------------------------------------------------------------------
+    # Build list of dataset splits to dump (e.g. train + optional validation)
+    # ------------------------------------------------------------------
+    splits_to_dump = [
+        {
+            "name": effective_hf_split,
+            "output_dir": effective_output_dir,
+            "num_samples": num_samples,
+        }
+    ]
+
+    # Determine validation dump parameters either from CLI or YAML
+    val_out_cfg = activation_dumper_cfg.get("val_output_dir")
+    val_split_cfg = activation_dumper_cfg.get("val_hf_split", "validation")
+    if args.val_output_dir or val_out_cfg:
+        val_out_dir = args.val_output_dir if args.val_output_dir else val_out_cfg
+        val_split = args.val_hf_split if args.val_hf_split else val_split_cfg
+        val_samples = args.val_num_samples if args.val_num_samples is not None else activation_dumper_cfg.get("val_num_samples", num_samples)
+        splits_to_dump.append({
+            "name": val_split,
+            "output_dir": val_out_dir,
+            "num_samples": val_samples,
+        })
 
     # ------------------------------------------------------------------
     # Logging setup
@@ -96,146 +151,125 @@ def main() -> None:  # noqa: D401
     torch.manual_seed(args.seed)
     random.seed(args.seed)
 
-    out_dir = Path(args.output_dir)
+    out_dir = Path(effective_output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    log.info(f"Using device: {device}")
 
     tokenizer = AutoTokenizer.from_pretrained(cfg["model_name"])
     # Some tiny models (GPT-2) miss an explicit pad_token.
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    logging.info(f"Tokenizer: {tokenizer}")
-    logging.info(f"Model name: {cfg['model_name']}")
+    log.info(f"Tokenizer: {tokenizer}")
+    log.info(f"Model name: {cfg['model_name']}")
 
-    model = AutoModelForCausalLM.from_pretrained(cfg["model_name"])
+    model = AutoModelForCausalLM.from_pretrained(cfg["model_name"]).to(device)
     model.eval()
 
     # ---------------------------------------------------------------------
-    # Decide the source of raw text samples.
+    # Decide the source of raw text samples for the *pairs* (A, A_prime).
+    # Both texts are now taken from the same iterator so that they are drawn
+    # from the same underlying distribution without requiring two HF splits.
     # ---------------------------------------------------------------------
-
-    prompts: Sequence[str]
-
-    if args.use_hf_dataset:
-        if not _HAS_DATASETS:
-            raise RuntimeError(
-                "datasets library not found – install with `pip install datasets` or omit --use_hf_dataset"
-            )
-
-        ds_split = "train"  # Pile-10k exposes only a single split
-
-        log.info(
-            "Loading '%s' (%s split) via HuggingFace datasets … this may take a moment.",
-            args.hf_dataset_name,
-            ds_split,
+    if effective_use_hf:
+        # Single split – create two independent iterators over the same split
+        text_iter_A = iter_hf_text(
+            effective_hf_dataset_name,
+            effective_dataset_cache_dir,
+            effective_hf_split,
+            num_samples,
         )
-
-        # Ensure cache directory exists so `datasets` can write without permission issues.
-        cache_path = Path(args.dataset_cache_dir)
-        cache_path.mkdir(parents=True, exist_ok=True)
-
-        # Download/cache inside project tree so CI environments w/out $HOME permissions still work.
-        # NOTE: We load the whole tiny (10 k rows) split into memory – acceptable for smoke tests.
-        # TODO(kitf): when switching to a larger dataset, call `load_dataset(..., streaming=True)`
-        #             and iterate lazily to avoid high RAM usage.
-        ds = load_dataset(args.hf_dataset_name, split=ds_split, cache_dir=str(cache_path))
-
-        # Keep just the 'text' field & strip trailing whitespace
-        prompts = [str(x["text"]).strip() for x in ds]
-
-        if len(prompts) == 0:
-            raise ValueError(
-                f"Dataset '{args.hf_dataset_name}' returned zero usable rows – check the column names or split."
-            )
-
-        log.info("Loaded %s text snippets from '%s'.", f"{len(prompts):,}", args.hf_dataset_name)
+        text_iter_B = iter_hf_text(
+            effective_hf_dataset_name,
+            effective_dataset_cache_dir,
+            effective_hf_split,
+            num_samples,
+        )
+        get_next_A = lambda: next(text_iter_A)
+        get_next_B = lambda: next(text_iter_B)
     else:
-        log.info("Using hard-coded list of prompts for smoke tests.")
-        # Fallback – tiny hard-coded list for smoke tests.
+        # Use fixed prompt list
         prompts = [
             "The quick brown fox jumps over the lazy dog.",
             "Consistency Lens minimal test sentence.",
             "Hello world!",
             "Another short prompt for dumping activations.",
         ]
+        get_next_A = lambda: random.choice(prompts)
+        get_next_B = lambda: random.choice(prompts)
 
     log.info("Dumping %d activation samples to %s …", num_samples, out_dir)
 
-    for idx in range(num_samples):
-        # --- Select prompts for A and A′ ---
-        txt_A = random.choice(prompts)
-        txt_Ap = random.choice(prompts)
+    # -----------------------
+    # Helper: perform dump for a single split
+    # -----------------------
+    def dump_split(split_name: str, out_path: Path, n_samples: int):
+        MIN_TOKEN_IDX_INCLUSIVE = 5
+        log.info(f"Dumping split '{split_name}' to {out_path} with {n_samples} samples …")
+        out_path.mkdir(parents=True, exist_ok=True)
 
-        toks_A = tokenizer(txt_A, return_tensors="pt").input_ids
-        toks_Ap = tokenizer(txt_Ap, return_tensors="pt").input_ids
+        text_iter_A = iter_hf_text(
+            effective_hf_dataset_name,
+            effective_dataset_cache_dir,
+            split_name,
+            n_samples,
+        )
+        text_iter_B = iter_hf_text(
+            effective_hf_dataset_name,
+            effective_dataset_cache_dir,
+            split_name,
+            n_samples,
+        )
+        get_next_A = lambda: next(text_iter_A)
+        get_next_B = lambda: next(text_iter_B)
 
-        toks_A = _pad(toks_A, seq_len, tokenizer.pad_token_id)
-        toks_Ap = _pad(toks_Ap, seq_len, tokenizer.pad_token_id)
-
-        with torch.no_grad():
-            out_A = model(toks_A, output_hidden_states=True)
-            out_Ap = model(toks_Ap, output_hidden_states=True)
-
-        hidden_A = out_A.hidden_states[layer_idx]  # (1, L, d_model)
-        hidden_Ap = out_Ap.hidden_states[layer_idx]
-
-        # ------------------------------------------------------------------
-        # Choose a random token position that is *inside* the non-padding
-        # region of *both* sequences to avoid extracting activations from PAD
-        # tokens. Lower-bound at 5 to skip trivial prefix tokens.
-        # ------------------------------------------------------------------
-
-        nonpad_len_A = int((toks_A != tokenizer.pad_token_id).sum())
-        nonpad_len_Ap = int((toks_Ap != tokenizer.pad_token_id).sum())
-
-        max_valid = min(nonpad_len_A, nonpad_len_Ap, seq_len - 1) - 1  # exclusive upper bound previously -2
-        min_valid = 5
-
-        if max_valid < min_valid:
-            # Fallback: pick middle of shortest sequence
-            token_pos = max(0, (max_valid + 1) // 2)
-        else:
-            token_pos = random.randint(min_valid, max_valid)
-
-        A = hidden_A[0, token_pos].half()  # (d_model,)
-        A_prime = hidden_Ap[0, token_pos].half()
-
-        sample = {
-            "A": A,
-            "A_prime": A_prime,
-            "input_ids_A": toks_A.squeeze(0),
-            "input_ids_A_prime": toks_Ap.squeeze(0),
-            "token_pos": token_pos,
-            "layer_idx": layer_idx,
-        }
-
-        torch.save(sample, out_dir / f"{idx:05d}.pt")
+        num_batches = (n_samples + activation_dumper_cfg["batch_size"] - 1) // activation_dumper_cfg["batch_size"]
+        saved = 0
+        for batch_idx in tqdm(range(num_batches), desc=f"Split {split_name}"):
+            current_batch_actual_size = min(activation_dumper_cfg["batch_size"], n_samples - saved)
+            if current_batch_actual_size <= 0:
+                break
+            # -- reuse existing batch processing code via inner function --
+            batch_txt_A = [get_next_A() for _ in range(current_batch_actual_size)]
+            batch_txt_Ap = [get_next_B() for _ in range(current_batch_actual_size)]
+            toks_A_batch = tokenizer(batch_txt_A, padding="max_length", truncation=True, max_length=seq_len, return_tensors="pt").input_ids.to(device)
+            toks_Ap_batch = tokenizer(batch_txt_Ap, padding="max_length", truncation=True, max_length=seq_len, return_tensors="pt").input_ids.to(device)
+            with torch.no_grad():
+                out_A_batch = model(toks_A_batch, output_hidden_states=True)
+                out_Ap_batch = model(toks_Ap_batch, output_hidden_states=True)
+            hidden_A_batch = out_A_batch.hidden_states[layer_idx]
+            hidden_Ap_batch = out_Ap_batch.hidden_states[layer_idx]
+            nonpad_len_A_b = (toks_A_batch != tokenizer.pad_token_id).sum(dim=1)
+            nonpad_len_Ap_b = (toks_Ap_batch != tokenizer.pad_token_id).sum(dim=1)
+            max_idx_shared_b = torch.minimum(nonpad_len_A_b, nonpad_len_Ap_b) - 1
+            token_pos_b = torch.clamp((max_idx_shared_b + MIN_TOKEN_IDX_INCLUSIVE) // 2, min=0)
+            batch_indices = torch.arange(current_batch_actual_size, device=device)
+            A_selected_b = hidden_A_batch[batch_indices, token_pos_b].cpu().half()
+            Ap_selected_b = hidden_Ap_batch[batch_indices, token_pos_b].cpu().half()
+            batch_samples = []
+            for i in range(current_batch_actual_size):
+                sample = {
+                    "A": A_selected_b[i],
+                    "A_prime": Ap_selected_b[i],
+                    "input_ids_A": toks_A_batch[i].cpu(),
+                    "input_ids_A_prime": toks_Ap_batch[i].cpu(),
+                    "token_pos": token_pos_b[i].item(),
+                    "layer_idx": layer_idx,
+                }
+                batch_samples.append(sample)
+            torch.save(batch_samples, out_path / f"shard_{batch_idx:05d}.pt")
+            saved += current_batch_actual_size
 
     # ------------------------------------------------------------------
-    # Log a quick example so users can inspect the structure.
+    # Main dumping loop over requested splits
     # ------------------------------------------------------------------
-    example_path = out_dir / "00000.pt"
-    if example_path.exists():
-        ex = torch.load(example_path, map_location="cpu")
+    for split_cfg in splits_to_dump:
+        dump_split(split_cfg["name"], Path(split_cfg["output_dir"]), split_cfg["num_samples"])
 
-        # Build a concise summary: tensor shapes + token text
-        def _shape(t):
-            return list(t.shape) if torch.is_tensor(t) else "-"
-
-        summary = {
-            "A_shape": _shape(ex["A"]),
-            "A_prime_shape": _shape(ex["A_prime"]),
-            "input_ids_A_len": int(ex["input_ids_A"].numel()),
-            "input_ids_A_prime_len": int(ex["input_ids_A_prime"].numel()),
-            "token_pos": int(ex["token_pos"]),
-            "layer_idx": int(ex["layer_idx"]),
-            "text_A": tokenizer.decode(ex["input_ids_A"]),
-            "text_A_prime": tokenizer.decode(ex["input_ids_A_prime"]),
-        }
-
-        log.info("Example sample (00000.pt): %s", summary)
-    else:
-        log.warning("Could not find example sample at %s; something went wrong?", example_path)
+    log.info("All requested splits dumped successfully.")
+    return
 
 
 if __name__ == "__main__":

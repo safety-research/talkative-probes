@@ -11,7 +11,7 @@ decoder_n_prompt_tokens: 4       # Number of learnable prompt tokens for the Dec
 decoder_prompt: "Explain: "       # Prompt for the Decoder
 
 # Training hyperparameters
-t_text: 8                        # Number of tokens to generate with the Decoder
+t_text: 1                        # Number of tokens to generate with the Decoder
 learning_rate: 1.0e-3
 batch_size: 2                    # Effective batch size (adjust with gradient_accumulation_steps if using DeepSpeed)
 num_train_epochs: 3              # Or a fixed number of steps
@@ -52,6 +52,7 @@ activation_dumper:
   use_hf_dataset: true
   hf_dataset_name: "NeelNanda/pile-10k"
   dataset_cache_dir: "consistency-lens/data/corpus/pile-10k"
+  batch_size: 16
   # future option – not yet consumed by the script
   # streaming: false
 
@@ -63,4 +64,15 @@ wandb:
 # Loss weights
 ce_weight: 0.01                 # Multiplier on cross-entropy term
 kl_base_weight: 1.0             # Base weight; final KL multiplier = kl_base_weight * alpha_schedule
-compile_models: false            # Wrap Decoder & Encoder with torch.compile if True
+
+# Token entropy bonus (see loop.py). Positive values reward higher entropy;
+# set to 0.0 to disable.
+entropy_weight: 0.0
+
+# Validation split & scheduling
+val_fraction: 0.1               # Fraction of dataset for validation
+split_seed: 42                  # Random seed for train/val split
+val_interval: 100               # Run validation every N training steps
+
+# Logging
+log_interval: 10               # Log metrics every N training steps

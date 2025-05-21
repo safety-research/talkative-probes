@@ -30,7 +30,7 @@ consistency-lens/
 ├── lens/                      # Python package
 │   ├── __init__.py
 │   ├── models/
-│   │   ├── orig.py            # thin HuggingFace wrapper w/ “replace-activation” hook
+│   │   ├── orig.py            # thin HuggingFace wrapper w/ "replace-activation" hook
 │   │   ├── decoder.py         # D: prompt-prep + Gumbel-Softmax + STE
 │   │   ├── encoder.py         # E: final-token slice + projector
 │   │   └── utils.py           # share dropout masks, weight init helpers
@@ -87,7 +87,7 @@ A core principle is to leverage existing, well-tested libraries for heavy liftin
 | Logging & dashboards          | Weights & Biases (`wandb`)            | Push metrics + the 128-sample text grid via `wandb.Table`, no HTML hacking. Configured via `config/wandb.yaml`.              |
 | Checkpoint format             | DeepSpeed checkpointing               | Handles partition re-stitching; `lens.utils.checkpoint` decorates with EMA tensors and resume logic.                          |
 | Scheduling (Slurm)            | Existing cluster                      | Five-line `scripts/slurm.sh`; no custom orchestration.                                                                        |
-| Tests                         | `pytest`                              | Catch regressions; rely on HF’s mocked models to keep CI light (`tests/smoke_train.py`, `tests/test_swap_hook.py`, etc.). |
+| Tests                         | `pytest`                              | Catch regressions; rely on HF's mocked models to keep CI light (`tests/smoke_train.py`, `tests/test_swap_hook.py`, etc.). |
 
 **Bottom line:** Every heavy lift—tokenisation, flash attention, distributed memory ops, fused optimisers, checkpoints—is already solved in the ecosystem. Our codebase, primarily within the `lens/` package, is the slim glue that:
 1.  Inserts the projection layers (`lens/models/decoder.py`, `lens/models/encoder.py`).
@@ -244,12 +244,17 @@ for step, batch in enumerate(loader): # loader uses lens.data.dataset.Activation
         ).logits_at_target_pos
 
         # --- Loss Calculation ---
-        # L_LM: cross_entropy over D's generated tokens
-        # Sum or average CE loss over T_text tokens
-        loss_lm = F.cross_entropy(
-            generated_output_D_A.token_logits.view(-1, generated_output_D_A.token_logits.size(-1)), # (Batch*T_text, VocabSize)
-            generated_output_D_A.discrete_token_ids.view(-1) # (Batch*T_text)
-        )
+        # L_LM: negative log-likelihood of the generated explanation under
+        # the *frozen* base model.  This encourages the bottleneck string to
+        # stay on-manifold (no degenerate tokens).
+        if T_text > 1:  # need a next-token target
+            lm_logits = LLM_orig_model.model(input_ids=generated_output_D_A.discrete_token_ids).logits
+            loss_lm = F.cross_entropy(
+                lm_logits[:, :-1].reshape(-1, lm_logits.size(-1)),
+                generated_output_D_A.discrete_token_ids[:, 1:].reshape(-1),
+            )
+        else:
+            loss_lm = torch.tensor(0.0)
 
         # L_KL: KL( M(A_target_for_KL) || M(A) )
         # P distribution is from M(A_target_for_KL)
@@ -288,82 +293,4 @@ for step, batch in enumerate(loader): # loader uses lens.data.dataset.Activation
         *   Through the Straight-Through Estimator (STE), these gradients `dL_KL / d(token_embedding_t)` are passed to `dL_KL / d(soft_token_probabilities_t)` and subsequently to `dL_KL / d(logits_t)` for each generation step `t` in `D`.
         *   Critically, `logits_t` (which `D` uses to sample `token_t`) is a function of `A_proj` and all *preceding generated tokens* (`token_1_embedding, ..., token_{t-1}_embedding`). Therefore, the gradient `dL_KL / d(logits_t)` will backpropagate not only to the parameters of `D` involved in that specific step `t` but also to `A_proj` and to the embeddings of these preceding tokens.
         *   This ensures that `D` learns how its early token choices (`token_1`, `token_2`, etc.) affect the overall utility of the complete sequence `text` for `E`'s reconstruction task. The gradient signal from `L_KL` informs every decision in `D`'s generation process, enabling it to learn the complex temporal dependencies within the generated text that are vital for minimizing `L_KL`.
-*   `torch.compile` wraps the forward methods of `D` and `E` for performance.
-
----
-
-## 5. Evaluation
-
-Handled by `scripts/02_eval.py` and `lens.evaluation/`.
-
-*   **Quantitative Metrics (`lens.evaluation.metrics`):**
-    *   `loss_lm`, `loss_kl`, `total_loss`, `cosine_similarity(A, A_reconstructed)`, perplexity of generated text. Logged to W&B via `lens.utils.logging`.
-*   **Qualitative Spot-Checks (`lens.evaluation.dump_text`):**
-    *   Periodically run `D` on a fixed set of diverse activations, log the generated textual explanations to a W&B table for manual review.
-*   **Early Stopping Criteria:** Monitored based on W&B metrics (e.g., validation loss plateau).
-
----
-
-## 6. Check-pointing & Resilience
-
-Managed by `lens.utils.checkpoint` leveraging DeepSpeed's capabilities.
-
-*   **Checkpointing Strategy:** Full DeepSpeed checkpoints, saving model states (`D`, `E`), optimizer states, and training metadata (step, schedules).
-*   **EMA for Evaluation:** Exponential Moving Average of `D` and `E` weights maintained by `lens.utils.checkpoint.EMA`. Evaluation can be run on these EMA weights for more stable metrics.
-*   **State Resumption:** `lens.utils.checkpoint` ensures all necessary states (current step, learning rate schedules, Gumbel temperature, alpha schedule, optimizer states, RNG states) are saved and can be correctly loaded for seamless resumption from failures or for continued training.
-
----
-
-## 7. Job Launcher (Slurm Example)
-
-Using `scripts/slurm.sh`.
-
-```bash
-#!/bin/bash
-#SBATCH --job-name=consistency_lens
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=8
-#SBATCH --gpus-per-task=1
-#SBATCH --cpus-per-task=8
-#SBATCH --constraint=h100
-#SBATCH --output=logs/consistency_lens_%j.out # Consider putting logs in a dedicated dir
-#SBATCH --error=logs/consistency_lens_%j.err
-
-# Activate environment (conda/venv/module load)
-# cd /path/to/consistency-lens # Ensure PWD is project root
-
-# Path to your training script and config
-TRAIN_SCRIPT="scripts/01_train.py"
-DEEPSPEED_CONFIG="config/ds_stage2.yaml"
-LENS_CONFIG="config/lens.yaml"
-WANDB_CONFIG="config/wandb.yaml"
-
-deepspeed --num_gpus 8 ${TRAIN_SCRIPT} \
-          --deepspeed_config ${DEEPSPEED_CONFIG} \
-          --lens_config ${LENS_CONFIG} \
-          --wandb_config ${WANDB_CONFIG} \
-          --model_name_or_path "meta-llama/Llama-2-7b-hf" \
-          --output_dir "outputs/run_XYZ" \
-          # activation_cache_path implicitly data/activations/
-          --num_train_epochs 3 \
-          # per_device_train_batch_size, grad_accum likely in ds_stage2.yaml or train.py defaults
-          # learning_rates likely in lens.yaml or train.py defaults
-```
-
-**`config/ds_stage2.yaml` (Example DeepSpeed Configuration - structure):**
-(Content similar to the JSON, but in YAML format, defining optimizer, scheduler, bf16, zero_optimization stage 2, etc. `train_batch_size`, `train_micro_batch_size_per_gpu`, `gradient_accumulation_steps` would be set here or inferred.)
-
----
-
-## 8. Post-MVP Enhancements & Future Directions
-
-(This section remains largely the same as the original, focusing on future research avenues rather than specific code paths.)
-
-*   **Optimize `LLM_orig`:** Transition frozen `LLM_orig` to FP8 if supported and beneficial.
-*   **Parameter-Efficient Fine-Tuning (PEFT):** Investigate LoRA or other PEFT methods for `D` and `E` to reduce trainable parameters and memory, potentially allowing for larger base models or more efficient training.
-*   **Multi-Layer and Multi-Position Interpretation:** Extend the lens to simultaneously interpret activations from multiple layers or token positions, or to choose which layer/position is most "explainable."
-*   **Advanced Text Generation Strategies:** Explore techniques beyond greedy Gumbel-Softmax sampling, such as beam search (with STE adaptations) or other methods to improve the quality and diversity of explanations from `D`.
-*   **Dictionary Learning on Bottleneck:** If the generated text `text` still contains non-interpretable elements, consider applying dictionary learning or sparse coding techniques to the `text` embeddings to find more fundamental "explanatory atoms."
-*   **Iterative Refinement / Self-Critique:** Explore if `D` can be improved by having `E` (or another model) critique its explanations, feeding that critique back to `D`.
-
-This revised plan aligns the architecture with the proposed practical directory structure and explicitly states the reliance on existing libraries, making the unique contributions of the `lens/` package very clear. The data handling, backpropagation, and KL divergence loss details are now more explicit and corrected.
+*   `torch.compile` wraps the forward methods of `D`
