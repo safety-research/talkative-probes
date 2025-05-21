@@ -14,7 +14,8 @@ dependencies = [
     "flash-attn>=2.7,<3.0",
     "deepspeed>=0.14",
     "wandb>=0.16",
-    "torch"
+    "torch",
+    "hf-transfer"
 ]
 
 [tool.setuptools]

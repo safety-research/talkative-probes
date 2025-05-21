@@ -1,8 +1,9 @@
 # Configuration for Consistency Lens training
 
 # Model parameters
-model_name: "sshleifer/tiny-gpt2" # Base model for LLM_orig, Decoder, Encoder
-layer_l: 1                       # Target layer for activation extraction (LLM_orig)
+# model_name: "sshleifer/tiny-gpt2" # Base model for LLM_orig, Decoder, Encoder
+model_name: "roneneldan/TinyStories-3M"
+layer_l: 6                      # Target layer for activation extraction (LLM_orig)
 token_pos_p: 0                   # Target token position for activation extraction (LLM_orig) - currently fixed in MVP dumper
 
 # Decoder parameters
