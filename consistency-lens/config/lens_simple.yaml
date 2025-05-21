@@ -3,6 +3,9 @@
 # Model parameters
 # model_name: "sshleifer/tiny-gpt2" # Base model for LLM_orig, Decoder, Encoder
 model_name: "roneneldan/TinyStories-3M"
+# Optional: specify a different tokenizer to use instead of the model's default
+# E.g. a reduced-vocabulary tokenizer such as "Qilex/tinyStories-10k-tokenizer"
+tokenizer_name: "Qilex/tinyStories-10k-tokenizer"
 layer_l: 6                      # Target layer for activation extraction (LLM_orig)
 token_pos_p: 0                   # Target token position for activation extraction (LLM_orig) - currently fixed in MVP dumper
 
@@ -12,13 +15,30 @@ decoder_prompt: "Explain: "       # Prompt for the Decoder
 
 # Training hyperparameters
 t_text: 1                        # Number of tokens to generate with the Decoder
-learning_rate: 1.0e-1
-batch_size: 4096                   # Effective batch size (adjust with gradient_accumulation_steps if using DeepSpeed)
+learning_rate: 1.0e-4
+batch_size: 512               # Effective batch size (adjust with gradient_accumulation_steps if using DeepSpeed)
 num_train_epochs: 3              # Or a fixed number of steps
 max_train_steps: 1600            # If not using epochs
 compile_models: false            # Wrap Decoder & Encoder with torch.compile if True
 log_interval: 10             # Log metrics every N training steps
 wandb_log_interval: 1         # Log metrics every N training steps to WandB
+
+# Trainable components configuration
+trainable_components:
+  decoder:
+    base_model: false          # Train the underlying LLM weights of the Decoder
+    projection_layer: true   # Train Proj_A_to_D_emb (self.proj)
+    output_head: true        # Train the Decoder's output LM head (self.out)
+  encoder:
+    base_model: false          # Train the underlying LLM weights of the Encoder
+    projection_layer: true   # Train Proj_E_hidden_to_A (self.proj)
+
+# Learning rate multiplier for specific parameter groups.
+# These multipliers are applied to the base learning_rate from above.
+# The training script will need to create parameter groups accordingly.
+# Example: projection_layers refers to decoder.proj, decoder.out, and encoder.proj.
+custom_lr_multipliers:
+  projection_layers: 1.0 # Set > 1.0 to use a higher LR for these layers.
 
 # Gumbel-Softmax temperature (tau) schedule
 gumbel_tau_schedule:
@@ -49,7 +69,7 @@ activation_dumper:
   hf_split: "train"
   dataset_cache_dir: "consistency-lens/data/corpus/TinyStories"
   output_dir: "consistency-lens/data/activations/TinyStoriesV2_train"
-  batch_size: 512
+  batch_size: 4096
   # Validation split dumping in the same run of 00_dump_activations.py
   val_hf_split: "validation"
   val_output_dir: "consistency-lens/data/activations/TinyStoriesV2_validation"
@@ -72,12 +92,12 @@ wandb:
   mode: "online" # "online", "offline", "disabled"
 
 # Loss weights
-ce_weight: 0.01                 # Multiplier on cross-entropy term
+lm_weight: 0.01                 # Multiplier on language model KL divergence term
 kl_base_weight: 1.0             # Base weight; final KL multiplier = kl_base_weight * alpha_schedule
 
 # Token entropy bonus (see loop.py). Positive values reward higher entropy to
 # avoid posterior collapse; set to 0.0 to disable.
-entropy_weight: 0.0
+entropy_weight: 0.1
 
 # Validation split & scheduling
 val_fraction: 0.1               # Fraction of dataset for validation
