@@ -35,5 +35,9 @@ def load(path: str | Path, models: Dict[str, torch.nn.Module], optim: torch.opti
         if k in ckpt["models"]:
             m.load_state_dict(ckpt["models"][k])
     if optim is not None and "optim" in ckpt:
-        optim.load_state_dict(ckpt["optim"])
+        try:
+            optim.load_state_dict(ckpt["optim"])
+        except ValueError:
+            # Param group mismatch (e.g., eval build uses flat param list). Skip.
+            pass
     return ckpt
