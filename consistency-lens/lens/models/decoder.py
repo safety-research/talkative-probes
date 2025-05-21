@@ -6,10 +6,10 @@ from typing import Any, NamedTuple
 import torch
 from torch import nn
 from transformers import AutoModelForCausalLM, PreTrainedModel
-
+import logging
 __all__ = ["Decoder", "Generated"]
 
-
+log = logging.getLogger(__name__)
 class Generated(NamedTuple):
     generated_text_embeddings: torch.Tensor
     raw_lm_logits: torch.Tensor
@@ -20,24 +20,70 @@ class Generated(NamedTuple):
 class DecoderConfig:
     model_name: str
     n_prompt_tokens: int = 8
+    train_base_model: bool = False
+    train_projection_layer: bool = True
+    train_output_head: bool = True
 
 
 class Decoder(nn.Module):
-    """Prepends prompt, inserts projected activation, emits differentiable tokens."""
+    """Prepends prompt, inserts projected activation, emits differentiable tokens.
+
+    The Decoder is architecturally similar to the base LLM (LLM_orig). It takes a
+    projected activation `A_proj` (derived from an internal LLM activation `A`)
+    and, optionally, a textual prompt, then autoregressively generates a textual
+    explanation.
+
+    Key components:
+    - `self.base`: The underlying LLM structure (e.g., a GPT-2 or LLaMA model).
+                   Its weights can be frozen or fine-tuned.
+    - `self.proj`: A linear layer (`Proj_A_to_D_emb` in the README) that maps the
+                   input activation `A` into the embedding space of `self.base`.
+    - `self.out`: A linear layer that acts as the language modeling head, mapping
+                  the final hidden state from `self.base` to vocabulary logits.
+                  This is crucial for generation, especially if `self.base` is frozen,
+                  as it allows the Decoder to learn to produce coherent text.
+    """
 
     def __init__(self, cfg: DecoderConfig) -> None:
         super().__init__()
         self.base: PreTrainedModel = AutoModelForCausalLM.from_pretrained(cfg.model_name)
+        # Configure trainability of the base model
         for p in self.base.parameters():
-            p.requires_grad_(False)
+            p.requires_grad_(cfg.train_base_model)
+
         d_model = self.base.config.hidden_size
         self.proj = nn.Linear(d_model, d_model, bias=False)
-        # Simple output projection so we don't rely on the base model's full forward.
+        # Configure trainability of the input projection layer
+        for p in self.proj.parameters():
+            p.requires_grad_(cfg.train_projection_layer)
+
+        # The output head (self.out) maps hidden states to vocabulary logits.
+        # This is essential for the Decoder to generate text.
+        # If self.base is frozen, self.out allows the Decoder to adapt the
+        # (frozen) base model\'s representations for the explanation generation task.
+        # If self.base is trainable, self.out is trained along with it.
         self.out = nn.Linear(d_model, self.base.config.vocab_size, bias=False)
+        # Initialise `self.out` with a copy of the original unembedding matrix
+        # (i.e. the tied output embedding / LM head from the base model).
+        with torch.no_grad():
+            try:
+                orig_out_w = self.base.get_output_embeddings().weight
+            except AttributeError:
+                # Fallback for models that expose `lm_head`
+                orig_out_w = self.base.lm_head.weight  # type: ignore[attr-defined]
+
+            if orig_out_w.shape == self.out.weight.shape:
+                self.out.weight.copy_(orig_out_w)
+
+        # Configure trainability of the output head (separate from the base model)
+        for p in self.out.parameters():
+            p.requires_grad_(cfg.train_output_head)
+
         self.n_prompt = cfg.n_prompt_tokens
         self.register_buffer(
             "prompt_ids", torch.full((1, self.n_prompt), self.base.config.bos_token_id, dtype=torch.long)
         )
+
 
     def forward(self, *args: Any, **kwargs: Any):  # noqa: D401
         raise NotImplementedError
@@ -84,13 +130,16 @@ class Decoder(nn.Module):
             h_last = out.last_hidden_state if hasattr(out, "last_hidden_state") else out.hidden_states[-1]
             logits_t = self.out(h_last[:, -1])  # (B, V)
 
-            soft = torch.nn.functional.gumbel_softmax(logits_t, tau=gumbel_tau, hard=False)
-            emb_t = soft @ emb_table  # (B, d_model)
+            # Use gumbel_softmax with hard=True for Straight-Through Estimation (STE)
+            # Forward pass uses one-hot samples, backward pass uses soft probabilities.
+            ste_token_dist = torch.nn.functional.gumbel_softmax(logits_t, tau=gumbel_tau, hard=True)
+            emb_t = ste_token_dist @ emb_table  # (B, d_model)
 
             seq_embs = torch.cat([seq_embs, emb_t.unsqueeze(1)], dim=1)
 
             logits_list.append(logits_t)
-            hard_ids_list.append(logits_t.argmax(dim=-1))
+            # Store hard token IDs derived from the STE output
+            hard_ids_list.append(ste_token_dist.argmax(dim=-1))
 
         # Stack along time dim (B, T, ...)
         logits_seq = torch.stack(logits_list, dim=1)

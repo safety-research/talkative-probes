@@ -1,0 +1,118 @@
+{
+    "total_samples": 100000,
+    "shards": [
+        {
+            "name": "shard_00000.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00001.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00002.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00003.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00004.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00005.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00006.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00007.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00008.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00009.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00010.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00011.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00012.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00013.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00014.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00015.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00016.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00017.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00018.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00019.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00020.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00021.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00022.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00023.pt",
+            "num_samples": 4096
+        },
+        {
+            "name": "shard_00024.pt",
+            "num_samples": 1696
+        }
+    ],
+    "config": {
+        "split_name": "train",
+        "num_samples": 100000,
+        "seq_len": 64,
+        "layer_idx": 6,
+        "model_name": "roneneldan/TinyStories-3M",
+        "tokenizer_name": "Qilex/tinyStories-10k-tokenizer",
+        "use_hf_dataset": true,
+        "hf_dataset_name": "roneneldan/TinyStories",
+        "dataset_cache_dir": "consistency-lens/data/corpus/TinyStories",
+        "min_token_idx_inclusive": 5,
+        "seed": 0
+    }
+}

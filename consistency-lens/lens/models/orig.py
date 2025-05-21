@@ -14,37 +14,39 @@ class OrigWrapper:
         self.model.eval()
         self._monkeypatch_reshape_inputs()
 
-    @torch.no_grad()
     def forward_with_replacement(
         self,
         input_ids: torch.Tensor,
         new_activation: torch.Tensor,
         layer_idx: int,
         token_pos: int,
+        *,
+        no_grad: bool = True,
     ) -> "transformers.modeling_outputs.CausalLMOutput":
         """Forward pass where hidden_state[layer_idx][:, token_pos] is replaced."""
 
-        def _swap_hook(_, __, output):  # noqa: ANN001
-            hidden = output[0]
-            # Allow new_activation with shape (d_model,) or (B, d_model)
-            if new_activation.dim() == 1:
-                hidden[:, token_pos] = new_activation.unsqueeze(0)
-            else:
-                hidden[:, token_pos] = new_activation  # type: ignore[index]
-            return (hidden,) + output[1:]
+        from contextlib import nullcontext
 
-        # The exact module path varies across architectures.  We try the common
-        # ``transformer.h`` fallback and, if missing, build the sub-module name
-        # explicitly.
-        try:
-            target_block = self.model.transformer.h[layer_idx]  # type: ignore[attr-defined]
-        except AttributeError:
-            target_block = self.model.get_submodule(f"transformer.h.{layer_idx}")
+        grad_ctx = torch.no_grad() if no_grad else nullcontext()
 
-        handle = target_block.register_forward_hook(_swap_hook)
-        out = self.model(input_ids=input_ids)
-        handle.remove()
-        return out
+        with grad_ctx:
+            def _swap_hook(_, __, output):  # noqa: ANN001
+                hidden = output[0]
+                if new_activation.dim() == 1:
+                    hidden[:, token_pos] = new_activation.unsqueeze(0)
+                else:
+                    hidden[:, token_pos] = new_activation  # type: ignore[index]
+                return (hidden,) + output[1:]
+
+            try:
+                target_block = self.model.transformer.h[layer_idx]  # type: ignore[attr-defined]
+            except AttributeError:
+                target_block = self.model.get_submodule(f"transformer.h.{layer_idx}")
+
+            handle = target_block.register_forward_hook(_swap_hook)
+            out = self.model(input_ids=input_ids)
+            handle.remove()
+            return out
 
     # ------------------------------------------------------------------
     # Convenience ----------------------------------------------------------------

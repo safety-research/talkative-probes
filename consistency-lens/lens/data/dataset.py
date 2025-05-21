@@ -10,6 +10,7 @@ from bisect import bisect_right
 from pathlib import Path
 from typing import Dict, List, Optional
 import tqdm
+import json
 
 import torch
 from torch.utils.data import Dataset
@@ -20,32 +21,61 @@ __all__ = ["ActivationDataset"]
 class ActivationDataset(Dataset):
     def __init__(self, root: str, max_samples: Optional[int] = None, desc: str = "Loading activations"):
         self.root = Path(root)
-
-        # Collect all .pt files (either shards or single-sample files)
-        self.shards: List[Path] = sorted(self.root.glob("*.pt")) if self.root.is_dir() else [self.root]
-
+        self.shards: List[Path] = []
         self.lengths: List[int] = []
         self.offsets: List[int] = []
+        self.total = 0
+        self._cache: dict[Path, List[Dict[str, torch.Tensor]]] = {}
 
-        total = 0
-        for fp in tqdm.tqdm(self.shards, desc=desc):
-            obj = torch.load(fp, map_location="cpu")
-            shard_len = len(obj) if isinstance(obj, list) else 1
-            self.lengths.append(shard_len)
-            self.offsets.append(total)
-            total += shard_len
+        metadata_path = self.root / "metadata.json"
+        
+        if metadata_path.exists():
+            with open(metadata_path, "r") as f:
+                metadata = json.load(f)
             
-            # Stop loading if we've reached max_samples
-            if max_samples is not None and total >= max_samples:
-                # Adjust the last shard's length if needed
-                if total > max_samples:
-                    excess = total - max_samples
-                    self.lengths[-1] -= excess
-                    total = max_samples
-                break
+            current_total = 0
+            for shard_info in tqdm.tqdm(metadata["shards"], desc=f"{desc} (from metadata)"):
+                if max_samples is not None and current_total >= max_samples:
+                    break
 
-        self.total = total
-        self._cache: dict[Path, List[Dict[str, torch.Tensor]]] = {}  # only used for list-shards
+                shard_path = self.root / shard_info["name"]
+                self.shards.append(shard_path)
+                
+                shard_len = shard_info["num_samples"]
+                if max_samples is not None and current_total + shard_len > max_samples:
+                    shard_len = max_samples - current_total
+                
+                self.lengths.append(shard_len)
+                self.offsets.append(current_total)
+                current_total += shard_len
+            
+            self.total = current_total
+        else:
+            # Fallback to original loading method if metadata.json doesn't exist
+            potential_shards = sorted(self.root.glob("*.pt")) if self.root.is_dir() else [self.root]
+            
+            current_total = 0
+            for fp in tqdm.tqdm(potential_shards, desc=f"{desc} (legacy scan)"):
+                if max_samples is not None and current_total >= max_samples:
+                    break
+
+                # This is the slow part we are trying to avoid with metadata
+                obj = torch.load(fp, map_location="cpu")
+                shard_len = len(obj) if isinstance(obj, list) else 1
+                
+                actual_shard_len = shard_len
+                if max_samples is not None and current_total + shard_len > max_samples:
+                    actual_shard_len = max_samples - current_total
+                
+                if actual_shard_len <= 0 : # No more samples needed or shard is effectively empty for our needs
+                    continue
+
+                self.shards.append(fp)
+                self.lengths.append(actual_shard_len)
+                self.offsets.append(current_total)
+                current_total += actual_shard_len
+            
+            self.total = current_total
 
     def __len__(self) -> int:
         return self.total

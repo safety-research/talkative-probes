@@ -79,7 +79,7 @@ A core principle is to leverage existing, well-tested libraries for heavy liftin
 | Tokenizer & raw text I/O      | HuggingFace `tokenizers` + `datasets` | Pre-tokenise once (`datasets.map(batch_encode_plus)`), memory-map to skip bespoke dataloader code.                            |
 | Frozen model                  | `transformers.AutoModelForCausalLM`   | Out-of-the-box forward; we only patch a single hook to overwrite one hidden slice (same trick as prompt-tuning).              |
 | Parameter off-loading & sharding | DeepSpeed ZeRO-1 + FSDP (torch 2.3)  | No hand-rolled DistributedDataParallel; we declare shards in `config/ds_stage2.yaml`.                                       |
-| 8-bit weights                 | `bitsandbytes`                        | `load_in_8bit=True` on the frozen model gets us 4× memory cut for free.                                                      |
+| 8-bit weights                 | `bitsandbytes`                        | `load_in_8bit=True` on the frozen model gets us 4× memory cut for free. Optional.                                                   |
 | Attention speedup             | `flash-attn` 3                         | `model._apply_flash_attention_2()` after load—zero code rewrite. (Note: `flash-attn` 3 uses `_apply_flash_attention_2`)     |
 | Gumbel-Softmax + STE          | `torch.nn.functional.gumbel_softmax`  | Provided primitive already supports temperature; STE is two lines (`soft_output = F.gumbel_softmax(logits, tau=..., hard=True, dim=-1)` for forward, then `hard_output = F.one_hot(soft_output.argmax(dim=-1), num_classes=vocab_size).float(); y_for_grad = soft_output; y_for_input = hard_output - soft_output.detach() + soft_output`).                   |
 | Training loop plumbing        | `torch.compile` (nvFuser)             | Wrap decoder/encoder forward; eliminates manual kernel fusion.                                                               |
@@ -125,7 +125,7 @@ Managed by `scripts/00_dump_activations.py` and `lens.data.dataset`.
 *   **Activation Tuples (`(input_ids_A, A, input_ids_A_prime, A_prime)`):**
     *   **Generation Script:** `scripts/00_dump_activations.py` (one-off pre-processing step).
     *   **Process Details:**
-        1.  Load `LLM_orig` (e.g., `meta-llama/Llama-2-7b-hf` foundation model, not a chat-finetuned variant) using `bitsandbytes` 8-bit quantization (`load_in_8bit=True`) and keep it frozen. Initialize `D` and `E` from this base model's weights.
+        1.  Load `LLM_orig` (e.g., `meta-llama/Llama-2-7b-hf` foundation model, not a chat-finetuned variant. Initialize `D` and `E` from this base model's weights.
         2.  For each sequence from the tokenized corpus:
             *   Perform a forward pass with `torch.no_grad()` and `output_hidden_states=True`.
             *   **Target Activation `A`:**
@@ -244,18 +244,50 @@ for step, batch in enumerate(loader): # loader uses lens.data.dataset.Activation
         ).logits_at_target_pos
 
         # --- Loss Calculation ---
-        # L_LM: negative log-likelihood of the generated explanation under
-        # the *frozen* base model.  This encourages the bottleneck string to
-        # stay on-manifold (no degenerate tokens).
-        if T_text > 1:  # need a next-token target
-            lm_logits = LLM_orig_model.model(input_ids=generated_output_D_A.discrete_token_ids).logits
-            loss_lm = F.cross_entropy(
-                lm_logits[:, :-1].reshape(-1, lm_logits.size(-1)),
-                generated_output_D_A.discrete_token_ids[:, 1:].reshape(-1),
+        # L_LM: KL divergence KL(P_D || P_Orig), where P_D are D_model's next-token probabilities
+        # during explanation generation, and P_Orig are LLM_orig_model's (frozen) next-token probabilities
+        # for that same D_model-generated explanation. This encourages D_model's generation (P_D)
+        # to align with the base model's linguistic knowledge (P_Orig), keeping explanations on-manifold.
+        if T_text > 1:  # need a next-token target for KL divergence
+            # Logits from D_model for its own generation (predicting token t+1 given prefix 0..t from D)
+            # generated_output_D_A.token_logits are (B, T_text, V)
+            d_model_pred_logits = generated_output_D_A.token_logits[:, :-1, :] # Shape: (B, T_text-1, V)
+
+            # Logits from LLM_orig_model for D_model's generated sequence
+            # (predicting token t+1 given prefix 0..t from D)
+            # LLM_orig_model.model is assumed to be causal and takes full input_ids
+            orig_model_pred_logits_all_pos = LLM_orig_model.model(
+                input_ids=generated_output_D_A.discrete_token_ids
+            ).logits # Shape: (B, T_text, V)
+            # We need the logits that predict the same tokens as d_model_pred_logits
+            orig_model_pred_logits = orig_model_pred_logits_all_pos[:, :-1, :] # Shape: (B, T_text-1, V)
+
+            # P_D: Distribution from D_model (this is the distribution we want to regularize)
+            # These are probabilities for tokens 1...T_text-1
+            P_D_probs = F.softmax(d_model_pred_logits, dim=-1)
+
+            # log_P_Orig: Log-distribution from LLM_orig_model (this is the reference distribution)
+            # These are log-probabilities for tokens 1...T_text-1
+            log_P_Orig_log_probs = F.log_softmax(orig_model_pred_logits, dim=-1)
+            
+            # Reshape for kl_div to (N, C) where N = B * (T_text-1), C = V
+            # This ensures 'batchmean' reduction averages over token positions.
+            V = d_model_pred_logits.size(-1)
+            P_D_probs_flat = P_D_probs.reshape(-1, V)
+            log_P_Orig_log_probs_flat = log_P_Orig_log_probs.reshape(-1, V)
+
+            # loss_lm = KL(P_D || P_Orig)
+            # F.kl_div(input, target) computes sum(target * (log(target) - input))
+            # Here, input is log_P_Orig, target is P_D.
+            # So it computes sum(P_D * (log P_D - log_P_Orig)) which is KL(P_D || P_Orig)
+            loss_lm = F.kl_div(
+                input=log_P_Orig_log_probs_flat, # log-probabilities of P_Orig (the "approximating" distribution Q in KL(P||Q))
+                target=P_D_probs_flat,           # probabilities of P_D (the "true" distribution P in KL(P||Q))
+                reduction='batchmean',           # average KL divergence per token position
+                log_target=False                 # P_D_probs_flat contains probabilities, not log-probabilities
             )
         else:
-            loss_lm = torch.tensor(0.0)
-
+            loss_lm = torch.tensor(0.0) # Or handle device appropriately, e.g., device=A_reconstructed.device
         # L_KL: KL( M(A_target_for_KL) || M(A) )
         # P distribution is from M(A_target_for_KL)
         # Q distribution is from M(A)

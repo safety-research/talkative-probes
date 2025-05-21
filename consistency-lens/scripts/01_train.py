@@ -9,12 +9,13 @@ from __future__ import annotations
 import argparse
 import logging
 import math # For math.ceil if needed, or integer arithmetic for epochs
+from collections import Counter # Add this import
 
 import torch
 from lens.data.collate import collate
 from lens.data.dataset import ActivationDataset
 from lens.models.decoder import Decoder, DecoderConfig
-from lens.models.encoder import Encoder
+from lens.models.encoder import Encoder, EncoderConfig
 from lens.models.orig import OrigWrapper
 from lens.training.loop import train_step
 from torch.utils.data import DataLoader, random_split
@@ -22,99 +23,38 @@ from lens.training.optim import param_groups
 from lens.utils.logging import init as log_init, log as log_metrics
 from lens.training.schedules import get_schedule_value
 import yaml
-# from transformers import AutoTokenizer # Not used in this selection
+from transformers import AutoTokenizer # Not used in this selection
 from torch.amp import autocast, GradScaler
 from contextlib import nullcontext
-from pathlib import Path
+from pathlib import Path # This import is assumed to be at the module level. If not, it should be moved there.
+import math # For math.ceil
+import torch # For torch.utils.data, torch.Generator
+from torch.utils.data import DataLoader, random_split, Dataset, Subset # Explicit imports for clarity
+from lens.data.collate import collate
+from lens.data.dataset import ActivationDataset
+import logging # For type hinting Logger
+import torch.nn as nn
+from lens.utils.embedding_remap import remap_embeddings
 
+# Helper function to prepare datasets and dataloaders
+def _prepare_dataloaders(
+    config: dict,
+    activation_dir: str,
+    effective_val_activation_dir: str | None,
+    max_train_samples_req: int | None,
+    max_val_samples_req: int | None,
+    log: logging.Logger
+) -> tuple[DataLoader | None, DataLoader | None, Dataset | None, Dataset | None]:
+    """Loads, splits (if necessary), and creates DataLoaders for train/validation."""
 
-def main() -> None:  # noqa: D401
-    parser = argparse.ArgumentParser(description="Train Consistency-Lens MVP")
-    parser.add_argument("--config_path", type=str, default="consistency-lens/config/lens_simple.yaml", help="Path to the simple lens config file.")
-    # Allow overriding some key parameters from the command line
-    parser.add_argument("--model_name", type=str, help="Override model_name from config.")
-    parser.add_argument("--activation_dir", type=str, help="Override activation_dir from config.")
-    parser.add_argument("--val_activation_dir", type=str, help="Path to validation activations directory (skip split)")
-    parser.add_argument("--max_train_steps", type=int, help="Override max_train_steps from config.")
-    parser.add_argument("--learning_rate", type=float, help="Override learning_rate from config.")
-    parser.add_argument("--t_text", type=int, help="Override t_text from config.")
-    parser.add_argument("--save_every", type=int, default=100, help="Save checkpoint every N steps.") # Default was 100
-    parser.add_argument("--log_interval", type=int, help="Log metrics every N steps.")
-    parser.add_argument("--wandb_log_interval", type=int, help="Log metrics to WandB every N steps.")
-    parser.add_argument("--resume", type=str, help="Path to checkpoint to resume from.")
-    parser.add_argument("--val_fraction", type=float, help="Fraction of dataset for validation")
-    parser.add_argument("--split_seed", type=int,   help="Seed for train/val split")
-    parser.add_argument("--val_interval", type=int, help="Validate every N steps")
-    parser.add_argument("--max_train_samples", type=int, help="Maximum number of training samples to load.")
-    parser.add_argument("--max_val_samples", type=int, help="Maximum number of validation samples to load.")
-    args = parser.parse_args()
+    train_ds: Dataset | None = None
+    val_ds: Dataset | None = None
 
-    # ---------------------------------------------------------------
-    # Logging setup (console). W&B handled via lens.utils.logging.
-    # ---------------------------------------------------------------
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(message)s",
-        datefmt="%H:%M:%S",
-    )
-    log = logging.getLogger(__name__)
-
-    # Load config from YAML file
-    with open(args.config_path, 'r') as f:
-        config = yaml.safe_load(f)
-
-    # Override config with CLI arguments if provided
-    if args.model_name: config['model_name'] = args.model_name
-    if args.max_train_steps: config['max_train_steps'] = args.max_train_steps
-    if args.learning_rate: config['learning_rate'] = args.learning_rate
-    if args.t_text: config['t_text'] = args.t_text
-    if args.log_interval: config['log_interval'] = args.log_interval
-    if hasattr(args, 'wandb_log_interval') and args.wandb_log_interval is not None:
-        config['wandb_log_interval'] = args.wandb_log_interval
-    # val_fraction, split_seed, val_interval can also be overridden from CLI
-    if args.val_fraction is not None: config['val_fraction'] = args.val_fraction
-    if args.split_seed is not None: config['split_seed'] = args.split_seed
-    if args.val_interval is not None: config['val_interval'] = args.val_interval
-
-
-    # Use overridden values or defaults from config
-    model_name = config['model_name']
-    # Handle activation_dir override carefully: CLI takes precedence over config.
-    activation_dir = args.activation_dir if args.activation_dir is not None else config['activation_dumper']['output_dir']
-    
-    # Handle val_activation_dir: CLI takes precedence over config.
-    effective_val_activation_dir = args.val_activation_dir if args.val_activation_dir is not None else config.get('val_activation_dir')
-    
-    max_steps = config['max_train_steps']
-    learning_rate = config['learning_rate']
-    t_text = config['t_text']
-    wandb_config = config.get('wandb', {}) # Ensure wandb_config is a dict
-    wandb_log_interval = config['wandb_log_interval']
-    ce_weight = config['ce_weight']
-    kl_base_weight = config['kl_base_weight']
-    entropy_weight = config['entropy_weight']
-    log_interval = config['log_interval']
-    if log_interval <= 0:
-        log.warning(f"log_interval must be positive, got {log_interval}. Setting to 100.")
-        log_interval = 100
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Initialize W&B logging (if enabled in config)
-    # Pass the merged config (YAML + CLI overrides)
-    log_init(project=wandb_config.get('project', 'consistency-lens'), # Add default project name
-             config=config,  # Pass the potentially modified config dict
-             mode=wandb_config.get('mode', 'online')) # Add default mode
-
-
-    # Dataset loading parameters from args (CLI) and config
-    max_train_samples_req = args.max_train_samples
-    max_val_samples_req = args.max_val_samples
-    
+    # Retrieve dataset configuration from the main config
     split_seed = config['split_seed']
-    val_interval = config['val_interval']
+    val_fraction = config.get('val_fraction', 0.1) # Default val_fraction if not in config
+    batch_size = config['batch_size']
 
-    train_ds, val_ds = None, None
 
     if effective_val_activation_dir and Path(effective_val_activation_dir).exists():
         log.info(f"Loading training data from {activation_dir} (limit: {max_train_samples_req if max_train_samples_req is not None else 'all'}).")
@@ -136,7 +76,6 @@ def main() -> None:  # noqa: D401
         if effective_val_activation_dir and not Path(effective_val_activation_dir).exists():
             log.warning(f"Validation activations directory {effective_val_activation_dir} not found. Falling back to random split from {activation_dir}.")
         
-        val_fraction = config.get('val_fraction', 0.1)
         log.info(f"Preparing to split data from {activation_dir} with val_fraction={val_fraction:.2f}, seed={split_seed}.")
 
         initial_load_n = None
@@ -183,7 +122,7 @@ def main() -> None:  # noqa: D401
 
         # Adjust if sum of targets differs from available_total or requested sum
         # This ensures the dataset to be split matches the sum of final train/val sizes.
-        dataset_to_actually_split = full_dataset_loaded
+        dataset_to_actually_split: Dataset = full_dataset_loaded
         current_total_target = final_train_size + final_val_size
 
         if current_total_target > available_total:
@@ -198,7 +137,7 @@ def main() -> None:  # noqa: D401
             # Loaded more than needed by final_train_size + final_val_size. Take a subset.
             log.info(f"Loaded {available_total} but target sum is {current_total_target}. "
                      f"Taking subset of {current_total_target} before splitting.")
-            dataset_to_actually_split = torch.utils.data.Subset(full_dataset_loaded, range(current_total_target))
+            dataset_to_actually_split = Subset(full_dataset_loaded, range(current_total_target))
         # Else (current_total_target == available_total), dataset_to_actually_split is full_dataset_loaded.
         
         # Perform the split on dataset_to_actually_split
@@ -207,7 +146,9 @@ def main() -> None:  # noqa: D401
         
         if final_val_size > 0 and final_train_size > 0:
             log.info(f"Splitting {len(dataset_to_actually_split)} samples into train: {final_train_size}, val: {final_val_size}.")
-            train_ds, val_ds = random_split(
+            # Type ignore below because random_split can return List[Subset[T]]
+            # and we are destructuring it.
+            train_ds, val_ds = random_split( # type: ignore[assignment]
                 dataset_to_actually_split,
                 [final_train_size, final_val_size],
                 generator=torch.Generator().manual_seed(split_seed),
@@ -226,20 +167,123 @@ def main() -> None:  # noqa: D401
             val_ds = None
 
     # Create DataLoaders
+    train_loader: DataLoader | None = None
     if train_ds and len(train_ds) > 0:
-        train_loader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=True, collate_fn=collate)
+        train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, collate_fn=collate)
     else:
         # This path should ideally not be reached if checks above are robust,
         # but as a safeguard:
         log.error("Training dataset is empty or None after processing. Cannot create DataLoader.")
         raise RuntimeError("Training dataset is empty. Check data paths, limits, and split configuration.")
 
+    val_loader: DataLoader | None = None
     if val_ds and len(val_ds) > 0:
-        val_loader = DataLoader(val_ds, batch_size=config['batch_size'], shuffle=False, collate_fn=collate)
+        val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate)
     else:
-        val_loader = None
         # This is an expected outcome if no validation data was configured or found.
         log.info("Validation dataset is empty or None. Validation will be skipped during training.")
+    
+    return train_loader, val_loader, train_ds, val_ds
+
+
+def main() -> None:  # noqa: D401
+    parser = argparse.ArgumentParser(description="Train Consistency-Lens MVP")
+    parser.add_argument("--config_path", type=str, default="consistency-lens/config/lens_simple.yaml", help="Path to the simple lens config file.")
+    # Allow overriding some key parameters from the command line
+    parser.add_argument("--model_name", type=str, help="Override model_name from config.")
+    parser.add_argument("--activation_dir", type=str, help="Override activation_dir from config.")
+    parser.add_argument("--val_activation_dir", type=str, help="Path to validation activations directory (skip split)")
+    parser.add_argument("--max_train_steps", type=int, help="Override max_train_steps from config.")
+    parser.add_argument("--learning_rate", type=float, help="Override learning_rate from config.")
+    parser.add_argument("--t_text", type=int, help="Override t_text from config.")
+    parser.add_argument("--save_every", type=int, default=100, help="Save checkpoint every N steps.") # Default was 100
+    parser.add_argument("--log_interval", type=int, help="Log metrics every N steps.")
+    parser.add_argument("--wandb_log_interval", type=int, help="Log metrics to WandB every N steps.")
+    parser.add_argument("--resume", type=str, help="Path to checkpoint to resume from.")
+    parser.add_argument("--val_fraction", type=float, help="Fraction of dataset for validation")
+    parser.add_argument("--split_seed", type=int,   help="Seed for train/val split")
+    parser.add_argument("--val_interval", type=int, help="Validate every N steps") # Retained for use later in training loop
+    parser.add_argument("--max_train_samples", type=int, help="Maximum number of training samples to load.")
+    parser.add_argument("--max_val_samples", type=int, help="Maximum number of validation samples to load.")
+    args = parser.parse_args()
+
+    # ---------------------------------------------------------------
+    # Logging setup (console). W&B handled via lens.utils.logging.
+    # ---------------------------------------------------------------
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    log = logging.getLogger(__name__)
+
+    # Load config from YAML file
+    with open(args.config_path, 'r') as f:
+        config = yaml.safe_load(f)
+
+    # Override config with CLI arguments if provided
+    if args.model_name: config['model_name'] = args.model_name
+    if args.max_train_steps: config['max_train_steps'] = args.max_train_steps
+    if args.learning_rate: config['learning_rate'] = args.learning_rate
+    if args.t_text: config['t_text'] = args.t_text
+    if args.log_interval: config['log_interval'] = args.log_interval
+    if hasattr(args, 'wandb_log_interval') and args.wandb_log_interval is not None:
+        config['wandb_log_interval'] = args.wandb_log_interval
+    # val_fraction, split_seed, val_interval can also be overridden from CLI
+    if args.val_fraction is not None: config['val_fraction'] = args.val_fraction
+    if args.split_seed is not None: config['split_seed'] = args.split_seed
+    if args.val_interval is not None: config['val_interval'] = args.val_interval
+
+
+    # Use overridden values or defaults from config
+    model_name = config['model_name']
+    # Handle activation_dir override carefully: CLI takes precedence over config.
+    activation_dir = args.activation_dir if args.activation_dir is not None else config['activation_dumper']['output_dir']
+    
+    # Handle val_activation_dir: CLI takes precedence over config.
+    effective_val_activation_dir = args.val_activation_dir if args.val_activation_dir is not None else config.get('val_activation_dir')
+    
+    max_steps = config['max_train_steps']
+    learning_rate = config['learning_rate']
+    t_text = config['t_text']
+    wandb_config = config.get('wandb', {}) # Ensure wandb_config is a dict
+    wandb_log_interval = config['wandb_log_interval']
+    lm_weight = config['lm_weight']
+    kl_base_weight = config['kl_base_weight']
+    entropy_weight = config['entropy_weight']
+    log_interval = config['log_interval']
+    if log_interval <= 0:
+        log.warning(f"log_interval must be positive, got {log_interval}. Setting to 100.")
+        log_interval = 100
+    
+    # val_interval is used by the training loop, not dataset prep, but initialized here from config
+    val_interval = config['val_interval']
+
+    # Extract trainable_components and custom_lr_multipliers from config
+    trainable_components_config = config.get('trainable_components', {})
+    decoder_train_cfg = trainable_components_config.get('decoder', {})
+    encoder_train_cfg = trainable_components_config.get('encoder', {})
+    custom_lr_multipliers = config.get('custom_lr_multipliers', {})
+    projection_lr_multiplier = custom_lr_multipliers.get('projection_layers', 1.0)
+
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Initialize W&B logging (if enabled in config)
+    # Pass the merged config (YAML + CLI overrides)
+    log_init(project=wandb_config.get('project', 'consistency-lens'), # Add default project name
+             config=config,  # Pass the potentially modified config dict
+             mode=wandb_config.get('mode', 'online')) # Add default mode
+
+    # Prepare DataLoaders by calling the helper function
+    train_loader, val_loader, train_ds, val_ds = _prepare_dataloaders(
+        config=config,
+        activation_dir=activation_dir,
+        effective_val_activation_dir=effective_val_activation_dir,
+        max_train_samples_req=args.max_train_samples,
+        max_val_samples_req=args.max_val_samples,
+        log=log
+    )
 
     steps_per_epoch = len(train_loader)
     if steps_per_epoch == 0: # Should not happen if dataset is not empty and batch_size > 0
@@ -266,10 +310,51 @@ def main() -> None:  # noqa: D401
     if val_loader:
         log.info("Dataset split – train: %d | val: %d", len(train_ds), len(val_ds))
 
+    # Initialize models using new config flags
+    decoder_config = DecoderConfig(
+        model_name=model_name,
+        n_prompt_tokens=config['decoder_n_prompt_tokens'],
+        train_base_model=decoder_train_cfg.get('base_model', False),
+        train_projection_layer=decoder_train_cfg.get('projection_layer', True),
+        train_output_head=decoder_train_cfg.get('output_head', True)
+    )
+    dec_raw = Decoder(decoder_config)
 
-    dec_raw = Decoder(DecoderConfig(model_name=model_name, n_prompt_tokens=config['decoder_n_prompt_tokens']))
-    enc_raw = Encoder(model_name)
+    encoder_config = EncoderConfig(
+        model_name=model_name,
+        train_base_model=encoder_train_cfg.get('base_model', False),
+        train_projection_layer=encoder_train_cfg.get('projection_layer', True)
+    )
+    enc_raw = Encoder(encoder_config)
 
+    # ------------------------------------------------------------------
+    # Tokenizer & vocab-size-based resizing (do this BEFORE optional torch.compile)
+    # ------------------------------------------------------------------
+    tokenizer_name = config.get("tokenizer_name", model_name)
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    log.info(f"Tokenizer name: {tokenizer_name}")
+
+    new_vocab_size = tokenizer.vocab_size
+
+    from lens.utils.embedding_remap import remap_embeddings
+    base_tok = AutoTokenizer.from_pretrained(model_name)
+
+    remap_embeddings(dec_raw.base, base_tok, tokenizer)
+    remap_embeddings(enc_raw.base, base_tok, tokenizer)
+    log.info("Remapped Decoder & Encoder embedding matrices to new tokenizer")
+
+    # Reinitialise prompt ids to ensure they are within new vocab
+    dec_raw.set_prompt(config.get("decoder_prompt", "Explain: "), tokenizer)
+
+    # Ensure Decoder's standalone LM head matches new vocab
+    if dec_raw.out.weight.size(0) != new_vocab_size:
+        d_model = dec_raw.base.config.hidden_size
+        dec_raw.out = nn.Linear(d_model, new_vocab_size, bias=False)
+        with torch.no_grad():
+            dec_raw.out.weight.copy_(dec_raw.base.get_output_embeddings().weight)
+        log.info("Resized Decoder.out to new vocab size")
+
+    # Now compile models if requested
     if config.get('compile_models', True):
         log.info("Compiling models")
         dec = torch.compile(dec_raw).to(device)
@@ -279,15 +364,54 @@ def main() -> None:  # noqa: D401
         dec = dec_raw.to(device)
         enc = enc_raw.to(device)
 
+    # Original model wrapper (remap after creation)
     orig = OrigWrapper(model_name, load_in_8bit=False)
+    remap_embeddings(orig.model, base_tok, tokenizer)
+    log.info("Remapped Orig model embeddings to new tokenizer")
     orig.model.to(device)
-    trainable_params = [p for p in dec.parameters()] + [p for p in enc.parameters()]
 
-    groups = param_groups(dec, learning_rate) + param_groups(enc, learning_rate)
-    log.info(f"Total number of parameters: {sum(p['params'][0].numel() for p in groups)}") # Assuming p['params'] is a list with one tensor
-    opt = torch.optim.AdamW(groups)
-    # gradscaler takes device not device_type (Note: This comment is from original code. Standard GradScaler does not take 'device'.)
-    scaler = GradScaler(enabled=device.type == "cuda") # Removed `device="cuda"` as it's not a standard param for GradScaler
+    # Consolidate all parameters from dec and enc that require gradients.
+    # This list is used for gradient clipping and for parameter counting.
+    trainable_params = [p for p in dec.parameters() if p.requires_grad] + \
+                       [p for p in enc.parameters() if p.requires_grad]
+    
+    # Calculate and log parameter counts
+    total_trainable_params_val = sum(p.numel() for p in trainable_params)
+    num_params_orig_total = sum(p.numel() for p in orig.model.parameters()) # Orig model is frozen
+
+    log.info(f"Total trainable parameters (Decoder + Encoder): {total_trainable_params_val:,}")
+    num_params_dec_base_trainable = sum(p.numel() for n, p in dec.named_parameters() if p.requires_grad and 'base' in n)
+    num_params_dec_proj_trainable = sum(p.numel() for n, p in dec.named_parameters() if p.requires_grad and 'proj' in n)
+    num_params_dec_out_trainable = sum(p.numel() for n, p in dec.named_parameters() if p.requires_grad and 'out' in n)
+    num_params_enc_base_trainable = sum(p.numel() for n, p in enc.named_parameters() if p.requires_grad and 'base' in n)
+    num_params_enc_proj_trainable = sum(p.numel() for n, p in enc.named_parameters() if p.requires_grad and 'proj' in n)
+
+    log.info(f"  Decoder base trainable: {num_params_dec_base_trainable:,} (Config: {decoder_config.train_base_model})")
+    log.info(f"  Decoder proj trainable: {num_params_dec_proj_trainable:,} (Config: {decoder_config.train_projection_layer})")
+    log.info(f"  Decoder out trainable: {num_params_dec_out_trainable:,} (Config: {decoder_config.train_output_head})")
+    log.info(f"  Encoder base trainable: {num_params_enc_base_trainable:,} (Config: {encoder_config.train_base_model})")
+    log.info(f"  Encoder proj trainable: {num_params_enc_proj_trainable:,} (Config: {encoder_config.train_projection_layer})")
+
+    log.info(f"Original LLM (frozen) parameters: {num_params_orig_total:,}")
+    log.info(f"Hyperparameters: lm_weight={lm_weight}, kl_base_weight={kl_base_weight}, entropy_weight={entropy_weight}")
+    log.info(f"Learning rate: {learning_rate}, Projection LR Multiplier: {projection_lr_multiplier}")
+
+    
+    # Create optimizer groups with potentially different LRs
+    optimizer_groups = param_groups([dec, enc], learning_rate, projection_lr_multiplier)
+
+    # Verify that the number of parameters in optimizer groups matches the count from trainable_params list.
+    num_params_in_optimizer_groups = sum(p.numel() for group in optimizer_groups for p in group['params'])
+    if total_trainable_params_val != num_params_in_optimizer_groups:
+        log.warning(
+            f"Parameter count mismatch: sum of p.numel() for trainable_params is {total_trainable_params_val}, "
+            f"but optimizer groups sum to {num_params_in_optimizer_groups}. "
+            "Check requires_grad flags and param grouping logic."
+        )
+
+    opt = torch.optim.AdamW(optimizer_groups)
+    # GradScaler enabled only when using CUDA
+    scaler = GradScaler(enabled=(device.type == "cuda"))
 
     start_step = 0
     if args.resume:
@@ -297,13 +421,32 @@ def main() -> None:  # noqa: D401
         start_step = int(rec.get("step", -1)) + 1 # Resume from the next step
         log.info(f"Resuming training from step {start_step}")
 
-
+    epoch_decoded_tokens = []  # Initialize accumulator for decoded tokens per epoch
     step_iter = iter(train_loader)
     for step in range(start_step, max_steps):
+        current_epoch_num = (step // steps_per_epoch) + 1 if steps_per_epoch > 0 else 1
         try:
             batch = next(step_iter)
         except StopIteration:
-            # Epoch finished, re-initialize data loader
+            # Epoch finished, log token stats, then re-initialize data loader
+            if epoch_decoded_tokens:
+                token_counts = Counter(epoch_decoded_tokens)
+                if token_counts:
+                    most_common_token_id, most_common_count = token_counts.most_common(1)[0]
+                    total_tokens_in_epoch = len(epoch_decoded_tokens)
+                    frequency = most_common_count / total_tokens_in_epoch
+                    log.info(
+                        f"Epoch {current_epoch_num} ended. Most common token: ID {most_common_token_id} = `{tokenizer.decode([most_common_token_id])}` "
+                        f"(Count: {most_common_count}/{total_tokens_in_epoch}, Freq: {frequency:.4f})"
+                    )
+                    log_metrics({
+                        "epoch_stats/most_common_token_id": most_common_token_id,
+                        "epoch_stats/most_common_token_count": most_common_count,
+                        "epoch_stats/most_common_token_freq": frequency,
+                        "epoch_stats/total_tokens_in_epoch": total_tokens_in_epoch,
+                    }, step=step) # Log with the current step, which marks the end of the epoch
+            
+            epoch_decoded_tokens = [] # Reset for the next epoch
             step_iter = iter(train_loader)
             batch = next(step_iter)
 
@@ -312,7 +455,11 @@ def main() -> None:  # noqa: D401
 
         opt.zero_grad(set_to_none=True)
 
-        cast_ctx = autocast(device_type=device.type, dtype=torch.bfloat16, enabled=device.type == "cuda") if device.type == "cuda" else nullcontext()
+        if device.type == "cuda":
+            preferred_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            cast_ctx = autocast(device_type="cuda", dtype=preferred_dtype)
+        else:
+            cast_ctx = nullcontext()
         with cast_ctx:
             current_tau = get_schedule_value(config['gumbel_tau_schedule'], step, max_steps)
             current_alpha = get_schedule_value(config['alpha_schedule'], step, max_steps)
@@ -324,12 +471,16 @@ def main() -> None:  # noqa: D401
                     "tau": current_tau,
                     "T_text": t_text,
                     "alpha": current_alpha,
-                    "ce_weight": ce_weight,
+                    "lm_weight": lm_weight,
                     "kl_base_weight": kl_base_weight,
                     "entropy_weight": entropy_weight,
                 },
             )
             loss = losses["total"]
+            
+            # Accumulate decoded tokens from the current step
+            if "decoded_tokens_batch" in losses:
+                epoch_decoded_tokens.extend(losses["decoded_tokens_batch"].tolist())
 
         if device.type == "cuda":
             scaler.scale(loss).backward()
@@ -358,9 +509,6 @@ def main() -> None:  # noqa: D401
 
         lr_current = opt.param_groups[0]["lr"]
 
-        current_epoch_num = (step // steps_per_epoch) + 1 if steps_per_epoch > 0 else 1
-
-
         # Log metrics at specified interval or at the last step
         if step % log_interval == 0 or step == max_steps - 1:
             log_msg_parts = [
@@ -368,7 +516,7 @@ def main() -> None:  # noqa: D401
                 f"Step {step}/{max_steps-1}", # max_steps-1 is the last step index
                 f"loss {loss.item():.4f}",
                 f"mse {losses['mse'].item():.4f}",
-                f"ce {losses['ce'].item():.4f}",
+                f"lm {losses['lm'].item():.4f}",
                 f"kl {losses['kl'].item():.4f}",
                 f"entropy {losses['entropy'].item():.4f}",
                 f"tau {current_tau:.3f}",
@@ -379,12 +527,12 @@ def main() -> None:  # noqa: D401
             metrics_to_log = {
                 "loss/total": loss.item(),
                 "loss/mse": losses["mse"].item(),
-                "loss/ce": losses["ce"].item(),
+                "loss/lm": losses["lm"].item(),
                 "loss/kl": losses["kl"].item(),
                 "loss/entropy": losses["entropy"].item(),
                 "params/tau": current_tau,
                 "params/alpha": current_alpha,
-                "params/ce_w": ce_weight,
+                "params/lm_w": lm_weight,
                 "params/kl_w": kl_base_weight,
                 "params/entropy_w": entropy_weight,
                 "optim/lr": lr_current,
@@ -420,7 +568,7 @@ def main() -> None:  # noqa: D401
         if val_loader and val_interval > 0 and step > 0 and step % val_interval == 0:
             dec.eval()
             enc.eval()
-            val_loss = val_mse = val_ce = val_kl = 0.0
+            val_loss = val_mse = val_lm = val_kl = 0.0
             val_seen = 0
             with torch.no_grad():
                 for vbatch in val_loader:
@@ -429,7 +577,7 @@ def main() -> None:  # noqa: D401
                         "tau": get_schedule_value(config['gumbel_tau_schedule'], step, max_steps),
                         "T_text": t_text,
                         "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps),
-                        "ce_weight": ce_weight,
+                        "lm_weight": lm_weight,
                         "kl_base_weight": kl_base_weight,
                         "entropy_weight": entropy_weight,
                     }
@@ -437,20 +585,20 @@ def main() -> None:  # noqa: D401
                     bsz = vbatch["A"].size(0)
                     val_loss += v_losses["total"].item() * bsz
                     val_mse  += v_losses["mse"].item()   * bsz
-                    val_ce   += v_losses["ce"].item()    * bsz
+                    val_lm   += v_losses["lm"].item()    * bsz
                     val_kl   += v_losses["kl"].item()    * bsz
                     val_seen += bsz
             avg_val_loss = val_loss / val_seen if val_seen else float("nan")
             avg_val_mse  = val_mse  / val_seen if val_seen else float("nan")
-            avg_val_ce   = val_ce   / val_seen if val_seen else float("nan")
+            avg_val_lm   = val_lm   / val_seen if val_seen else float("nan")
             avg_val_kl   = val_kl   / val_seen if val_seen else float("nan")
             log.info(
-                f"Validation – loss {avg_val_loss:.4f}, mse {avg_val_mse:.4f}, ce {avg_val_ce:.4f}, kl {avg_val_kl:.4f}"
+                f"Validation – loss {avg_val_loss:.4f}, mse {avg_val_mse:.4f}, lm {avg_val_lm:.4f}, kl {avg_val_kl:.4f}"
             )
             log_metrics({
                 "eval/loss/total": avg_val_loss,
                 "eval/loss/mse":    avg_val_mse,
-                "eval/loss/ce":     avg_val_ce,
+                "eval/loss/lm":     avg_val_lm,
                 "eval/loss/kl":     avg_val_kl,
             }, step=step)
             dec.train()
