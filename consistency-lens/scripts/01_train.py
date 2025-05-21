@@ -281,6 +281,7 @@ def main() -> None:  # noqa: D401
 
     orig = OrigWrapper(model_name, load_in_8bit=False)
     orig.model.to(device)
+    trainable_params = [p for p in dec.parameters()] + [p for p in enc.parameters()]
 
     groups = param_groups(dec, learning_rate) + param_groups(enc, learning_rate)
     log.info(f"Total number of parameters: {sum(p['params'][0].numel() for p in groups)}") # Assuming p['params'] is a list with one tensor
@@ -332,12 +333,31 @@ def main() -> None:  # noqa: D401
 
         if device.type == "cuda":
             scaler.scale(loss).backward()
+            scaler.unscale_(opt)
+            grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, float("inf"))
+            param_before = [p.detach().clone() for p in trainable_params]
             scaler.step(opt)
             scaler.update()
         else:
             loss.backward()
+            grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, float("inf"))
+            param_before = [p.detach().clone() for p in trainable_params]
             opt.step()
-        
+
+        with torch.no_grad():
+            upd_sq = 0.0
+            param_sq = 0.0
+            for p, prev in zip(trainable_params, param_before):
+                diff = p.data - prev
+                upd_sq += diff.pow(2).sum().item()
+                param_sq += p.data.pow(2).sum().item()
+            update_norm = math.sqrt(upd_sq)
+            param_norm = math.sqrt(param_sq)
+            update_ratio = update_norm / (param_norm + 1e-12)
+        del param_before
+
+        lr_current = opt.param_groups[0]["lr"]
+
         current_epoch_num = (step // steps_per_epoch) + 1 if steps_per_epoch > 0 else 1
 
 
@@ -367,6 +387,10 @@ def main() -> None:  # noqa: D401
                 "params/ce_w": ce_weight,
                 "params/kl_w": kl_base_weight,
                 "params/entropy_w": entropy_weight,
+                "optim/lr": lr_current,
+                "grads/norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else float(grad_norm),
+                "updates/norm": update_norm,
+                "updates/ratio": update_ratio,
             }
             if steps_per_epoch > 0:
                 metrics_to_log["epoch"] = current_epoch_num

@@ -16,7 +16,8 @@ dependencies = [
     "wandb>=0.16",
     "torch",
     "hf-transfer",
-    "datasets"
+    "datasets",
+    "pytest"
 ]
 
 [tool.setuptools]
