@@ -45,7 +45,7 @@ def _pad(seq: torch.Tensor, length: int, pad_id: int) -> torch.Tensor:
 
 def main() -> None:  # noqa: D401
     parser = argparse.ArgumentParser(description="Dump a minimal activation cache")
-    parser.add_argument("--model_name", type=str, default="sshleifer/tiny-gpt2")
+    parser.add_argument("--model_name", type=str, help="Override model_name from config.")
     parser.add_argument("--output_dir", type=str, default="consistency-lens/data/activations")
     parser.add_argument("--num_samples", type=int, help="Override number of samples, otherwise from config")
     parser.add_argument("--seq_len", type=int, help="Override sequence length, otherwise from config")
@@ -99,12 +99,15 @@ def main() -> None:  # noqa: D401
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+    tokenizer = AutoTokenizer.from_pretrained(cfg["model_name"])
     # Some tiny models (GPT-2) miss an explicit pad_token.
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(args.model_name)
+    logging.info(f"Tokenizer: {tokenizer}")
+    logging.info(f"Model name: {cfg['model_name']}")
+
+    model = AutoModelForCausalLM.from_pretrained(cfg["model_name"])
     model.eval()
 
     # ---------------------------------------------------------------------
