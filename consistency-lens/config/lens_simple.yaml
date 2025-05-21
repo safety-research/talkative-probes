@@ -1,0 +1,85 @@
+# Configuration for Consistency Lens training
+
+# Model parameters
+# model_name: "sshleifer/tiny-gpt2" # Base model for LLM_orig, Decoder, Encoder
+model_name: "roneneldan/TinyStories-3M"
+layer_l: 6                      # Target layer for activation extraction (LLM_orig)
+token_pos_p: 0                   # Target token position for activation extraction (LLM_orig) - currently fixed in MVP dumper
+
+# Decoder parameters
+decoder_n_prompt_tokens: 4       # Number of learnable prompt tokens for the Decoder
+decoder_prompt: "Explain: "       # Prompt for the Decoder
+
+# Training hyperparameters
+t_text: 1                        # Number of tokens to generate with the Decoder
+learning_rate: 1.0e-1
+batch_size: 4096                   # Effective batch size (adjust with gradient_accumulation_steps if using DeepSpeed)
+num_train_epochs: 3              # Or a fixed number of steps
+max_train_steps: 1600            # If not using epochs
+compile_models: false            # Wrap Decoder & Encoder with torch.compile if True
+log_interval: 10             # Log metrics every N training steps
+wandb_log_interval: 1         # Log metrics every N training steps to WandB
+
+# Gumbel-Softmax temperature (tau) schedule
+gumbel_tau_schedule:
+  type: "linear_decay"  # Options: constant, linear_decay, cosine_anneal, exponential_decay
+  start_value: 1.0
+  end_value: 1
+  num_steps: 1600       # Over how many training steps to apply the schedule
+
+# KL divergence loss weight (alpha) schedule
+alpha_schedule:
+  type: "constant"      # Options: constant, linear_warmup, etc.
+  value: 0.1            # For constant schedule
+  # For linear_warmup:
+  # start_value: 0.0
+  # end_value: 0.1
+  # num_steps: 50
+
+# Loss component weights (these are currently hardcoded in loop.py, could move here)
+# loss_ce_weight: 0.01
+# loss_kl_weight: 0.1 # This is superseded by alpha_schedule if used as the direct multiplier
+
+# Activation dumper config (for 00_dump_activations.py)
+activation_dumper:
+  num_samples: 2200000
+  seq_len: 64
+  use_hf_dataset: true
+  hf_dataset_name: "roneneldan/TinyStories"
+  hf_split: "train"
+  dataset_cache_dir: "consistency-lens/data/corpus/TinyStories"
+  output_dir: "consistency-lens/data/activations/TinyStoriesV2_train"
+  batch_size: 512
+  # Validation split dumping in the same run of 00_dump_activations.py
+  val_hf_split: "validation"
+  val_output_dir: "consistency-lens/data/activations/TinyStoriesV2_validation"
+  val_num_samples: 2000
+  # HuggingFace dataset loading options
+  # If 'use_hf_dataset' is true the dumper script will read the tiny 10-k subset of
+  # The Pile instead of the built-in toy prompts. Useful once the smoke test passes
+  # and we want more realistic activations.
+  # NOTE: the dumper currently loads the entire split into RAM; see TODO in the
+  #       script about switching to streaming=True for larger datasets.
+  # future option – not yet consumed by the script
+  # streaming: false
+
+# Validation activation directory (skip split when provided)
+val_activation_dir: "consistency-lens/data/activations/TinyStoriesV2_validation"
+
+# WandB configuration (can also be in wandb.yaml)
+wandb:
+  project: "consistency-lens-mvp"
+  mode: "online" # "online", "offline", "disabled"
+
+# Loss weights
+ce_weight: 0.01                 # Multiplier on cross-entropy term
+kl_base_weight: 1.0             # Base weight; final KL multiplier = kl_base_weight * alpha_schedule
+
+# Token entropy bonus (see loop.py). Positive values reward higher entropy to
+# avoid posterior collapse; set to 0.0 to disable.
+entropy_weight: 0.0
+
+# Validation split & scheduling
+val_fraction: 0.1               # Fraction of dataset for validation
+split_seed: 42                  # Random seed for train/val split
+val_interval: 100               # Run validation every N training steps

@@ -15,7 +15,8 @@ dependencies = [
     "deepspeed>=0.14",
     "wandb>=0.16",
     "torch",
-    "hf-transfer"
+    "hf-transfer",
+    "datasets"
 ]
 
 [tool.setuptools]

@@ -29,12 +29,12 @@ def collate(batch: List[dict]) -> dict:  # noqa: D401
     for k in keys:
         values = [b[k] for b in batch]
 
-        if k.endswith("_ids"):
-            pad_id = int(values[0].new_tensor(0).item())  # assume 0 is pad
-            max_len = max(v.size(0) for v in values)
-            padded = [_pad_1d(v, max_len, pad_id) for v in values]
-            out[k] = torch.stack(padded)
-        else:
-            out[k] = torch.stack(values)
+        # if k.endswith("_ids") or k.endswith("token_pos"):
+        #     pad_id = int(values[0].new_tensor(0).item())  # assume 0 is pad
+        #     max_len = max(v.size(0) for v in values)
+        #     padded = [_pad_1d(v, max_len, pad_id) for v in values]
+        #     out[k] = torch.stack(padded)
+        # else:
+        out[k] = torch.stack(values)
 
     return out

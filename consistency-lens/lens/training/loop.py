@@ -39,11 +39,31 @@ def train_step(  # noqa: D401
 
     loss_mse = torch.nn.functional.mse_loss(A_hat, A)
 
-    # ----------------------- language-model CE -------------------------------
-    logits = gen.raw_lm_logits  # (B, T, V)
-    targets = gen.hard_token_ids  # (B, T)
-    B, T, V = logits.shape
-    loss_ce = torch.nn.functional.cross_entropy(logits.view(B * T, V), targets.view(B * T))
+    ce_w = _loss_fns.get("ce_weight", 0.0) if _loss_fns else 0.0
+
+    # ----------------------- language-model CE ------------------------------
+    # We compute perplexity of the discrete tokens *under the frozen base LM*.
+    # This encourages the bottleneck text to look like ordinary language.
+    if ce_w > 0 and orig is not None:
+        ids = gen.hard_token_ids.detach()  # (B, T)
+        # Shift for next-token prediction; if T == 1 we skip CE.
+        if ids.size(1) > 1:
+            with torch.no_grad():
+                lm_logits = orig.model(input_ids=ids).logits  # (B, T, V)
+            lm_B, lm_T, V = lm_logits.shape
+            loss_ce = torch.nn.functional.cross_entropy(
+                lm_logits[:, :-1].contiguous().view(lm_B * (lm_T - 1), V),
+                ids[:, 1:].contiguous().view(lm_B * (lm_T - 1)),
+            )
+        else:
+            loss_ce = torch.tensor(0.0, device=A.device)
+    else:
+        loss_ce = torch.tensor(0.0, device=A.device)
+
+    # ------------------ entropy (optional regulariser) ---------------------
+    logits = gen.raw_lm_logits  # (B, T, V) from Decoder – still useful for entropy
+    probs = torch.softmax(logits, dim=-1)
+    entropy = (-probs * torch.log(probs + 1e-9)).sum(-1).mean()
 
     # ----------------------- KL (optional) -----------------------------------
     if orig is not None and all(k in batch for k in ("A_prime", "input_ids_A")):
@@ -59,6 +79,7 @@ def train_step(  # noqa: D401
         input_ids_batch = batch["input_ids_A"]
         layer_idx_batch = batch.get("layer_idx")  # (B,)
         token_pos_batch = batch.get("token_pos")  # (B,)
+        B = A.shape[0]
 
         logits_orig_chunks = []
         logits_target_chunks = []
@@ -100,14 +121,16 @@ def train_step(  # noqa: D401
         loss_kl = torch.tensor(0.0, device=A.device)
 
     alpha = _loss_fns.get("alpha", 0.1) if _loss_fns else 0.1
-    ce_w = _loss_fns.get("ce_weight", 0.01) if _loss_fns else 0.01
-    kl_base = _loss_fns.get("kl_base_weight", 1.0) if _loss_fns else 1.0
 
-    total_loss = ce_w * loss_ce + (kl_base * alpha) * loss_kl
+    kl_base = _loss_fns.get("kl_base_weight", 1.0) if _loss_fns else 1.0
+    ent_w = _loss_fns.get("entropy_weight", 0.0) if _loss_fns else 0.0
+
+    total_loss = ce_w * loss_ce + (kl_base * alpha) * loss_kl - ent_w * entropy
 
     return {
         "total": total_loss,
         "mse": loss_mse,  # For logging
         "ce": loss_ce,
         "kl": loss_kl,
+        "entropy": entropy,
     }
