@@ -56,6 +56,9 @@ class Decoder(nn.Module):
           can hand it to the Encoder directly.
         """
 
+        # Ensure dtype matches linear layer to avoid Half/Float mismatch during eval.
+        activation_input = activation_input.to(self.proj.weight.dtype)
+
         B, d_model = activation_input.shape
         device = activation_input.device
 

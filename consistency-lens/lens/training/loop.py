@@ -99,11 +99,11 @@ def train_step(  # noqa: D401
     else:
         loss_kl = torch.tensor(0.0, device=A.device)
 
-    alpha = _loss_fns["alpha"] if _loss_fns and "alpha" in _loss_fns else 0.1
+    alpha = _loss_fns.get("alpha", 0.1) if _loss_fns else 0.1
+    ce_w = _loss_fns.get("ce_weight", 0.01) if _loss_fns else 0.01
+    kl_base = _loss_fns.get("kl_base_weight", 1.0) if _loss_fns else 1.0
 
-    # README primary formula: loss_lm + current_alpha * loss_kl
-    # loss_lm is equivalent to our loss_ce here.
-    total_loss = loss_ce + alpha * loss_kl
+    total_loss = ce_w * loss_ce + (kl_base * alpha) * loss_kl
 
     return {
         "total": total_loss,

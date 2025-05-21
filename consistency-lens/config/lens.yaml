@@ -2,11 +2,12 @@
 
 # Model parameters
 model_name: "sshleifer/tiny-gpt2" # Base model for LLM_orig, Decoder, Encoder
-layer_l: 0                       # Target layer for activation extraction (LLM_orig)
+layer_l: 1                       # Target layer for activation extraction (LLM_orig)
 token_pos_p: 0                   # Target token position for activation extraction (LLM_orig) - currently fixed in MVP dumper
 
 # Decoder parameters
 decoder_n_prompt_tokens: 4       # Number of learnable prompt tokens for the Decoder
+decoder_prompt: "Explain: "       # Prompt for the Decoder
 
 # Training hyperparameters
 t_text: 8                        # Number of tokens to generate with the Decoder
@@ -14,6 +15,7 @@ learning_rate: 1.0e-3
 batch_size: 2                    # Effective batch size (adjust with gradient_accumulation_steps if using DeepSpeed)
 num_train_epochs: 3              # Or a fixed number of steps
 max_train_steps: 200             # If not using epochs
+compile_models: true            # Wrap Decoder & Encoder with torch.compile if True
 
 # Gumbel-Softmax temperature (tau) schedule
 gumbel_tau_schedule:
@@ -39,8 +41,25 @@ alpha_schedule:
 activation_dumper:
   num_samples: 32
   seq_len: 32
+  output_dir: "consistency-lens/data/activations"
+  # HuggingFace dataset loading options
+  # If 'use_hf_dataset' is true the dumper script will read the tiny 10-k subset of
+  # The Pile instead of the built-in toy prompts. Useful once the smoke test passes
+  # and we want more realistic activations.
+  # NOTE: the dumper currently loads the entire split into RAM; see TODO in the
+  #       script about switching to streaming=True for larger datasets.
+  use_hf_dataset: true
+  hf_dataset_name: "NeelNanda/pile-10k"
+  dataset_cache_dir: "consistency-lens/data/corpus/pile-10k"
+  # future option – not yet consumed by the script
+  # streaming: false
 
 # WandB configuration (can also be in wandb.yaml)
 wandb:
   project: "consistency-lens-mvp"
   mode: "offline" # "online", "offline", "disabled"
+
+# Loss weights
+ce_weight: 0.01                 # Multiplier on cross-entropy term
+kl_base_weight: 1.0             # Base weight; final KL multiplier = kl_base_weight * alpha_schedule
+compile_models: false            # Wrap Decoder & Encoder with torch.compile if True
