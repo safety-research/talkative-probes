@@ -20,9 +20,10 @@ class Generated(NamedTuple):
 class DecoderConfig:
     model_name: str
     n_prompt_tokens: int = 8
-    train_base_model: bool = False
-    train_projection_layer: bool = True
-    train_output_head: bool = True
+    base_model: bool = False         # YAML `base_model`
+    projection_layer: bool = True    # YAML `projection_layer`
+    output_head: bool = True         # YAML `output_head`
+    eye_init: bool = True            # YAML `eye_init`
 
 
 class Decoder(nn.Module):
@@ -49,13 +50,17 @@ class Decoder(nn.Module):
         self.base: PreTrainedModel = AutoModelForCausalLM.from_pretrained(cfg.model_name)
         # Configure trainability of the base model
         for p in self.base.parameters():
-            p.requires_grad_(cfg.train_base_model)
-
+            p.requires_grad_(cfg.base_model)
+        self.config = cfg
         d_model = self.base.config.hidden_size
         self.proj = nn.Linear(d_model, d_model, bias=False)
+        # Initialize as identity matrix
+        if cfg.eye_init:
+            nn.init.eye_(self.proj.weight)
+            log.info("Initialized projection layer as identity matrix")
         # Configure trainability of the input projection layer
         for p in self.proj.parameters():
-            p.requires_grad_(cfg.train_projection_layer)
+            p.requires_grad_(cfg.projection_layer)
 
         # The output head (self.out) maps hidden states to vocabulary logits.
         # This is essential for the Decoder to generate text.
@@ -77,22 +82,79 @@ class Decoder(nn.Module):
 
         # Configure trainability of the output head (separate from the base model)
         for p in self.out.parameters():
-            p.requires_grad_(cfg.train_output_head)
-
-        self.n_prompt = cfg.n_prompt_tokens
-        self.register_buffer(
-            "prompt_ids", torch.full((1, self.n_prompt), self.base.config.bos_token_id, dtype=torch.long)
-        )
+            p.requires_grad_(cfg.output_head)
+        # --- Prompt placeholders -------------------------------------------------
+        self.prompt_left_emb = None      # type: torch.Tensor | None
+        self.prompt_right_emb = None     # type: torch.Tensor | None
+        self.prompt_len = 0
+        self.prompt_text = []
+        # keep prompt_ids only for logging/debug convenience
+        self.register_buffer("prompt_ids", torch.empty(0, dtype=torch.long))
 
 
     def forward(self, *args: Any, **kwargs: Any):  # noqa: D401
         raise NotImplementedError
+
+    def swap_base_model(self, model_name_or_path: str, keep_projection: bool = True) -> None:
+        """Swap the base model with a different one (e.g., untrained version).
+        
+        Args:
+            model_name_or_path: Model identifier or path to load
+            keep_projection: Whether to keep the current projection layer weights
+        """
+        old_dtype = self.proj.weight.dtype
+        old_device = self.proj.weight.device
+        
+        # Store old projection weights if requested
+        if keep_projection:
+            old_proj_weight = self.proj.weight.data.clone()
+        
+        # Load new base model
+        self.base = AutoModelForCausalLM.from_pretrained(model_name_or_path)
+        self.base = self.base.to(old_device)
+        
+        # Re-apply trainability settings
+        for p in self.base.parameters():
+            p.requires_grad_(self.config.base_model)
+        
+        # Update output head dimensions if needed
+        d_model = self.base.config.hidden_size
+        vocab_size = self.base.config.vocab_size
+        
+        if self.out.out_features != vocab_size:
+            self.out = nn.Linear(d_model, vocab_size, bias=False).to(old_device)
+            # Initialize with new model's output embeddings
+            with torch.no_grad():
+                try:
+                    orig_out_w = self.base.get_output_embeddings().weight
+                except AttributeError:
+                    orig_out_w = self.base.lm_head.weight
+                if orig_out_w.shape == self.out.weight.shape:
+                    self.out.weight.copy_(orig_out_w)
+            
+            for p in self.out.parameters():
+                p.requires_grad_(self.config.output_head)
+        
+        # Restore projection weights if requested and dimensions match
+        if keep_projection and self.proj.weight.shape == (d_model, d_model):
+            self.proj.weight.data = old_proj_weight.to(old_dtype)
+        else:
+            # Reinitialize projection if dimensions changed
+            self.proj = nn.Linear(d_model, d_model, bias=False).to(old_device)
+            if self.config.eye_init:
+                nn.init.eye_(self.proj.weight)
+            for p in self.proj.parameters():
+                p.requires_grad_(self.config.projection_layer)
+        
+        log.info(f"Swapped base model to: {model_name_or_path}")
 
     def generate_soft(
         self,
         activation_input: torch.Tensor,
         max_length: int,
         gumbel_tau: float,
+        use_projection: bool = True,
+        print_prompt: bool = False,
     ) -> Generated:
         """Differentiable autoregressive sampling with Gumbel-Softmax.
 
@@ -100,27 +162,42 @@ class Decoder(nn.Module):
         * For *max_length* steps we generate soft tokens and feed them back in.
         * Returns the *text* part only (excludes the A_proj token) so caller
           can hand it to the Encoder directly.
+        
+        Args:
+            activation_input: Input activation tensor
+            max_length: Maximum generation length
+            gumbel_tau: Temperature for Gumbel-Softmax
+            use_projection: Whether to apply the projection layer to activation_input
+            print_prompt: Whether to print the prompt text with activation insertion point
         """
+        
+        if print_prompt and hasattr(self, 'prompt_text'):
+            print(f"Prompt template: {self.prompt_text}")
 
         # Ensure dtype matches linear layer to avoid Half/Float mismatch during eval.
+        self.prompt_left_emb = self.prompt_left_emb.to(activation_input.device)
+        self.prompt_right_emb = self.prompt_right_emb.to(activation_input.device)
         activation_input = activation_input.to(self.proj.weight.dtype)
 
         B, d_model = activation_input.shape
         device = activation_input.device
-
         # Embedding table reference once.
-        emb_table = self.base.get_input_embeddings().weight  # (V, d_model)
+        #emb_table = self.base.get_input_embeddings().weight  # (V, d_model)
+        emb_table = self.base.get_output_embeddings().weight  # (V, d_model)
 
-        # 0) optional textual prompt tokens
-        if self.n_prompt and self.n_prompt > 0:
-            prompt_emb = emb_table[self.prompt_ids.expand(B, -1)]  # (B, P, d_model)
+        # 0) prepend textual prompt (pre-computed at set_prompt)
+        parts = []
+        if self.prompt_left_emb is not None:
+            parts.append(self.prompt_left_emb.expand(B, -1, -1))
+        # 1) activation slot - optionally apply projection
+        if use_projection:
+            a_proj = self.proj(activation_input).unsqueeze(1)
         else:
-            prompt_emb = None
-
-        # 1) projected activation token
-        a_proj = self.proj(activation_input).unsqueeze(1)  # (B, 1, d_model)
-
-        seq_embs = torch.cat([prompt_emb, a_proj], dim=1) if prompt_emb is not None else a_proj
+            a_proj = activation_input.unsqueeze(1)
+        parts.append(a_proj)
+        if self.prompt_right_emb is not None:
+            parts.append(self.prompt_right_emb.expand(B, -1, -1))
+        seq_embs = torch.cat(parts, dim=1)
 
         logits_list = []
         hard_ids_list = []
@@ -133,6 +210,8 @@ class Decoder(nn.Module):
             # Use gumbel_softmax with hard=True for Straight-Through Estimation (STE)
             # Forward pass uses one-hot samples, backward pass uses soft probabilities.
             ste_token_dist = torch.nn.functional.gumbel_softmax(logits_t, tau=gumbel_tau, hard=True)
+            #KEEP FOR TESTING: 
+            #ste_token_dist = torch.nn.functional.softmax(logits_t, dim=-1)
             emb_t = ste_token_dist @ emb_table  # (B, d_model)
 
             seq_embs = torch.cat([seq_embs, emb_t.unsqueeze(1)], dim=1)
@@ -145,8 +224,8 @@ class Decoder(nn.Module):
         logits_seq = torch.stack(logits_list, dim=1)
         hard_ids = torch.stack(hard_ids_list, dim=1)
 
-        # Expose only generated text (exclude prompt & A_proj) embeddings
-        start_idx = 1 + (prompt_emb.shape[1] if prompt_emb is not None else 0)
+        # Expose only generated text (exclude prompt & A_proj)
+        start_idx = 1 + self.prompt_len  # 1 for A_proj
         text_embs = seq_embs[:, start_idx:]
 
         return Generated(text_embs, logits_seq, hard_ids)
@@ -155,16 +234,26 @@ class Decoder(nn.Module):
     # Prompt helpers
     # ------------------------------------------------------------------
 
-    def set_prompt(self, prompt: str, tokenizer) -> None:  # noqa: D401
-        """Tokenise *prompt* and store first *n_prompt* ids in ``prompt_ids``.
+    def set_prompt(self, prompt: str, tokenizer) -> None:
+        """Tokenise *prompt*, split on '<embed>', cache embeddings.
 
-        Extra tokens are truncated; shorter prompts are right-padded with BOS.
-        Call this **after** constructing the Decoder and once per run.
-        """
+        '<embed>' marks where the activation embedding is inserted."""
+        left_str, *right = prompt.split("<embed>")
+        right_str = right[0] if right else ""
 
-        toks = tokenizer(prompt, add_special_tokens=False).input_ids[: self.n_prompt]
-        if len(toks) < self.n_prompt:
-            toks = toks + [self.base.config.bos_token_id] * (self.n_prompt - len(toks))
+        left_ids  = tokenizer(left_str,  add_special_tokens=False).input_ids
+        right_ids = tokenizer(right_str, add_special_tokens=False).input_ids
+
+        # store ids for logging
+        ids = left_ids + [tokenizer.eos_token_id] + right_ids
+        # Properly update the registered buffer instead of reassigning
+        ids_tensor = torch.tensor(ids, dtype=torch.long, device=self.prompt_ids.device)
+        self.prompt_ids.resize_(len(ids))
+        self.prompt_ids.copy_(ids_tensor)
+        self.prompt_text = tokenizer.decode(left_ids) + '<embed>' + tokenizer.decode(right_ids)
 
         with torch.no_grad():
-            self.prompt_ids.copy_(torch.tensor([toks], dtype=self.prompt_ids.dtype, device=self.prompt_ids.device))
+            emb_table = self.base.get_output_embeddings().weight
+            self.prompt_left_emb  = emb_table[torch.tensor(left_ids,  device=emb_table.device)] if left_ids  else None
+            self.prompt_right_emb = emb_table[torch.tensor(right_ids, device=emb_table.device)] if right_ids else None
+            self.prompt_len = len(left_ids) + len(right_ids)

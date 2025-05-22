@@ -13,6 +13,7 @@ class OrigWrapper:
         self.model = AutoModelForCausalLM.from_pretrained(model_name, load_in_8bit=load_in_8bit)
         self.model.eval()
         self._monkeypatch_reshape_inputs()
+        self.valid_layer = False
 
     def forward_with_replacement(
         self,
@@ -26,9 +27,20 @@ class OrigWrapper:
         """Forward pass where hidden_state[layer_idx][:, token_pos] is replaced."""
 
         from contextlib import nullcontext
+        if not self.valid_layer:
+            try:
+                if layer_idx < self.model.config.num_hidden_layers:
+                    self.valid_layer = True
+                else:
+                    self.valid_layer = False
+            except AttributeError as e:
+                self.valid_layer = False
+                raise ValueError(f"AttributeError for layer {layer_idx}: {e}") from e
+            if not self.valid_layer:
+                raise ValueError(f"Invalid layer index: {layer_idx}")
+
 
         grad_ctx = torch.no_grad() if no_grad else nullcontext()
-
         with grad_ctx:
             def _swap_hook(_, __, output):  # noqa: ANN001
                 hidden = output[0]
@@ -39,9 +51,19 @@ class OrigWrapper:
                 return (hidden,) + output[1:]
 
             try:
-                target_block = self.model.transformer.h[layer_idx]  # type: ignore[attr-defined]
+                # Attempt to get the target block for hooking.
+                # Try LLaMA-style path first (e.g., model.model.layers[idx])
+                target_block = self.model.get_submodule(f"model.layers.{layer_idx}")
             except AttributeError:
-                target_block = self.model.get_submodule(f"transformer.h.{layer_idx}")
+                # Fallback to GPT-2-style paths if LLaMA-style fails
+                try:
+                    # Original primary attempt for GPT-2 (e.g., model.transformer.h[idx])
+                    target_block = self.model.transformer.h[layer_idx]  # type: ignore[attr-defined]
+                except AttributeError:
+                    # Original fallback for GPT-2
+                    target_block = self.model.get_submodule(f"transformer.h.{layer_idx}")
+                    # If this also fails, get_submodule will raise an AttributeError,
+                    # which is appropriate to signal an unsupported model structure.
 
             handle = target_block.register_forward_hook(_swap_hook)
             out = self.model(input_ids=input_ids)

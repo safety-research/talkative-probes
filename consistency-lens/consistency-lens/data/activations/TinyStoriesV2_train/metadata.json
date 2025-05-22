@@ -3,103 +3,395 @@
     "shards": [
         {
             "name": "shard_00000.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00001.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00002.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00003.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00004.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00005.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00006.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00007.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00008.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00009.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00010.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00011.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00012.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00013.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00014.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00015.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00016.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00017.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00018.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00019.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00020.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00021.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00022.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00023.pt",
-            "num_samples": 4096
+            "num_samples": 1024
         },
         {
             "name": "shard_00024.pt",
-            "num_samples": 1696
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00025.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00026.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00027.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00028.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00029.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00030.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00031.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00032.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00033.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00034.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00035.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00036.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00037.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00038.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00039.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00040.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00041.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00042.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00043.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00044.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00045.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00046.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00047.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00048.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00049.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00050.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00051.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00052.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00053.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00054.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00055.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00056.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00057.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00058.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00059.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00060.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00061.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00062.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00063.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00064.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00065.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00066.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00067.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00068.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00069.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00070.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00071.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00072.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00073.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00074.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00075.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00076.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00077.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00078.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00079.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00080.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00081.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00082.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00083.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00084.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00085.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00086.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00087.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00088.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00089.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00090.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00091.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00092.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00093.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00094.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00095.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00096.pt",
+            "num_samples": 1024
+        },
+        {
+            "name": "shard_00097.pt",
+            "num_samples": 672
         }
     ],
     "config": {
@@ -108,7 +400,7 @@
         "seq_len": 64,
         "layer_idx": 6,
         "model_name": "roneneldan/TinyStories-3M",
-        "tokenizer_name": "Qilex/tinyStories-10k-tokenizer",
+        "tokenizer_name": "roneneldan/TinyStories-3M",
         "use_hf_dataset": true,
         "hf_dataset_name": "roneneldan/TinyStories",
         "dataset_cache_dir": "consistency-lens/data/corpus/TinyStories",
