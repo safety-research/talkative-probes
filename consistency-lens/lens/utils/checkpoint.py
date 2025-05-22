@@ -10,12 +10,14 @@ import torch
 __all__ = ["save", "load"]
 
 
-def save(path: str | Path, models: Dict[str, torch.nn.Module], optim: torch.optim.Optimizer | None, step: int, **extra) -> None:  # noqa: D401
+def save(path: str | Path, models: Dict[str, torch.nn.Module], optim: torch.optim.Optimizer | None, step: int, scheduler: Any | None = None, **extra) -> None:  # noqa: D401
     """Serialize *models* + *optim* state_dicts and training metadata to *path*."""
 
     ckpt = {"step": step, "models": {k: m.state_dict() for k, m in models.items()}}
     if optim is not None:
         ckpt["optim"] = optim.state_dict()
+    if scheduler is not None:
+        ckpt["scheduler"] = scheduler.state_dict()
     ckpt.update(extra)
 
     path = Path(path)

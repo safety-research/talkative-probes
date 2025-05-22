@@ -10,8 +10,18 @@ import argparse
 import logging
 import math # For math.ceil if needed, or integer arithmetic for epochs
 from collections import Counter # Add this import
+from datetime import datetime
+import re
+import time
+import psutil
+try:
+    import GPUtil
+except ImportError:
+    GPUtil = None
 
 import torch
+# Enable TF32 for better performance on Ampere GPUs (A100, H100)
+torch.set_float32_matmul_precision('high')
 from lens.data.collate import collate
 from lens.data.dataset import ActivationDataset
 from lens.models.decoder import Decoder, DecoderConfig
@@ -21,14 +31,17 @@ from lens.training.loop import train_step
 from torch.utils.data import DataLoader, random_split
 from lens.training.optim import param_groups
 from lens.utils.logging import init as log_init, log as log_metrics
-from lens.training.schedules import get_schedule_value
+from lens.training.schedules import get_schedule_value, get_lr_scheduler
 from lens.utils.checkpoint_manager import CheckpointManager
 import yaml
 from lens.evaluation.verbose_samples import process_and_print_verbose_batch_samples
+from lens.evaluation.wandb_logger import verbose_samples_logger
 from transformers import AutoTokenizer # Not used in this selection
 from torch.amp import autocast, GradScaler
 from contextlib import nullcontext
 from pathlib import Path # This import is assumed to be at the module level. If not, it should be moved there.
+from tqdm import tqdm
+from collections import deque
 import math # For math.ceil
 import torch # For torch.utils.data, torch.Generator
 from torch.utils.data import DataLoader, random_split, Dataset, Subset # Explicit imports for clarity
@@ -37,6 +50,121 @@ from lens.data.dataset import ActivationDataset
 import logging # For type hinting Logger
 import torch.nn as nn
 from lens.utils.embedding_remap import remap_embeddings
+
+
+def extract_dataset_info(activation_dir: str) -> dict:
+    """Extract model name, layer, and dataset info from activation directory path.
+    
+    Expected format: .../dataset_name/model_name/layer_X/split_name/
+    """
+    parts = Path(activation_dir).parts
+    info = {
+        'model_name': None,
+        'layer': None,
+        'dataset': None,
+        'split': None
+    }
+    
+    # Find layer_X pattern
+    for i, part in enumerate(parts):
+        if part.startswith('layer_'):
+            layer_match = re.match(r'layer_(\d+)', part)
+            if layer_match:
+                info['layer'] = int(layer_match.group(1))
+                # Model name should be one level up
+                if i > 0:
+                    info['model_name'] = parts[i-1]
+                # Dataset should be two levels up
+                if i > 1:
+                    info['dataset'] = parts[i-2]
+                # Split should be one level down
+                if i < len(parts) - 1:
+                    info['split'] = parts[i+1]
+                break
+    
+    return info
+
+
+def get_system_metrics(device: torch.device) -> dict:
+    """Get current system performance metrics."""
+    metrics = {}
+    
+    # CPU metrics
+    metrics['cpu_percent'] = psutil.cpu_percent(interval=0.1)
+    metrics['memory_percent'] = psutil.virtual_memory().percent
+    
+    # GPU metrics if available
+    if device.type == 'cuda' and GPUtil is not None:
+        try:
+            gpus = GPUtil.getGPUs()
+            if gpus and device.index is not None and device.index < len(gpus):
+                gpu = gpus[device.index]
+                metrics['gpu_utilization'] = gpu.load * 100
+                metrics['gpu_memory_percent'] = gpu.memoryUtil * 100
+                metrics['gpu_temperature'] = gpu.temperature
+            elif gpus and len(gpus) > 0:
+                # If no specific device index, use first GPU
+                gpu = gpus[0]
+                metrics['gpu_utilization'] = gpu.load * 100
+                metrics['gpu_memory_percent'] = gpu.memoryUtil * 100
+                metrics['gpu_temperature'] = gpu.temperature
+        except:
+            # GPUtil might fail in some environments
+            pass
+    
+    return metrics
+
+
+def format_time(seconds: float) -> str:
+    """Format seconds into human readable time."""
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    elif seconds < 3600:
+        minutes = seconds / 60
+        return f"{minutes:.1f}m"
+    else:
+        hours = seconds / 3600
+        return f"{hours:.1f}h"
+
+
+def generate_run_name(config: dict, dataset_info: dict, resume_from: str = None) -> str:
+    """Generate a descriptive run name based on config and dataset info."""
+    components = []
+    
+    # Model name (abbreviated)
+    if dataset_info['model_name']:
+        model_short = dataset_info['model_name'].replace('/', '_').split('_')[-1]
+        components.append(model_short)
+    
+    # Layer
+    if dataset_info['layer'] is not None:
+        components.append(f"L{dataset_info['layer']}")
+    
+    # Dataset (abbreviated)
+    if dataset_info['dataset']:
+        dataset_short = dataset_info['dataset'].replace('_', '').replace('-', '')
+        if len(dataset_short) > 10:
+            dataset_short = ''.join([w[0].upper() for w in dataset_short.split()])
+        components.append(dataset_short)
+    
+    # Key hyperparameters
+    lr = config.get('learning_rate', 1e-4)
+    components.append(f"lr{lr:.0e}".replace('e-0', 'e-').replace('e+0', 'e'))
+    
+    # Text position
+    t_text = config.get('t_text', 10)
+    components.append(f"t{t_text}")
+    
+    # If resuming, add 'resume'
+    if resume_from:
+        components.append("resume")
+    
+    # Add timestamp
+    timestamp = datetime.now().strftime("%m%d_%H%M")
+    components.append(timestamp)
+    
+    return "_".join(components)
+
 
 # Helper function to prepare datasets and dataloaders
 def _prepare_dataloaders(
@@ -206,6 +334,8 @@ def main() -> None:  # noqa: D401
     parser.add_argument("--val_interval", type=int, help="Validate every N steps") # Retained for use later in training loop
     parser.add_argument("--max_train_samples", type=int, help="Maximum number of training samples to load.")
     parser.add_argument("--max_val_samples", type=int, help="Maximum number of validation samples to load.")
+    parser.add_argument("--wandb_resume_id", type=str, help="WandB run ID to resume from (usually loaded from checkpoint)")
+    parser.add_argument("--run_name", type=str, help="Override the auto-generated run name")
     args = parser.parse_args()
 
     # ---------------------------------------------------------------
@@ -276,14 +406,63 @@ def main() -> None:  # noqa: D401
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Initialize W&B logging (if enabled in config)
-    # Pass the merged config (YAML + CLI overrides)
-    log_init(project=wandb_config.get('project', 'consistency-lens'), # Add default project name
-             config=config,  # Pass the potentially modified config dict
-             mode=wandb_config.get('mode', 'online')) # Add default mode
-
-    # Initialize checkpoint manager
+    # Extract dataset info from activation directory
+    dataset_info = extract_dataset_info(activation_dir)
+    
+    # Generate run name (or use override)
+    if args.run_name:
+        run_name = args.run_name
+        log.info(f"Using user-specified run name: {run_name}")
+    else:
+        run_name = generate_run_name(config, dataset_info, args.resume)
+    
+    # Update checkpoint output directory to include run name
+    checkpoint_config = config.get('checkpoint', {})
+    base_checkpoint_dir = Path(checkpoint_config.get('output_dir', 'outputs'))
+    run_checkpoint_dir = base_checkpoint_dir / run_name
+    checkpoint_config['output_dir'] = str(run_checkpoint_dir)
+    config['checkpoint'] = checkpoint_config
+    
+    # Initialize checkpoint manager with updated config
     checkpoint_manager = CheckpointManager(config, log)
+    
+    # Log run information
+    log.info("=" * 60)
+    log.info(f"Run Name: {run_name}")
+    log.info(f"Dataset: {dataset_info.get('dataset', 'unknown')}")
+    log.info(f"Model: {dataset_info.get('model_name', 'unknown')}")
+    log.info(f"Layer: {dataset_info.get('layer', 'unknown')}")
+    log.info(f"Checkpoint Dir: {run_checkpoint_dir}")
+    log.info("=" * 60)
+    
+    # Handle wandb resume
+    wandb_run_id = args.wandb_resume_id
+    wandb_resume_mode = None
+    
+    # If resuming from checkpoint and no explicit wandb ID provided, try to load from checkpoint
+    if args.resume and not wandb_run_id:
+        # Peek into checkpoint to get wandb run ID if available
+        checkpoint_data = torch.load(args.resume, map_location='cpu')
+        wandb_run_id = checkpoint_data.get('wandb_run_id')
+        if wandb_run_id:
+            log.info(f"Found wandb run ID in checkpoint: {wandb_run_id}")
+            wandb_resume_mode = "must"  # Force resume of the exact run
+    
+    # Initialize W&B logging (if enabled in config)
+    wandb_init_kwargs = {
+        'project': wandb_config.get('project', 'consistency-lens'),
+        'name': run_name,  # Use our generated run name
+        'config': config,
+        'mode': wandb_config.get('mode', 'online')
+    }
+    
+    # Add resume parameters if we have a run ID
+    if wandb_run_id:
+        wandb_init_kwargs['id'] = wandb_run_id
+        wandb_init_kwargs['resume'] = wandb_resume_mode or "allow"
+    
+    # Initialize wandb and get the run ID
+    current_wandb_run_id = log_init(**wandb_init_kwargs)
 
     # Prepare DataLoaders by calling the helper function
     train_loader, val_loader, train_ds, val_ds = _prepare_dataloaders(
@@ -459,13 +638,32 @@ def main() -> None:  # noqa: D401
     opt = torch.optim.AdamW(optimizer_groups)
     # GradScaler enabled only when using CUDA
     scaler = GradScaler(enabled=(device.type == "cuda"))
+    
+    # Create learning rate scheduler
+    lr_scheduler_config = config.get('lr_scheduler', {'type': 'constant'})
+    lr_scheduler = get_lr_scheduler(opt, lr_scheduler_config, max_steps)
+    if lr_scheduler:
+        log.info(f"Using LR scheduler: {lr_scheduler_config['type']}")
+        if lr_scheduler_config.get('warmup_steps', 0) > 0:
+            log.info(f"  with {lr_scheduler_config['warmup_steps']} warmup steps")
 
     start_step = 0
+    scheduler_last_epoch = -1
     if args.resume:
         # Checkpoint stores the last completed step
         rec = checkpoint_manager.load_checkpoint(args.resume, models={"dec": dec, "enc": enc}, optimizer=opt, map_location=device)
         start_step = int(rec.get("step", -1)) + 1 # Resume from the next step
+        scheduler_last_epoch = int(rec.get("step", -1))  # Scheduler uses last completed step
         log.info(f"Resuming training from step {start_step}")
+        
+        # Load scheduler state if available
+        if lr_scheduler and 'scheduler' in rec:
+            try:
+                lr_scheduler.load_state_dict(rec['scheduler'])
+                log.info("Loaded scheduler state from checkpoint")
+            except Exception as e:
+                log.warning(f"Failed to load scheduler state: {e}. Creating new scheduler.")
+                lr_scheduler = get_lr_scheduler(opt, lr_scheduler_config, max_steps, last_epoch=scheduler_last_epoch)
 
     epoch_decoded_tokens = []  # Initialize accumulator for decoded tokens per epoch
     step_iter = iter(train_loader)
@@ -474,7 +672,21 @@ def main() -> None:  # noqa: D401
     # Track validation loss for best checkpoint
     best_val_loss = float('inf')
     
-    for step in range(start_step, max_steps):
+    # Performance tracking
+    step_times = deque(maxlen=100)  # Track last 100 step times
+    start_time = time.time()
+    last_log_time = start_time
+    
+    # Create progress bar
+    pbar = tqdm(range(start_step, max_steps), 
+                initial=start_step, 
+                total=max_steps,
+                desc=f"Training",
+                ncols=120,
+                leave=True)
+    
+    for step in pbar:
+        step_start_time = time.time()
         current_epoch_num = (step // steps_per_epoch) + 1 if steps_per_epoch > 0 else 1
         epoch_just_finished = False
         
@@ -563,24 +775,47 @@ def main() -> None:  # noqa: D401
             param_norm = math.sqrt(param_sq)
             update_ratio = update_norm / (param_norm + 1e-12)
         del param_before
+        
+        # Step the learning rate scheduler
+        if lr_scheduler:
+            lr_scheduler.step()
 
         lr_current = opt.param_groups[0]["lr"]
+        
+        # Track step time
+        step_time = time.time() - step_start_time
+        step_times.append(step_time)
+        
+        # Calculate performance metrics
+        avg_step_time = sum(step_times) / len(step_times)
+        steps_per_second = 1.0 / avg_step_time if avg_step_time > 0 else 0
+        samples_per_second = steps_per_second * batch["A"].size(0)
+        tokens_per_second = samples_per_second * config.get('t_text', 10)
+        
+        # Update progress bar with current metrics
+        pbar.set_postfix({
+            'loss': f'{loss.item():.4f}',
+            'lr': f'{lr_current:.1e}',
+            'samples/s': f'{samples_per_second:.1f}',
+            'eta': format_time((max_steps - step - 1) * avg_step_time)
+        })
 
         # Log metrics at specified interval or at the last step
         if step % log_interval == 0 or step == max_steps - 1:
+            # Only log to file/console at intervals to reduce clutter
             log_msg_parts = [
-                f"Epoch {current_epoch_num}/{num_epochs_total_approx}" if steps_per_epoch > 0 else f"Step {step}",
-                f"Step {step}/{max_steps-1}", # max_steps-1 is the last step index
+                f"Step {step}/{max_steps-1}",
                 f"loss {loss.item():.4f}",
-                f"mse {losses['mse'].item():.4f}",
-                f"lm {losses['lm'].item():.4f}",
-                f"kl {losses['kl'].item():.4f}",
-                f"entropy {losses['entropy'].item():.4f}",
-                f"tau {current_tau:.3f}",
-                f"alpha {current_alpha:.3f}",
+                f"lr {lr_current:.1e}",
+                f"{samples_per_second:.1f} samples/s",
             ]
             log.info(" | ".join(log_msg_parts))
         if step % wandb_log_interval == 0 or step == max_steps - 1:
+            # Get system metrics periodically (not every step to avoid overhead)
+            sys_metrics = {}
+            if step % (wandb_log_interval * 10) == 0:  # Every 10 wandb logs
+                sys_metrics = get_system_metrics(device)
+            
             metrics_to_log = {
                 "loss/total": loss.item(),
                 "loss/mse": losses["mse"].item(),
@@ -596,7 +831,26 @@ def main() -> None:  # noqa: D401
                 "grads/norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else float(grad_norm),
                 "updates/norm": update_norm,
                 "updates/ratio": update_ratio,
+                # Performance metrics
+                "performance/steps_per_second": steps_per_second,
+                "performance/samples_per_second": samples_per_second,
+                "performance/tokens_per_second": tokens_per_second,
+                "performance/avg_step_time": avg_step_time,
             }
+            
+            # Add system metrics if available
+            if sys_metrics:
+                metrics_to_log.update({
+                    "system/cpu_percent": sys_metrics.get('cpu_percent', 0),
+                    "system/memory_percent": sys_metrics.get('memory_percent', 0),
+                })
+                if 'gpu_utilization' in sys_metrics:
+                    metrics_to_log.update({
+                        "system/gpu_utilization": sys_metrics['gpu_utilization'],
+                        "system/gpu_memory_percent": sys_metrics['gpu_memory_percent'],
+                        "system/gpu_temperature": sys_metrics['gpu_temperature'],
+                    })
+            
             if steps_per_epoch > 0:
                 metrics_to_log["epoch"] = current_epoch_num
             
@@ -625,10 +879,12 @@ def main() -> None:  # noqa: D401
                 models={"dec": dec_raw if config.get('compile_models', True) else dec, 
                         "enc": enc_raw if config.get('compile_models', True) else enc},
                 optimizer=opt,
+                scheduler=lr_scheduler,
                 metrics=current_metrics,
                 config=config,
                 tau=current_tau,
                 alpha=current_alpha,
+                wandb_run_id=current_wandb_run_id,
             )
         
         # Check if we should save based on epoch completion
@@ -651,10 +907,12 @@ def main() -> None:  # noqa: D401
                 models={"dec": dec_raw if config.get('compile_models', True) else dec, 
                         "enc": enc_raw if config.get('compile_models', True) else enc},
                 optimizer=opt,
+                scheduler=lr_scheduler,
                 metrics=current_metrics,
                 config=config,
                 tau=current_tau,
                 alpha=current_alpha,
+                wandb_run_id=current_wandb_run_id,
             )
 
         # run validation at interval
@@ -719,11 +977,13 @@ def main() -> None:  # noqa: D401
                     models={"dec": dec_raw if config.get('compile_models', True) else dec, 
                             "enc": enc_raw if config.get('compile_models', True) else enc},
                     optimizer=opt,
+                    scheduler=lr_scheduler,
                     metrics=val_metrics,
                     config=config,
                     val_loss=avg_val_loss,
                     tau=current_tau,
                     alpha=current_alpha,
+                    wandb_run_id=current_wandb_run_id,
                 )
                 
             dec.train()
@@ -770,7 +1030,7 @@ def main() -> None:  # noqa: D401
                 }
                 
                 # Process verbose samples
-                num_printed = process_and_print_verbose_batch_samples(
+                result = process_and_print_verbose_batch_samples(
                     batch=batch,  # Use current batch
                     cfg=config,
                     models={"dec": dec, "enc": enc},
@@ -782,8 +1042,22 @@ def main() -> None:  # noqa: D401
                     top_n_analysis=verbose_config.get('top_n_predictions', 3),
                     printed_count_so_far=0,
                     generate_continuation=verbose_config.get('generate_continuation', True),
-                    continuation_tokens=verbose_config.get('continuation_tokens', 30)
+                    continuation_tokens=verbose_config.get('continuation_tokens', 30),
+                    return_structured_data=True
                 )
+                
+                # Handle return value based on whether we got structured data
+                if isinstance(result, tuple):
+                    num_printed, samples_data = result
+                    # Log to wandb if available
+                    if samples_data and current_wandb_run_id:
+                        verbose_samples_logger.log_verbose_samples(
+                            samples_data, 
+                            step=step,
+                            table_name="training_verbose_samples"
+                        )
+                else:
+                    num_printed = result
                 
                 dec.train()
                 enc.train()
@@ -803,11 +1077,41 @@ def main() -> None:  # noqa: D401
             models={"dec": dec_raw if config.get('compile_models', True) else dec, 
                     "enc": enc_raw if config.get('compile_models', True) else enc},
             optimizer=opt,
+            scheduler=lr_scheduler,
             metrics=final_metrics,
             config=config,
+            tau=current_tau,
+            alpha=current_alpha,
+            wandb_run_id=current_wandb_run_id,
         )
 
-    log.info("Training finished after %d steps.", max_steps)
+    # Close progress bar
+    pbar.close()
+    
+    # Training summary
+    log.info("=" * 60)
+    log.info("TRAINING COMPLETE")
+    log.info("=" * 60)
+    log.info(f"Run Name: {run_name}")
+    log.info(f"Total Steps: {max_steps}")
+    log.info(f"Final Step: {step}")
+    log.info(f"Checkpoint Directory: {run_checkpoint_dir}")
+    
+    # Find best checkpoint if tracking
+    best_ckpt_path = checkpoint_manager.get_best_checkpoint_path()
+    if best_ckpt_path:
+        log.info(f"Best Checkpoint: {best_ckpt_path.name}")
+    
+    # Log final hyperparameters
+    log.info(f"Final tau: {current_tau:.4f}")
+    log.info(f"Final alpha: {current_alpha:.4f}")
+    log.info(f"Final LR: {lr_current:.2e}")
+    
+    # If wandb is active, log the run URL
+    if current_wandb_run_id:
+        log.info(f"WandB Run ID: {current_wandb_run_id}")
+    
+    log.info("=" * 60)
 
 
 if __name__ == "__main__":

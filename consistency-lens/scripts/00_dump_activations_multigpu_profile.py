@@ -1,8 +1,4 @@
-"""Multi-GPU optimized activation dumper for 8x H100 nodes.
-
-Distributes model inference across multiple GPUs for efficient activation extraction.
-Includes layer labeling in output directories and supports distributed processing.
-"""
+"""Multi-GPU optimized activation dumper with profiling for bottleneck analysis."""
 
 from __future__ import annotations
 
@@ -14,7 +10,6 @@ import json
 from pathlib import Path
 from typing import Iterator, Callable
 import os
-import socket
 import time
 
 import torch
@@ -24,18 +19,30 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
 from tqdm import tqdm
 
-# Enable tokenizer parallelism within each process (we handle multi-process coordination)
-os.environ["TOKENIZERS_PARALLELISM"] = "true"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Avoid tokenizer warnings in multi-process
 
-# Ensure PyTorch thread count honors OMP configuration (helpful for tokenization CPU usage)
+# Respect OMP thread setting for CPU-heavy stages
 try:
     _req_threads = int(os.environ.get("OMP_NUM_THREADS", "0"))
     if _req_threads > 0:
         torch.set_num_threads(_req_threads)
-        # Force HF tokenizers to use requested threads
-        os.environ["RAYON_NUM_THREADS"] = str(_req_threads)
+        os.environ.setdefault("RAYON_NUM_THREADS", str(_req_threads))
 except Exception:
     pass
+
+class Timer:
+    """Simple timer for profiling."""
+    def __init__(self):
+        self.times = {}
+    
+    def start(self, name):
+        self.times[name] = time.time()
+    
+    def end(self, name):
+        if name in self.times:
+            elapsed = time.time() - self.times[name]
+            return elapsed
+        return 0
 
 
 def setup_distributed():
@@ -49,9 +56,10 @@ def setup_distributed():
         world_size = 1
         local_rank_env = 0
 
+    # Map local rank to an actual GPU index (wrap-around if too many processes)
     num_cuda = torch.cuda.device_count()
     if num_cuda == 0:
-        effective_local_rank = -1
+        effective_local_rank = -1  # CPU fallback
     else:
         effective_local_rank = local_rank_env % num_cuda
 
@@ -73,7 +81,7 @@ def iter_hf_text_distributed(
     dataset_name: str, 
     cache_dir: str | None, 
     split: str, 
-    num_samples: int | None,
+    num_samples: int,
     rank: int,
     world_size: int
 ) -> Iterator[str]:
@@ -81,54 +89,34 @@ def iter_hf_text_distributed(
     if num_samples == 0:
         return iter([])
     
-    # If num_samples is None, process entire dataset
-    if num_samples is None:
-        # For streaming, we'll process until exhausted
-        start_idx = None
-        end_idx = None
-    else:
-        # Each rank processes a subset of samples
-        samples_per_rank = (num_samples + world_size - 1) // world_size
-        start_idx = rank * samples_per_rank
-        end_idx = min(start_idx + samples_per_rank, num_samples)
+    # Each rank processes a subset of samples
+    samples_per_rank = (num_samples + world_size - 1) // world_size
+    start_idx = rank * samples_per_rank
+    end_idx = min(start_idx + samples_per_rank, num_samples)
     
     ds = load_dataset(dataset_name, split=split, streaming=True, cache_dir=cache_dir)
     count = 0
     global_count = 0
     
     for item in ds:
-        # For distributed processing when num_samples is None
-        if num_samples is None:
-            # Each rank processes every world_size-th item
-            if global_count % world_size == rank:
-                text: str | None = None
-                for v in item.values():
-                    if isinstance(v, str):
-                        text = v
-                        break
-                if text is not None:
-                    yield text
-                    count += 1
-        else:
-            # Original logic for fixed num_samples
-            if global_count >= end_idx:
-                break
-            
-            if global_count >= start_idx:
-                text: str | None = None
-                for v in item.values():
-                    if isinstance(v, str):
-                        text = v
-                        break
-                if text is not None:
-                    yield text
-                    count += 1
+        if global_count >= end_idx:
+            break
+        
+        if global_count >= start_idx:
+            text: str | None = None
+            for v in item.values():
+                if isinstance(v, str):
+                    text = v
+                    break
+            if text is not None:
+                yield text
+                count += 1
         
         global_count += 1
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Multi-GPU optimized activation dumper")
+    parser = argparse.ArgumentParser(description="Multi-GPU optimized activation dumper with profiling")
     parser.add_argument("--output_dir", type=str, help="Override output directory")
     parser.add_argument("--num_samples", type=int, help="Override number of samples")
     parser.add_argument("--seq_len", type=int, help="Override sequence length")
@@ -151,6 +139,9 @@ def main() -> None:
     parser.add_argument("--val_output_dir", type=str, help="Output directory for validation")
     parser.add_argument("--val_num_samples", type=int, help="Number of validation samples")
     
+    # Profiling option
+    parser.add_argument("--profile_batches", type=int, default=10, help="Number of batches to profile")
+    
     args = parser.parse_args()
     
     # Setup distributed
@@ -165,8 +156,7 @@ def main() -> None:
     # Determine effective config
     base_output_dir_str = args.output_dir if args.output_dir is not None else activation_dumper_cfg["output_dir"]
     seq_len = args.seq_len if args.seq_len is not None else activation_dumper_cfg["seq_len"]
-    # If num_samples not provided, we'll process the entire dataset
-    num_samples = args.num_samples if args.num_samples is not None else None
+    num_samples = args.num_samples if args.num_samples is not None else activation_dumper_cfg["num_samples"]
     layer_idx = args.layer_idx if args.layer_idx is not None else cfg["layer_l"]
     
     # Include layer index in output directory name
@@ -195,12 +185,11 @@ def main() -> None:
     
     if rank == 0:
         log.info(f"World size: {world_size}, using device: {device}")
-        log.info(f"CPU threads per process: torch.get_num_threads()={torch.get_num_threads()}, OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS', 'not set')}")
-        log.info(f"Tokenizer parallelism: TOKENIZERS_PARALLELISM={os.environ.get('TOKENIZERS_PARALLELISM')}, RAYON_NUM_THREADS={os.environ.get('RAYON_NUM_THREADS', 'not set')}")
         log.info(f"Tokenizer name: {tokenizer_name}")
         log.info(f"Model name: {cfg['model_name']}")
         log.info(f"Layer index: {layer_idx}")
         log.info(f"Output directory will include layer: {effective_output_dir}")
+        log.info(f"Profiling first {args.profile_batches} batches...")
     
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True)
@@ -259,35 +248,12 @@ def main() -> None:
         }
     ]
     
-    # Add validation split if specified
-    val_out_base_cfg = activation_dumper_cfg.get("val_output_dir")
-    val_split_cfg = activation_dumper_cfg.get("val_hf_split", "validation")
-    
-    base_val_output_dir_str = None
-    if args.val_output_dir:
-        base_val_output_dir_str = args.val_output_dir
-    elif val_out_base_cfg:
-        base_val_output_dir_str = val_out_base_cfg
-    
-    if base_val_output_dir_str:
-        val_out_dir = Path(Path(base_val_output_dir_str).parent / tokenizer_name / f"layer_{layer_idx}" / Path(base_val_output_dir_str).name)
-        val_split = args.val_hf_split if args.val_hf_split else val_split_cfg
-        val_samples = args.val_num_samples if args.val_num_samples is not None else activation_dumper_cfg.get("val_num_samples", num_samples)
-        splits_to_dump.append({
-            "name": val_split,
-            "output_dir": val_out_dir,
-            "num_samples": val_samples,
-        })
-    
-    # Dump helper function adapted for distributed
+    # Dump helper function adapted for distributed with profiling
     def dump_split_distributed(split_name_arg: str, out_path: Path, n_samples_for_split: int):
         MIN_TOKEN_IDX_INCLUSIVE = 5
         
         if rank == 0:
-            if n_samples_for_split is None:
-                log.info(f"Dumping split '{split_name_arg}' to {out_path} - processing ENTIRE dataset across {world_size} GPUs...")
-            else:
-                log.info(f"Dumping split '{split_name_arg}' to {out_path} with {n_samples_for_split} samples across {world_size} GPUs...")
+            log.info(f"Dumping split '{split_name_arg}' to {out_path} with {n_samples_for_split} samples across {world_size} GPUs...")
             out_path.mkdir(parents=True, exist_ok=True)
         
         # Synchronize after directory creation
@@ -295,41 +261,17 @@ def main() -> None:
             dist.barrier()
         
         # Calculate samples per rank
-        if n_samples_for_split is None:
-            # When processing entire dataset, we don't know exact count
-            rank_num_samples = None
-        else:
-            samples_per_rank = (n_samples_for_split + world_size - 1) // world_size
-            rank_start_idx = rank * samples_per_rank
-            rank_num_samples = min(samples_per_rank, n_samples_for_split - rank_start_idx)
-            
-            if rank_num_samples <= 0:
-                return
+        samples_per_rank = (n_samples_for_split + world_size - 1) // world_size
+        rank_start_idx = rank * samples_per_rank
+        rank_num_samples = min(samples_per_rank, n_samples_for_split - rank_start_idx)
         
-        # Initialize metadata for this rank
-        rank_metadata = {
-            "rank": rank,
-            "total_samples": 0,
-            "shards": [],
-            "config": {
-                "split_name": split_name_arg,
-                "num_samples": rank_num_samples,
-                "seq_len": seq_len,
-                "layer_idx": layer_idx,
-                "model_name": cfg["model_name"],
-                "tokenizer_name": tokenizer_name,
-                "use_hf_dataset": effective_use_hf,
-                "hf_dataset_name": effective_hf_dataset_name if effective_use_hf else None,
-                "dataset_cache_dir": effective_dataset_cache_dir if effective_use_hf else None,
-                "min_token_idx_inclusive": MIN_TOKEN_IDX_INCLUSIVE,
-                "seed": args.seed + rank,
-            }
-        }
+        if rank_num_samples <= 0:
+            return
         
         batch_size_cfg = activation_dumper_cfg.get("batch_size", 8)
         
         # Setup text iterator
-        get_next_text_fn: Callable[[], str | None]
+        get_next_text_fn: Callable[[], str]
         if effective_use_hf:
             text_iter = iter_hf_text_distributed(
                 effective_hf_dataset_name,
@@ -341,45 +283,38 @@ def main() -> None:
             )
             get_next_text_fn = lambda: next(text_iter, None)
         else:
-            # For fixed prompts, we never return None
             get_next_text_fn = lambda: random.choice(fixed_prompts)
         
-        if rank_num_samples is None:
-            # We'll process until the iterator is exhausted
-            num_batches = float('inf')
-        else:
-            num_batches = (rank_num_samples + batch_size_cfg - 1) // batch_size_cfg
+        num_batches = (rank_num_samples + batch_size_cfg - 1) // batch_size_cfg
         saved_samples_count = 0
         
         # Create rank-specific subdirectory
         rank_out_path = out_path / f"rank_{rank}"
         rank_out_path.mkdir(parents=True, exist_ok=True)
         
-        batch_idx = 0
-        pbar = tqdm(
-            desc=f"Rank {rank} - {split_name_arg}",
-            disable=(rank != 0),
-            unit="batch",
-            unit_scale=False,
-            total=int(num_batches) if num_batches != float('inf') else None,
-            bar_format="{desc}: {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}"
-        )
-        batch_start_time = time.time()
-        last_update_time = time.time()
-        samples_since_update = 0
+        # Profiling data
+        timer = Timer()
+        profile_data = {
+            "data_loading": [],
+            "tokenization": [],
+            "gpu_inference": [],
+            "cpu_postprocess": [],
+            "disk_save": [],
+            "total_batch": [],
+        }
         
-        while True:
-            if rank_num_samples is not None:
-                current_batch_actual_size = min(batch_size_cfg, rank_num_samples - saved_samples_count)
-                if current_batch_actual_size <= 0:
-                    break
-            else:
-                current_batch_actual_size = batch_size_cfg
+        for batch_idx in tqdm(range(num_batches), desc=f"Rank {rank} - Split {split_name_arg}", disable=(rank != 0)):
+            timer.start("total_batch")
+            
+            current_batch_actual_size = min(batch_size_cfg, rank_num_samples - saved_samples_count)
+            if current_batch_actual_size <= 0:
+                break
             
             batch_txt_A = []
             batch_txt_Ap = []
             
-            # Collect texts for batch
+            # Data loading
+            timer.start("data_loading")
             if batch_size_cfg > 1 and current_batch_actual_size > 1:
                 batch_base_texts = []
                 for _ in range(current_batch_actual_size):
@@ -418,8 +353,10 @@ def main() -> None:
                 break
             
             current_batch_actual_size = len(batch_txt_A)
+            data_load_time = timer.end("data_loading")
             
             # Tokenize
+            timer.start("tokenization")
             all_texts = batch_txt_A + batch_txt_Ap
             enc = tokenizer(
                 all_texts,
@@ -430,8 +367,10 @@ def main() -> None:
             )
             toks_all = enc.input_ids.to(device)
             toks_A_batch, toks_Ap_batch = toks_all.split(current_batch_actual_size, dim=0)
+            tokenize_time = timer.end("tokenization")
             
-            # Forward pass
+            # GPU inference
+            timer.start("gpu_inference")
             with torch.no_grad():
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16):
                     out_A_batch = model(toks_A_batch, output_hidden_states=True)
@@ -439,8 +378,10 @@ def main() -> None:
             
             hidden_A_batch = out_A_batch.hidden_states[layer_idx]
             hidden_Ap_batch = out_Ap_batch.hidden_states[layer_idx]
+            gpu_time = timer.end("gpu_inference")
             
-            # Calculate positions
+            # CPU postprocessing
+            timer.start("cpu_postprocess")
             nonpad_len_A_b = (toks_A_batch != tokenizer.pad_token_id).sum(dim=1)
             nonpad_len_Ap_b = (toks_Ap_batch != tokenizer.pad_token_id).sum(dim=1)
             
@@ -462,7 +403,6 @@ def main() -> None:
             A_selected_b = hidden_A_batch[batch_indices, token_pos_A_b].cpu().half()
             Ap_selected_b = hidden_Ap_batch[batch_indices, token_pos_Ap_b].cpu().half()
             
-            # Save batch
             batch_samples_to_save = []
             for i in range(current_batch_actual_size):
                 sample = {
@@ -475,96 +415,42 @@ def main() -> None:
                     "layer_idx": layer_idx,
                 }
                 batch_samples_to_save.append(sample)
+            cpu_time = timer.end("cpu_postprocess")
             
-            # Global batch index includes rank offset
+            # Save to disk
+            timer.start("disk_save")
             global_batch_idx = rank * 10000 + batch_idx
             shard_filename = f"shard_{global_batch_idx:08d}.pt"
             torch.save(batch_samples_to_save, rank_out_path / shard_filename)
+            disk_time = timer.end("disk_save")
             
-            # Update metadata
-            rank_metadata["shards"].append({
-                "name": shard_filename,
-                "num_samples": current_batch_actual_size
-            })
-            rank_metadata["total_samples"] += current_batch_actual_size
+            total_time = timer.end("total_batch")
+            
+            # Record profiling data for first N batches
+            if batch_idx < args.profile_batches:
+                profile_data["data_loading"].append(data_load_time)
+                profile_data["tokenization"].append(tokenize_time)
+                profile_data["gpu_inference"].append(gpu_time)
+                profile_data["cpu_postprocess"].append(cpu_time)
+                profile_data["disk_save"].append(disk_time)
+                profile_data["total_batch"].append(total_time)
+            
+            # Print profiling summary periodically
+            if batch_idx == args.profile_batches - 1 and rank == 0:
+                log.info("\n=== Profiling Summary (per batch) ===")
+                for key, times in profile_data.items():
+                    if times:
+                        avg_time = sum(times) / len(times)
+                        pct = (avg_time / profile_data["total_batch"][0]) * 100 if key != "total_batch" else 100
+                        log.info(f"{key:20s}: {avg_time*1000:7.2f}ms ({pct:5.1f}%)")
+                log.info(f"Batch size: {batch_size_cfg}")
+                log.info(f"Samples/sec: {batch_size_cfg / (sum(profile_data['total_batch']) / len(profile_data['total_batch'])):.1f}")
+                log.info("=====================================\n")
             
             saved_samples_count += current_batch_actual_size
-            samples_since_update += current_batch_actual_size
-            batch_idx += 1
-            pbar.update(1)
-            
-            # Update detailed stats every 5 batches
-            if batch_idx % 5 == 0:
-                current_time = time.time()
-                elapsed = time.time() - batch_start_time
-                instant_elapsed = current_time - last_update_time
-                
-                # Calculate rates
-                avg_samples_per_sec = saved_samples_count / elapsed if elapsed > 0 else 0
-                instant_samples_per_sec = samples_since_update / instant_elapsed if instant_elapsed > 0 else 0
-                
-                # Estimate total samples and ETA
-                if rank_num_samples is not None:
-                    pct_complete = (saved_samples_count / rank_num_samples) * 100
-                    eta_seconds = (rank_num_samples - saved_samples_count) / instant_samples_per_sec if instant_samples_per_sec > 0 else 0
-                    eta_str = f"{int(eta_seconds//60)}m{int(eta_seconds%60)}s"
-                else:
-                    pct_complete = 0
-                    eta_str = "unknown"
-                
-                pbar.set_postfix({
-                    "batch": batch_size_cfg,
-                    "avg_s/s": f"{avg_samples_per_sec:.0f}",
-                    "cur_s/s": f"{instant_samples_per_sec:.0f}",
-                    "done": f"{saved_samples_count:,}",
-                    "%": f"{pct_complete:.1f}" if pct_complete > 0 else "?",
-                    "ETA": eta_str
-                })
-                
-                last_update_time = current_time
-                samples_since_update = 0
-            
-            # If we have a fixed number of samples and reached it, break
-            if rank_num_samples is not None and saved_samples_count >= rank_num_samples:
-                break
-        
-        pbar.close()
-        
-        # Save rank-specific metadata
-        rank_metadata_path = rank_out_path / "metadata.json"
-        with open(rank_metadata_path, "w") as f:
-            json.dump(rank_metadata, f, indent=4)
-        
-        # Synchronize and combine metadata on rank 0
-        if world_size > 1:
-            dist.barrier()
         
         if rank == 0:
-            # Combine all rank metadata into global metadata
-            global_metadata = {
-                "total_samples": 0,
-                "shards": [],
-                "ranks": world_size,
-                "config": rank_metadata["config"],
-            }
-            
-            for r in range(world_size):
-                rank_path = out_path / f"rank_{r}" / "metadata.json"
-                if rank_path.exists():
-                    with open(rank_path, "r") as f:
-                        r_meta = json.load(f)
-                    global_metadata["total_samples"] += r_meta["total_samples"]
-                    for shard in r_meta["shards"]:
-                        shard["rank"] = r
-                        global_metadata["shards"].append(shard)
-            
-            # Save global metadata
-            global_metadata_path = out_path / "metadata.json"
-            with open(global_metadata_path, "w") as f:
-                json.dump(global_metadata, f, indent=4)
-            
-            log.info(f"Saved global metadata for split '{split_name_arg}' to {global_metadata_path}")
-            log.info(f"Total samples across all ranks: {global_metadata['total_samples']}")
+            log.info(f"Processing complete for split '{split_name_arg}'")
     
     # Main dumping loop
     for split_cfg_item in splits_to_dump:
