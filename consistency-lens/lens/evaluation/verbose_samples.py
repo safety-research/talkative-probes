@@ -207,7 +207,8 @@ def process_and_print_verbose_batch_samples(
     printed_count_so_far: int = 0,
     generate_continuation: bool = True,
     continuation_tokens: int = 30,
-) -> int:
+    return_structured_data: bool = False,
+) -> int | tuple[int, List[Dict[str, Any]]]:
     """Processes and prints verbose samples from a batch.
     
     Args:
@@ -223,13 +224,16 @@ def process_and_print_verbose_batch_samples(
         printed_count_so_far: Number already printed (for limiting)
         generate_continuation: Whether to generate autoregressive continuation
         continuation_tokens: Number of tokens to generate for continuation
+        return_structured_data: If True, return structured data for logging
         
     Returns:
-        Number of samples printed from this batch
+        If return_structured_data is False: Number of samples printed from this batch
+        If return_structured_data is True: Tuple of (num_printed, structured_samples_list)
     """
     dec = models["dec"]
     enc = models["enc"]
     num_printed_this_batch = 0
+    structured_samples = [] if return_structured_data else None
 
     for i in range(min(num_samples - printed_count_so_far, batch["A"].size(0))):
         l = int(batch["layer_idx"][i].item())
@@ -366,6 +370,27 @@ def process_and_print_verbose_batch_samples(
                 orig, input_ids_seq, p, num_tokens=continuation_tokens, tok=tok, device=device
             )
 
+        # Collect structured data if requested
+        if return_structured_data:
+            # Get decoder predictions for position p
+            decoder_preds = []
+            if p < len(topk_per_pos) and topk_per_pos[p]:
+                for token_id, prob in topk_per_pos[p][:top_n_analysis]:
+                    token_str = escape_newlines(tok.decode([token_id]))
+                    decoder_preds.append((token_str, prob))
+            
+            sample_data = {
+                "input_text": escape_newlines(original_string_cropped),
+                "chosen_token": escape_newlines(original_token_at_p_str),
+                "position": p,
+                "decoded_text": escape_newlines(" ".join(gen_tokens)),
+                "top_predictions": decoder_preds,
+                "continuation": escape_newlines(autoregressive_continuation) if autoregressive_continuation else None,
+                "original_logits": [(escape_newlines(tok.decode([t])), p) for t, p in top_n_orig_A_tokens],
+                "reconstructed_logits": [(escape_newlines(tok.decode([t])), p) for t, p in top_n_lens_recon_tokens],
+            }
+            structured_samples.append(sample_data)
+        
         print_verbose_sample_details(
             l, p, original_token_at_p_str,
             context_display_range, context_labels, context_data_rows,
@@ -377,4 +402,7 @@ def process_and_print_verbose_batch_samples(
         num_printed_this_batch += 1
         if (printed_count_so_far + num_printed_this_batch) >= num_samples:
             break
+    
+    if return_structured_data:
+        return num_printed_this_batch, structured_samples
     return num_printed_this_batch

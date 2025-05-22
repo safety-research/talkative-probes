@@ -5,6 +5,9 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
+from datetime import datetime
+import re
+import json
 
 import torch
 import yaml
@@ -36,6 +39,56 @@ from lens.evaluation.verbose_samples import (
 # These functions are now imported from lens.evaluation.verbose_samples
 
 
+def extract_dataset_info(activation_dir: str) -> dict:
+    """Extract model name, layer, and dataset info from activation directory path.
+    
+    Expected format: .../dataset_name/model_name/layer_X/split_name/
+    """
+    parts = Path(activation_dir).parts
+    info = {
+        'model_name': None,
+        'layer': None,
+        'dataset': None,
+        'split': None
+    }
+    
+    # Find layer_X pattern
+    for i, part in enumerate(parts):
+        if part.startswith('layer_'):
+            layer_match = re.match(r'layer_(\d+)', part)
+            if layer_match:
+                info['layer'] = int(layer_match.group(1))
+                # Model name should be one level up
+                if i > 0:
+                    info['model_name'] = parts[i-1]
+                # Dataset should be two levels up
+                if i > 1:
+                    info['dataset'] = parts[i-2]
+                # Split should be one level down
+                if i < len(parts) - 1:
+                    info['split'] = parts[i+1]
+                break
+    
+    return info
+
+
+def extract_checkpoint_info(checkpoint_path: str) -> dict:
+    """Extract information from checkpoint path/name."""
+    ckpt_name = Path(checkpoint_path).parent.name
+    info = {
+        'run_name': ckpt_name,
+        'step': None
+    }
+    
+    # Try to extract step number from filename
+    filename = Path(checkpoint_path).name
+    step_match = re.search(r'step[_]?(\d+)', filename)
+    if step_match:
+        info['step'] = int(step_match.group(1))
+    
+    return info
+
+
 def _parse_arguments() -> argparse.Namespace:
     """Parses command-line arguments."""
     parser = argparse.ArgumentParser(description="Evaluate a Consistency-Lens checkpoint")
@@ -50,6 +103,8 @@ def _parse_arguments() -> argparse.Namespace:
     parser.add_argument("--top_n_analysis", type=int, default=3, help="Number of top-N predictions to show in verbose analysis, including for decoder explanation steps.")
     parser.add_argument("--val_fraction", type=float, help="Fraction of dataset for validation (overrides config).")
     parser.add_argument("--split_seed", type=int, help="Seed for train/val split (overrides config).")
+    parser.add_argument("--output_dir", type=str, help="Directory to save evaluation results")
+    parser.add_argument("--save_results", action="store_true", help="Save evaluation results to JSON file")
     return parser.parse_args()
 
 
@@ -253,7 +308,7 @@ def _evaluate_model(
     device: torch.device,
     tok: PreTrainedTokenizerBase,
     log: logging.Logger,
-) -> None:
+) -> dict:
     """Runs the evaluation loop."""
     total_loss = 0.0
     n_seen = 0
@@ -290,11 +345,19 @@ def _evaluate_model(
             total_loss += losses["total"].item() * batch["A"].size(0)
             n_seen += batch["A"].size(0)
 
+    results = {
+        'total_samples': n_seen,
+        'avg_loss': total_loss / n_seen if n_seen > 0 else 0.0,
+        'verbose_samples_printed': printed_verbose_total
+    }
+    
     if n_seen > 0:
         avg_loss = total_loss / n_seen
         log.info("Eval loss_total: %.4f over %d samples", avg_loss, n_seen)
     else:
         log.info("No samples processed during evaluation.")
+    
+    return results
 
 
 def main() -> None:  # noqa: D401
@@ -310,6 +373,23 @@ def main() -> None:  # noqa: D401
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info(f"Using device: {device}")
+    
+    # Extract checkpoint info
+    ckpt_info = extract_checkpoint_info(args.checkpoint)
+    
+    # Setup output directory if requested
+    output_dir = None
+    if args.output_dir:
+        output_dir = Path(args.output_dir)
+    elif args.save_results:
+        # Auto-generate output dir based on checkpoint
+        base_eval_dir = Path("outputs/evaluations")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = base_eval_dir / f"{ckpt_info['run_name']}_step{ckpt_info['step']}_{timestamp}"
+    
+    if output_dir:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        log.info(f"Evaluation results will be saved to: {output_dir}")
 
     # Fetch tokenizer_name early to construct paths correctly
     model_name_for_tokenizer = cfg["model_name"] 
@@ -363,9 +443,62 @@ def main() -> None:  # noqa: D401
         log.critical("No effective activation directory could be determined for evaluation. Exiting.")
         return # Or raise an exception
 
+    # Extract dataset info
+    dataset_info = extract_dataset_info(effective_act_dir)
+    
+    # Log evaluation info
+    log.info("=" * 60)
+    log.info("EVALUATION INFO")
+    log.info("=" * 60)
+    log.info(f"Checkpoint: {args.checkpoint}")
+    log.info(f"Run Name: {ckpt_info['run_name']}")
+    log.info(f"Step: {ckpt_info.get('step', 'unknown')}")
+    log.info(f"Dataset: {dataset_info.get('dataset', 'unknown')}")
+    log.info(f"Model: {dataset_info.get('model_name', 'unknown')}")
+    log.info(f"Layer: {dataset_info.get('layer', 'unknown')}")
+    log.info(f"Split: {dataset_info.get('split', 'unknown')}")
+    log.info("=" * 60)
+    
     loader = _prepare_data(cfg, args, effective_act_dir, log)
 
-    _evaluate_model(loader, models_dict, orig_model, cfg, args, device, tok, log)
+    results = _evaluate_model(loader, models_dict, orig_model, cfg, args, device, tok, log)
+    
+    # Add metadata to results
+    results['checkpoint_path'] = str(args.checkpoint)
+    results['checkpoint_info'] = ckpt_info
+    results['dataset_info'] = dataset_info
+    results['eval_config'] = {
+        'batch_size': args.batch_size,
+        'num_batches': args.num_batches,
+        'verbose_samples': args.verbose_samples,
+        'top_n_analysis': args.top_n_analysis
+    }
+    results['timestamp'] = datetime.now().isoformat()
+    
+    # Save results if requested
+    if output_dir:
+        results_file = output_dir / "evaluation_results.json"
+        with open(results_file, 'w') as f:
+            json.dump(results, f, indent=2)
+        log.info(f"Saved evaluation results to: {results_file}")
+        
+        # Also save a summary text file
+        summary_file = output_dir / "summary.txt"
+        with open(summary_file, 'w') as f:
+            f.write(f"Evaluation Summary\n")
+            f.write(f"==================\n\n")
+            f.write(f"Checkpoint: {args.checkpoint}\n")
+            f.write(f"Run Name: {ckpt_info['run_name']}\n")
+            f.write(f"Step: {ckpt_info.get('step', 'unknown')}\n")
+            f.write(f"Dataset: {dataset_info.get('dataset', 'unknown')}/{dataset_info.get('split', 'unknown')}\n")
+            f.write(f"Model: {dataset_info.get('model_name', 'unknown')} (Layer {dataset_info.get('layer', 'unknown')})\n")
+            f.write(f"\nResults:\n")
+            f.write(f"--------\n")
+            f.write(f"Average Loss: {results['avg_loss']:.6f}\n")
+            f.write(f"Total Samples: {results['total_samples']}\n")
+            f.write(f"Timestamp: {results['timestamp']}\n")
+        
+        log.info(f"Saved evaluation summary to: {summary_file}")
 
 
 if __name__ == "__main__":

@@ -22,22 +22,35 @@ import json
 from pathlib import Path
 from typing import Iterator, Callable # Added Callable
 import os
+import time
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
 from tqdm import tqdm
+
+# Enable tokenizer parallelism
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
-def iter_hf_text(dataset_name: str, cache_dir: str | None, split: str, num_samples: int) -> Iterator[str]:
-    """Stream plain-text documents from a HuggingFace dataset until *num_samples* yielded."""
+# Ensure PyTorch thread count honors OMP configuration
+try:
+    _req_threads = int(os.environ.get("OMP_NUM_THREADS", "0"))
+    if _req_threads > 0:
+        torch.set_num_threads(_req_threads)
+        # Force HF tokenizers to use requested threads
+        os.environ["RAYON_NUM_THREADS"] = str(_req_threads)
+except Exception:
+    pass
+
+def iter_hf_text(dataset_name: str, cache_dir: str | None, split: str, num_samples: int | None) -> Iterator[str]:
+    """Stream plain-text documents from a HuggingFace dataset until *num_samples* yielded (or entire dataset if None)."""
     if num_samples == 0: # Avoid issues if 0 samples requested
         return iter([])
 
     ds = load_dataset(dataset_name, split=split, streaming=True, cache_dir=cache_dir)
     count = 0
     for item in ds:
-        if count >= num_samples: # Ensure we don't overshoot
+        if num_samples is not None and count >= num_samples: # Ensure we don't overshoot
             break
         text: str | None = None
         # heuristic: find first string field
@@ -100,7 +113,8 @@ def main() -> None:  # noqa: D401
     # Get base output_dir (CLI or YAML)
     base_output_dir_str = args.output_dir if args.output_dir is not None else activation_dumper_cfg["output_dir"]
     seq_len = args.seq_len if args.seq_len is not None else activation_dumper_cfg["seq_len"]
-    num_samples = args.num_samples if args.num_samples is not None else activation_dumper_cfg["num_samples"]
+    # If num_samples not provided via CLI or YAML, process the ENTIRE dataset
+    num_samples = args.num_samples if args.num_samples is not None else activation_dumper_cfg.get("num_samples", None)
     layer_idx = args.layer_idx if args.layer_idx is not None else cfg["layer_l"]
     
     # Construct final path with tokenizer_name and layer index
@@ -162,6 +176,8 @@ def main() -> None:  # noqa: D401
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info(f"Using device: {device}")
+    log.info(f"CPU threads: torch.get_num_threads()={torch.get_num_threads()}, OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS', 'not set')}")
+    log.info(f"Tokenizer parallelism: TOKENIZERS_PARALLELISM={os.environ.get('TOKENIZERS_PARALLELISM')}, RAYON_NUM_THREADS={os.environ.get('RAYON_NUM_THREADS', 'not set')}")
     log.info(f"Layer index: {layer_idx}")
     log.info(f"Output directories will include layer: e.g., {effective_output_dir}")
 
@@ -193,10 +209,14 @@ def main() -> None:  # noqa: D401
     # -----------------------
     # Helper: perform dump for a single split
     # -----------------------
-    def dump_split(split_name_arg: str, out_path: Path, n_samples_for_split: int):
+    def dump_split(split_name_arg: str, out_path: Path, n_samples_for_split: int | None):
+        """Dump activations for a single split. If *n_samples_for_split* is None, process the entire split."""
         # Minimum token index (inclusive) to consider for activation, from start of sequence.
         MIN_TOKEN_IDX_INCLUSIVE = 5 
-        log.info(f"Dumping split '{split_name_arg}' to {out_path} with {n_samples_for_split} samples …")
+        if n_samples_for_split is None:
+            log.info(f"Dumping split '{split_name_arg}' to {out_path} - processing ENTIRE dataset …")
+        else:
+            log.info(f"Dumping split '{split_name_arg}' to {out_path} with {n_samples_for_split} samples …")
         out_path.mkdir(parents=True, exist_ok=True)
 
         # Initialize metadata storage for this split
@@ -220,43 +240,46 @@ def main() -> None:  # noqa: D401
         
         batch_size_cfg = activation_dumper_cfg["batch_size"]
         
-        num_iterator_items_needed: int
+        # ------------------------------------------------------------------
+        # Text iterator setup
+        # ------------------------------------------------------------------
         if effective_use_hf:
-            if n_samples_for_split == 0:
-                num_iterator_items_needed = 0
-            elif batch_size_cfg == 1:
-                num_iterator_items_needed = n_samples_for_split * 2
-            else: # batch_size_cfg > 1
-                # If the last batch (or any batch that becomes size 1 due to n_samples_for_split)
-                # has exactly one sample, it needs an extra item from the iterator.
-                if n_samples_for_split > 0 and (n_samples_for_split % batch_size_cfg == 1):
-                    num_iterator_items_needed = n_samples_for_split + 1
-                else:
-                    num_iterator_items_needed = n_samples_for_split
+            # When n_samples_for_split is None, the iterator will stream the entire dataset
+            num_iterator_items_needed = None if n_samples_for_split is None else n_samples_for_split
         else:
-            # For fixed_prompts, this count isn't strictly used as random.choice doesn't consume an iterator.
-            num_iterator_items_needed = n_samples_for_split # Placeholder, not strictly enforced for fixed_prompts
+            num_iterator_items_needed = None  # Not used for fixed prompts
 
-        get_next_text_fn: Callable[[], str]
+        get_next_text_fn: Callable[[], str | None]
         if effective_use_hf:
             text_iter = iter_hf_text(
                 effective_hf_dataset_name,
                 effective_dataset_cache_dir,
-                split_name_arg, 
-                num_iterator_items_needed, # Use the calculated amount
+                split_name_arg,
+                num_iterator_items_needed,
             )
-            get_next_text_fn = lambda: next(text_iter)
+            get_next_text_fn = lambda: next(text_iter, None)
         else:
-            # Use fixed prompt list (defined in main scope)
             get_next_text_fn = lambda: random.choice(fixed_prompts)
 
-
-        num_batches = (n_samples_for_split + batch_size_cfg - 1) // batch_size_cfg
         saved_samples_count = 0
-        for batch_idx in tqdm(range(num_batches), desc=f"Split {split_name_arg}"):
-            current_batch_actual_size = min(batch_size_cfg, n_samples_for_split - saved_samples_count)
-            if current_batch_actual_size <= 0:
-                break
+        batch_idx = 0
+        pbar = tqdm(
+            desc=f"Split {split_name_arg}",
+            unit="batch",
+            unit_scale=False,
+            bar_format="{desc}: {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}"
+        )
+        batch_start_time = time.time()
+        last_update_time = time.time()
+        samples_since_update = 0
+        
+        while True:
+            if n_samples_for_split is not None:
+                current_batch_actual_size = min(batch_size_cfg, n_samples_for_split - saved_samples_count)
+                if current_batch_actual_size <= 0:
+                    break
+            else:
+                current_batch_actual_size = batch_size_cfg
             
             batch_txt_A = []
             batch_txt_Ap = []
@@ -368,6 +391,46 @@ def main() -> None:  # noqa: D401
             metadata["total_samples"] += current_batch_actual_size
             
             saved_samples_count += current_batch_actual_size
+            samples_since_update += current_batch_actual_size
+            batch_idx += 1
+            pbar.update(1)
+
+            # Update detailed stats every 5 batches
+            if batch_idx % 5 == 0:
+                current_time = time.time()
+                elapsed = time.time() - batch_start_time
+                instant_elapsed = current_time - last_update_time
+                
+                # Calculate rates
+                avg_samples_per_sec = saved_samples_count / elapsed if elapsed > 0 else 0
+                instant_samples_per_sec = samples_since_update / instant_elapsed if instant_elapsed > 0 else 0
+                
+                # Estimate total samples and ETA
+                if n_samples_for_split is not None:
+                    pct_complete = (saved_samples_count / n_samples_for_split) * 100
+                    eta_seconds = (n_samples_for_split - saved_samples_count) / instant_samples_per_sec if instant_samples_per_sec > 0 else 0
+                    eta_str = f"{int(eta_seconds//60)}m{int(eta_seconds%60)}s"
+                else:
+                    pct_complete = 0
+                    eta_str = "unknown"
+                
+                pbar.set_postfix({
+                    "batch": batch_size_cfg,
+                    "avg_s/s": f"{avg_samples_per_sec:.0f}",
+                    "cur_s/s": f"{instant_samples_per_sec:.0f}",
+                    "done": f"{saved_samples_count:,}",
+                    "%": f"{pct_complete:.1f}" if pct_complete > 0 else "?",
+                    "ETA": eta_str
+                })
+                
+                last_update_time = current_time
+                samples_since_update = 0
+            
+            # If we had a fixed sample cap and reached it, stop
+            if n_samples_for_split is not None and saved_samples_count >= n_samples_for_split:
+                break
+
+        pbar.close()
 
         # Save metadata to JSON file for this split
         metadata_path = out_path / "metadata.json"

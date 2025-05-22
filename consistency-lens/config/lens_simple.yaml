@@ -15,17 +15,38 @@ decoder_prompt: "Short explanation of <embed>:"       # Prompt for the Decoder
 
 # Training hyperparameters
 t_text: 5                       # Number of tokens to generate with the Decoder
-learning_rate: 1.0e-5
+learning_rate: 1.0e-3
 batch_size: 512               # Effective batch size (adjust with gradient_accumulation_steps if using DeepSpeed)
+
+# Learning rate scheduler
+lr_scheduler:
+  type: "constant"              # Options: constant, linear, cosine, cosine_with_restarts, polynomial, exponential
+  # Common parameters (not all apply to every scheduler type):
+  warmup_steps: 100               # Number of warmup steps (0 to disable warmup)
+  warmup_start_factor: 0.01      # Starting LR multiplier for warmup (lr * warmup_start_factor)
+  # Scheduler-specific parameters:
+  # For linear:
+  # end_factor: 0.0             # Final LR multiplier (lr * end_factor)
+  # For cosine:
+  # eta_min: 0.0                # Minimum learning rate
+  # For cosine_with_restarts:
+  # eta_min: 0.0                # Minimum learning rate
+  # T_0: 500                    # Number of iterations for the first restart
+  # T_mult: 2                   # Factor to increase T_0 after a restart
+  # For polynomial:
+  # power: 1.0                  # Polynomial power (1.0 = linear decay)
+  # end_factor: 0.0             # Final LR multiplier
+  # For exponential:
+  # gamma: 0.95                 # Multiplicative factor of learning rate decay
 
 # Training duration - use either epochs OR steps, not both:
 # For epoch-based training:
-num_train_epochs: 26            # Number of epochs to train (set > 0 for epoch-based)
+num_train_epochs: 10            # Number of epochs to train (set > 0 for epoch-based)
 max_train_steps: 0              # Set to 0 when using num_train_epochs
 # For step-based training:
 # num_train_epochs: 0           # Set to 0 when using max_train_steps  
 # max_train_steps: 50000        # Number of training steps (set > 0 for step-based)
-compile_models: false            # Wrap Decoder & Encoder with torch.compile if True
+compile_models: true            # Wrap Decoder & Encoder with torch.compile if True
 log_interval: 10             # Log metrics every N training steps
 wandb_log_interval: 1         # Log metrics every N training steps to WandB
 grad_clip: 1.0
@@ -52,9 +73,10 @@ custom_lr_multipliers:
 
 # Gumbel-Softmax temperature (tau) schedule
 gumbel_tau_schedule:
-  type: "linear_decay"  # Options: constant, linear_decay, cosine_anneal, exponential_decay
+  type: "linear_decay_after_constant"  # Options: constant, linear_decay, cosine_anneal, exponential_decay, linear_decay_after_constant
+  constant_steps_before_linear_decay: 7000
   start_value: 1.0
-  end_value: 1
+  end_value: 0.1
   num_steps: -1         # -1 means use total training steps (computed from epochs or max_train_steps)
 
 # KL divergence loss weight (alpha) schedule
@@ -72,14 +94,14 @@ alpha_schedule:
 
 # Activation dumper config (for 00_dump_activations.py)
 activation_dumper:
-  num_samples: 2200000
+  # num_samples: 2200000
   seq_len: 64
   use_hf_dataset: true
   hf_dataset_name: "SimpleStories/SimpleStories"
   hf_split: "train"
   dataset_cache_dir: "consistency-lens/data/corpus/SimpleStories"
   output_dir: "consistency-lens/data/activations/SimpleStories_train"
-  batch_size: 1024
+  batch_size: 4096
   # Validation split dumping in the same run of 00_dump_activations.py
   val_hf_split: "test"
   val_output_dir: "consistency-lens/data/activations/SimpleStories_test"
@@ -124,7 +146,7 @@ checkpoint:
   save_components:
     models: true                  # Save model state dicts
     optimizer: true               # Save optimizer state
-    scheduler: false              # Save scheduler state (if using)
+    scheduler: true               # Save scheduler state (if using)
     config: true                  # Save config used for this run
     metrics: true                 # Save current metrics
     

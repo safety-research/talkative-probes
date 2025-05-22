@@ -17,7 +17,10 @@ dependencies = [
     "torch",
     "hf-transfer",
     "datasets",
-    "pytest"
+    "pytest",
+    "tqdm",
+    "psutil",
+    "gputil"
 ]
 
 [tool.setuptools]
