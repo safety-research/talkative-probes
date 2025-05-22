@@ -66,29 +66,33 @@ def train_step(  # noqa: D401
             # We need the logits that predict the same tokens as d_model_pred_logits
             orig_model_pred_logits = orig_model_pred_logits_all_pos[:, :-1, :] # Shape: (B, T_text-1, V)
 
-            # P_D: Distribution from D_model (this is the distribution we want to regularize)
-            # These are probabilities for tokens 1...T_text-1
-            P_D_probs = torch.nn.functional.softmax(d_model_pred_logits, dim=-1)
+            # log_P_D: Log-distribution from D_model (this is the distribution we are training, q).
+            # This will be the `input` to F.kl_div.
+            # These are log-probabilities for tokens 1...T_text-1.
+            log_P_D_log_probs = torch.nn.functional.log_softmax(d_model_pred_logits, dim=-1)
 
-            # log_P_Orig: Log-distribution from LLM_orig_model (this is the reference distribution)
-            # These are log-probabilities for tokens 1...T_text-1
-            log_P_Orig_log_probs = torch.nn.functional.log_softmax(orig_model_pred_logits, dim=-1)
+            # P_Orig: Distribution from LLM_orig_model (this is the reference distribution, p).
+            # This will be the `target` for F.kl_div.
+            # These are probabilities for tokens 1...T_text-1 (since log_target=False for kl_div).
+            P_Orig_probs = torch.nn.functional.softmax(orig_model_pred_logits, dim=-1)
             
-            # Reshape for kl_div to (N, C) where N = B * (T_text-1), C = V
+            # Reshape for kl_div to (N, C) where N = B * (T_text-1), C = V.
             # This ensures 'batchmean' reduction averages over token positions.
-            V_lm = d_model_pred_logits.size(-1) # V_lm to avoid conflict with V from CE section if it were still present
-            P_D_probs_flat = P_D_probs.reshape(-1, V_lm)
-            log_P_Orig_log_probs_flat = log_P_Orig_log_probs.reshape(-1, V_lm)
+            V_lm = d_model_pred_logits.size(-1) # Vocabulary size for language model
+            log_P_D_log_probs_flat = log_P_D_log_probs.reshape(-1, V_lm)
+            P_Orig_probs_flat = P_Orig_probs.reshape(-1, V_lm)
 
-            # loss_lm = KL(P_D || P_Orig)
-            # F.kl_div(input, target) with log_target=False computes sum(target * (log(target) - input))
-            # Here, input is log_P_Orig, target is P_D.
-            # So it computes sum(P_D * (log P_D - log_P_Orig)) which is KL(P_D || P_Orig)
+            # loss_lm = KL(P_Orig || P_D)
+            # F.kl_div(input, target) with log_target=False computes sum(target * (log(target) - input)).
+            # Here, input is log_P_D_log_probs_flat (log q: log-probabilities from Decoder), 
+            # and target is P_Orig_probs_flat (p: probabilities from Original LLM).
+            # So it computes sum(P_Orig * (log P_Orig - log_P_D)), which is KL(P_Orig || P_D).
+            # This regularizes the Decoder's distribution (P_D) to match the Original LLM's distribution (P_Orig).
             loss_lm = torch.nn.functional.kl_div(
-                input=log_P_Orig_log_probs_flat, # log-probabilities of P_Orig
-                target=P_D_probs_flat,           # probabilities of P_D
+                input=log_P_D_log_probs_flat,    # log q: log-probabilities of P_D (Decoder model output)
+                target=P_Orig_probs_flat,        # p: probabilities of P_Orig (Original LLM target distribution)
                 reduction='batchmean',           # average KL divergence per token position
-                log_target=False                 # P_D_probs_flat contains probabilities
+                log_target=False                 # P_Orig_probs_flat contains probabilities, not log-probabilities
             )
         else:
             loss_lm = torch.tensor(0.0, device=A.device)
@@ -107,7 +111,10 @@ def train_step(  # noqa: D401
         tau = _loss_fns.get("tau", 1.0) if _loss_fns else 1.0
         gen_ap = dec.generate_soft(Ap, max_length=T_text, gumbel_tau=tau)
         Ap_hat = enc(gen_ap.generated_text_embeddings)
-        delta = (Ap - Ap_hat).detach()  # stop-grad on A′ branch
+        if enc.config.stop_grad_aprime:
+            delta = (Ap - Ap_hat).detach()  # stop-grad on A′ branch
+        else:
+            delta = (Ap - Ap_hat)  # no stop-grad on A′ branch
 
         A_target = A_hat + delta
 
@@ -160,7 +167,7 @@ def train_step(  # noqa: D401
         # Original: kl_fn(softmax(logits_orig), log_softmax(logits_target))
         #   This leads to log(log_Q) which is log(negative) = NaN
         # Corrected: kl_fn(log_softmax(logits_target), softmax(logits_orig))
-        loss_kl = kl_fn(
+        loss_kl = kl_fn(#kl_fn expect log y_pred, y_true - this is what we ahve here
             torch.log_softmax(logits_target, dim=-1),
             torch.softmax(logits_orig, dim=-1)
         ) # KL(P||Q) penalises Q for assigning mass where P has none; encourages Q to cover P.
@@ -172,7 +179,7 @@ def train_step(  # noqa: D401
     kl_base = _loss_fns.get("kl_base_weight", 1.0) if _loss_fns else 1.0
     ent_w = _loss_fns.get("entropy_weight", 0.0) if _loss_fns else 0.0
 
-    total_loss = lm_w * loss_lm + (kl_base * alpha) * loss_kl - ent_w * entropy
+    total_loss = lm_w * loss_lm + (kl_base * alpha) * loss_kl - ent_w * entropy #+ loss_mse
 
     return {
         "total": total_loss,

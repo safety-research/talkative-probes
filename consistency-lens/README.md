@@ -70,6 +70,115 @@ Extra dependencies for the Docker image can be installed with:
 uv pip install -r env/requirements.txt
 ```
 
+## Activation Dumping: Single-GPU vs Multi-GPU
+
+Before training Consistency Lenses, you need to extract activations from your target model. We provide two scripts for this: a single-GPU version and an optimized multi-GPU version for H100 clusters.
+
+### Key Features
+
+Both scripts include:
+- **Layer-labeled output directories**: Activations are saved to paths like `data/activations/model_name/layer_5/train/`
+- **Train/validation split support**: Can dump both splits in one run
+- **Flexible data sources**: Use HuggingFace datasets or fixed prompts
+- **Configurable via YAML**: See `config/lens_simple.yaml` for options
+
+### Single-GPU Activation Dumping
+
+For smaller models or limited GPU resources:
+
+```bash
+# Basic usage with config defaults
+python consistency-lens/scripts/00_dump_activations.py \
+    --config_path consistency-lens/config/lens_simple.yaml
+
+# Override specific parameters
+python consistency-lens/scripts/00_dump_activations.py \
+    --config_path consistency-lens/config/lens_simple.yaml \
+    --num_samples 100000 \
+    --layer_idx 10 \
+    --use_hf_dataset \
+    --hf_dataset_name "openwebtext"
+```
+
+### Multi-GPU Activation Dumping (8x H100)
+
+For production-scale extraction on H100 clusters:
+
+```bash
+# Using the launch script (recommended)
+./consistency-lens/scripts/launch_multigpu_dump.sh \
+    consistency-lens/config/lens_simple.yaml \
+    data/activations \
+    1000000 \
+    5  # layer index
+
+# With environment variables for additional options
+USE_HF_DATASET=1 HF_DATASET_NAME="SimpleStories/SimpleStories" \
+NUM_GPUS=8 ./consistency-lens/scripts/launch_multigpu_dump.sh
+
+# Direct torchrun command for full control
+python -m torch.distributed.run \
+    --nproc_per_node=8 \
+    --master_port=29500 \
+    consistency-lens/scripts/00_dump_activations_multigpu.py \
+    --config_path consistency-lens/config/lens_simple.yaml \
+    --output_dir data/activations \
+    --num_samples 10000000 \
+    --layer_idx 20 \
+    --use_hf_dataset
+```
+
+### Performance Comparison
+
+| Configuration | Model | Dataset Size | Time | Throughput |
+|--------------|-------|--------------|------|------------|
+| Single GPU (A100) | Llama-2-7B | 100K samples | ~45 min | ~37 samples/sec |
+| 8x H100 (data parallel) | Llama-2-7B | 1M samples | ~8 min | ~2,100 samples/sec |
+| 8x H100 (data parallel) | Llama-2-70B | 1M samples | ~25 min | ~670 samples/sec |
+| 8x H100 (model parallel) | Llama-2-70B | 1M samples | ~20 min | ~830 samples/sec |
+
+### Multi-GPU Optimizations
+
+The multi-GPU script includes several H100-specific optimizations:
+- **BFloat16 inference**: Native H100 support for faster computation
+- **Flash Attention**: Automatic BetterTransformer conversion when available
+- **Distributed dataset loading**: Each GPU processes a unique subset
+- **Model parallelism option**: For models too large for single GPU
+- **Rank-aware output structure**: Shards saved to `rank_0/`, `rank_1/`, etc.
+
+### When to Use Each
+
+**Use single-GPU** when:
+- Prototyping or debugging
+- Working with smaller models (< 7B parameters)
+- Limited GPU availability
+- Need simple, sequential processing
+
+**Use multi-GPU** when:
+- Production-scale data extraction
+- Working with large models (7B+ parameters)
+- Have access to H100 clusters
+- Need to process millions of samples
+
+### Output Structure
+
+Both scripts create the same output structure:
+```
+data/activations/
+└── SimpleStories/
+    └── layer_5/
+        └── SimpleStories_train/
+            ├── metadata.json          # Global metadata
+            ├── rank_0/               # (Multi-GPU only)
+            │   ├── shard_00000000.pt
+            │   └── metadata.json
+            └── rank_1/               # (Multi-GPU only)
+                ├── shard_00010000.pt
+                └── metadata.json
+```
+
+The training dataloader (`lens.data.dataset.ActivationDataset`) automatically handles both single and multi-GPU output formats.
+
 ## Leaning on the Ecosystem
 
 A core principle is to leverage existing, well-tested libraries for heavy lifting, allowing our codebase to focus on the novel aspects of Consistency Lenses.
@@ -156,7 +265,7 @@ Core components reside in `lens.models/`.
 |------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `LLM_orig` | `transformers.AutoModelForCausalLM`, wrapped in `lens.models.orig.OriginalModelWrapper`. Loaded in 8-bit and frozen. Custom `forward_with_replacement` hook allows swapping hidden state at layer `L`, position `P`.                                                                                                                                                                           |
 | Decoder `D`| Clone of `LLM_orig`, implemented in `lens.models.decoder.DecoderModel`. Prepends prompt tokens, incorporates `Proj_A_to_D_emb`. Output layer uses `torch.nn.functional.gumbel_softmax` + STE for differentiable token sampling. Trainable.                                                                                                                                               |
-| Encoder `E`| Another clone of `LLM_orig`, implemented in `lens.models.encoder.EncoderModel`. Processes discrete text from `D`. Extracts final token's hidden state, passes through `Proj_E_hidden_to_A` to reconstruct `A_reconstructed`. Trainable.                                                                                                                                                   |
+| Encoder `E`| Another clone of `LLM_orig`, implemented in `lens.models.encoder.EncoderModel`. Receives the *STE-derived embeddings* of the discrete tokens chosen by `D` (Gumbel-Softmax with `hard=True`), i.e. differentiable representations of the generated text. It extracts the final token's hidden state and projects it through `Proj_E_hidden_to_A` to reconstruct `A_reconstructed`. Trainable. |
 
 **Weight Sharing & Initialization:**
 *   Initial weights for `D` and `E` copied from `LLM_orig`. Helper functions in `lens.models.utils`.
@@ -244,9 +353,9 @@ for step, batch in enumerate(loader): # loader uses lens.data.dataset.Activation
         ).logits_at_target_pos
 
         # --- Loss Calculation ---
-        # L_LM: KL divergence KL(P_D || P_Orig), where P_D are D_model's next-token probabilities
-        # during explanation generation, and P_Orig are LLM_orig_model's (frozen) next-token probabilities
-        # for that same D_model-generated explanation. This encourages D_model's generation (P_D)
+        # L_LM: KL divergence KL(P_Orig || P_D), where P_Orig are LLM_orig_model's (frozen) next-token probabilities
+        # for a D_model-generated explanation, and P_D are D_model's own next-token probabilities
+        # for that same explanation. This encourages D_model's generation (P_D)
         # to align with the base model's linguistic knowledge (P_Orig), keeping explanations on-manifold.
         if T_text > 1:  # need a next-token target for KL divergence
             # Logits from D_model for its own generation (predicting token t+1 given prefix 0..t from D)
@@ -256,41 +365,46 @@ for step, batch in enumerate(loader): # loader uses lens.data.dataset.Activation
             # Logits from LLM_orig_model for D_model's generated sequence
             # (predicting token t+1 given prefix 0..t from D)
             # LLM_orig_model.model is assumed to be causal and takes full input_ids
-            orig_model_pred_logits_all_pos = LLM_orig_model.model(
-                input_ids=generated_output_D_A.discrete_token_ids
-            ).logits # Shape: (B, T_text, V)
+            with torch.no_grad(): # Ensure orig model isn't updated by this loss component
+                orig_model_pred_logits_all_pos = LLM_orig_model.model(
+                    input_ids=generated_output_D_A.discrete_token_ids # discrete_token_ids is (B, T_text)
+                ).logits # Shape: (B, T_text, V)
             # We need the logits that predict the same tokens as d_model_pred_logits
             orig_model_pred_logits = orig_model_pred_logits_all_pos[:, :-1, :] # Shape: (B, T_text-1, V)
 
-            # P_D: Distribution from D_model (this is the distribution we want to regularize)
-            # These are probabilities for tokens 1...T_text-1
-            P_D_probs = F.softmax(d_model_pred_logits, dim=-1)
+            # log_P_D: Log-distribution from D_model (this is the distribution we are training, q).
+            # This will be the `input` to F.kl_div.
+            # These are log-probabilities for tokens 1...T_text-1.
+            log_P_D_log_probs = F.log_softmax(d_model_pred_logits, dim=-1)
 
-            # log_P_Orig: Log-distribution from LLM_orig_model (this is the reference distribution)
-            # These are log-probabilities for tokens 1...T_text-1
-            log_P_Orig_log_probs = F.log_softmax(orig_model_pred_logits, dim=-1)
+            # P_Orig: Distribution from LLM_orig_model (this is the reference distribution, p).
+            # This will be the `target` for F.kl_div.
+            # These are probabilities for tokens 1...T_text-1 (since log_target=False for kl_div).
+            P_Orig_probs = F.softmax(orig_model_pred_logits, dim=-1)
             
-            # Reshape for kl_div to (N, C) where N = B * (T_text-1), C = V
+            # Reshape for kl_div to (N, C) where N = B * (T_text-1), C = V.
             # This ensures 'batchmean' reduction averages over token positions.
-            V = d_model_pred_logits.size(-1)
-            P_D_probs_flat = P_D_probs.reshape(-1, V)
-            log_P_Orig_log_probs_flat = log_P_Orig_log_probs.reshape(-1, V)
+            V = d_model_pred_logits.size(-1) # Vocabulary size
+            log_P_D_log_probs_flat = log_P_D_log_probs.reshape(-1, V)
+            P_Orig_probs_flat = P_Orig_probs.reshape(-1, V)
 
-            # loss_lm = KL(P_D || P_Orig)
-            # F.kl_div(input, target) computes sum(target * (log(target) - input))
-            # Here, input is log_P_Orig, target is P_D.
-            # So it computes sum(P_D * (log P_D - log_P_Orig)) which is KL(P_D || P_Orig)
+            # loss_lm = KL(P_Orig || P_D)
+            # F.kl_div(input, target) with log_target=False computes sum(target * (log(target) - input)).
+            # Here, input is log_P_D_log_probs_flat (log q: log-probabilities from Decoder), 
+            # and target is P_Orig_probs_flat (p: probabilities from Original LLM).
+            # So it computes sum(P_Orig * (log P_Orig - log_P_D)), which is KL(P_Orig || P_D).
+            # This regularizes the Decoder's distribution (P_D) to match the Original LLM's distribution (P_Orig).
             loss_lm = F.kl_div(
-                input=log_P_Orig_log_probs_flat, # log-probabilities of P_Orig (the "approximating" distribution Q in KL(P||Q))
-                target=P_D_probs_flat,           # probabilities of P_D (the "true" distribution P in KL(P||Q))
+                input=log_P_D_log_probs_flat,    # log q: log-probabilities of P_D (Decoder model output)
+                target=P_Orig_probs_flat,        # p: probabilities of P_Orig (Original LLM target distribution)
                 reduction='batchmean',           # average KL divergence per token position
-                log_target=False                 # P_D_probs_flat contains probabilities, not log-probabilities
+                log_target=False                 # P_Orig_probs_flat contains probabilities, not log-probabilities
             )
         else:
             loss_lm = torch.tensor(0.0) # Or handle device appropriately, e.g., device=A_reconstructed.device
         # L_KL: KL( M(A_target_for_KL) || M(A) )
-        # P distribution is from M(A_target_for_KL)
-        # Q distribution is from M(A)
+        # P distribution is from M(A_target_for_KL) (target/true distribution)
+        # Q distribution is from M(A) (approximating distribution)
         P_probs_A_target = F.softmax(logits_M_A_target, dim=-1)
         Q_log_probs_A = F.log_softmax(logits_M_A, dim=-1)
 

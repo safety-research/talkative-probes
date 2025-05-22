@@ -2,37 +2,47 @@
 
 # Model parameters
 # model_name: "sshleifer/tiny-gpt2" # Base model for LLM_orig, Decoder, Encoder
-model_name: "roneneldan/TinyStories-3M"
 # Optional: specify a different tokenizer to use instead of the model's default
 # E.g. a reduced-vocabulary tokenizer such as "Qilex/tinyStories-10k-tokenizer"
-tokenizer_name: "Qilex/tinyStories-10k-tokenizer"
-layer_l: 6                      # Target layer for activation extraction (LLM_orig)
-token_pos_p: 0                   # Target token position for activation extraction (LLM_orig) - currently fixed in MVP dumper
+#tokenizer_name: "Qilex/tinyStories-10k-tokenizer"
+model_name: "SimpleStories/SimpleStories-5M"
+tokenizer_name: "SimpleStories/SimpleStories-5M"
+layer_l: 5                      # Target layer for activation extraction (LLM_orig)
+#token_pos_p: 0                   # Target token position for activation extraction (LLM_orig) - currently fixed in MVP dumper
 
 # Decoder parameters
-decoder_n_prompt_tokens: 4       # Number of learnable prompt tokens for the Decoder
-decoder_prompt: "Explain: "       # Prompt for the Decoder
+decoder_prompt: "Short explanation of <embed>:"       # Prompt for the Decoder
 
 # Training hyperparameters
-t_text: 1                        # Number of tokens to generate with the Decoder
-learning_rate: 1.0e-4
+t_text: 5                       # Number of tokens to generate with the Decoder
+learning_rate: 1.0e-5
 batch_size: 512               # Effective batch size (adjust with gradient_accumulation_steps if using DeepSpeed)
-num_train_epochs: 3              # Or a fixed number of steps
-max_train_steps: 1600            # If not using epochs
+
+# Training duration - use either epochs OR steps, not both:
+# For epoch-based training:
+num_train_epochs: 26            # Number of epochs to train (set > 0 for epoch-based)
+max_train_steps: 0              # Set to 0 when using num_train_epochs
+# For step-based training:
+# num_train_epochs: 0           # Set to 0 when using max_train_steps  
+# max_train_steps: 50000        # Number of training steps (set > 0 for step-based)
 compile_models: false            # Wrap Decoder & Encoder with torch.compile if True
 log_interval: 10             # Log metrics every N training steps
 wandb_log_interval: 1         # Log metrics every N training steps to WandB
+grad_clip: 1.0
 
+stop_grad_aprime: false
 # Trainable components configuration
 trainable_components:
   decoder:
     base_model: false          # Train the underlying LLM weights of the Decoder
     projection_layer: true   # Train Proj_A_to_D_emb (self.proj)
-    output_head: true        # Train the Decoder's output LM head (self.out)
+    eye_init: true
+    output_head: false # Train the Decoder's output LM head (self.out)
   encoder:
     base_model: false          # Train the underlying LLM weights of the Encoder
+    use_base_model: true      # Use the base model to process the embeddings
     projection_layer: true   # Train Proj_E_hidden_to_A (self.proj)
-
+    eye_init: true
 # Learning rate multiplier for specific parameter groups.
 # These multipliers are applied to the base learning_rate from above.
 # The training script will need to create parameter groups accordingly.
@@ -45,7 +55,7 @@ gumbel_tau_schedule:
   type: "linear_decay"  # Options: constant, linear_decay, cosine_anneal, exponential_decay
   start_value: 1.0
   end_value: 1
-  num_steps: 1600       # Over how many training steps to apply the schedule
+  num_steps: -1         # -1 means use total training steps (computed from epochs or max_train_steps)
 
 # KL divergence loss weight (alpha) schedule
 alpha_schedule:
@@ -65,14 +75,14 @@ activation_dumper:
   num_samples: 2200000
   seq_len: 64
   use_hf_dataset: true
-  hf_dataset_name: "roneneldan/TinyStories"
+  hf_dataset_name: "SimpleStories/SimpleStories"
   hf_split: "train"
-  dataset_cache_dir: "consistency-lens/data/corpus/TinyStories"
-  output_dir: "consistency-lens/data/activations/TinyStoriesV2_train"
-  batch_size: 4096
+  dataset_cache_dir: "consistency-lens/data/corpus/SimpleStories"
+  output_dir: "consistency-lens/data/activations/SimpleStories_train"
+  batch_size: 1024
   # Validation split dumping in the same run of 00_dump_activations.py
-  val_hf_split: "validation"
-  val_output_dir: "consistency-lens/data/activations/TinyStoriesV2_validation"
+  val_hf_split: "test"
+  val_output_dir: "consistency-lens/data/activations/SimpleStories_test"
   val_num_samples: 2000
   # HuggingFace dataset loading options
   # If 'use_hf_dataset' is true the dumper script will read the tiny 10-k subset of
@@ -84,12 +94,43 @@ activation_dumper:
   # streaming: false
 
 # Validation activation directory (skip split when provided)
-val_activation_dir: "consistency-lens/data/activations/TinyStoriesV2_validation"
+# This path should also be salted with the tokenizer_name if it's used.
+val_activation_dir: "consistency-lens/data/activations/SimpleStories_test"
 
 # WandB configuration (can also be in wandb.yaml)
 wandb:
   project: "consistency-lens-mvp"
   mode: "online" # "online", "offline", "disabled"
+
+# Checkpoint configuration
+checkpoint:
+  enabled: true
+  output_dir: "outputs/checkpoints"  # Base directory for checkpoints
+  
+  # Checkpoint naming pattern - supports {step}, {epoch}, {val_loss}, {timestamp}
+  name_pattern: "checkpoint_step{step}_epoch{epoch}"
+  
+  # Save strategies (can enable multiple)
+  save_every_n_steps: 10000         # Save every N training steps (0 to disable)
+  save_every_n_epochs: 0          # Save every N epochs (0 to disable)
+  save_at_end: true               # Save final checkpoint when training completes
+  
+  # Best checkpoint tracking
+  track_best_n: 3                 # Keep N best checkpoints based on validation loss (0 to disable)
+  best_metric: "val_loss"         # Metric to track for best checkpoints
+  best_mode: "min"                # "min" or "max" depending on metric
+  
+  # What to save in checkpoints
+  save_components:
+    models: true                  # Save model state dicts
+    optimizer: true               # Save optimizer state
+    scheduler: false              # Save scheduler state (if using)
+    config: true                  # Save config used for this run
+    metrics: true                 # Save current metrics
+    
+  # Checkpoint management
+  max_checkpoints: -1             # Maximum total checkpoints to keep (-1 for unlimited)
+  delete_old_checkpoints: true    # Delete oldest checkpoints when max_checkpoints reached
 
 # Loss weights
 lm_weight: 0.01                 # Multiplier on language model KL divergence term
@@ -97,9 +138,22 @@ kl_base_weight: 1.0             # Base weight; final KL multiplier = kl_base_wei
 
 # Token entropy bonus (see loop.py). Positive values reward higher entropy to
 # avoid posterior collapse; set to 0.0 to disable.
-entropy_weight: 0.1
+entropy_weight: 0.000
 
 # Validation split & scheduling
 val_fraction: 0.1               # Fraction of dataset for validation
 split_seed: 42                  # Random seed for train/val split
 val_interval: 100               # Run validation every N training steps
+
+# Verbose sample configuration for training monitoring
+verbose_samples:
+  enabled: true                 # Enable verbose sample printing during training
+  num_samples: 2                # Number of samples to print per interval
+  interval_type: "steps"        # "steps" or "epochs" - when to print samples
+  interval: 1000                # Print every N steps/epochs (based on interval_type)
+  # If interval_type is "epochs", can also set to print every epoch AND every N steps:
+  # print_every_epoch: true     # Print at the end of each epoch
+  # print_every_n_steps: 1000   # Also print every N steps
+  top_n_predictions: 3          # Number of top predictions to show in analysis
+  generate_continuation: true   # Generate autoregressive continuation
+  continuation_tokens: 30       # Number of tokens to generate for continuation

@@ -22,7 +22,9 @@ from torch.utils.data import DataLoader, random_split
 from lens.training.optim import param_groups
 from lens.utils.logging import init as log_init, log as log_metrics
 from lens.training.schedules import get_schedule_value
+from lens.utils.checkpoint_manager import CheckpointManager
 import yaml
+from lens.evaluation.verbose_samples import process_and_print_verbose_batch_samples
 from transformers import AutoTokenizer # Not used in this selection
 from torch.amp import autocast, GradScaler
 from contextlib import nullcontext
@@ -196,7 +198,6 @@ def main() -> None:  # noqa: D401
     parser.add_argument("--max_train_steps", type=int, help="Override max_train_steps from config.")
     parser.add_argument("--learning_rate", type=float, help="Override learning_rate from config.")
     parser.add_argument("--t_text", type=int, help="Override t_text from config.")
-    parser.add_argument("--save_every", type=int, default=100, help="Save checkpoint every N steps.") # Default was 100
     parser.add_argument("--log_interval", type=int, help="Log metrics every N steps.")
     parser.add_argument("--wandb_log_interval", type=int, help="Log metrics to WandB every N steps.")
     parser.add_argument("--resume", type=str, help="Path to checkpoint to resume from.")
@@ -237,11 +238,17 @@ def main() -> None:  # noqa: D401
 
     # Use overridden values or defaults from config
     model_name = config['model_name']
+    tokenizer_name = config.get("tokenizer_name", model_name) # Moved here for earlier access
+    
     # Handle activation_dir override carefully: CLI takes precedence over config.
-    activation_dir = args.activation_dir if args.activation_dir is not None else config['activation_dumper']['output_dir']
+    base_activation_dir_str = args.activation_dir if args.activation_dir is not None else config['activation_dumper']['output_dir']
+    activation_dir = str(Path(Path(base_activation_dir_str).parent / tokenizer_name / Path(base_activation_dir_str).name))
     
     # Handle val_activation_dir: CLI takes precedence over config.
-    effective_val_activation_dir = args.val_activation_dir if args.val_activation_dir is not None else config.get('val_activation_dir')
+    base_val_activation_dir_str = args.val_activation_dir if args.val_activation_dir is not None else config.get('val_activation_dir')
+    effective_val_activation_dir: str | None = None
+    if base_val_activation_dir_str:
+        effective_val_activation_dir = str(Path(Path(base_val_activation_dir_str).parent / tokenizer_name / Path(base_val_activation_dir_str).name))
     
     max_steps = config['max_train_steps']
     learning_rate = config['learning_rate']
@@ -275,6 +282,9 @@ def main() -> None:  # noqa: D401
              config=config,  # Pass the potentially modified config dict
              mode=wandb_config.get('mode', 'online')) # Add default mode
 
+    # Initialize checkpoint manager
+    checkpoint_manager = CheckpointManager(config, log)
+
     # Prepare DataLoaders by calling the helper function
     train_loader, val_loader, train_ds, val_ds = _prepare_dataloaders(
         config=config,
@@ -290,10 +300,21 @@ def main() -> None:  # noqa: D401
         log.warning("DataLoader is empty or batch_size is too large for dataset; steps_per_epoch is 0.")
         # This implies an issue, but to prevent division by zero if max_steps > 0:
         num_epochs_total_approx = 0 if max_steps == 0 else 1 
-    elif max_steps == 0:
-        num_epochs_total_approx = 0
     else:
-        num_epochs_total_approx = (max_steps - 1) // steps_per_epoch + 1
+        # Handle epoch-based training
+        num_train_epochs = config.get('num_train_epochs', 0)
+        
+        if num_train_epochs > 0 and max_steps == 0:
+            # Epoch-based training: calculate max_steps from num_train_epochs
+            max_steps = steps_per_epoch * num_train_epochs
+            num_epochs_total_approx = num_train_epochs
+            log.info(f"Epoch-based training: {num_train_epochs} epochs × {steps_per_epoch} steps/epoch = {max_steps} total steps")
+        elif max_steps > 0:
+            # Step-based training: calculate approximate epochs from max_steps
+            num_epochs_total_approx = (max_steps - 1) // steps_per_epoch + 1
+        else:
+            # Neither epochs nor steps specified
+            raise ValueError("Either 'num_train_epochs' or 'max_train_steps' must be > 0 in config")
 
 
     log.info("Starting training run – Model: %s, Activations: %s", model_name, activation_dir)
@@ -313,24 +334,19 @@ def main() -> None:  # noqa: D401
     # Initialize models using new config flags
     decoder_config = DecoderConfig(
         model_name=model_name,
-        n_prompt_tokens=config['decoder_n_prompt_tokens'],
-        train_base_model=decoder_train_cfg.get('base_model', False),
-        train_projection_layer=decoder_train_cfg.get('projection_layer', True),
-        train_output_head=decoder_train_cfg.get('output_head', True)
+        **decoder_train_cfg
     )
     dec_raw = Decoder(decoder_config)
 
     encoder_config = EncoderConfig(
         model_name=model_name,
-        train_base_model=encoder_train_cfg.get('base_model', False),
-        train_projection_layer=encoder_train_cfg.get('projection_layer', True)
+        **encoder_train_cfg
     )
     enc_raw = Encoder(encoder_config)
 
     # ------------------------------------------------------------------
     # Tokenizer & vocab-size-based resizing (do this BEFORE optional torch.compile)
     # ------------------------------------------------------------------
-    tokenizer_name = config.get("tokenizer_name", model_name)
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     log.info(f"Tokenizer name: {tokenizer_name}")
 
@@ -339,12 +355,15 @@ def main() -> None:  # noqa: D401
     from lens.utils.embedding_remap import remap_embeddings
     base_tok = AutoTokenizer.from_pretrained(model_name)
 
-    remap_embeddings(dec_raw.base, base_tok, tokenizer)
-    remap_embeddings(enc_raw.base, base_tok, tokenizer)
-    log.info("Remapped Decoder & Encoder embedding matrices to new tokenizer")
+    if config["tokenizer_name"] != model_name:
+        log.info(f"Remapping embeddings from {model_name} to {tokenizer_name}")
+        remap_embeddings(dec_raw.base, base_tok, tokenizer)
+        remap_embeddings(enc_raw.base, base_tok, tokenizer)
+        log.info("Remapped Decoder & Encoder embedding matrices to new tokenizer")
 
     # Reinitialise prompt ids to ensure they are within new vocab
     dec_raw.set_prompt(config.get("decoder_prompt", "Explain: "), tokenizer)
+    log.info("Prompt for decoder: %s",str([tokenizer.decode(d) for d in dec_raw.prompt_ids]))
 
     # Ensure Decoder's standalone LM head matches new vocab
     if dec_raw.out.weight.size(0) != new_vocab_size:
@@ -366,8 +385,9 @@ def main() -> None:  # noqa: D401
 
     # Original model wrapper (remap after creation)
     orig = OrigWrapper(model_name, load_in_8bit=False)
-    remap_embeddings(orig.model, base_tok, tokenizer)
-    log.info("Remapped Orig model embeddings to new tokenizer")
+    if config["tokenizer_name"] != model_name:
+        remap_embeddings(orig.model, base_tok, tokenizer)
+        log.info("Remapped Orig model embeddings to new tokenizer")
     orig.model.to(device)
 
     # Consolidate all parameters from dec and enc that require gradients.
@@ -379,23 +399,50 @@ def main() -> None:  # noqa: D401
     total_trainable_params_val = sum(p.numel() for p in trainable_params)
     num_params_orig_total = sum(p.numel() for p in orig.model.parameters()) # Orig model is frozen
 
-    log.info(f"Total trainable parameters (Decoder + Encoder): {total_trainable_params_val:,}")
+    log.info(f"Total trainable parameters (Decoder + Encoder combined): {total_trainable_params_val:,}")
+
+    # Decoder parameter counts
+    num_params_dec_total = sum(p.numel() for p in dec.parameters())
     num_params_dec_base_trainable = sum(p.numel() for n, p in dec.named_parameters() if p.requires_grad and 'base' in n)
     num_params_dec_proj_trainable = sum(p.numel() for n, p in dec.named_parameters() if p.requires_grad and 'proj' in n)
     num_params_dec_out_trainable = sum(p.numel() for n, p in dec.named_parameters() if p.requires_grad and 'out' in n)
+    current_dec_trainable_total = num_params_dec_base_trainable + num_params_dec_proj_trainable + num_params_dec_out_trainable
+    num_params_dec_frozen = num_params_dec_total - current_dec_trainable_total
+    
+    log.info(f"Decoder - Total parameters: {num_params_dec_total:,}")
+    log.info(f"  Decoder - Trainable parameters: {current_dec_trainable_total:,}")
+    log.info(f"    Decoder base trainable: {num_params_dec_base_trainable:,} (Config: {decoder_config.base_model})")
+    log.info(f"    Decoder proj trainable: {num_params_dec_proj_trainable:,} (Config: {decoder_config.projection_layer})")
+    log.info(f"    Decoder out trainable: {num_params_dec_out_trainable:,} (Config: {decoder_config.output_head})")
+    log.info(f"  Decoder - Frozen parameters: {num_params_dec_frozen:,}")
+
+    # Encoder parameter counts
+    num_params_enc_total = sum(p.numel() for p in enc.parameters())
     num_params_enc_base_trainable = sum(p.numel() for n, p in enc.named_parameters() if p.requires_grad and 'base' in n)
     num_params_enc_proj_trainable = sum(p.numel() for n, p in enc.named_parameters() if p.requires_grad and 'proj' in n)
+    current_enc_trainable_total = num_params_enc_base_trainable + num_params_enc_proj_trainable
+    num_params_enc_frozen = num_params_enc_total - current_enc_trainable_total
 
-    log.info(f"  Decoder base trainable: {num_params_dec_base_trainable:,} (Config: {decoder_config.train_base_model})")
-    log.info(f"  Decoder proj trainable: {num_params_dec_proj_trainable:,} (Config: {decoder_config.train_projection_layer})")
-    log.info(f"  Decoder out trainable: {num_params_dec_out_trainable:,} (Config: {decoder_config.train_output_head})")
-    log.info(f"  Encoder base trainable: {num_params_enc_base_trainable:,} (Config: {encoder_config.train_base_model})")
-    log.info(f"  Encoder proj trainable: {num_params_enc_proj_trainable:,} (Config: {encoder_config.train_projection_layer})")
+    log.info(f"Encoder - Total parameters: {num_params_enc_total:,}")
+    log.info(f"  Encoder - Trainable parameters: {current_enc_trainable_total:,}")
+    log.info(f"    Encoder base trainable: {num_params_enc_base_trainable:,} (Config: {encoder_config.base_model}, present: {encoder_config.use_base_model})")
+    log.info(f"    Encoder proj trainable: {num_params_enc_proj_trainable:,} (Config: {encoder_config.projection_layer})")
+    log.info(f"  Encoder - Frozen parameters: {num_params_enc_frozen:,}")
+
+    # Sanity check: sum of categorized trainable parameters should match total_trainable_params_val
+    sum_of_categorized_trainable = current_dec_trainable_total + current_enc_trainable_total
+    if total_trainable_params_val != sum_of_categorized_trainable:
+        log.warning(
+            f"Parameter count mismatch: total_trainable_params_val is {total_trainable_params_val:,}, "
+            f"but sum of categorized trainable parameters (Decoder + Encoder) is {sum_of_categorized_trainable:,}. "
+            "This might indicate that some trainable parameters are not covered by the 'base', 'proj', 'out' categorization."
+        )
 
     log.info(f"Original LLM (frozen) parameters: {num_params_orig_total:,}")
     log.info(f"Hyperparameters: lm_weight={lm_weight}, kl_base_weight={kl_base_weight}, entropy_weight={entropy_weight}")
     log.info(f"Learning rate: {learning_rate}, Projection LR Multiplier: {projection_lr_multiplier}")
-
+    log.info(f"Stop-grad on A′: {config['stop_grad_aprime']}")
+    log.info(f"Grad clip: {config['grad_clip']}")
     
     # Create optimizer groups with potentially different LRs
     optimizer_groups = param_groups([dec, enc], learning_rate, projection_lr_multiplier)
@@ -404,8 +451,8 @@ def main() -> None:  # noqa: D401
     num_params_in_optimizer_groups = sum(p.numel() for group in optimizer_groups for p in group['params'])
     if total_trainable_params_val != num_params_in_optimizer_groups:
         log.warning(
-            f"Parameter count mismatch: sum of p.numel() for trainable_params is {total_trainable_params_val}, "
-            f"but optimizer groups sum to {num_params_in_optimizer_groups}. "
+            f"Parameter count mismatch: sum of p.numel() for trainable_params is {total_trainable_params_val:,}, "
+            f"but optimizer groups sum to {num_params_in_optimizer_groups:,}. "
             "Check requires_grad flags and param grouping logic."
         )
 
@@ -415,30 +462,40 @@ def main() -> None:  # noqa: D401
 
     start_step = 0
     if args.resume:
-        from lens.utils import checkpoint as ckpt
         # Checkpoint stores the last completed step
-        rec = ckpt.load(args.resume, models={"dec": dec, "enc": enc}, optim=opt, map_location=device)
+        rec = checkpoint_manager.load_checkpoint(args.resume, models={"dec": dec, "enc": enc}, optimizer=opt, map_location=device)
         start_step = int(rec.get("step", -1)) + 1 # Resume from the next step
         log.info(f"Resuming training from step {start_step}")
 
     epoch_decoded_tokens = []  # Initialize accumulator for decoded tokens per epoch
     step_iter = iter(train_loader)
+    log.info(f"Start step: {start_step}, Max steps: {max_steps}")
+    
+    # Track validation loss for best checkpoint
+    best_val_loss = float('inf')
+    
     for step in range(start_step, max_steps):
         current_epoch_num = (step // steps_per_epoch) + 1 if steps_per_epoch > 0 else 1
+        epoch_just_finished = False
+        
         try:
             batch = next(step_iter)
         except StopIteration:
-            # Epoch finished, log token stats, then re-initialize data loader
+            # Epoch finished
+            epoch_just_finished = True
+            
+            # Log token stats
             if epoch_decoded_tokens:
                 token_counts = Counter(epoch_decoded_tokens)
                 if token_counts:
                     most_common_token_id, most_common_count = token_counts.most_common(1)[0]
                     total_tokens_in_epoch = len(epoch_decoded_tokens)
                     frequency = most_common_count / total_tokens_in_epoch
-                    log.info(
-                        f"Epoch {current_epoch_num} ended. Most common token: ID {most_common_token_id} = `{tokenizer.decode([most_common_token_id])}` "
-                        f"(Count: {most_common_count}/{total_tokens_in_epoch}, Freq: {frequency:.4f})"
-                    )
+                    if step % config['log_interval'] == 0:
+                        log.info(
+                            f"Epoch {current_epoch_num} most common token: ID {most_common_token_id} = `{tokenizer.decode([most_common_token_id])}` "
+                            f"(Count: {most_common_count}/{total_tokens_in_epoch}, Freq: {frequency:.4f})"
+                        )
                     log_metrics({
                         "epoch_stats/most_common_token_id": most_common_token_id,
                         "epoch_stats/most_common_token_count": most_common_count,
@@ -485,13 +542,13 @@ def main() -> None:  # noqa: D401
         if device.type == "cuda":
             scaler.scale(loss).backward()
             scaler.unscale_(opt)
-            grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, float("inf"))
+            grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, config['grad_clip'])
             param_before = [p.detach().clone() for p in trainable_params]
             scaler.step(opt)
             scaler.update()
         else:
             loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, float("inf"))
+            grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, config['grad_clip'])
             param_before = [p.detach().clone() for p in trainable_params]
             opt.step()
 
@@ -548,21 +605,57 @@ def main() -> None:  # noqa: D401
         # ------------------------------------------------------------------
         # Checkpoint
         # ------------------------------------------------------------------
-        if args.save_every > 0 and step % args.save_every == 0 and step > 0: # step > 0 to avoid saving at step 0 if save_every is small
-            from lens.utils import checkpoint
-
-            checkpoint_path = f"outputs/ckpt_step_{step}.pt"
-            checkpoint.save(
-                path=checkpoint_path,
-                models={"dec": dec, "enc": enc}, # Pass raw models if compiled
-                optim=opt,
-                step=step, # Save the completed step number
+        # Check if we should save based on step interval
+        if checkpoint_manager.should_save_step(step):
+            current_metrics = {
+                "loss/total": loss.item(),
+                "loss/mse": losses["mse"].item(),
+                "loss/lm": losses["lm"].item(),
+                "loss/kl": losses["kl"].item(),
+                "loss/entropy": losses["entropy"].item(),
+                "params/tau": current_tau,
+                "params/alpha": current_alpha,
+                "optim/lr": lr_current,
+                "grads/norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else float(grad_norm),
+            }
+            
+            checkpoint_manager.save_checkpoint(
+                step=step,
+                epoch=current_epoch_num,
+                models={"dec": dec_raw if config.get('compile_models', True) else dec, 
+                        "enc": enc_raw if config.get('compile_models', True) else enc},
+                optimizer=opt,
+                metrics=current_metrics,
+                config=config,
                 tau=current_tau,
                 alpha=current_alpha,
-                # Optionally save config or other metadata
             )
-            epoch_info_str = f"(Epoch {current_epoch_num})" if steps_per_epoch > 0 else ""
-            log.info(f"Saved checkpoint to {checkpoint_path} at step {step} {epoch_info_str}")
+        
+        # Check if we should save based on epoch completion
+        if epoch_just_finished and checkpoint_manager.should_save_epoch(current_epoch_num, epoch_just_finished):
+            current_metrics = {
+                "loss/total": loss.item(),
+                "loss/mse": losses["mse"].item(),
+                "loss/lm": losses["lm"].item(),
+                "loss/kl": losses["kl"].item(),
+                "loss/entropy": losses["entropy"].item(),
+                "params/tau": current_tau,
+                "params/alpha": current_alpha,
+                "optim/lr": lr_current,
+                "grads/norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else float(grad_norm),
+            }
+            
+            checkpoint_manager.save_checkpoint(
+                step=step,
+                epoch=current_epoch_num,
+                models={"dec": dec_raw if config.get('compile_models', True) else dec, 
+                        "enc": enc_raw if config.get('compile_models', True) else enc},
+                optimizer=opt,
+                metrics=current_metrics,
+                config=config,
+                tau=current_tau,
+                alpha=current_alpha,
+            )
 
         # run validation at interval
         if val_loader and val_interval > 0 and step > 0 and step % val_interval == 0:
@@ -601,8 +694,118 @@ def main() -> None:  # noqa: D401
                 "eval/loss/lm":     avg_val_lm,
                 "eval/loss/kl":     avg_val_kl,
             }, step=step)
+            
+            # Save checkpoint if validation loss tracking is enabled
+            if checkpoint_manager.track_best_n > 0 and not math.isnan(avg_val_loss):
+                val_metrics = {
+                    "loss/total": loss.item(),
+                    "loss/mse": losses["mse"].item(),
+                    "loss/lm": losses["lm"].item(),
+                    "loss/kl": losses["kl"].item(),
+                    "loss/entropy": losses["entropy"].item(),
+                    "eval/loss/total": avg_val_loss,
+                    "eval/loss/mse": avg_val_mse,
+                    "eval/loss/lm": avg_val_lm,
+                    "eval/loss/kl": avg_val_kl,
+                    "params/tau": current_tau,
+                    "params/alpha": current_alpha,
+                    "optim/lr": lr_current,
+                    "grads/norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else float(grad_norm),
+                }
+                
+                checkpoint_manager.save_checkpoint(
+                    step=step,
+                    epoch=current_epoch_num,
+                    models={"dec": dec_raw if config.get('compile_models', True) else dec, 
+                            "enc": enc_raw if config.get('compile_models', True) else enc},
+                    optimizer=opt,
+                    metrics=val_metrics,
+                    config=config,
+                    val_loss=avg_val_loss,
+                    tau=current_tau,
+                    alpha=current_alpha,
+                )
+                
             dec.train()
             enc.train()
+
+        # Verbose sample printing
+        verbose_config = config.get('verbose_samples', {})
+        if verbose_config.get('enabled', False):
+            should_print = False
+            
+            # Check if we should print based on interval type
+            if verbose_config.get('interval_type', 'steps') == 'steps':
+                # Print every N steps
+                verbose_interval = verbose_config.get('interval', 1000)
+                if step > 0 and step % verbose_interval == 0:
+                    should_print = True
+            else:  # interval_type == 'epochs'
+                # Print at epoch boundaries
+                if epoch_just_finished:
+                    verbose_interval = verbose_config.get('interval', 1)
+                    if current_epoch_num % verbose_interval == 0:
+                        should_print = True
+            
+            # Also check for combined epoch+steps printing
+            if verbose_config.get('print_every_epoch', False) and epoch_just_finished:
+                should_print = True
+            if verbose_config.get('print_every_n_steps', 0) > 0:
+                if step > 0 and step % verbose_config['print_every_n_steps'] == 0:
+                    should_print = True
+            
+            if should_print:
+                log.info(f"Generating verbose samples at step {step}, epoch {current_epoch_num}")
+                dec.eval()
+                enc.eval()
+                
+                # Get schedule arguments
+                sch_args = {
+                    "tau": get_schedule_value(config['gumbel_tau_schedule'], step, max_steps),
+                    "T_text": t_text,
+                    "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps),
+                    "lm_weight": lm_weight,
+                    "kl_base_weight": kl_base_weight,
+                    "entropy_weight": entropy_weight,
+                }
+                
+                # Process verbose samples
+                num_printed = process_and_print_verbose_batch_samples(
+                    batch=batch,  # Use current batch
+                    cfg=config,
+                    models={"dec": dec, "enc": enc},
+                    orig=orig,
+                    tok=tokenizer,
+                    sch_args=sch_args,
+                    device=device,
+                    num_samples=verbose_config.get('num_samples', 2),
+                    top_n_analysis=verbose_config.get('top_n_predictions', 3),
+                    printed_count_so_far=0,
+                    generate_continuation=verbose_config.get('generate_continuation', True),
+                    continuation_tokens=verbose_config.get('continuation_tokens', 30)
+                )
+                
+                dec.train()
+                enc.train()
+
+    # Save final checkpoint if enabled
+    if checkpoint_manager.save_at_end:
+        log.info("Saving final checkpoint...")
+        final_metrics = {
+            "loss/total": loss.item() if 'loss' in locals() else None,
+            "step": max_steps - 1,
+            "epoch": num_epochs_total_approx,
+        }
+        
+        checkpoint_manager.save_checkpoint(
+            step=max_steps - 1,
+            epoch=num_epochs_total_approx,
+            models={"dec": dec_raw if config.get('compile_models', True) else dec, 
+                    "enc": enc_raw if config.get('compile_models', True) else enc},
+            optimizer=opt,
+            metrics=final_metrics,
+            config=config,
+        )
 
     log.info("Training finished after %d steps.", max_steps)
 

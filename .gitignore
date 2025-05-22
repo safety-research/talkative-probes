@@ -31,3 +31,4 @@ __pycache__/
 sae_cache
 *.pth
 *.pt
+pgn_results

@@ -4,15 +4,19 @@ import torch
 from torch import nn
 from transformers import AutoModelForCausalLM, PreTrainedModel
 from dataclasses import dataclass
-
+import logging
 __all__ = ["Encoder", "EncoderConfig"]
 
 
 @dataclass
 class EncoderConfig:
     model_name: str
-    train_base_model: bool = True
-    train_projection_layer: bool = True
+    base_model: bool = True          # YAML `base_model`
+    projection_layer: bool = True    # YAML `projection_layer`
+    use_base_model: bool = False     # YAML `use_base_model`
+    eye_init: bool = True            # YAML `eye_init`
+    stop_grad_aprime: bool = False   # YAML `stop_grad_aprime`
+log = logging.getLogger(__name__)
 
 
 class Encoder(nn.Module):
@@ -20,21 +24,28 @@ class Encoder(nn.Module):
 
     def __init__(self, cfg: EncoderConfig):
         super().__init__()
-
+        self.config = cfg
         self.base: PreTrainedModel = AutoModelForCausalLM.from_pretrained(cfg.model_name)
-        # Configure trainability of the base model
-        for p in self.base.parameters():
-            p.requires_grad_(cfg.train_base_model)
-
         d_model = self.base.config.hidden_size
+        self._use_base = cfg.use_base_model
+        if self._use_base:
+            # Configure trainability of the base model
+            for p in self.base.parameters():
+                p.requires_grad_(cfg.base_model)
+        else:
+            self.base = None
+
         # This is Proj_E_hidden_to_A from the README
         self.proj = nn.Linear(d_model, d_model, bias=False)
+        # Initialize as identity matrix
+        if cfg.eye_init:
+            nn.init.eye_(self.proj.weight)
+            log.info("Initialized projection layer as identity matrix")
         # Configure trainability of the output projection layer
         for p in self.proj.parameters():
-            p.requires_grad_(cfg.train_projection_layer)
+            p.requires_grad_(cfg.projection_layer)
 
         # Store flag for forward()
-        self._use_base = cfg.train_base_model
 
     def forward(self, embeddings: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
         """Project final token embedding back to activation space."""

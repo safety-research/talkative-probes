@@ -21,28 +21,16 @@ import yaml
 import json
 from pathlib import Path
 from typing import Iterator, Callable # Added Callable
+import os
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from datasets import load_dataset
 from tqdm import tqdm
-
-
-# Optional dependency – defer import to runtime in case users only want the smoke-test mode
-try:
-    from datasets import load_dataset  # type: ignore
-
-    _HAS_DATASETS = True
-except ImportError:  # pragma: no cover
-    # load_dataset will be undefined if this happens.
-    _HAS_DATASETS = False
-    load_dataset = None # Make it explicit that load_dataset might be None
-
+os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
 def iter_hf_text(dataset_name: str, cache_dir: str | None, split: str, num_samples: int) -> Iterator[str]:
     """Stream plain-text documents from a HuggingFace dataset until *num_samples* yielded."""
-    if not _HAS_DATASETS or load_dataset is None: # Should be caught by main, but defensive
-        raise ImportError("datasets library is not available or failed to import.")
-
     if num_samples == 0: # Avoid issues if 0 samples requested
         return iter([])
 
@@ -109,10 +97,15 @@ def main() -> None:  # noqa: D401
     activation_dumper_cfg = cfg["activation_dumper"]
 
     # Determine effective config: CLI > YAML > Default
-    effective_output_dir = args.output_dir if args.output_dir is not None else activation_dumper_cfg["output_dir"]
+    # Get base output_dir (CLI or YAML)
+    base_output_dir_str = args.output_dir if args.output_dir is not None else activation_dumper_cfg["output_dir"]
     seq_len = args.seq_len if args.seq_len is not None else activation_dumper_cfg["seq_len"]
     num_samples = args.num_samples if args.num_samples is not None else activation_dumper_cfg["num_samples"]
     layer_idx = args.layer_idx if args.layer_idx is not None else cfg["layer_l"]
+    
+    # Construct final path with tokenizer_name and layer index
+    tokenizer_name = cfg.get("tokenizer_name", cfg["model_name"])
+    effective_output_dir = Path(Path(base_output_dir_str).parent / tokenizer_name / f"layer_{layer_idx}" / Path(base_output_dir_str).name)
     
     # effective_use_hf: True if CLI flag set, else YAML value (defaulting to False if not in YAML)
     effective_use_hf = args.use_hf_dataset or activation_dumper_cfg.get("use_hf_dataset", False)
@@ -134,10 +127,17 @@ def main() -> None:  # noqa: D401
     ]
 
     # Determine validation dump parameters either from CLI or YAML
-    val_out_cfg = activation_dumper_cfg.get("val_output_dir")
+    val_out_base_cfg = activation_dumper_cfg.get("val_output_dir")
     val_split_cfg = activation_dumper_cfg.get("val_hf_split", "validation") # Default val split name if not specified
-    if args.val_output_dir or val_out_cfg: # If either CLI or YAML specifies a val output dir
-        val_out_dir = args.val_output_dir if args.val_output_dir else val_out_cfg
+    
+    base_val_output_dir_str = None
+    if args.val_output_dir:
+        base_val_output_dir_str = args.val_output_dir
+    elif val_out_base_cfg:
+        base_val_output_dir_str = val_out_base_cfg
+
+    if base_val_output_dir_str: # If a base validation output dir is specified (CLI or YAML)
+        val_out_dir = Path(Path(base_val_output_dir_str).parent / tokenizer_name / f"layer_{layer_idx}" / Path(base_val_output_dir_str).name)
         val_split = args.val_hf_split if args.val_hf_split else val_split_cfg
         # Default val_num_samples to main num_samples if not specified
         val_samples = args.val_num_samples if args.val_num_samples is not None else activation_dumper_cfg.get("val_num_samples", num_samples)
@@ -162,9 +162,10 @@ def main() -> None:  # noqa: D401
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info(f"Using device: {device}")
+    log.info(f"Layer index: {layer_idx}")
+    log.info(f"Output directories will include layer: e.g., {effective_output_dir}")
 
-    tokenizer_name = cfg.get("tokenizer_name", cfg["model_name"])
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True)
     log.info(f"Tokenizer name: {tokenizer_name}")
     # Some tiny models (GPT-2) miss an explicit pad_token.
     if tokenizer.pad_token_id is None:
@@ -238,13 +239,6 @@ def main() -> None:  # noqa: D401
 
         get_next_text_fn: Callable[[], str]
         if effective_use_hf:
-            if not _HAS_DATASETS or load_dataset is None:
-                log.error("HuggingFace datasets library is required for use_hf_dataset=True but not available.")
-                raise ImportError("datasets library is not available or failed to import.")
-            if not effective_hf_dataset_name:
-                log.error("HF dataset name not configured (hf_dataset_name), but use_hf_dataset is True.")
-                raise ValueError("HF dataset name must be provided if use_hf_dataset is True.")
-
             text_iter = iter_hf_text(
                 effective_hf_dataset_name,
                 effective_dataset_cache_dir,
@@ -303,8 +297,17 @@ def main() -> None:  # noqa: D401
                     batch_txt_A.append(text_A)
                     batch_txt_Ap.append(text_Ap)
             
-            toks_A_batch = tokenizer(batch_txt_A, padding="max_length", truncation=True, max_length=seq_len, return_tensors="pt").input_ids.to(device)
-            toks_Ap_batch = tokenizer(batch_txt_Ap, padding="max_length", truncation=True, max_length=seq_len, return_tensors="pt").input_ids.to(device)
+            # thread-parallel tokenisation + single call
+            all_texts = batch_txt_A + batch_txt_Ap
+            enc = tokenizer(
+                all_texts,
+                padding="max_length",
+                truncation=True,
+                max_length=seq_len,
+                return_tensors="pt",
+            )
+            toks_all = enc.input_ids.to(device)
+            toks_A_batch, toks_Ap_batch = toks_all.split(current_batch_actual_size, dim=0)
             
             with torch.no_grad():
                 out_A_batch = model(toks_A_batch, output_hidden_states=True)
@@ -378,7 +381,7 @@ def main() -> None:  # noqa: D401
     for split_cfg_item in splits_to_dump:
         dump_split(
             split_cfg_item["name"], 
-            Path(split_cfg_item["output_dir"]), 
+            Path(split_cfg_item["output_dir"]), # Ensure it's a Path object
             split_cfg_item["num_samples"]
         )
 
