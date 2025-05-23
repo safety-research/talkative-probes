@@ -44,8 +44,8 @@ activation_dumper:
   seq_len: 64
   use_hf_dataset: true
   hf_dataset_name: "NeelNanda/pile-10k"
-  dataset_cache_dir: "consistency-lens/data/corpus/pile-10k"
-  output_dir: "consistency-lens/data/activations"
+  dataset_cache_dir: "./data/corpus/pile-10k"
+  output_dir: "./data/activations"
   batch_size: 512
   # HuggingFace dataset loading options
   # If 'use_hf_dataset' is true the dumper script will read the tiny 10-k subset of

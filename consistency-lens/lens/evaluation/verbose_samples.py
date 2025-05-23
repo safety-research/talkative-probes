@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import torch
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, NamedTuple
 from transformers import PreTrainedTokenizerBase
+from torch.nn import functional as F  # Added for gumbel_softmax
 
 from lens.models.decoder import Decoder
 from lens.models.encoder import Encoder
@@ -158,10 +159,12 @@ def print_verbose_sample_details(
     context_labels: List[str],
     context_data_rows: List[List[str]],
     analysis_predictions: Dict[str, List[str]],
-    gen_tokens: List[str],
-    topk_per_pos: List[str],
+    decoder_tokens: List[str],
+    decoder_preds_by_rank: List[List[str]],
+    base_tokens: List[str],
+    base_preds_by_rank: List[List[str]],
     top_n_analysis_val: int,
-    original_string_cropped: str, # Accepts the wider context string
+    original_string_cropped: str,
     autoregressive_continuation: Optional[str] = None,
 ) -> None:
     """Prints detailed information for a single verbose sample."""
@@ -184,13 +187,25 @@ def print_verbose_sample_details(
         print(f"  - {pred_type} (Top {top_n_analysis_val}): {tokens_str}")
 
     print("\nGenerated Explanation (from Decoder using A_i):")
-    if gen_tokens:
-        expl_labels = ["Token:", f"Decoder Top-{top_n_analysis_val} Preds:"]
-        expl_data_rows = [gen_tokens, topk_per_pos]
-        print_formatted_table(expl_labels, expl_data_rows)
+    if decoder_tokens:
+        dec_labels = ["Token:"] + [f"Dec Top {i+1}:" for i in range(len(decoder_preds_by_rank))]
+        dec_data_rows = [decoder_tokens] + decoder_preds_by_rank
+        print_formatted_table(dec_labels, dec_data_rows)
     else:
         print("  (No explanation generated or empty)")
     
+    # ------------------------------------------------------------------
+    # Base model generation comparison
+    # ------------------------------------------------------------------
+
+    print("\nGenerated Explanation (from BASE model using same context):")
+    if base_tokens:
+        base_labels = ["Token:"] + [f"Base Top {i+1}:" for i in range(len(base_preds_by_rank))]
+        base_data_rows = [base_tokens] + base_preds_by_rank
+        print_formatted_table(base_labels, base_data_rows)
+    else:
+        print("  (No explanation generated or empty)")
+
     print("-" * 60)
 
 
@@ -310,26 +325,61 @@ def process_and_print_verbose_batch_samples(
         
         original_token_at_p_str = escape_newlines(tok.decode([raw_prefix_ids[p]])) if p < len(raw_prefix_ids) else "N/A"
 
-        # Generated explanation processing
+        # ------------------------------------------------------------------
+        # (1) Decoder explanation & stacked top-k predictions (per-rank rows)
+        # ------------------------------------------------------------------
+
         gen_token_ids_full = gen_single.hard_token_ids[0].tolist()
         gen_tokens = [escape_newlines(tok.decode([tid])) for tid in gen_token_ids_full]
-        
-        # Use top_n_analysis for decoder's own predictions during explanation generation.
-        # Ensure k for topk is not larger than vocab size and not zero if top_n_analysis is zero.
+
         k_for_decoder_preds = min(top_n_analysis, gen_single.raw_lm_logits.size(-1))
-        if top_n_analysis == 0: # if top_n_analysis is 0, effectively no tokens.
-            k_for_decoder_preds = 0
 
-        topk_per_pos = []
+        # Build list of rows: one row per rank (top-1, top-2, ...)
+        decoder_preds_by_rank: List[List[str]] = [[] for _ in range(k_for_decoder_preds)]
+
         if k_for_decoder_preds > 0:
-            topk_per_pos = [
-                ", ".join(f'"{escape_newlines(tok.decode([x_id]).strip())}"' 
-                          for x_id in torch.topk(logit_slice, k=k_for_decoder_preds).indices.tolist())
-                for logit_slice in gen_single.raw_lm_logits[0][: len(gen_tokens)]
-            ]
-        else: # Handle case where k_for_decoder_preds is 0
-             topk_per_pos = [""] * len(gen_tokens)
+            for logit_slice in gen_single.raw_lm_logits[0][: len(gen_tokens)]:
+                topk_ids = torch.topk(logit_slice, k=k_for_decoder_preds).indices.tolist()
+                for rank_idx, tok_id in enumerate(topk_ids):
+                    decoder_preds_by_rank[rank_idx].append(
+                        escape_newlines(tok.decode([tok_id]).strip())
+                    )
+        else:
+            decoder_preds_by_rank = []
 
+        # ------------------------------------------------------------------
+        # (2) Base model generation with identical context                
+        # ------------------------------------------------------------------
+
+        base_gen_single = generate_soft_with_base(
+            orig,
+            A_i,
+            proj_layer=dec.proj,
+            prompt_left_emb=dec.prompt_left_emb,
+            prompt_right_emb=dec.prompt_right_emb,
+            prompt_len=dec.prompt_len,
+            max_length=cfg["t_text"],
+            gumbel_tau=sch_args["tau"],
+            device=device,
+        )
+
+        base_token_ids_full = base_gen_single.hard_token_ids[0].tolist()
+        base_gen_tokens = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full]
+
+        # For base model, build top-k predictions in same stacked format for readability (optional)
+        base_preds_by_rank: List[List[str]] = []
+        if k_for_decoder_preds > 0:
+            base_preds_by_rank = [[] for _ in range(k_for_decoder_preds)]
+            for logit_slice in base_gen_single.raw_lm_logits[0][: len(base_gen_tokens)]:
+                topk_ids = torch.topk(logit_slice, k=k_for_decoder_preds).indices.tolist()
+                for rank_idx, tok_id in enumerate(topk_ids):
+                    base_preds_by_rank[rank_idx].append(
+                        escape_newlines(tok.decode([tok_id]).strip())
+                    )
+
+        # ------------------------------------------------------------------
+        # END generation blocks
+        # ------------------------------------------------------------------
 
         # Prepare context table data
         context_display_range = f"{display_start_idx}-{display_end_idx-1}" if displayed_positions else "empty"
@@ -372,12 +422,43 @@ def process_and_print_verbose_batch_samples(
 
         # Collect structured data if requested
         if return_structured_data:
-            # Get decoder predictions for position p
+            # Get decoder predictions for position p - topk_per_pos contains strings, not tuples
             decoder_preds = []
-            if p < len(topk_per_pos) and topk_per_pos[p]:
-                for token_id, prob in topk_per_pos[p][:top_n_analysis]:
+            if p < gen_single.raw_lm_logits.size(1):
+                # Get actual token IDs and probabilities from the raw logits
+                logits_at_p = gen_single.raw_lm_logits[0, p]
+                probs = torch.softmax(logits_at_p, dim=-1)
+                top_values, top_indices = torch.topk(probs, k=min(top_n_analysis, probs.size(-1)))
+                for i in range(len(top_indices)):
+                    token_id = top_indices[i].item()
+                    prob = top_values[i].item()
                     token_str = escape_newlines(tok.decode([token_id]))
                     decoder_preds.append((token_str, prob))
+            
+            # For original and reconstructed logits, we need to get probabilities too
+            # Since get_top_n_tokens only returns strings, we need to get the probabilities from the original logits
+            
+            # Original logits with probabilities
+            original_logits_with_probs = []
+            if logits_orig_at_p.numel() > 0:
+                orig_probs = torch.softmax(logits_orig_at_p, dim=-1)
+                orig_top_values, orig_top_indices = torch.topk(orig_probs, k=min(top_n_analysis, orig_probs.size(-1)))
+                for i in range(len(orig_top_indices)):
+                    token_id = orig_top_indices[i].item()
+                    prob = orig_top_values[i].item()
+                    token_str = escape_newlines(tok.decode([token_id]))
+                    original_logits_with_probs.append((token_str, prob))
+            
+            # Reconstructed logits with probabilities
+            reconstructed_logits_with_probs = []
+            if logits_target_at_p.numel() > 0:
+                recon_probs = torch.softmax(logits_target_at_p, dim=-1)
+                recon_top_values, recon_top_indices = torch.topk(recon_probs, k=min(top_n_analysis, recon_probs.size(-1)))
+                for i in range(len(recon_top_indices)):
+                    token_id = recon_top_indices[i].item()
+                    prob = recon_top_values[i].item()
+                    token_str = escape_newlines(tok.decode([token_id]))
+                    reconstructed_logits_with_probs.append((token_str, prob))
             
             sample_data = {
                 "input_text": escape_newlines(original_string_cropped),
@@ -386,18 +467,26 @@ def process_and_print_verbose_batch_samples(
                 "decoded_text": escape_newlines(" ".join(gen_tokens)),
                 "top_predictions": decoder_preds,
                 "continuation": escape_newlines(autoregressive_continuation) if autoregressive_continuation else None,
-                "original_logits": [(escape_newlines(tok.decode([t])), p) for t, p in top_n_orig_A_tokens],
-                "reconstructed_logits": [(escape_newlines(tok.decode([t])), p) for t, p in top_n_lens_recon_tokens],
+                "original_logits": original_logits_with_probs,
+                "reconstructed_logits": reconstructed_logits_with_probs,
             }
             structured_samples.append(sample_data)
         
         print_verbose_sample_details(
-            l, p, original_token_at_p_str,
-            context_display_range, context_labels, context_data_rows,
-            analysis_preds_dict,
-            gen_tokens, topk_per_pos,
-            top_n_analysis, original_string_cropped,
-            autoregressive_continuation
+            l=l,
+            p=p,
+            original_token_at_p_str=original_token_at_p_str,
+            context_display_range=context_display_range,
+            context_labels=context_labels,
+            context_data_rows=context_data_rows,
+            analysis_predictions=analysis_preds_dict,
+            decoder_tokens=gen_tokens,
+            decoder_preds_by_rank=decoder_preds_by_rank,
+            base_tokens=base_gen_tokens,
+            base_preds_by_rank=base_preds_by_rank,
+            top_n_analysis_val=top_n_analysis,
+            original_string_cropped=original_string_cropped,
+            autoregressive_continuation=autoregressive_continuation,
         )
         num_printed_this_batch += 1
         if (printed_count_so_far + num_printed_this_batch) >= num_samples:
@@ -406,3 +495,86 @@ def process_and_print_verbose_batch_samples(
     if return_structured_data:
         return num_printed_this_batch, structured_samples
     return num_printed_this_batch
+
+
+# -----------------------------------------------------------------------------
+# NOTE: Add helper to generate using the original (base) model with identical
+#       context handling (prompt left/right + activation splice) to the Decoder
+#       `generate_soft` method. This allows comparison between the trained
+#       Decoder and the frozen base model when supplied the same projected
+#       activation.
+# -----------------------------------------------------------------------------
+
+class BaseGenerated(NamedTuple):
+    """Lightweight container mirroring `Decoder.Generated` for the base model."""
+
+    hard_token_ids: torch.Tensor
+    raw_lm_logits: torch.Tensor
+
+
+def generate_soft_with_base(
+    orig_model: OrigWrapper,
+    activation_input: torch.Tensor,
+    *,
+    proj_layer: torch.nn.Linear,
+    prompt_left_emb: torch.Tensor | None,
+    prompt_right_emb: torch.Tensor | None,
+    prompt_len: int,
+    max_length: int,
+    gumbel_tau: float,
+    device: torch.device,
+) -> BaseGenerated:
+    """Autoregressively sample *soft* tokens from the *frozen* base model.
+
+    This closely follows `Decoder.generate_soft`, but relies solely on the
+    base model's LM head (tied embeddings) instead of a separate `out` layer.
+    """
+
+    # Ensure dtype/device consistency
+    activation_input = activation_input.to(proj_layer.weight.dtype).to(device)
+    if prompt_left_emb is not None:
+        prompt_left_emb = prompt_left_emb.to(device)
+    if prompt_right_emb is not None:
+        prompt_right_emb = prompt_right_emb.to(device)
+
+    # Build initial sequence of embeddings: <prompt_left> + proj(A) + <prompt_right>
+    parts: list[torch.Tensor] = []
+    if prompt_left_emb is not None:
+        parts.append(prompt_left_emb.expand(activation_input.size(0), -1, -1))
+
+    a_proj = proj_layer(activation_input).unsqueeze(1)
+    parts.append(a_proj)
+
+    if prompt_right_emb is not None:
+        parts.append(prompt_right_emb.expand(activation_input.size(0), -1, -1))
+
+    seq_embs = torch.cat(parts, dim=1)  # (B, prompt_len+1, d_model)
+
+    emb_table = orig_model.model.get_output_embeddings().weight  # (V, d_model)
+
+    logits_list: list[torch.Tensor] = []
+    hard_ids_list: list[torch.Tensor] = []
+
+    for _ in range(max_length):
+        outputs = orig_model.model(inputs_embeds=seq_embs, output_hidden_states=True)
+        h_last = (
+            outputs.last_hidden_state
+            if hasattr(outputs, "last_hidden_state")
+            else outputs.hidden_states[-1]
+        )
+
+        logits_t = orig_model.model.lm_head(h_last[:, -1])  # (B, V)
+
+        # Straight-Through Gumbel-Softmax sampling
+        ste_token_dist = F.gumbel_softmax(logits_t, tau=gumbel_tau, hard=True)
+        emb_t = ste_token_dist @ emb_table  # (B, d_model)
+
+        seq_embs = torch.cat([seq_embs, emb_t.unsqueeze(1)], dim=1)
+
+        logits_list.append(logits_t)
+        hard_ids_list.append(ste_token_dist.argmax(dim=-1))
+
+    logits_seq = torch.stack(logits_list, dim=1)
+    hard_ids = torch.stack(hard_ids_list, dim=1)
+
+    return BaseGenerated(hard_token_ids=hard_ids, raw_lm_logits=logits_seq)

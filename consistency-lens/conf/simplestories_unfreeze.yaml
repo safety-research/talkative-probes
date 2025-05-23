@@ -1,0 +1,45 @@
+# Configuration for SimpleStories Progressive Unfreezing Experiment
+# This config trains consistency lens on SimpleStories-5M, unfreezing after 1st epoch
+
+# Inherit all settings from config.yaml
+defaults:
+  - config
+  - _self_
+
+# Override specific settings for this experiment
+t_text: 10                            # Width-10 explanations as requested
+num_train_epochs: 30                  # More epochs for unfreezing experiment
+
+# Enable base model training with freeze schedule
+trainable_components:
+  decoder:
+    base_model: true                  # Will be frozen initially, then unfrozen
+    projection_layer: true
+    eye_init: true
+    output_head: true                 # Unfreeze LM head too
+  encoder:
+    base_model: true                  # Will be frozen initially, then unfrozen
+    use_base_model: true
+    projection_layer: true
+    eye_init: true
+
+# Progressive unfreezing after 1st epoch
+freeze_schedule:
+  enabled: true
+  unfreeze_at_epoch: 1                # Unfreeze after first epoch
+
+# Custom learning rates for unfrozen components
+custom_lr_multipliers:
+  projection_layers: 1.0              # Full LR for projections
+  base_model: 0.1                     # 10x lower LR for base model when unfrozen
+  output_head: 0.5                    # 2x lower LR for output heads
+
+# Keep tau constant as requested (no decay implemented)
+gumbel_tau_schedule:
+  type: "constant"
+  value: 1.0
+
+# WandB configuration
+wandb:
+  project: "consistency-lens-simplestories"
+  mode: "online"

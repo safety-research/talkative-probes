@@ -174,7 +174,9 @@ class CheckpointManager:
             keep_paths.add(path)
         
         # Keep most recent checkpoints up to max_checkpoints
-        recent_checkpoints = sorted(self.all_checkpoints, key=lambda p: p.stat().st_mtime, reverse=True)
+        # Filter out non-existent files before sorting
+        existing_checkpoints = [p for p in self.all_checkpoints if p.exists()]
+        recent_checkpoints = sorted(existing_checkpoints, key=lambda p: p.stat().st_mtime, reverse=True)
         for path in recent_checkpoints[:self.max_checkpoints]:
             keep_paths.add(path)
         

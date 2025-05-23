@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import logging
 from pathlib import Path
 from datetime import datetime
@@ -27,16 +26,30 @@ from typing import Any, Dict, List, Tuple, Union
 from transformers import PreTrainedTokenizerBase
 from lens.utils.embedding_remap import remap_embeddings
 from lens.evaluation.verbose_samples import (
-    escape_newlines,
     generate_autoregressive_continuation,
     get_top_n_tokens,
     print_formatted_table,
     print_verbose_sample_details,
     process_and_print_verbose_batch_samples,
 )
+import hydra
+from omegaconf import DictConfig, OmegaConf
 
 
-# These functions are now imported from lens.evaluation.verbose_samples
+def get_project_root() -> Path:
+    """Get the project root directory (consistency-lens folder)."""
+    script_dir = Path(__file__).parent.absolute()
+    project_root = script_dir.parent
+    return project_root
+
+
+def resolve_path(path_str: str) -> Path:
+    """Resolve a path relative to the project root if it's a relative path."""
+    path = Path(path_str)
+    if not path.is_absolute():
+        project_root = get_project_root()
+        return project_root / path
+    return path
 
 
 def extract_dataset_info(activation_dir: str) -> dict:
@@ -89,25 +102,6 @@ def extract_checkpoint_info(checkpoint_path: str) -> dict:
     return info
 
 
-def _parse_arguments() -> argparse.Namespace:
-    """Parses command-line arguments."""
-    parser = argparse.ArgumentParser(description="Evaluate a Consistency-Lens checkpoint")
-    parser.add_argument("--checkpoint", type=str, required=True, help="Path to the checkpoint file.")
-    parser.add_argument(
-        "--config_path", type=str, default="consistency-lens/config/lens_simple.yaml", help="Path to the configuration YAML file."
-    )
-    parser.add_argument("--activation_dir", type=str, help="Override activation_dir from config.")
-    parser.add_argument("--batch_size", type=int, default=4, help="Batch size for evaluation.")
-    parser.add_argument("--num_batches", type=int, default=25, help="Number of batches to evaluate.")
-    parser.add_argument("--verbose_samples", type=int, default=3, help="Number of verbose samples to print from the start of evaluation.")
-    parser.add_argument("--top_n_analysis", type=int, default=3, help="Number of top-N predictions to show in verbose analysis, including for decoder explanation steps.")
-    parser.add_argument("--val_fraction", type=float, help="Fraction of dataset for validation (overrides config).")
-    parser.add_argument("--split_seed", type=int, help="Seed for train/val split (overrides config).")
-    parser.add_argument("--output_dir", type=str, help="Directory to save evaluation results")
-    parser.add_argument("--save_results", action="store_true", help="Save evaluation results to JSON file")
-    return parser.parse_args()
-
-
 def _setup_logging() -> logging.Logger:
     """Sets up basic logging."""
     logging.basicConfig(
@@ -116,12 +110,6 @@ def _setup_logging() -> logging.Logger:
         datefmt="%H:%M:%S",
     )
     return logging.getLogger(__name__)
-
-
-def _load_config(config_path: str) -> Dict[str, Any]:
-    """Loads the YAML configuration file."""
-    with open(config_path, "r") as f:
-        return yaml.safe_load(f)
 
 
 def _build_models(
@@ -146,9 +134,6 @@ def _build_models(
     orig.model.to(device)
 
     new_vocab_size = tok.vocab_size
-    # Don't set prompt here - will be done after checkpoint loading
-    # dec.set_prompt(cfg.get("decoder_prompt", "Explain: "), tok)
-
 
     from lens.utils.embedding_remap import remap_embeddings
     base_tok = AutoTokenizer.from_pretrained(model_name)
@@ -158,9 +143,6 @@ def _build_models(
             remap_embeddings(enc.base, base_tok, tok)
         remap_embeddings(orig.model, base_tok, tok)
         logging.getLogger(__name__).info("Remapped all model embeddings to new tokenizer")
-
-    # Don't refresh decoder prompt ids here - will be done after checkpoint loading
-    # dec.set_prompt(cfg.get("decoder_prompt", "Explain: "), tok)
 
     # Ensure Decoder's independent LM head matches new vocab
     if dec.out.weight.size(0) != new_vocab_size:
@@ -231,23 +213,21 @@ def _load_checkpoint(checkpoint_path: str, models: Dict[str, torch.nn.Module], d
 
 
 def _prepare_data(
-    cfg: Dict[str, Any], args: argparse.Namespace, effective_act_dir: str, log: logging.Logger
+    cfg: Dict[str, Any], effective_act_dir: str, log: logging.Logger
 ) -> DataLoader:
     """Loads and prepares the dataset and DataLoader."""
     log.info(f"Loading activations from {effective_act_dir}")
     full_ds = ActivationDataset(effective_act_dir)
 
-    val_fraction_cfg = cfg.get('val_fraction', 0.1)
-    vf = args.val_fraction if args.val_fraction is not None else val_fraction_cfg
-    vf = max(0.0, min(1.0, vf))
+    # Get evaluation config
+    eval_cfg = cfg.get('evaluation', {})
+    vf = eval_cfg.get('val_fraction', None)
+    split_seed = eval_cfg.get('split_seed', cfg.get('split_seed', 42))
 
-    split_seed_cfg = cfg.get('split_seed', 42)
-    split_seed = args.split_seed if args.split_seed is not None else split_seed_cfg
-
-    if 0 < vf < 1.0:
+    if vf is not None and 0 < vf < 1.0:
         vsz = int(len(full_ds) * vf)
         tsz = len(full_ds) - vsz
-        if tsz == 0 or vsz == 0: # Avoid empty splits if possible
+        if tsz == 0 or vsz == 0:
             log.warning(f"Validation split resulted in an empty train or validation set (tsz={tsz}, vsz={vsz}). Using full dataset for evaluation.")
             ds = full_ds
         else:
@@ -256,20 +236,19 @@ def _prepare_data(
                 [tsz, vsz],
                 generator=torch.Generator().manual_seed(split_seed),
             )
-    else: # vf is 0.0 or 1.0, or invalid (handled by max/min)
+    else:
         ds = full_ds
         if vf == 0.0:
             log.info("val_fraction is 0, using full dataset for evaluation (as validation set).")
         elif vf == 1.0:
              log.info("val_fraction is 1, using full dataset for evaluation.")
+        elif vf is None:
+            log.info("val_fraction is None, using full dataset for evaluation.")
 
-
-    loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate)
+    batch_size = eval_cfg.get('batch_size', 4)
+    loader = DataLoader(ds, batch_size=batch_size, shuffle=False, collate_fn=collate)
     log.info(f"Loaded {len(ds)} samples for evaluation.")
     return loader
-
-
-# These functions are now imported from lens.evaluation.verbose_samples
 
 
 def _process_and_print_verbose_batch_samples(
@@ -278,12 +257,12 @@ def _process_and_print_verbose_batch_samples(
     models: Dict[str, torch.nn.Module],
     orig: OrigWrapper,
     tok: PreTrainedTokenizerBase,
-    args: argparse.Namespace,
     sch_args: Dict[str, Any],
     device: torch.device,
     printed_count_so_far: int
 ) -> int:
     """Wrapper for the shared verbose sample processing function."""
+    eval_cfg = cfg.get('evaluation', {})
     return process_and_print_verbose_batch_samples(
         batch=batch,
         cfg=cfg,
@@ -292,8 +271,8 @@ def _process_and_print_verbose_batch_samples(
         tok=tok,
         sch_args=sch_args,
         device=device,
-        num_samples=args.verbose_samples,
-        top_n_analysis=args.top_n_analysis,
+        num_samples=eval_cfg.get('verbose_samples', 3),
+        top_n_analysis=eval_cfg.get('top_n_analysis', 3),
         printed_count_so_far=printed_count_so_far,
         generate_continuation=True,
         continuation_tokens=30
@@ -304,7 +283,6 @@ def _evaluate_model(
     models: Dict[str, torch.nn.Module],
     orig: OrigWrapper,
     cfg: Dict[str, Any],
-    args: argparse.Namespace,
     device: torch.device,
     tok: PreTrainedTokenizerBase,
     log: logging.Logger,
@@ -314,13 +292,17 @@ def _evaluate_model(
     n_seen = 0
     printed_verbose_total = 0
 
+    eval_cfg = cfg.get('evaluation', {})
+    num_batches = eval_cfg.get('num_batches', 25)
+    verbose_samples = eval_cfg.get('verbose_samples', 3)
+
     models["dec"].eval()
     models["enc"].eval()
 
     with torch.no_grad():
-        for b_idx, batch in tqdm(enumerate(loader), total=args.num_batches, desc="Evaluating"):
-            if b_idx >= args.num_batches:
-                log.info(f"Reached max {args.num_batches} batches.")
+        for b_idx, batch in tqdm(enumerate(loader), total=num_batches, desc="Evaluating"):
+            if b_idx >= num_batches:
+                log.info(f"Reached max {num_batches} batches.")
                 break
 
             batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
@@ -336,9 +318,9 @@ def _evaluate_model(
             current_models_for_step = {"dec": models["dec"], "enc": models["enc"], "orig": orig}
             losses = train_step(batch, current_models_for_step, sch_args)
             
-            if printed_verbose_total < args.verbose_samples:
+            if printed_verbose_total < verbose_samples:
                 num_printed_this_batch = _process_and_print_verbose_batch_samples(
-                    batch, cfg, models, orig, tok, args, sch_args, device, printed_verbose_total
+                    batch, cfg, models, orig, tok, sch_args, device, printed_verbose_total
                 )
                 printed_verbose_total += num_printed_this_batch
 
@@ -360,28 +342,36 @@ def _evaluate_model(
     return results
 
 
-def main() -> None:  # noqa: D401
-    # tok        = AutoTokenizer.from_pretrained("Qilex/tinyStories-10k-tokenizer")
-    # orig_tok   = AutoTokenizer.from_pretrained("gpt2")  # or whatever the model used
+# ----------------------------------------------------------------------------
+# Hydra entry point
+# ----------------------------------------------------------------------------
 
-    # for tid in range(20):     # compare a few low-id tokens
-    #     print(tid, tok.convert_ids_to_tokens(tid), orig_tok.convert_ids_to_tokens(tid))
+@hydra.main(version_base=None, config_path="../conf", config_name="config")
+def main(hcfg: DictConfig) -> None:
     """Main entry point for evaluating a Consistency-Lens checkpoint."""
-    args = _parse_arguments()
     log = _setup_logging()
-    cfg = _load_config(args.config_path)
+    cfg = OmegaConf.to_container(hcfg, resolve=True)
+    
+    # Get evaluation config
+    eval_cfg = cfg.get('evaluation', {})
+    
+    # Check if checkpoint is specified
+    checkpoint_path = cfg.get('checkpoint')
+    if not checkpoint_path:
+        log.error("No checkpoint specified. Use: checkpoint=path/to/checkpoint.pt")
+        return
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info(f"Using device: {device}")
     
     # Extract checkpoint info
-    ckpt_info = extract_checkpoint_info(args.checkpoint)
+    ckpt_info = extract_checkpoint_info(checkpoint_path)
     
     # Setup output directory if requested
     output_dir = None
-    if args.output_dir:
-        output_dir = Path(args.output_dir)
-    elif args.save_results:
+    if eval_cfg.get('output_dir'):
+        output_dir = Path(eval_cfg['output_dir'])
+    elif eval_cfg.get('save_results', False):
         # Auto-generate output dir based on checkpoint
         base_eval_dir = Path("outputs/evaluations")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -395,8 +385,8 @@ def main() -> None:  # noqa: D401
     model_name_for_tokenizer = cfg["model_name"] 
     tokenizer_name = cfg.get("tokenizer_name", model_name_for_tokenizer)
 
-    models_dict, tok, orig_model = _build_models(cfg, device) # tokenizer_name is used inside _build_models from cfg
-    ckpt_data = _load_checkpoint(args.checkpoint, models_dict, device)
+    models_dict, tok, orig_model = _build_models(cfg, device)
+    ckpt_data = _load_checkpoint(checkpoint_path, models_dict, device)
     
     # Set decoder prompt from checkpoint if available
     if 'config' in ckpt_data:
@@ -433,15 +423,18 @@ def main() -> None:  # noqa: D401
         log.warning("Checkpoint has no config metadata (old format?), using current config values")
         models_dict['dec'].set_prompt(cfg.get('decoder_prompt', 'Explain: '), tok)
 
-    base_eval_act_dir_str = args.activation_dir if args.activation_dir is not None else cfg.get("val_activation_dir")
+    # Determine activation directory
+    base_eval_act_dir_str = eval_cfg.get('activation_dir') or cfg.get("val_activation_dir")
+    layer_l = cfg.get('layer_l')
     
     effective_act_dir: str | None = None
     if base_eval_act_dir_str:
-        effective_act_dir = str(Path(Path(base_eval_act_dir_str).parent / tokenizer_name / Path(base_eval_act_dir_str).name))
+        base_path = resolve_path(base_eval_act_dir_str)
+        effective_act_dir = str(base_path.parent / tokenizer_name / f"layer_{layer_l}" / base_path.name)
 
     if not effective_act_dir:
         log.critical("No effective activation directory could be determined for evaluation. Exiting.")
-        return # Or raise an exception
+        return
 
     # Extract dataset info
     dataset_info = extract_dataset_info(effective_act_dir)
@@ -450,7 +443,7 @@ def main() -> None:  # noqa: D401
     log.info("=" * 60)
     log.info("EVALUATION INFO")
     log.info("=" * 60)
-    log.info(f"Checkpoint: {args.checkpoint}")
+    log.info(f"Checkpoint: {checkpoint_path}")
     log.info(f"Run Name: {ckpt_info['run_name']}")
     log.info(f"Step: {ckpt_info.get('step', 'unknown')}")
     log.info(f"Dataset: {dataset_info.get('dataset', 'unknown')}")
@@ -459,20 +452,15 @@ def main() -> None:  # noqa: D401
     log.info(f"Split: {dataset_info.get('split', 'unknown')}")
     log.info("=" * 60)
     
-    loader = _prepare_data(cfg, args, effective_act_dir, log)
+    loader = _prepare_data(cfg, effective_act_dir, log)
 
-    results = _evaluate_model(loader, models_dict, orig_model, cfg, args, device, tok, log)
+    results = _evaluate_model(loader, models_dict, orig_model, cfg, device, tok, log)
     
     # Add metadata to results
-    results['checkpoint_path'] = str(args.checkpoint)
+    results['checkpoint_path'] = str(checkpoint_path)
     results['checkpoint_info'] = ckpt_info
     results['dataset_info'] = dataset_info
-    results['eval_config'] = {
-        'batch_size': args.batch_size,
-        'num_batches': args.num_batches,
-        'verbose_samples': args.verbose_samples,
-        'top_n_analysis': args.top_n_analysis
-    }
+    results['eval_config'] = eval_cfg
     results['timestamp'] = datetime.now().isoformat()
     
     # Save results if requested
@@ -487,7 +475,7 @@ def main() -> None:  # noqa: D401
         with open(summary_file, 'w') as f:
             f.write(f"Evaluation Summary\n")
             f.write(f"==================\n\n")
-            f.write(f"Checkpoint: {args.checkpoint}\n")
+            f.write(f"Checkpoint: {checkpoint_path}\n")
             f.write(f"Run Name: {ckpt_info['run_name']}\n")
             f.write(f"Step: {ckpt_info.get('step', 'unknown')}\n")
             f.write(f"Dataset: {dataset_info.get('dataset', 'unknown')}/{dataset_info.get('split', 'unknown')}\n")

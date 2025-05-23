@@ -42,7 +42,7 @@ alpha_schedule:
 activation_dumper:
   num_samples: 32
   seq_len: 32
-  output_dir: "consistency-lens/data/activations"
+  output_dir: "./data/activations"
   # HuggingFace dataset loading options
   # If 'use_hf_dataset' is true the dumper script will read the tiny 10-k subset of
   # The Pile instead of the built-in toy prompts. Useful once the smoke test passes
@@ -51,7 +51,7 @@ activation_dumper:
   #       script about switching to streaming=True for larger datasets.
   use_hf_dataset: true
   hf_dataset_name: "NeelNanda/pile-10k"
-  dataset_cache_dir: "consistency-lens/data/corpus/pile-10k"
+  dataset_cache_dir: "./data/corpus/pile-10k"
   batch_size: 16
   # future option – not yet consumed by the script
   # streaming: false

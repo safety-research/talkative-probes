@@ -38,7 +38,11 @@ class ActivationDataset(Dataset):
                 if max_samples is not None and current_total >= max_samples:
                     break
 
-                shard_path = self.root / shard_info["name"]
+                # Handle rank subdirectories if present
+                if "rank" in shard_info:
+                    shard_path = self.root / f"rank_{shard_info['rank']}" / shard_info["name"]
+                else:
+                    shard_path = self.root / shard_info["name"]
                 self.shards.append(shard_path)
                 
                 shard_len = shard_info["num_samples"]
@@ -51,6 +55,7 @@ class ActivationDataset(Dataset):
             
             self.total = current_total
         else:
+            raise FileNotFoundError(f"Metadata file not found at {metadata_path}")
             # Fallback to original loading method if metadata.json doesn't exist
             potential_shards = sorted(self.root.glob("*.pt")) if self.root.is_dir() else [self.root]
             

@@ -1,0 +1,24 @@
+# Debug configuration for quick testing
+# Usage: python scripts/01_train.py +debug
+
+# Smaller batch size for debugging
+batch_size: 32
+
+# Fewer training steps
+max_train_steps: 100
+num_train_epochs: 0
+
+# More frequent logging
+log_interval: 10
+wandb_log_interval: 10
+val_interval: 50
+
+# Disable model compilation for faster startup
+compile_models: false
+
+# Use smaller validation set
+val_fraction: 0.05
+
+# Disable wandb for local testing
+wandb:
+  mode: "disabled" 
