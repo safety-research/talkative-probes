@@ -3,13 +3,17 @@
 ## Quick Start (Recommended)
 
 ```bash
-# Submit SimpleStories experiments (handles everything automatically)
+# Submit new experiments (handles everything automatically)
 ./scripts/submit_with_dumping.sh ss-frozen
 ./scripts/submit_with_dumping.sh ss-unfreeze
-
-# Submit GPT-2 experiments
 ./scripts/submit_with_dumping.sh gpt2-frozen
 ./scripts/submit_with_dumping.sh gpt2-pile
+
+# Resume from checkpoint (find checkpoint path in outputs/checkpoints/)
+./scripts/submit_with_dumping.sh ss-frozen false outputs/checkpoints/run_name/checkpoint_step5000.pt
+
+# Resume with WandB run ID (get from WandB dashboard)
+./scripts/submit_with_dumping.sh ss-frozen false outputs/checkpoints/run_name/checkpoint_step5000.pt abc123xyz
 ```
 
 The wrapper script automatically:
@@ -50,11 +54,15 @@ sbatch scripts/slurm_dump_activations.sh conf/gpt2_pile_frozen.yaml 6
 The wrapper script automatically handles dependencies:
 
 ```bash
-# Automatically checks for activations and submits both jobs if needed
+# Start new experiments (automatically checks for activations and submits both jobs if needed)
 ./scripts/submit_with_dumping.sh ss-frozen
 ./scripts/submit_with_dumping.sh ss-unfreeze
 ./scripts/submit_with_dumping.sh gpt2-frozen
 ./scripts/submit_with_dumping.sh gpt2-pile
+
+# Resume experiments from checkpoint
+./scripts/submit_with_dumping.sh ss-frozen false outputs/checkpoints/run_name/checkpoint_step5000.pt
+./scripts/submit_with_dumping.sh gpt2-frozen false outputs/checkpoints/run_name/checkpoint_step5000.pt abc123xyz
 
 # Force re-dump even if activations exist
 ./scripts/submit_with_dumping.sh ss-frozen force-redump
@@ -66,6 +74,44 @@ The wrapper script automatically handles dependencies:
 - ✅ Submits dumping job only if needed
 - ✅ Sets up proper SLURM dependencies
 - ✅ Single command does everything
+- ✅ Supports resuming from checkpoints with WandB run continuation
+
+## Resuming Experiments
+
+### Finding Your Checkpoint
+
+Checkpoints are saved in `outputs/checkpoints/` with run-specific directories:
+```bash
+# List recent runs
+ls -la outputs/checkpoints/
+
+# Find checkpoints for a specific run
+ls outputs/checkpoints/SimpleStories-5M_L5_S_lr1e-3_t10_0523_1234/
+```
+
+### Getting WandB Run ID
+
+1. Go to your WandB dashboard
+2. Find the run you want to resume
+3. Copy the run ID from the URL (e.g., `abc123xyz` from `wandb.ai/project/runs/abc123xyz`)
+
+### Resume Commands
+
+```bash
+# Resume with just checkpoint (WandB run ID auto-detected from checkpoint)
+./scripts/submit_with_dumping.sh ss-frozen false outputs/checkpoints/run_name/checkpoint_step5000.pt
+
+# Resume with specific WandB run ID (overrides auto-detection)
+./scripts/submit_with_dumping.sh ss-frozen false outputs/checkpoints/run_name/checkpoint_step5000.pt abc123xyz
+
+# Resume GPT-2 experiment
+./scripts/submit_with_dumping.sh gpt2-frozen false outputs/checkpoints/gpt2_run/checkpoint_step2000.pt
+```
+
+**Note:** When resuming, the script will:
+- Skip activation dumping (uses existing activations)
+- Resume training from the specified checkpoint
+- Continue the WandB run with the same metrics and history
 
 ## Manual Method (Not Recommended)
 
@@ -74,11 +120,10 @@ The wrapper script automatically handles dependencies:
 Training scripts will check for activations and exit with instructions if not found.
 
 ## SimpleStories Experiments
-```bash
-./scripts/submit_simplestories_experiments.sh all
-```
 
-### Individual Experiments
+**Note: Use `./scripts/submit_with_dumping.sh ss-frozen` or `./scripts/submit_with_dumping.sh ss-unfreeze` instead (recommended)**
+
+### Individual Experiments (Manual method)
 ```bash
 # Frozen base model (12 hours)
 sbatch scripts/slurm_simplestories_frozen.sh
@@ -100,12 +145,9 @@ FORCE_REDUMP=true sbatch scripts/slurm_simplestories_frozen.sh
 
 ## GPT-2 Experiments
 
-### Submit All GPT-2 Experiments
-```bash
-./scripts/submit_gpt2_experiments.sh all
-```
+**Note: Use `./scripts/submit_with_dumping.sh gpt2-frozen`, `gpt2-unfreeze`, `gpt2-pile`, or `gpt2-pile-unfreeze` instead (recommended)**
 
-### Individual Experiments
+### Individual Experiments (Manual method)
 ```bash
 # Frozen with OpenWebText (24 hours)
 sbatch scripts/slurm_gpt2_frozen.sh
@@ -136,8 +178,9 @@ tail -f logs/simplestories_frozen_*.out
 # Check for errors
 grep -i error logs/*.err
 
-# Monitor all GPT-2 jobs
-./scripts/monitor_gpt2_jobs.sh
+# Monitor jobs with standard SLURM commands
+squeue -u $USER
+watch squeue -u $USER
 ```
 
 ## Pretokenization Details

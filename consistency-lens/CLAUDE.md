@@ -6,6 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Consistency Lens** is a scalable method for interpreting Large Language Models by forcing internal neural states through a human-readable textual bottleneck. The system trains an autoencoder that converts LLM activations to text explanations and back, testing whether reconstructed activations preserve functional behavior.
 
+### Training Objective
+
+- **Primary Goal**: KL divergence loss measures functional preservation - ensuring reconstructed activations maintain the same behavioral properties as original activations (fixed weight)
+- **Secondary Goal**: Language modeling loss encourages linguistic fluency - keeping explanations coherent and human-readable (ramped up via alpha schedule)  
+- **Training Strategy**: KL loss provides the constant core learning signal, while LM loss weight is gradually increased from 0 to introduce linguistic constraints without overwhelming the reconstruction objective
+
 ## Development Commands
 
 ### Setup
@@ -111,13 +117,22 @@ For HPC clusters with SLURM, use the provided submission scripts that handle dep
 
 #### Quick Start (Recommended)
 ```bash
-# Submit experiments with automatic activation dumping
+# Submit new experiments with automatic activation dumping
 ./scripts/submit_with_dumping.sh ss-frozen         # SimpleStories frozen
 ./scripts/submit_with_dumping.sh ss-unfreeze       # SimpleStories progressive unfreeze
 ./scripts/submit_with_dumping.sh gpt2-frozen       # GPT-2 with OpenWebText
 ./scripts/submit_with_dumping.sh gpt2-unfreeze     # GPT-2 with OpenWebText + unfreeze
 ./scripts/submit_with_dumping.sh gpt2-pile         # GPT-2 with The Pile
 ./scripts/submit_with_dumping.sh gpt2-pile-unfreeze # GPT-2 with The Pile + unfreeze
+
+# Resume from checkpoint (find checkpoint in outputs/ directory)
+./scripts/submit_with_dumping.sh ss-frozen false outputs/checkpoints/run_name/checkpoint_step5000.pt
+
+# Resume with specific WandB run ID (get ID from WandB dashboard)
+./scripts/submit_with_dumping.sh ss-frozen false outputs/checkpoints/run_name/checkpoint_step5000.pt abc123xyz
+
+# Use specific SLURM nodes (optional - defaults to 330702be7061)
+./scripts/submit_with_dumping.sh ss-frozen false "" "" node001,node002
 
 # Force re-dump activations even if they exist
 ./scripts/submit_with_dumping.sh ss-frozen force-redump

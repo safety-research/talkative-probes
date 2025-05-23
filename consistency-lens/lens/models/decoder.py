@@ -23,6 +23,7 @@ class DecoderConfig:
     base_model: bool = False         # YAML `base_model`
     projection_layer: bool = True    # YAML `projection_layer`
     output_head: bool = True         # YAML `output_head`
+    embedding_head: bool = False     # YAML `embedding_head`
     eye_init: bool = True            # YAML `eye_init`
 
 
@@ -83,6 +84,30 @@ class Decoder(nn.Module):
         # Configure trainability of the output head (separate from the base model)
         for p in self.out.parameters():
             p.requires_grad_(cfg.output_head)
+        
+        # Configure trainability of the embedding heads (input/output embeddings)
+        # These may be tied in many models like GPT-2
+        try:
+            input_embeddings = self.base.get_input_embeddings()
+            if input_embeddings is not None:
+                for p in input_embeddings.parameters():
+                    p.requires_grad_(cfg.embedding_head)
+        except AttributeError:
+            log.warning("Could not access input embeddings for freezing control")
+        
+        try:
+            output_embeddings = self.base.get_output_embeddings()
+            if output_embeddings is not None:
+                for p in output_embeddings.parameters():
+                    p.requires_grad_(cfg.embedding_head)
+        except AttributeError:
+            # Fallback for models that expose `lm_head`
+            if hasattr(self.base, 'lm_head'):
+                for p in self.base.lm_head.parameters():
+                    p.requires_grad_(cfg.embedding_head)
+            else:
+                log.warning("Could not access output embeddings for freezing control")
+        
         # --- Prompt placeholders -------------------------------------------------
         self.prompt_left_emb = None      # type: torch.Tensor | None
         self.prompt_right_emb = None     # type: torch.Tensor | None
@@ -207,11 +232,16 @@ class Decoder(nn.Module):
             h_last = out.last_hidden_state if hasattr(out, "last_hidden_state") else out.hidden_states[-1]
             logits_t = self.out(h_last[:, -1])  # (B, V)
 
-            # Use gumbel_softmax with hard=True for Straight-Through Estimation (STE)
-            # Forward pass uses one-hot samples, backward pass uses soft probabilities.
-            ste_token_dist = torch.nn.functional.gumbel_softmax(logits_t, tau=gumbel_tau, hard=True)
-            #KEEP FOR TESTING: 
-            #ste_token_dist = torch.nn.functional.softmax(logits_t, dim=-1)
+            # 1. Apply forward sampling temperature
+            current_T_sampling = 1.0 # T_sampling_schedule(current_step_or_epoch) # Get from your schedule - TODO may want to add a schedule/config for this.
+            logits_t_scaled = logits_t / current_T_sampling
+
+            # 2. Apply Gumbel-Softmax with STE temperature
+            ste_token_dist = torch.nn.functional.gumbel_softmax(
+                logits_t_scaled,
+                tau=gumbel_tau,
+                hard=True
+            )
             emb_t = ste_token_dist @ emb_table  # (B, d_model)
 
             seq_embs = torch.cat([seq_embs, emb_t.unsqueeze(1)], dim=1)

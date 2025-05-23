@@ -42,7 +42,7 @@ trainable_components:
     base_model: true                  # Will be frozen initially, then unfrozen
     projection_layer: true            # Always trainable
     eye_init: true
-    output_head: true                 # Unfreeze LM head too
+    output_head: false                 # freeze LM head
   encoder:
     base_model: true                  # Will be frozen initially, then unfrozen
     use_base_model: true
@@ -60,7 +60,7 @@ freeze_schedule:
 custom_lr_multipliers:
   projection_layers: 1.0              # Full LR for projections
   base_model: 0.1                     # 10x lower LR for base model when unfrozen
-  output_head: 0.5                    # 2x lower LR for output heads
+  output_head: 0.1                    # 2x lower LR for output heads
 
 # Gumbel temperature schedule
 gumbel_tau_schedule:
@@ -70,12 +70,13 @@ gumbel_tau_schedule:
   end_value: 0.1
   num_steps: -1                       # Use total training steps
 
-# KL weight schedule - slower warmup for stability
+# LM weight schedule (alpha) - slower warmup for stability
+# Ramps up language modeling constraint while KL remains the fundamental objective
 alpha_schedule:
   type: "linear_warmup"
   start_value: 0.0
   end_value: 0.1
-  num_steps: 8000                     # Slower warmup
+  num_steps: 8000                     # Slower LM warmup for unfreezing stability
 
 # Activation dumper config for OpenWebText
 activation_dumper:
@@ -124,9 +125,9 @@ checkpoint:
   delete_old_checkpoints: true
 
 # Loss weights
-lm_weight: 0.01
+lm_weight: 1.0                  # Base LM weight; final LM multiplier = lm_weight * alpha_schedule
 kl_base_weight: 1.0
-entropy_weight: 0.001                 # Small entropy bonus
+entropy_weight: 0.000                 # Small entropy bonus
 
 # Verbose samples for monitoring
 verbose_samples:

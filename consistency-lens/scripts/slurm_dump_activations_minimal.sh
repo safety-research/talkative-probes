@@ -1,10 +1,19 @@
 #!/bin/bash
 #SBATCH --job-name=dump
 #SBATCH --gres=gpu:4
-#SBATCH --nodelist=330702be7061
 #SBATCH --time=4:00:00
 #SBATCH --output=logs/dump_%j.out
 #SBATCH --error=logs/dump_%j.err
+
+# Set nodelist from environment variable or use default
+if [ -n "${SLURM_NODELIST:-}" ]; then
+    echo "Using nodelist from environment: ${SLURM_NODELIST}"
+    echo "Using nodelist from environment: ${SLURM_NODELIST}"
+else
+    # Default nodelist if not provided
+    echo "Using default nodelist: 330702be7061"
+    echo "Using default nodelist: 330702be7061"
+fi
 
 # Minimal activation dumping script
 # Usage: sbatch slurm_dump_activations_minimal.sh <config_file> [layer_idx]

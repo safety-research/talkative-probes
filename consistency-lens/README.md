@@ -2,6 +2,12 @@
 
 This document outlines the architectural plan for training Consistency Lenses, a method to interpret the internal states of Large Language Models (LLMs) by forcing them through a textual, human-readable bottleneck. The plan is designed for an 8 x H100 GPU environment, emphasizing scalability and efficiency.
 
+## Training Objective
+
+The **fundamental objective** is the **KL divergence loss**, which measures how well the reconstructed activations preserve functional behavior in the original model. This ensures that explanations capture semantically meaningful information rather than superficial correlations.
+
+The **language modeling (LM) loss** serves as a **linguistic fluency regularizer**, encouraging the generated explanations to be coherent and on-manifold text. The LM loss weight is ramped up during early training (via the alpha schedule) to gradually introduce this constraint while the model learns the core reconstruction task.
+
 ## Project Structure
 
 The project will be organized as follows:
@@ -142,13 +148,13 @@ python consistency-lens/scripts/00_dump_activations.py \
 For production-scale extraction on H100 clusters:
 
 ```bash
-# Using the launch script (recommended) - processes ENTIRE dataset by default
-./consistency-lens/scripts/launch_multigpu_dump.sh \
+# Using the optimized launch script (recommended) - processes ENTIRE dataset by default
+./consistency-lens/scripts/launch_multigpu_dump_optimized.sh \
     consistency-lens/config/lens_simple.yaml \
     data/activations
 
 # Process specific number of samples
-./consistency-lens/scripts/launch_multigpu_dump.sh \
+./consistency-lens/scripts/launch_multigpu_dump_optimized.sh \
     consistency-lens/config/lens_simple.yaml \
     data/activations \
     1000000 \
@@ -156,7 +162,7 @@ For production-scale extraction on H100 clusters:
 
 # With environment variables for additional options
 USE_HF_DATASET=1 HF_DATASET_NAME="SimpleStories/SimpleStories" \
-NUM_GPUS=8 ./consistency-lens/scripts/launch_multigpu_dump.sh
+NUM_GPUS=8 ./consistency-lens/scripts/launch_multigpu_dump_optimized.sh
 
 # Using optimized script for better tokenization performance (processes entire dataset)
 ./consistency-lens/scripts/launch_multigpu_dump_optimized.sh \
@@ -243,15 +249,15 @@ The optimized script sets multiple threading variables:
 ```bash
 # Tiny models (< 100M params) on high-core systems
 # Prioritize CPU throughput over GPU count
-OMP_NUM_THREADS=112 NUM_GPUS=2 ./consistency-lens/scripts/launch_multigpu_dump.sh
+OMP_NUM_THREADS=112 NUM_GPUS=2 ./consistency-lens/scripts/launch_multigpu_dump_optimized.sh
 
 # Small models (100M - 1B params)
 # Balance CPU and GPU
-OMP_NUM_THREADS=56 NUM_GPUS=4 ./consistency-lens/scripts/launch_multigpu_dump.sh
+OMP_NUM_THREADS=56 NUM_GPUS=4 ./consistency-lens/scripts/launch_multigpu_dump_optimized.sh
 
 # Large models (7B+ params)
 # Maximize GPU usage, CPU becomes less critical
-OMP_NUM_THREADS=28 NUM_GPUS=8 ./consistency-lens/scripts/launch_multigpu_dump.sh
+OMP_NUM_THREADS=28 NUM_GPUS=8 ./consistency-lens/scripts/launch_multigpu_dump_optimized.sh
 ```
 
 #### Rule of Thumb
@@ -303,8 +309,15 @@ For HPC clusters with SLURM, we provide submission scripts that handle the compl
 ### Quick Start
 
 ```bash
-# Run complete experiment with automatic dependency management
+# Start new experiments with automatic dependency management
 ./scripts/submit_with_dumping.sh ss-frozen
+./scripts/submit_with_dumping.sh gpt2-frozen
+
+# Resume from checkpoint (find checkpoint path in outputs/checkpoints/)
+./scripts/submit_with_dumping.sh ss-frozen false outputs/checkpoints/run_name/checkpoint_step5000.pt
+
+# Resume with specific WandB run ID (get from WandB dashboard)
+./scripts/submit_with_dumping.sh ss-frozen false outputs/checkpoints/run_name/checkpoint_step5000.pt abc123xyz
 
 # Available experiments:
 # ss-frozen, ss-unfreeze, gpt2-frozen, gpt2-unfreeze, 
@@ -315,7 +328,8 @@ This wrapper automatically:
 1. Checks if activations exist
 2. Submits 8-GPU dumping job if needed  
 3. Submits 1-GPU training job with dependency
-4. Handles job failures gracefully
+4. Supports resuming from checkpoints with WandB run continuation
+5. Handles job failures gracefully
 
 ### Performance Expectations
 
@@ -365,10 +379,10 @@ We profiled the activation dumping process to understand bottlenecks. Here's wha
 **Example configurations:**
 ```bash
 # Small model optimization (more CPU per process)
-OMP_NUM_THREADS=32 NUM_GPUS=4 ./consistency-lens/scripts/launch_multigpu_dump.sh
+OMP_NUM_THREADS=32 NUM_GPUS=4 ./consistency-lens/scripts/launch_multigpu_dump_optimized.sh
 
 # Large model optimization (maximize GPU usage)
-NUM_GPUS=8 ./consistency-lens/scripts/launch_multigpu_dump.sh
+NUM_GPUS=8 ./consistency-lens/scripts/launch_multigpu_dump_optimized.sh
 ```
 
 #### Pre-tokenization for Maximum Performance
@@ -684,7 +698,9 @@ for step, batch in enumerate(loader): # loader uses lens.data.dataset.Activation
         )
 
         current_alpha = alpha_schedule(step, config.lens_yaml) # from config/lens.yaml
-        loss = loss_lm + current_alpha * loss_kl
+        # Note: KL loss is the fundamental objective with fixed weight
+        # LM loss is ramped up via alpha to gradually introduce linguistic constraints
+        loss = (lm_weight * current_alpha) * loss_lm + kl_base_weight * loss_kl
 
     # Optimization (DeepSpeed engine handles backward/step)
     # optimizer setup in lens.training.optim (AdamW, param groups)

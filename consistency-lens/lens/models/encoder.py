@@ -14,6 +14,7 @@ class EncoderConfig:
     base_model: bool = True          # YAML `base_model`
     projection_layer: bool = True    # YAML `projection_layer`
     use_base_model: bool = False     # YAML `use_base_model`
+    embedding_head: bool = False     # YAML `embedding_head`
     eye_init: bool = True            # YAML `eye_init`
     stop_grad_aprime: bool = False   # YAML `stop_grad_aprime`
 log = logging.getLogger(__name__)
@@ -44,6 +45,29 @@ class Encoder(nn.Module):
         # Configure trainability of the output projection layer
         for p in self.proj.parameters():
             p.requires_grad_(cfg.projection_layer)
+
+        # Configure trainability of the embedding heads (input/output embeddings) if using base model
+        if self._use_base:
+            try:
+                input_embeddings = self.base.get_input_embeddings()
+                if input_embeddings is not None:
+                    for p in input_embeddings.parameters():
+                        p.requires_grad_(cfg.embedding_head)
+            except AttributeError:
+                log.warning("Could not access input embeddings for freezing control")
+            
+            try:
+                output_embeddings = self.base.get_output_embeddings()
+                if output_embeddings is not None:
+                    for p in output_embeddings.parameters():
+                        p.requires_grad_(cfg.embedding_head)
+            except AttributeError:
+                # Fallback for models that expose `lm_head`
+                if hasattr(self.base, 'lm_head'):
+                    for p in self.base.lm_head.parameters():
+                        p.requires_grad_(cfg.embedding_head)
+                else:
+                    log.warning("Could not access output embeddings for freezing control")
 
         # Store flag for forward()
 

@@ -8,7 +8,7 @@ defaults:
 
 # Override specific settings for this experiment
 t_text: 10                            # Width-10 explanations as requested
-num_train_epochs: 30                  # More epochs for unfreezing experiment
+num_train_epochs: 80                  # More epochs for unfreezing experiment
 
 # Enable base model training with freeze schedule
 trainable_components:
@@ -16,7 +16,7 @@ trainable_components:
     base_model: true                  # Will be frozen initially, then unfrozen
     projection_layer: true
     eye_init: true
-    output_head: true                 # Unfreeze LM head too
+    output_head: false                 # Keep LM head frozen too
   encoder:
     base_model: true                  # Will be frozen initially, then unfrozen
     use_base_model: true
@@ -32,12 +32,23 @@ freeze_schedule:
 custom_lr_multipliers:
   projection_layers: 1.0              # Full LR for projections
   base_model: 0.1                     # 10x lower LR for base model when unfrozen
-  output_head: 0.5                    # 2x lower LR for output heads
+  output_head: 0.1                    # 2x lower LR for output heads
 
 # Keep tau constant as requested (no decay implemented)
-gumbel_tau_schedule:
+# gumbel_tau_schedule:
+#   type: "constant"
+#   value: 1.0
+alpha_schedule:
   type: "constant"
-  value: 1.0
+  value: 0.3
+
+
+gumbel_tau_schedule:
+  type: "linear_decay_after_constant"
+  constant_steps_before_linear_decay: 103349
+  start_value: 0.1
+  end_value: 0.1
+  num_steps: -1      
 
 # WandB configuration
 wandb:

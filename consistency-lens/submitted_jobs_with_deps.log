@@ -109,3 +109,16 @@ Fri 23 May 04:59:34 UTC 2025: gpt2-frozen - dump:none train:1521
 Fri 23 May 05:01:11 UTC 2025: gpt2-frozen - dump:1523 train:1524
 Fri 23 May 05:09:28 UTC 2025: gpt2-frozen - dump:none train:1527
 Fri 23 May 05:10:26 UTC 2025: gpt2-frozen - dump:1529 train:1530
+Fri 23 May 11:38:38 UTC 2025: gpt2-unfreeze - dump:none train:1579
+Fri 23 May 12:02:16 UTC 2025: ss-unfreeze - dump:none train:1580 resume:./outputs/checkpoints/ss_unfreeze_t10_1520/checkpoint_step62009_epoch30.pt
+Fri 23 May 12:07:57 UTC 2025: ss-unfreeze - dump:none train:1581 resume:./outputs/checkpoints/ss_unfreeze_t10_1520/checkpoint_step62009_epoch30.pt
+Fri 23 May 12:15:12 UTC 2025: gpt2-pile - dump:1583 train:1584
+Fri 23 May 14:32:08 UTC 2025: gpt2-frozen - dump:none train:1585
+Fri 23 May 14:38:58 UTC 2025: gpt2-unfreeze - dump:none train:1586
+Fri 23 May 14:44:41 UTC 2025: gpt2-unfreeze - dump:none train:1587
+Fri 23 May 15:00:15 UTC 2025: gpt2-unfreeze - dump:none train:1593
+Fri 23 May 15:02:24 UTC 2025: gpt2-unfreeze - dump:none train:1594
+Fri 23 May 15:18:51 UTC 2025: gpt2-unfreeze - dump:none train:1598
+Fri 23 May 15:21:48 UTC 2025: gpt2-frozen - dump:none train:1599
+Fri 23 May 15:34:45 UTC 2025: ss-unfreeze - dump:none train:1600 resume:./outputs/checkpoints/ss_unfreeze_t10_1581/checkpoint_step103349_epoch50.pt
+Fri 23 May 15:38:03 UTC 2025: ss-unfreeze - dump:none train:1601 resume:./outputs/checkpoints/ss_unfreeze_t10_1581/checkpoint_step103349_epoch50.pt

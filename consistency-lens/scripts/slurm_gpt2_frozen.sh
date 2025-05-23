@@ -4,7 +4,6 @@
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
-#SBATCH --nodelist=330702be7061
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/gpt2_frozen_%j.out
 #SBATCH --error=logs/gpt2_frozen_%j.err
@@ -26,6 +25,16 @@ export OMP_NUM_THREADS=16
 export TORCHINDUCTOR_CACHE_DIR="${HOME}/.cache/torchinductor"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TOKENIZERS_PARALLELISM=true
+
+# Set nodelist from environment variable or use default
+if [ -n "${SLURM_NODELIST:-}" ]; then
+    echo "Using nodelist from environment: ${SLURM_NODELIST}"
+    echo "Using nodelist from environment: ${SLURM_NODELIST}"
+else
+    # Default nodelist if not provided
+    echo "Using default nodelist: 330702be7061"
+    echo "Using default nodelist: 330702be7061"
+fi
 
 # Create log directory
 mkdir -p logs
@@ -78,12 +87,22 @@ echo "=== Starting training ==="
 # Running on single GPU for now - you may want to reduce batch_size
 echo "WARNING: Running on single GPU. Consider reducing batch_size in config if OOM occurs."
 
-python scripts/01_train.py \
-    --config-name=gpt2_frozen \
-    wandb.mode=online \
-    wandb.project=consistency-lens-gpt2 \
-    +wandb.name="gpt2_frozen_${SLURM_JOB_ID}" \
-    batch_size=256  # Reduced from 1024 for single GPU
+# Build training command with dynamic resume support
+TRAIN_CMD="python scripts/01_train.py --config-name=gpt2_frozen wandb.mode=online wandb.project=consistency-lens-gpt2 +wandb.name=\"gpt2_frozen_${SLURM_JOB_ID}\" batch_size=256"
+
+# Add resume parameters if provided
+if [ -n "${RESUME_CHECKPOINT:-}" ]; then
+    echo "=== Resuming from checkpoint: $RESUME_CHECKPOINT ==="
+    TRAIN_CMD="$TRAIN_CMD resume=\"$RESUME_CHECKPOINT\""
+fi
+
+if [ -n "${WANDB_RESUME_ID:-}" ]; then
+    echo "=== Resuming WandB run: $WANDB_RESUME_ID ==="
+    TRAIN_CMD="$TRAIN_CMD wandb_resume_id=\"$WANDB_RESUME_ID\""
+fi
+
+echo "=== Running: $TRAIN_CMD ==="
+eval $TRAIN_CMD
 
 echo "=== Training complete ==="
 echo "End time: $(date)"

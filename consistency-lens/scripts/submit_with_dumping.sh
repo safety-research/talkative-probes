@@ -11,11 +11,14 @@ echo "Running from $(pwd)"
 # Parse arguments
 EXPERIMENT="${1}"
 FORCE_REDUMP="${2:-false}"
+RESUME_CHECKPOINT="${3:-}"
+WANDB_RESUME_ID="${4:-}"
+NODELIST="${5:-330702be7061}"  # Default to current cluster node
 
 # Check if experiment name provided
 if [ -z "$EXPERIMENT" ]; then
     echo "Error: No experiment specified"
-    echo "Usage: $0 <experiment> [force-redump]"
+    echo "Usage: $0 <experiment> [force-redump] [resume_checkpoint] [wandb_resume_id] [nodelist]"
     echo "Run with no arguments to see available experiments"
     exit 1
 fi
@@ -56,7 +59,7 @@ submit_pretokenize_job() {
     local result=$(sbatch --parsable \
         --job-name="${job_name}-pretok" \
         --gres=gpu:0 \
-        --nodelist=330702be7061 \
+        --nodelist="$NODELIST" \
         --time=2:00:00 \
         --output=logs/pretokenize_%j.out \
         --error=logs/pretokenize_%j.err \
@@ -85,7 +88,7 @@ submit_dump_job() {
     echo "Config: $config, Layer: $layer, Use pretokenized: $use_pretokenized" >&2
     
     # Build sbatch command
-    local sbatch_cmd="sbatch --parsable --job-name=${job_name}-dump"
+    local sbatch_cmd="sbatch --parsable --job-name=${job_name}-dump --export=SLURM_NODELIST='$NODELIST'"
     if [ -n "$dependency" ]; then
         sbatch_cmd="$sbatch_cmd --dependency=afterok:$dependency"
     fi
@@ -126,14 +129,32 @@ submit_train_job() {
     local script=$1
     local job_name=$2
     local dependency=$3
+    local resume_checkpoint=$4
+    local wandb_resume_id=$5
+    
+    # Build environment variables for resume parameters
+    local env_vars=""
+    if [ -n "$resume_checkpoint" ]; then
+        env_vars="--export=RESUME_CHECKPOINT='$resume_checkpoint'"
+        echo -e "${GREEN}Will resume from checkpoint: $resume_checkpoint${NC}" >&2
+    fi
+    if [ -n "$wandb_resume_id" ]; then
+        if [ -n "$env_vars" ]; then
+            env_vars="$env_vars,WANDB_RESUME_ID='$wandb_resume_id'"
+        else
+            env_vars="--export=WANDB_RESUME_ID='$wandb_resume_id'"
+        fi
+        echo -e "${GREEN}Will resume WandB run: $wandb_resume_id${NC}" >&2
+    fi
+    echo -e "${BLUE}Using nodelist: $NODELIST${NC}" >&2
     
     local sbatch_cmd
     if [ -n "$dependency" ]; then
         echo -e "${YELLOW}Submitting training job with dependency on job $dependency...${NC}" >&2
-        sbatch_cmd="sbatch --parsable --dependency=afterok:$dependency --job-name=$job_name $script"
+        sbatch_cmd="sbatch --parsable --dependency=afterok:$dependency --job-name=$job_name --nodelist=$NODELIST $env_vars $script"
     else
         echo -e "${YELLOW}Submitting training job...${NC}" >&2
-        sbatch_cmd="sbatch --parsable --job-name=$job_name $script"
+        sbatch_cmd="sbatch --parsable --job-name=$job_name --nodelist=$NODELIST $env_vars $script"
     fi
     
     # Submit job and capture result
@@ -168,11 +189,11 @@ case $EXPERIMENT in
         # Check if activations exist
         if check_activations "SimpleStories/SimpleStories-5M" 5 "SimpleStories_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
             echo -e "${GREEN}Activations already exist, submitting training only${NC}"
-            train_job=$(submit_train_job "scripts/slurm_simplestories_frozen.sh" "ss-frozen" "")
+            train_job=$(submit_train_job "scripts/slurm_simplestories_frozen.sh" "ss-frozen" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         else
             echo -e "${YELLOW}Activations not found or force redump requested${NC}"
             dump_job=$(submit_dump_job "conf/simplestories_frozen.yaml" 5 "ss-frozen")
-            train_job=$(submit_train_job "scripts/slurm_simplestories_frozen.sh" "ss-frozen" "$dump_job")
+            train_job=$(submit_train_job "scripts/slurm_simplestories_frozen.sh" "ss-frozen" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         fi
         ;;
         
@@ -182,11 +203,11 @@ case $EXPERIMENT in
         # Same activations as frozen
         if check_activations "SimpleStories/SimpleStories-5M" 5 "SimpleStories_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
             echo -e "${GREEN}Activations already exist, submitting training only${NC}"
-            train_job=$(submit_train_job "scripts/slurm_simplestories_unfreeze.sh" "ss-unfreeze" "")
+            train_job=$(submit_train_job "scripts/slurm_simplestories_unfreeze.sh" "ss-unfreeze" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         else
             echo -e "${YELLOW}Activations not found or force redump requested${NC}"
             dump_job=$(submit_dump_job "conf/simplestories_unfreeze.yaml" 5 "ss-unfreeze")
-            train_job=$(submit_train_job "scripts/slurm_simplestories_unfreeze.sh" "ss-unfreeze" "$dump_job")
+            train_job=$(submit_train_job "scripts/slurm_simplestories_unfreeze.sh" "ss-unfreeze" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         fi
         ;;
         
@@ -197,13 +218,13 @@ case $EXPERIMENT in
         
         if check_activations "openai-community/gpt2" 6 "openwebtext_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
             echo -e "${GREEN}Activations already exist, submitting training only${NC}"
-            train_job=$(submit_train_job "scripts/slurm_gpt2_frozen.sh" "gpt2-frozen" "")
+            train_job=$(submit_train_job "scripts/slurm_gpt2_frozen.sh" "gpt2-frozen" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         else
             echo -e "${YELLOW}Activations not found or force redump requested${NC}"
             # First pretokenize, then dump with pretokenized data
             pretok_job=$(submit_pretokenize_job "conf/gpt2_frozen.yaml" "gpt2-frozen")
             dump_job=$(submit_dump_job "conf/gpt2_frozen.yaml" 6 "gpt2-frozen" true "$pretok_job")
-            train_job=$(submit_train_job "scripts/slurm_gpt2_frozen.sh" "gpt2-frozen" "$dump_job")
+            train_job=$(submit_train_job "scripts/slurm_gpt2_frozen.sh" "gpt2-frozen" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         fi
         ;;
         
@@ -215,13 +236,13 @@ case $EXPERIMENT in
         # Same activations as frozen
         if check_activations "openai-community/gpt2" 6 "openwebtext_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
             echo -e "${GREEN}Activations already exist, submitting training only${NC}"
-            train_job=$(submit_train_job "scripts/slurm_gpt2_unfreeze.sh" "gpt2-unfreeze" "")
+            train_job=$(submit_train_job "scripts/slurm_gpt2_unfreeze.sh" "gpt2-unfreeze" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         else
             echo -e "${YELLOW}Activations not found or force redump requested${NC}"
             # First pretokenize, then dump with pretokenized data
             pretok_job=$(submit_pretokenize_job "conf/gpt2_unfreeze.yaml" "gpt2-unfreeze")
             dump_job=$(submit_dump_job "conf/gpt2_unfreeze.yaml" 6 "gpt2-unfreeze" true "$pretok_job")
-            train_job=$(submit_train_job "scripts/slurm_gpt2_unfreeze.sh" "gpt2-unfreeze" "$dump_job")
+            train_job=$(submit_train_job "scripts/slurm_gpt2_unfreeze.sh" "gpt2-unfreeze" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         fi
         ;;
         
@@ -232,13 +253,13 @@ case $EXPERIMENT in
         
         if check_activations "openai-community/gpt2" 6 "pile_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
             echo -e "${GREEN}Activations already exist, submitting training only${NC}"
-            train_job=$(submit_train_job "scripts/slurm_gpt2_pile.sh" "gpt2-pile" "")
+            train_job=$(submit_train_job "scripts/slurm_gpt2_pile.sh" "gpt2-pile" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         else
             echo -e "${YELLOW}Activations not found or force redump requested${NC}"
             # First pretokenize, then dump with pretokenized data
             pretok_job=$(submit_pretokenize_job "conf/gpt2_pile_frozen.yaml" "gpt2-pile")
             dump_job=$(submit_dump_job "conf/gpt2_pile_frozen.yaml" 6 "gpt2-pile" true "$pretok_job")
-            train_job=$(submit_train_job "scripts/slurm_gpt2_pile.sh" "gpt2-pile" "$dump_job")
+            train_job=$(submit_train_job "scripts/slurm_gpt2_pile.sh" "gpt2-pile" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         fi
         ;;
         
@@ -250,18 +271,18 @@ case $EXPERIMENT in
         # Same activations as pile frozen
         if check_activations "openai-community/gpt2" 6 "pile_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
             echo -e "${GREEN}Activations already exist, submitting training only${NC}"
-            train_job=$(submit_train_job "scripts/slurm_gpt2_pile_unfreeze.sh" "gpt2-pile-unfreeze" "")
+            train_job=$(submit_train_job "scripts/slurm_gpt2_pile_unfreeze.sh" "gpt2-pile-unfreeze" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         else
             echo -e "${YELLOW}Activations not found or force redump requested${NC}"
             # First pretokenize, then dump with pretokenized data
             pretok_job=$(submit_pretokenize_job "conf/gpt2_pile_unfreeze.yaml" "gpt2-pile-unfreeze")
             dump_job=$(submit_dump_job "conf/gpt2_pile_unfreeze.yaml" 6 "gpt2-pile-unfreeze" true "$pretok_job")
-            train_job=$(submit_train_job "scripts/slurm_gpt2_pile_unfreeze.sh" "gpt2-pile-unfreeze" "$dump_job")
+            train_job=$(submit_train_job "scripts/slurm_gpt2_pile_unfreeze.sh" "gpt2-pile-unfreeze" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         fi
         ;;
         
     *)
-        echo "Usage: $0 <experiment> [force-redump]"
+        echo "Usage: $0 <experiment> [force-redump] [resume_checkpoint] [wandb_resume_id] [nodelist]"
         echo ""
         echo "SimpleStories Experiments (5M params, faster):"
         echo "  ss-frozen        - SimpleStories data, frozen base model"
@@ -279,18 +300,31 @@ case $EXPERIMENT in
         echo "  - The Pile: Diverse 800GB dataset from EleutherAI"
         echo ""
         echo "Options:"
-        echo "  force-redump     - Force re-dumping even if activations exist"
+        echo "  force-redump       - Force re-dumping even if activations exist"
+        echo "  resume_checkpoint  - Path to checkpoint file to resume from"
+        echo "  wandb_resume_id    - WandB run ID to resume"
+        echo "  nodelist           - SLURM node list (default: 330702be7061)"
         echo ""
         echo "Examples:"
-        echo "  $0 ss-frozen              # SimpleStories experiment"
-        echo "  $0 gpt2-frozen            # GPT-2 on OpenWebText"
-        echo "  $0 gpt2-pile force-redump # GPT-2 on Pile, force re-dump"
+        echo "  $0 ss-frozen                                    # New SimpleStories experiment"
+        echo "  $0 gpt2-frozen                                  # New GPT-2 on OpenWebText"
+        echo "  $0 gpt2-pile force-redump                       # GPT-2 on Pile, force re-dump"
+        echo "  $0 ss-frozen false outputs/ckpt_step_1000.pt   # Resume from checkpoint"
+        echo "  $0 ss-frozen false outputs/ckpt_step_1000.pt abc123xyz # Resume with WandB ID"
+        echo "  $0 ss-frozen false \"\" \"\" node001,node002        # Use different nodes"
         exit 1
         ;;
 esac
 
 echo -e "\n${BLUE}=== Job Summary ===${NC}"
 echo "Experiment: $EXPERIMENT"
+echo "Nodelist: $NODELIST"
+if [ -n "$RESUME_CHECKPOINT" ]; then
+    echo "Resume Checkpoint: $RESUME_CHECKPOINT"
+fi
+if [ -n "$WANDB_RESUME_ID" ]; then
+    echo "WandB Resume ID: $WANDB_RESUME_ID"
+fi
 if [ -n "${dump_job:-}" ]; then
     echo "Dumping Job ID: $dump_job"
 fi
@@ -298,5 +332,12 @@ echo "Training Job ID: $train_job"
 echo -e "\n${BLUE}Monitor with:${NC} squeue -u $USER"
 echo -e "${BLUE}Cancel with:${NC} scancel $train_job"
 
-# Save job IDs to log
-echo "$(date): $EXPERIMENT - dump:${dump_job:-none} train:$train_job" >> submitted_jobs_with_deps.log
+# Save job IDs to log with resume info
+resume_info=""
+if [ -n "$RESUME_CHECKPOINT" ]; then
+    resume_info=" resume:$RESUME_CHECKPOINT"
+fi
+if [ -n "$WANDB_RESUME_ID" ]; then
+    resume_info="$resume_info wandb:$WANDB_RESUME_ID"
+fi
+echo "$(date): $EXPERIMENT - dump:${dump_job:-none} train:$train_job$resume_info" >> submitted_jobs_with_deps.log

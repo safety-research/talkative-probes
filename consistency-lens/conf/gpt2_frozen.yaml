@@ -63,12 +63,14 @@ gumbel_tau_schedule:
   end_value: 0.1
   num_steps: -1                       # Use total training steps
 
-# KL weight schedule
+# LM weight schedule (alpha)
+# Ramps up language modeling constraint to gradually introduce linguistic fluency
+# while KL loss (functional preservation) remains the constant fundamental objective  
 alpha_schedule:
   type: "linear_warmup"
   start_value: 0.0
   end_value: 0.1
-  num_steps: 5000                     # Warmup KL loss over 5k steps
+  num_steps: 5000                     # Warmup LM constraint over 5k steps
 
 # Activation dumper config for OpenWebText
 activation_dumper:
@@ -117,9 +119,9 @@ checkpoint:
   delete_old_checkpoints: true
 
 # Loss weights
-lm_weight: 0.01
+lm_weight: 1.0                  # Base LM weight; final LM multiplier = lm_weight * alpha_schedule
 kl_base_weight: 1.0
-entropy_weight: 0.001                 # Small entropy bonus
+entropy_weight: 0.000                 # Small entropy bonus
 
 # Verbose samples for monitoring
 verbose_samples:
