@@ -57,26 +57,60 @@ trainable_components:
   decoder:
     base_model: false          # Train the underlying LLM weights of the Decoder
     projection_layer: true   # Train Proj_A_to_D_emb (self.proj)
-    eye_init: true
     output_head: false # Train the Decoder's output LM head (self.out)
+    embedding_head: false      # Train the input/output embeddings of the base model (may be tied)
+    eye_init: true
   encoder:
     base_model: false          # Train the underlying LLM weights of the Encoder
     use_base_model: true      # Use the base model to process the embeddings
     projection_layer: true   # Train Proj_E_hidden_to_A (self.proj)
+    embedding_head: false      # Train the input/output embeddings of the base model (may be tied)
     eye_init: true
 
 # Freeze schedule for non-adapter parameters
-# When enabled, non-adapter parameters (base_model, output_head) will be frozen
-# for the specified number of steps, then unfrozen for the rest of training
+# When enabled, non-adapter parameters (base_model, output_head, embedding_head) will be frozen
+# for the specified time, then unfrozen for the rest of training
+# 
+# FLEXIBLE SCHEDULING: Use suffix notation for epochs/steps:
+#   - "1000s" or "1000steps" = 1000 steps
+#   - "5e" or "5epochs" = 5 epochs  
+#   - Plain numbers (legacy) = steps
 freeze_schedule:
   enabled: false                # Enable freeze schedule
-  unfreeze_at_step: 1000       # Step at which to unfreeze non-adapter parameters
-  # Alternative: use epochs instead of steps
-  # unfreeze_at_epoch: 2       # Epoch at which to unfreeze (overrides unfreeze_at_step if set)
+  
+  # Global unfreeze timing (applies to all components unless overridden)
+  unfreeze_at: "1000s"         # When to unfreeze non-adapter parameters
+                               # Examples: "1000s", "5e", "2000steps", "10epochs"
+  
   # Warmup settings for newly unfrozen parameters
-  unfreeze_warmup_steps: 100   # Number of steps to warmup newly unfrozen parameters
-  unfreeze_warmup_start_factor: 0.01  # Starting LR multiplier for warmup (1% of target LR)
-  # The learning rate will linearly increase from start_factor * lr to full lr over warmup_steps
+  warmup_duration: "100s"      # Duration to warmup newly unfrozen parameters
+  warmup_start_factor: 0.01    # Starting LR multiplier for warmup (1% of target LR)
+  # The learning rate will linearly increase from start_factor * lr to full lr over warmup_duration
+  
+  # Fine-grained component control with individual timing
+  # Each component can have its own unfreeze timing that overrides the global unfreeze_at
+  components:
+    decoder:
+      base_model:
+        enabled: null          # null = use trainable_components setting, true/false = override
+        unfreeze_at: null      # null = use global unfreeze_at, or specify like "500s", "3e"
+      output_head:
+        enabled: null
+        unfreeze_at: null      # Can unfreeze at different time than base_model
+      embedding_head:
+        enabled: null
+        unfreeze_at: null      # Embedding heads can have their own schedule
+    encoder:
+      base_model:
+        enabled: null
+        unfreeze_at: null
+      embedding_head:
+        enabled: null
+        unfreeze_at: null
+        
+  # Legacy compatibility (deprecated - use unfreeze_at instead)
+  # unfreeze_at_step: 1000     # Step at which to unfreeze (converted to "1000s")
+  # unfreeze_at_epoch: 2       # Epoch at which to unfreeze (converted to "2e")
 
 # Learning rate multiplier for specific parameter groups.
 # These multipliers are applied to the base learning_rate from above.
@@ -84,6 +118,7 @@ freeze_schedule:
 # Example: projection_layers refers to decoder.proj, decoder.out, and encoder.proj.
 custom_lr_multipliers:
   projection_layers: 1.0 # Set > 1.0 to use a higher LR for these layers.
+  embedding_layers: 1.0  # Set different LR for embedding heads (input/output embeddings)
 
 # Gumbel-Softmax temperature (tau) schedule
 gumbel_tau_schedule:
@@ -93,7 +128,8 @@ gumbel_tau_schedule:
   end_value: 0.1
   num_steps: -1         # -1 means use total training steps (computed from epochs or max_train_steps)
 
-# KL divergence loss weight (alpha) schedule
+# Language model loss weight (alpha) schedule  
+# Alpha ramps up the LM loss component to gradually introduce linguistic fluency constraints
 alpha_schedule:
   type: "constant"      # Options: constant, linear_warmup, etc.
   value: 0.1            # For constant schedule
@@ -172,8 +208,8 @@ checkpoint:
   delete_old_checkpoints: true    # Delete oldest checkpoints when max_checkpoints reached
 
 # Loss weights
-lm_weight: 0.01                 # Multiplier on language model KL divergence term
-kl_base_weight: 1.0             # Base weight; final KL multiplier = kl_base_weight * alpha_schedule
+lm_weight: 1.0                  # Base LM weight; final LM multiplier = lm_weight * alpha_schedule  
+kl_base_weight: 1.0             # Fixed weight on KL divergence (fundamental objective)
 
 # Token entropy bonus (see loop.py). Positive values reward higher entropy to
 # avoid posterior collapse; set to 0.0 to disable.
@@ -182,20 +218,22 @@ entropy_weight: 0.000
 # Validation split & scheduling
 val_fraction: 0.1               # Fraction of dataset for validation
 split_seed: 42                  # Random seed for train/val split
-val_interval: 100               # Run validation every N training steps
+val_interval: "100s"            # Run validation interval using flexible notation
+                                # Examples: "100s", "1e", "500steps", "2epochs"
 
 # Verbose sample configuration for training monitoring
 verbose_samples:
   enabled: true                 # Enable verbose sample printing during training
-  num_samples: 2                # Number of samples to print per interval
-  interval_type: "steps"        # "steps" or "epochs" - when to print samples
-  interval: 1000                # Print every N steps/epochs (based on interval_type)
-  # If interval_type is "epochs", can also set to print every epoch AND every N steps:
-  # print_every_epoch: true     # Print at the end of each epoch
-  # print_every_n_steps: 1000   # Also print every N steps
+  num_samples: 5               # Number of samples to print per interval
+  interval: "1000s"            # Print interval using flexible notation
+                               # Examples: "1000s", "1e", "500steps", "2epochs"
   top_n_predictions: 3          # Number of top predictions to show in analysis
   generate_continuation: true   # Generate autoregressive continuation
   continuation_tokens: 30       # Number of tokens to generate for continuation
+  
+  # Legacy compatibility (deprecated - use interval instead)
+  # interval_type: "steps"      # "steps" or "epochs" - when to print samples
+  # interval: 1000              # Print every N steps/epochs (based on interval_type)
 
 # ------------------------------------------------------------------------------
 # Optional CLI-style parameters (set to null by default)

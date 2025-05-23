@@ -1,0 +1,107 @@
+# Example: Flexible Epoch/Step Scheduling Configuration
+# This demonstrates the new flexible scheduling system with suffix notation.
+# Copy relevant sections to your main config as needed.
+
+# Inherits from config.yaml but shows flexible scheduling examples
+defaults:
+  - config
+
+# Override specific sections to demonstrate flexible scheduling
+
+# FLEXIBLE FREEZE SCHEDULE EXAMPLE
+# Demonstrates staggered unfreezing with different timing per component
+freeze_schedule:
+  enabled: true
+  
+  # Global timing (used as fallback)
+  unfreeze_at: "2000s"           # Default: unfreeze at 2000 steps
+  warmup_duration: "200s"        # 200 steps warmup after unfreezing
+  warmup_start_factor: 0.01
+  
+  # Component-specific timing (overrides global)
+  components:
+    decoder:
+      base_model:
+        enabled: true            # Enable unfreezing for base model
+        unfreeze_at: "1e"        # Unfreeze base model at 1 epoch
+      output_head:
+        enabled: true
+        unfreeze_at: "1500s"     # Unfreeze output head at 1500 steps
+      embedding_head:
+        enabled: true  
+        unfreeze_at: "2e"        # Unfreeze embeddings at 2 epochs
+    encoder:
+      base_model:
+        enabled: true
+        unfreeze_at: "3e"        # Unfreeze encoder base much later
+      embedding_head:
+        enabled: false           # Never unfreeze encoder embeddings
+        unfreeze_at: null
+
+# FLEXIBLE INTERVAL EXAMPLES
+# Validation every 2 epochs instead of fixed steps
+val_interval: "2e"
+
+# Verbose samples every 500 steps
+verbose_samples:
+  enabled: true
+  num_samples: 5
+  interval: "500s"               # Every 500 steps
+  # Alternative examples:
+  # interval: "1e"               # Every epoch
+  # interval: "10epochs"         # Every 10 epochs
+  # interval: "2000steps"        # Every 2000 steps
+
+# EMBEDDING-SPECIFIC LEARNING RATES
+custom_lr_multipliers:
+  projection_layers: 10.0        # High LR for adapters
+  embedding_layers: 0.1          # Low LR for embeddings
+
+# EMBEDDING HEAD CONTROL
+trainable_components:
+  decoder:
+    base_model: true             # Will be frozen initially, unfrozen per schedule
+    projection_layer: true       # Always trainable (adapters)
+    output_head: true            # Will be frozen initially, unfrozen per schedule
+    embedding_head: true         # Will be frozen initially, unfrozen per schedule
+  encoder:
+    base_model: true             # Will be frozen initially, unfrozen per schedule
+    use_base_model: true
+    projection_layer: true       # Always trainable (adapters)
+    embedding_head: false        # Will remain frozen (disabled in schedule)
+
+# Example training progression with this config:
+# 
+# Step 0-999 (Epoch 0):
+#   - Only projection layers training
+#   - All base models, output heads, embeddings frozen
+#
+# Step 1000+ (Epoch 1):
+#   - Decoder base model unfreezes (1e = 1 epoch)
+#   - Projection layers continue training
+#   - Output heads, embeddings still frozen
+#   - 200-step warmup for newly unfrozen decoder base
+#
+# Step 1500+:
+#   - Decoder output head unfreezes (1500s)
+#   - Decoder base model, projection layers continue
+#   - Embeddings still frozen
+#   - 200-step warmup for newly unfrozen output head
+#
+# Step 2000+ (Epoch 2):  
+#   - Decoder embeddings unfreeze (2e = 2 epochs)
+#   - All decoder components now training
+#   - Encoder base still frozen
+#   - 200-step warmup for newly unfrozen embeddings
+#
+# Step 3000+ (Epoch 3):
+#   - Encoder base model unfreezes (3e = 3 epochs)
+#   - All components except encoder embeddings training
+#   - 200-step warmup for newly unfrozen encoder base
+#
+# This allows for very precise control over which parameters train when,
+# enabling sophisticated training strategies like:
+# 1. Adapter-only pretraining
+# 2. Gradual base model unfreezing  
+# 3. Late-stage embedding fine-tuning
+# 4. Component-specific learning schedules

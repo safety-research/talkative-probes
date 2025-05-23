@@ -179,7 +179,11 @@ def train_step(  # noqa: D401
     kl_base = _loss_fns.get("kl_base_weight", 1.0) if _loss_fns else 1.0
     ent_w = _loss_fns.get("entropy_weight", 0.0) if _loss_fns else 0.0
 
-    total_loss = lm_w * loss_lm + (kl_base * alpha) * loss_kl - ent_w * entropy #+ loss_mse
+    # Total loss composition:
+    # - KL loss (fundamental objective): fixed weight, measures functional preservation
+    # - LM loss (linguistic regularizer): ramped up via alpha schedule for fluency
+    # - Alpha schedule gradually introduces linguistic constraints during training
+    total_loss = (lm_w * alpha) * loss_lm + kl_base * loss_kl - ent_w * entropy #+ loss_mse
 
     return {
         "total": total_loss,

@@ -5,15 +5,24 @@ This directory contains all scripts for running Consistency Lens experiments, fr
 ## Quick Start
 
 ```bash
-# Run complete experiment with automatic dependency management
+# Start new experiment with automatic dependency management
 ./submit_with_dumping.sh ss-frozen
+
+# Resume from checkpoint (find path in outputs/checkpoints/)
+./submit_with_dumping.sh ss-frozen false outputs/checkpoints/run_name/checkpoint_step5000.pt
+
+# Resume with WandB run ID (get from WandB dashboard)
+./submit_with_dumping.sh ss-frozen false outputs/checkpoints/run_name/checkpoint_step5000.pt abc123xyz
+
+# Use specific SLURM nodes
+./submit_with_dumping.sh ss-frozen false "" "" node001,node002
 
 # Or manually: 
 # 1. Extract activations (8 GPUs)
 sbatch slurm_dump_activations_minimal.sh
 
 # 2. Train model (1 GPU) 
-sbatch slurm_simplestories_frozen_minimal.sh
+sbatch slurm_simplestories_frozen.sh
 ```
 
 ## Available Experiments
@@ -139,9 +148,18 @@ python scripts/01_train.py \
 ### Resume Training
 
 ```bash
+# Resume via wrapper script (recommended)
+./submit_with_dumping.sh ss-frozen false outputs/checkpoint.pt wandb_run_id
+
+# Or manually
 python scripts/01_train.py \
     resume=outputs/checkpoint.pt \
     wandb_resume_id=run_id
+
+# SLURM environment variables (used by wrapper)
+export RESUME_CHECKPOINT="outputs/checkpoint.pt"
+export WANDB_RESUME_ID="abc123xyz"
+sbatch slurm_simplestories_frozen.sh
 ```
 
 ## File Organization

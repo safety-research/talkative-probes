@@ -34,6 +34,7 @@ from lens.training.optim import param_groups
 from lens.utils.logging import init as log_init, log as log_metrics
 from lens.training.schedules import get_schedule_value, get_lr_scheduler
 from lens.utils.checkpoint_manager import CheckpointManager
+from lens.utils.schedule_parser import parse_schedule_config, parse_schedule_value, resolve_schedule_at_step
 import yaml
 from lens.evaluation.verbose_samples import process_and_print_verbose_batch_samples
 from lens.evaluation.wandb_logger import verbose_samples_logger
@@ -333,7 +334,7 @@ def _prepare_dataloaders(
     return train_loader, val_loader, train_ds, val_ds
 
 
-def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr_multiplier, opt_state_dict=None, unfreeze_step=None):
+def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr_multiplier, embedding_lr_multiplier, opt_state_dict=None, current_step=None, current_epoch=None):
     """Unfreeze non-adapter parameters and create new optimizer with all parameters."""
     log = logging.getLogger(__name__)
     
@@ -341,30 +342,136 @@ def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr
     decoder_train_cfg = config.get('trainable_components', {}).get('decoder', {})
     encoder_train_cfg = config.get('trainable_components', {}).get('encoder', {})
     
+    # Check for freeze schedule overrides
+    freeze_schedule = config.get('freeze_schedule', {})
+    components_config = freeze_schedule.get('components', {})
+    
+    # Helper function to get effective config (freeze schedule override or original config)
+    def get_effective_config(component, param_name, original_config):
+        component_cfg = components_config.get(component, {}).get(param_name, {})
+        
+        # Check if this component has custom enabled setting
+        enabled_override = component_cfg.get('enabled') if isinstance(component_cfg, dict) else None
+        if enabled_override is not None:
+            return enabled_override
+            
+        # Use original config setting
+        return original_config.get(param_name, False)
+    
+    # Helper function to check if a component should be unfrozen based on timing
+    def should_unfreeze_component(component, param_name):
+        component_cfg = components_config.get(component, {}).get(param_name, {})
+        
+        # Check for component-specific timing
+        if isinstance(component_cfg, dict) and 'unfreeze_at' in component_cfg:
+            unfreeze_spec_str = component_cfg['unfreeze_at']
+            if unfreeze_spec_str is not None:
+                try:
+                    unfreeze_spec = parse_schedule_value(unfreeze_spec_str)
+                    return resolve_schedule_at_step(unfreeze_spec, current_step or 0, current_epoch or 0)
+                except Exception as e:
+                    print(f"Warning: Failed to parse unfreeze_at for {component}.{param_name}: {e}")
+        
+        # Fall back to global unfreeze timing
+        global_unfreeze_at = freeze_schedule.get('unfreeze_at')
+        if global_unfreeze_at is not None:
+            try:
+                unfreeze_spec = parse_schedule_value(global_unfreeze_at)
+                return resolve_schedule_at_step(unfreeze_spec, current_step or 0, current_epoch or 0)
+            except Exception as e:
+                print(f"Warning: Failed to parse global unfreeze_at: {e}")
+        
+        # Legacy compatibility
+        if current_step is not None:
+            legacy_step = freeze_schedule.get('unfreeze_at_step')
+            if legacy_step is not None:
+                return current_step >= legacy_step
+        
+        if current_epoch is not None:
+            legacy_epoch = freeze_schedule.get('unfreeze_at_epoch')
+            if legacy_epoch is not None:
+                return current_epoch >= legacy_epoch
+                
+        return False
+    
     # Track which parameters are newly unfrozen
     newly_unfrozen_params = set()
     
-    # Unfreeze based on original config
+    # Helper function to unfreeze embedding heads
+    def unfreeze_embedding_heads(model, should_unfreeze):
+        if not should_unfreeze:
+            return
+        
+        # Unfreeze input embeddings
+        try:
+            input_embeddings = model.get_input_embeddings()
+            if input_embeddings is not None:
+                for param in input_embeddings.parameters():
+                    was_frozen = not param.requires_grad
+                    param.requires_grad = True
+                    if was_frozen:
+                        newly_unfrozen_params.add(param)
+        except AttributeError:
+            pass
+        
+        # Unfreeze output embeddings
+        try:
+            output_embeddings = model.get_output_embeddings()
+            if output_embeddings is not None:
+                for param in output_embeddings.parameters():
+                    was_frozen = not param.requires_grad
+                    param.requires_grad = True
+                    if was_frozen:
+                        newly_unfrozen_params.add(param)
+        except AttributeError:
+            # Fallback for models that expose `lm_head`
+            if hasattr(model, 'lm_head'):
+                for param in model.lm_head.parameters():
+                    was_frozen = not param.requires_grad
+                    param.requires_grad = True
+                    if was_frozen:
+                        newly_unfrozen_params.add(param)
+    
+    # Unfreeze based on effective config and timing
     for name, param in dec_raw.named_parameters():
-        if 'base' in name:
+        if 'base' in name and 'embed' not in name:  # Base model params (excluding embeddings)
             was_frozen = not param.requires_grad
-            param.requires_grad = decoder_train_cfg.get('base_model', False)
+            should_enable = get_effective_config('decoder', 'base_model', decoder_train_cfg)
+            should_unfreeze_now = should_unfreeze_component('decoder', 'base_model')
+            param.requires_grad = should_enable and should_unfreeze_now
             if was_frozen and param.requires_grad:
                 newly_unfrozen_params.add(param)
-        elif 'out' in name:
+        elif 'out' in name:  # Output head (self.out layer)
             was_frozen = not param.requires_grad
-            param.requires_grad = decoder_train_cfg.get('output_head', False)
+            should_enable = get_effective_config('decoder', 'output_head', decoder_train_cfg)
+            should_unfreeze_now = should_unfreeze_component('decoder', 'output_head')
+            param.requires_grad = should_enable and should_unfreeze_now
             if was_frozen and param.requires_grad:
                 newly_unfrozen_params.add(param)
         # proj layers remain as they were
     
+    # Handle decoder embedding heads separately
+    should_enable_dec_embeddings = get_effective_config('decoder', 'embedding_head', decoder_train_cfg)
+    should_unfreeze_now_dec_embeddings = should_unfreeze_component('decoder', 'embedding_head')
+    if should_enable_dec_embeddings and should_unfreeze_now_dec_embeddings:
+        unfreeze_embedding_heads(dec_raw.base, True)
+    
     for name, param in enc_raw.named_parameters():
-        if 'base' in name:
+        if 'base' in name and 'embed' not in name:  # Base model params (excluding embeddings)
             was_frozen = not param.requires_grad
-            param.requires_grad = encoder_train_cfg.get('base_model', False)
+            should_enable = get_effective_config('encoder', 'base_model', encoder_train_cfg)
+            should_unfreeze_now = should_unfreeze_component('encoder', 'base_model')
+            param.requires_grad = should_enable and should_unfreeze_now
             if was_frozen and param.requires_grad:
                 newly_unfrozen_params.add(param)
         # proj layers remain as they were
+    
+    # Handle encoder embedding heads separately (only if using base model)
+    if enc_raw.config.use_base_model:
+        should_enable_enc_embeddings = get_effective_config('encoder', 'embedding_head', encoder_train_cfg)
+        should_unfreeze_now_enc_embeddings = should_unfreeze_component('encoder', 'embedding_head')
+        if should_enable_enc_embeddings and should_unfreeze_now_enc_embeddings:
+            unfreeze_embedding_heads(enc_raw.base, True)
     
     # Update trainable params list
     dec = dec_raw if not isinstance(dec_raw, torch._dynamo.eval_frame.OptimizedModule) else dec_raw
@@ -374,8 +481,13 @@ def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr
                        [p for p in enc.parameters() if p.requires_grad]
     
     # Create new optimizer with updated parameters
-    optimizer_groups = param_groups([dec, enc], learning_rate, projection_lr_multiplier)
+    optimizer_groups = param_groups([dec, enc], learning_rate, projection_lr_multiplier, embedding_lr_multiplier)
     new_opt = torch.optim.AdamW(optimizer_groups)
+    
+    # Set initial_lr for each parameter group (required for LR scheduler)
+    for group in new_opt.param_groups:
+        if 'initial_lr' not in group:
+            group['initial_lr'] = group['lr']
     
     # Restore optimizer state if provided
     if opt_state_dict is not None:
@@ -430,6 +542,9 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
 
     # Convert Hydra config to a plain Python dict for the legacy code.
     config = OmegaConf.to_container(cfg, resolve=True)
+    
+    # Parse flexible schedule notations (e.g., "1000s", "5e") into detailed format
+    config = parse_schedule_config(config)
 
     # ---------------------------------------------------------------
     # Logging setup (console). W&B handled via lens.utils.logging.
@@ -481,7 +596,17 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         log_interval = 100
     
     # val_interval is used by the training loop, not dataset prep, but initialized here from config
-    val_interval = config['val_interval']
+    val_interval_str = config['val_interval']
+    try:
+        val_interval_spec = parse_schedule_value(val_interval_str)
+        # Convert to steps for legacy compatibility with the validation check
+        if val_interval_spec.unit == "epochs":
+            val_interval = val_interval_spec.value * steps_per_epoch
+        else:
+            val_interval = val_interval_spec.value
+    except Exception as e:
+        print(f"Warning: Failed to parse val_interval '{val_interval_str}': {e}")
+        val_interval = int(val_interval_str) if isinstance(val_interval_str, str) else val_interval_str
 
     # Extract trainable_components and custom_lr_multipliers from config
     trainable_components_config = config.get('trainable_components', {})
@@ -489,6 +614,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     encoder_train_cfg = trainable_components_config.get('encoder', {})
     custom_lr_multipliers = config.get('custom_lr_multipliers', {})
     projection_lr_multiplier = custom_lr_multipliers.get('projection_layers', 1.0)
+    embedding_lr_multiplier = custom_lr_multipliers.get('embedding_layers', 1.0)
 
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -659,14 +785,69 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     # Handle freeze schedule
     freeze_schedule_config = config.get('freeze_schedule', {})
     freeze_schedule_enabled = freeze_schedule_config.get('enabled', False)
+    
+    def should_unfreeze_any_component(current_step, current_epoch):
+        """Check if any component should be unfrozen at current step/epoch."""
+        if not freeze_schedule_enabled:
+            return False
+        
+        components_config = freeze_schedule_config.get('components', {})
+        
+        # Check each component individually
+        for component_name, component_cfg in components_config.items():
+            for param_name, param_cfg in component_cfg.items():
+                if isinstance(param_cfg, dict) and 'unfreeze_at' in param_cfg:
+                    unfreeze_spec_str = param_cfg['unfreeze_at']
+                    if unfreeze_spec_str is not None:
+                        try:
+                            unfreeze_spec = parse_schedule_value(unfreeze_spec_str)
+                            if resolve_schedule_at_step(unfreeze_spec, current_step, current_epoch):
+                                return True
+                        except Exception:
+                            pass
+        
+        # Check global unfreeze timing
+        global_unfreeze_at = freeze_schedule_config.get('unfreeze_at')
+        if global_unfreeze_at is not None:
+            try:
+                unfreeze_spec = parse_schedule_value(global_unfreeze_at)
+                return resolve_schedule_at_step(unfreeze_spec, current_step, current_epoch)
+            except Exception:
+                pass
+        
+        # Legacy compatibility
+        legacy_step = freeze_schedule_config.get('unfreeze_at_step')
+        if legacy_step is not None and current_step >= legacy_step:
+            return True
+            
+        legacy_epoch = freeze_schedule_config.get('unfreeze_at_epoch')
+        if legacy_epoch is not None and current_epoch >= legacy_epoch:
+            return True
+            
+        return False
+    
     if freeze_schedule_enabled:
-        # Determine unfreeze step
-        if 'unfreeze_at_epoch' in freeze_schedule_config and freeze_schedule_config['unfreeze_at_epoch'] is not None:
-            unfreeze_at_step = steps_per_epoch * freeze_schedule_config['unfreeze_at_epoch']
-            log.info(f"Freeze schedule enabled: will unfreeze non-adapters at epoch {freeze_schedule_config['unfreeze_at_epoch']} (step {unfreeze_at_step})")
-        else:
-            unfreeze_at_step = freeze_schedule_config.get('unfreeze_at_step', 0)
-            log.info(f"Freeze schedule enabled: will unfreeze non-adapters at step {unfreeze_at_step}")
+        # Log initial freeze schedule configuration
+        global_unfreeze_at = freeze_schedule_config.get('unfreeze_at')
+        if global_unfreeze_at:
+            log.info(f"Freeze schedule enabled: global unfreeze timing = {global_unfreeze_at}")
+        
+        # Log component-specific timing
+        components_config = freeze_schedule_config.get('components', {})
+        for component_name, component_cfg in components_config.items():
+            for param_name, param_cfg in component_cfg.items():
+                if isinstance(param_cfg, dict) and 'unfreeze_at' in param_cfg:
+                    unfreeze_at = param_cfg['unfreeze_at']
+                    if unfreeze_at:
+                        log.info(f"Freeze schedule: {component_name}.{param_name} will unfreeze at {unfreeze_at}")
+        
+        # Legacy compatibility logging
+        legacy_step = freeze_schedule_config.get('unfreeze_at_step')
+        legacy_epoch = freeze_schedule_config.get('unfreeze_at_epoch')
+        if legacy_step is not None:
+            log.info(f"Legacy freeze schedule: will unfreeze at step {legacy_step}")
+        elif legacy_epoch is not None:
+            log.info(f"Legacy freeze schedule: will unfreeze at epoch {legacy_epoch}")
         
         # Initially freeze non-adapter parameters (base_model and output_head)
         # We'll freeze them regardless of the config settings, then unfreeze later
@@ -733,12 +914,12 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
 
     log.info(f"Original LLM (frozen) parameters: {num_params_orig_total:,}")
     log.info(f"Hyperparameters: lm_weight={lm_weight}, kl_base_weight={kl_base_weight}, entropy_weight={entropy_weight}")
-    log.info(f"Learning rate: {learning_rate}, Projection LR Multiplier: {projection_lr_multiplier}")
+    log.info(f"Learning rate: {learning_rate}, Projection LR Multiplier: {projection_lr_multiplier}, Embedding LR Multiplier: {embedding_lr_multiplier}")
     log.info(f"Stop-grad on A′: {config['stop_grad_aprime']}")
     log.info(f"Grad clip: {config['grad_clip']}")
     
     # Create optimizer groups with potentially different LRs
-    optimizer_groups = param_groups([dec, enc], learning_rate, projection_lr_multiplier)
+    optimizer_groups = param_groups([dec, enc], learning_rate, projection_lr_multiplier, embedding_lr_multiplier)
 
     # Verify that the number of parameters in optimizer groups matches the count from trainable_params list.
     num_params_in_optimizer_groups = sum(p.numel() for group in optimizer_groups for p in group['params'])
@@ -781,7 +962,11 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
 
     epoch_decoded_tokens = []  # Initialize accumulator for decoded tokens per epoch
     step_iter = iter(train_loader)
-    log.info(f"Start step: {start_step}, Max steps: {max_steps}")
+    
+    # Calculate start epoch from start step
+    start_epoch = start_step // steps_per_epoch if steps_per_epoch > 0 else 0
+    
+    log.info(f"Start step: {start_step}, Start epoch: {start_epoch}, Max steps: {max_steps}")
     
     # Track validation loss for best checkpoint
     best_val_loss = float('inf')
@@ -792,10 +977,16 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     last_log_time = start_time
     
     # Track freeze schedule state
-    non_adapters_frozen = freeze_schedule_enabled and (start_step < unfreeze_at_step)
+    non_adapters_frozen = freeze_schedule_enabled and not should_unfreeze_any_component(start_step, start_epoch)
     
     # Track warmup for newly unfrozen parameters
-    unfreeze_warmup_steps = freeze_schedule_config.get('unfreeze_warmup_steps', 100)
+    unfreeze_warmup_duration = freeze_schedule_config.get('warmup_duration', "100s")
+    try:
+        warmup_spec = parse_schedule_value(unfreeze_warmup_duration)
+        unfreeze_warmup_steps = warmup_spec.value if warmup_spec.unit == "steps" else warmup_spec.value * steps_per_epoch
+    except Exception:
+        # Fallback to legacy config
+        unfreeze_warmup_steps = freeze_schedule_config.get('unfreeze_warmup_steps', 100)
     newly_unfrozen_params = set()
     unfreeze_transition_step = None
     
@@ -810,8 +1001,11 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                 leave=True)
     
     for step in pbar:
+        # Calculate current epoch from step
+        epoch = step // steps_per_epoch if steps_per_epoch > 0 else 0
+        
         # Check if we should unfreeze non-adapter parameters
-        if freeze_schedule_enabled and non_adapters_frozen and step >= unfreeze_at_step:
+        if freeze_schedule_enabled and non_adapters_frozen and should_unfreeze_any_component(step, epoch):
             log.info(f"Unfreezing non-adapter parameters at step {step}")
             
             # Save current optimizer state
@@ -819,7 +1013,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
             
             # Unfreeze and recreate optimizer
             opt, trainable_params, newly_unfrozen_params = unfreeze_non_adapters(
-                dec_raw, enc_raw, config, learning_rate, projection_lr_multiplier, opt_state, step
+                dec_raw, enc_raw, config, learning_rate, projection_lr_multiplier, embedding_lr_multiplier, opt_state, step, epoch
             )
             
             # Recreate LR scheduler with new optimizer
@@ -1202,11 +1396,29 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
             avg_val_mse  = val_mse  / val_seen if val_seen else float("nan")
             avg_val_lm   = val_lm   / val_seen if val_seen else float("nan")
             avg_val_kl   = val_kl   / val_seen if val_seen else float("nan")
+            
+            # Calculate normalized validation loss for checkpointing
+            # This represents what the loss would be with the final alpha value
+            # to avoid alpha warmup affecting checkpoint selection
+            alpha_config = config.get('alpha_schedule', {})
+            if alpha_config.get('type') == 'linear_warmup':
+                final_alpha = alpha_config.get('end_value', 0.1)
+            else:
+                final_alpha = alpha_config.get('value', 0.1)
+            
+            # Normalized loss using the correct formula from loop.py:
+            # total_loss = (lm_w * alpha) * loss_lm + kl_base * loss_kl - ent_w * entropy
+            lm_w = config.get('lm_weight', 1.0)
+            kl_base = config.get('kl_base_weight', 1.0)
+            normalized_val_loss = (lm_w * final_alpha) * avg_val_lm + kl_base * avg_val_kl
+            
             log.info(
                 f"Validation – loss {avg_val_loss:.4f}, mse {avg_val_mse:.4f}, lm {avg_val_lm:.4f}, kl {avg_val_kl:.4f}"
             )
+            log.info(f"Normalized validation loss (for checkpointing): {normalized_val_loss:.4f}")
             log_metrics({
                 "eval/loss/total": avg_val_loss,
+                "eval/loss/normalized": normalized_val_loss,  # For checkpointing
                 "eval/loss/mse":    avg_val_mse,
                 "eval/loss/lm":     avg_val_lm,
                 "eval/loss/kl":     avg_val_kl,
@@ -1239,7 +1451,8 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                     scheduler=lr_scheduler,
                     metrics=val_metrics,
                     config=config,
-                    val_loss=avg_val_loss,
+                    val_loss=normalized_val_loss,  # Use normalized loss for best checkpoint tracking
+                    raw_val_loss=avg_val_loss,     # Keep raw loss for logging
                     tau=current_tau,
                     alpha=current_alpha,
                     wandb_run_id=current_wandb_run_id,
@@ -1253,18 +1466,31 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         if verbose_config.get('enabled', False):
             should_print = False
             
-            # Check if we should print based on interval type
-            if verbose_config.get('interval_type', 'steps') == 'steps':
-                # Print every N steps
-                verbose_interval = verbose_config.get('interval', 1000)
-                if step > 0 and step % verbose_interval == 0:
-                    should_print = True
-            else:  # interval_type == 'epochs'
-                # Print at epoch boundaries
-                if epoch_just_finished:
-                    verbose_interval = verbose_config.get('interval', 1)
-                    if current_epoch_num % verbose_interval == 0:
+            # Check if we should print based on flexible interval notation
+            verbose_interval_str = verbose_config.get('interval', "1000s")
+            try:
+                verbose_spec = parse_schedule_value(verbose_interval_str)
+                if verbose_spec.unit == "steps":
+                    # Print every N steps
+                    if step > 0 and step % verbose_spec.value == 0:
                         should_print = True
+                elif verbose_spec.unit == "epochs":
+                    # Print at epoch boundaries
+                    if epoch_just_finished:
+                        if current_epoch_num % verbose_spec.value == 0:
+                            should_print = True
+            except Exception as e:
+                # Fallback to legacy logic
+                print(f"Warning: Failed to parse verbose_samples interval '{verbose_interval_str}': {e}")
+                if verbose_config.get('interval_type', 'steps') == 'steps':
+                    verbose_interval = verbose_config.get('interval', 1000)
+                    if step > 0 and step % verbose_interval == 0:
+                        should_print = True
+                else:
+                    if epoch_just_finished:
+                        verbose_interval = verbose_config.get('interval', 1)
+                        if current_epoch_num % verbose_interval == 0:
+                            should_print = True
             
             # Also check for combined epoch+steps printing
             if verbose_config.get('print_every_epoch', False) and epoch_just_finished:
