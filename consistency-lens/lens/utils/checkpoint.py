@@ -35,7 +35,25 @@ def load(path: str | Path, models: Dict[str, torch.nn.Module], optim: torch.opti
     ckpt = torch.load(path, map_location=map_location)
     for k, m in models.items():
         if k in ckpt["models"]:
-            m.load_state_dict(ckpt["models"][k])
+            state_dict = ckpt["models"][k]
+            
+            # Handle loading from non-compiled to compiled models
+            if hasattr(m, '_orig_mod'):
+                # Model is compiled (wrapped in OptimizedModule)
+                # Check if state dict keys need _orig_mod prefix
+                sample_key = next(iter(state_dict.keys()))
+                if not sample_key.startswith('_orig_mod.'):
+                    # Add _orig_mod prefix to all keys
+                    state_dict = {f'_orig_mod.{k}': v for k, v in state_dict.items()}
+            else:
+                # Model is not compiled
+                # Check if state dict has _orig_mod prefix that needs removal
+                sample_key = next(iter(state_dict.keys())) if state_dict else ""
+                if sample_key.startswith('_orig_mod.'):
+                    # Remove _orig_mod prefix from all keys
+                    state_dict = {k.replace('_orig_mod.', '', 1): v for k, v in state_dict.items()}
+            
+            m.load_state_dict(state_dict)
     if optim is not None and "optim" in ckpt:
         try:
             optim.load_state_dict(ckpt["optim"])

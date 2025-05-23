@@ -1,22 +1,22 @@
 {
     "rank": 0,
-    "total_samples": 1000,
+    "total_samples": 1526,
     "shards": [
         {
             "name": "shard_00000000.pt",
-            "num_samples": 1000
+            "num_samples": 1526
         }
     ],
     "config": {
         "split_name": "test",
-        "num_samples": 1000,
+        "num_samples": null,
         "seq_len": 64,
         "layer_idx": 5,
         "model_name": "SimpleStories/SimpleStories-5M",
         "tokenizer_name": "SimpleStories/SimpleStories-5M",
         "use_hf_dataset": true,
         "hf_dataset_name": "SimpleStories/SimpleStories",
-        "dataset_cache_dir": "consistency-lens/data/corpus/SimpleStories",
+        "dataset_cache_dir": "./data/corpus/SimpleStories",
         "min_token_idx_inclusive": 5,
         "seed": 0
     }

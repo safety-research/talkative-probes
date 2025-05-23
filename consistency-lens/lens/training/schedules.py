@@ -34,10 +34,12 @@ def get_schedule_value(
 
     if schedule_type == "constant":
         return float(schedule_config["value"])
-
     start_value = float(schedule_config["start_value"])
     end_value = float(schedule_config["end_value"])
-    num_schedule_steps = int(schedule_config.get("num_steps", total_steps if total_steps is not None else current_step +1 ))
+    num_steps = schedule_config.get("num_steps", -1)
+    num_schedule_steps = total_steps if num_steps == -1 else int(num_steps)
+    if num_schedule_steps is None:
+        num_schedule_steps = current_step + 1  # Fallback if total_steps is None
 
     if num_schedule_steps == 0: # Avoid division by zero if num_steps is 0 or not properly set
         return end_value

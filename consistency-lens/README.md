@@ -1,6 +1,4 @@
-Okay, I've integrated the suggested minor clarifications and corrected the KL divergence argument order in the training loop pseudocode. Here's the revised plan:
-
-# Consistency Lenses: An Architectural Plan for Scalable LLM Interpretation
+# Consistency Lenses: Scalable LLM Interpretation via Textual Bottlenecks
 
 This document outlines the architectural plan for training Consistency Lenses, a method to interpret the internal states of Large Language Models (LLMs) by forcing them through a textual, human-readable bottleneck. The plan is designed for an 8 x H100 GPU environment, emphasizing scalability and efficiency.
 
@@ -70,6 +68,44 @@ Extra dependencies for the Docker image can be installed with:
 uv pip install -r env/requirements.txt
 ```
 
+## Training with Hydra
+
+The training entry-point is still `scripts/01_train.py`, but it now uses [Hydra](https://github.com/facebookresearch/hydra).  In practice this means:
+
+* The base configuration lives in `conf/config.yaml`.  Running with no overrides picks up that file automatically:
+
+```bash
+python scripts/01_train.py                     # default config
+```
+
+* Any change is passed as a **dot-list override** (`key=value`) – no more `--foo BAR` flags.
+
+```bash
+# change a couple of hyper-parameters on the fly
+python scripts/01_train.py learning_rate=5e-4 t_text=7
+```
+
+* Mini config fragments live in `conf/*.yaml` and are enabled with a leading `+`:
+
+```bash
+python scripts/01_train.py +debug               # conf/debug.yaml overrides
+python scripts/01_train.py +high_lr batch_size=128
+```
+
+* Resuming is also an override:
+
+```bash
+python scripts/01_train.py \\\
+    resume=outputs/checkpoints/run_X/ckpt_step_1000.pt \\\
+    wandb_resume_id=abc123xyz
+```
+
+If you really need to point at a different whole config file use Hydra's built-ins:
+
+```bash
+python scripts/01_train.py --config-path ./some_dir --config-name my_cfg
+```
+
 ## Activation Dumping: Single-GPU vs Multi-GPU
 
 Before training Consistency Lenses, you need to extract activations from your target model. We provide two scripts for this: a single-GPU version and an optimized multi-GPU version for H100 clusters.
@@ -87,11 +123,12 @@ Both scripts include:
 For smaller models or limited GPU resources:
 
 ```bash
-# Basic usage with config defaults
+# Basic usage with config defaults (processes ENTIRE dataset by default)
 python consistency-lens/scripts/00_dump_activations.py \
     --config_path consistency-lens/config/lens_simple.yaml
 
-# Override specific parameters
+# Override specific parameters  
+# Note: --num_samples -1 means process entire dataset
 python consistency-lens/scripts/00_dump_activations.py \
     --config_path consistency-lens/config/lens_simple.yaml \
     --num_samples 100000 \
@@ -259,6 +296,37 @@ data/activations/
 
 The training dataloader (`lens.data.dataset.ActivationDataset`) automatically handles both single and multi-GPU output formats.
 
+## SLURM Submission on HPC Clusters
+
+For HPC clusters with SLURM, we provide submission scripts that handle the complete workflow from activation dumping to training. See [scripts/README.md](scripts/README.md) for detailed usage.
+
+### Quick Start
+
+```bash
+# Run complete experiment with automatic dependency management
+./scripts/submit_with_dumping.sh ss-frozen
+
+# Available experiments:
+# ss-frozen, ss-unfreeze, gpt2-frozen, gpt2-unfreeze, 
+# gpt2-pile-frozen, gpt2-pile-unfreeze
+```
+
+This wrapper automatically:
+1. Checks if activations exist
+2. Submits 8-GPU dumping job if needed  
+3. Submits 1-GPU training job with dependency
+4. Handles job failures gracefully
+
+### Performance Expectations
+
+| Task | GPUs | Time | Memory |
+|------|------|------|--------|
+| Activation Dumping (5M model) | 8 | ~30 min | 20GB/GPU |
+| Training (frozen base) | 1 | 4-6 hours | 40GB |
+| Training (unfreezing) | 1 | 8-12 hours | 60GB |
+
+**Note**: First 2-3 training steps may take 2+ minutes each due to torch.compile optimization. This is normal.
+
 ### Performance Analysis: Understanding GPU Utilization
 
 We profiled the activation dumping process to understand bottlenecks. Here's what we found:
@@ -323,6 +391,45 @@ tokenized.save_to_disk("data/pretokenized/dataset_name")
 ```
 
 This can reduce the 42% tokenization overhead to near zero for subsequent runs.
+
+### Pre-tokenization Pipeline
+
+We provide a complete pre-tokenization pipeline for maximum performance:
+
+```bash
+# Step 1: Pre-tokenize dataset (one-time, uses 32 CPU cores by default)
+python consistency-lens/scripts/pretokenize_dataset.py \
+    --config_path consistency-lens/config/lens_simple.yaml \
+    --num_proc 32 \
+    --batch_size 10000
+
+# Step 2: Use pre-tokenized data for activation dumping (5-10x faster!)
+./consistency-lens/scripts/launch_multigpu_dump_pretokenized.sh \
+    consistency-lens/config/lens_simple.yaml \
+    data/activations
+```
+
+Pre-tokenization eliminates the tokenization bottleneck entirely:
+- Tokenization time: 3,273ms → 0ms per batch
+- Total time per batch: 5,766ms → ~2,500ms
+- Throughput improvement: ~2.3x for small models, even more for CPU-bound scenarios
+
+### Default Dataset Processing Behavior
+
+**Important change**: By default, the activation dumper now processes the **entire dataset** rather than a fixed number of samples:
+
+```yaml
+# In config/lens_simple.yaml
+activation_dumper:
+  num_samples: -1      # -1 means process entire dataset
+  val_num_samples: -1  # -1 means process entire validation set
+```
+
+To process a specific number of samples, either:
+1. Update the config file with a positive number
+2. Use command-line override: `--num_samples 100000`
+
+This change ensures you don't accidentally miss data when processing large datasets. The scripts will automatically handle streaming and distributed processing across all available data.
 
 ## Leaning on the Ecosystem
 

@@ -14,10 +14,27 @@ if [ -z "$NUM_GPUS" ]; then
 fi
 
 # Calculate optimal OMP threads per process
-# Assuming a typical H100 node has 112-128 CPU cores
 TOTAL_CPUS=$(nproc)
-OMP_THREADS=$((TOTAL_CPUS / NUM_GPUS))
-echo "Detected $TOTAL_CPUS CPU cores, allocating $OMP_THREADS threads per GPU process"
+THREADS_PER_GPU=$((TOTAL_CPUS / NUM_GPUS))
+
+# Allow manual override
+if [ -n "$FORCE_THREADS" ]; then
+    OMP_THREADS=$FORCE_THREADS
+    echo "Using forced thread count: $FORCE_THREADS"
+else
+# Cap threads to avoid diminishing returns and thrashing
+# For tokenization, 8-16 threads per process is usually optimal
+if [ $THREADS_PER_GPU -gt 16 ]; then
+    echo "Warning: $THREADS_PER_GPU threads per GPU may cause thrashing. Capping at 16."
+    OMP_THREADS=16
+else
+    OMP_THREADS=$THREADS_PER_GPU
+fi
+fi
+
+echo "Detected $TOTAL_CPUS CPU cores, $NUM_GPUS GPUs"
+echo "Allocating $OMP_THREADS threads per GPU process (calculated: $THREADS_PER_GPU)"
+echo "Note: HF tokenizers may not use all threads depending on implementation"
 
 # Set OpenMP and MKL thread counts
 export OMP_NUM_THREADS=$OMP_THREADS
@@ -25,6 +42,10 @@ export MKL_NUM_THREADS=$OMP_THREADS
 export OPENBLAS_NUM_THREADS=$OMP_THREADS
 export VECLIB_MAXIMUM_THREADS=$OMP_THREADS
 export NUMEXPR_NUM_THREADS=$OMP_THREADS
+export RAYON_NUM_THREADS=$OMP_THREADS
+
+# Debug: verify exports
+echo "Thread settings: OMP_NUM_THREADS=$OMP_NUM_THREADS"
 
 # Determine base path for defaults based on current directory
 # If running from consistency-lens/scripts, use relative paths

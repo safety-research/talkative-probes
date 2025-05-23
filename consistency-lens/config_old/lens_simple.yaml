@@ -94,18 +94,18 @@ alpha_schedule:
 
 # Activation dumper config (for 00_dump_activations.py)
 activation_dumper:
-  # num_samples: 2200000
+  num_samples: -1  # -1 means process entire dataset
   seq_len: 64
   use_hf_dataset: true
   hf_dataset_name: "SimpleStories/SimpleStories"
   hf_split: "train"
-  dataset_cache_dir: "consistency-lens/data/corpus/SimpleStories"
-  output_dir: "consistency-lens/data/activations/SimpleStories_train"
-  batch_size: 4096
+  dataset_cache_dir: "./data/corpus/SimpleStories"
+  output_dir: "./data/activations/SimpleStories_train"
+  batch_size: 2048  # With pre-tokenization, we can use larger batches
   # Validation split dumping in the same run of 00_dump_activations.py
   val_hf_split: "test"
-  val_output_dir: "consistency-lens/data/activations/SimpleStories_test"
-  val_num_samples: 2000
+  val_output_dir: "./data/activations/SimpleStories_test"
+  val_num_samples: -1  # -1 means process entire validation dataset
   # HuggingFace dataset loading options
   # If 'use_hf_dataset' is true the dumper script will read the tiny 10-k subset of
   # The Pile instead of the built-in toy prompts. Useful once the smoke test passes
@@ -117,7 +117,7 @@ activation_dumper:
 
 # Validation activation directory (skip split when provided)
 # This path should also be salted with the tokenizer_name if it's used.
-val_activation_dir: "consistency-lens/data/activations/SimpleStories_test"
+val_activation_dir: "./data/activations/SimpleStories_test"
 
 # WandB configuration (can also be in wandb.yaml)
 wandb:
@@ -133,7 +133,7 @@ checkpoint:
   name_pattern: "checkpoint_step{step}_epoch{epoch}"
   
   # Save strategies (can enable multiple)
-  save_every_n_steps: 10000         # Save every N training steps (0 to disable)
+  save_every_n_steps: 20000         # Save every N training steps (0 to disable)
   save_every_n_epochs: 0          # Save every N epochs (0 to disable)
   save_at_end: true               # Save final checkpoint when training completes
   

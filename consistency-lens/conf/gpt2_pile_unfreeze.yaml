@@ -1,0 +1,140 @@
+# Configuration for GPT-2 Progressive Unfreezing with The Pile
+# This config trains consistency lens on GPT-2 with The Pile dataset, unfreezing after 1st epoch
+
+defaults:
+  - config
+  - _self_
+
+# Model parameters
+model_name: "openai-community/gpt2"  # GPT-2 124M parameters
+tokenizer_name: "openai-community/gpt2"
+layer_l: 6                            # Middle layer (GPT-2 has 12 layers, 0-indexed)
+
+# Decoder parameters
+decoder_prompt: "This token represents:"
+
+# Training hyperparameters
+t_text: 10                            # Number of tokens to generate with the Decoder
+learning_rate: 1.0e-4                 # Starting LR for projections
+batch_size: 1024                      # Can go higher with 8xH100
+
+# Learning rate scheduler
+lr_scheduler:
+  type: "cosine_with_restarts"        # Restarts help when unfreezing
+  warmup_steps: 1000                  # 1k warmup steps
+  warmup_start_factor: 0.1            # Start at 10% of target LR
+  eta_min: 1.0e-6                     # Lower min LR for fine-tuning
+  T_0: 10000                          # First restart at 10k steps
+  T_mult: 2                           # Double period after each restart
+
+# Training duration
+num_train_epochs: 2                   # 2 epochs for The Pile subset
+max_train_steps: 0                    # Use epochs instead
+
+compile_models: true                  # Enable torch.compile for speed
+log_interval: 100                     # Log every 100 steps
+wandb_log_interval: 10                # WandB every 10 steps
+grad_clip: 1.0
+
+# Trainable components - will be unfrozen by freeze_schedule
+trainable_components:
+  decoder:
+    base_model: true                  # Will be frozen initially, then unfrozen
+    projection_layer: true            # Always trainable
+    eye_init: true
+    output_head: true                 # Unfreeze LM head too
+  encoder:
+    base_model: true                  # Will be frozen initially, then unfrozen
+    use_base_model: true
+    projection_layer: true            # Always trainable
+    eye_init: true
+
+# Progressive unfreezing schedule
+freeze_schedule:
+  enabled: true                       # ENABLE freeze schedule
+  unfreeze_at_epoch: 1                # Unfreeze after first epoch
+
+# Custom learning rates - IMPORTANT for unfrozen models
+custom_lr_multipliers:
+  projection_layers: 1.0              # Full LR for projections
+  base_model: 0.1                     # 10x lower LR for base model when unfrozen
+  output_head: 0.5                    # 2x lower LR for output heads
+
+# Gumbel temperature schedule
+gumbel_tau_schedule:
+  type: "linear_decay_after_constant"
+  constant_steps_before_linear_decay: 10000
+  start_value: 1.0
+  end_value: 0.1
+  num_steps: -1                       # Use total training steps
+
+# KL weight schedule - slower warmup for stability
+alpha_schedule:
+  type: "linear_warmup"
+  start_value: 0.0
+  end_value: 0.1
+  num_steps: 8000                     # Slower warmup
+
+# Activation dumper config for The Pile
+activation_dumper:
+  num_samples: 10000000               # 10M samples from The Pile
+  seq_len: 128                        # Standard sequence length
+  use_hf_dataset: true
+  hf_dataset_name: "EleutherAI/pile"  # The Pile dataset
+  hf_split: "train"
+  dataset_cache_dir: "./data/corpus/pile"
+  output_dir: "./data/activations/pile_train"
+  batch_size: 2048                    # Large batch for dumping
+  # Validation split
+  val_hf_split: "validation"          # Pile has proper validation split
+  val_output_dir: "./data/activations/pile_val"
+  val_num_samples: 100000             # 100k validation samples
+
+# Validation settings
+val_activation_dir: "./data/activations/pile_val"
+val_fraction: 0.01                    # Only used if separate val dir doesn't exist
+split_seed: 42
+val_interval: 500                     # Validate every 500 steps
+
+# WandB configuration
+wandb:
+  project: "consistency-lens-gpt2-pile"
+  mode: "online"
+
+# Checkpoint configuration
+checkpoint:
+  enabled: true
+  output_dir: "outputs/checkpoints"
+  name_pattern: "gpt2_pile_unfreeze_step{step}_epoch{epoch}"
+  save_every_n_steps: 5000
+  save_every_n_epochs: 1
+  save_at_end: true
+  track_best_n: 5                     # Keep more best checkpoints
+  best_metric: "val_loss"
+  best_mode: "min"
+  save_components:
+    models: true
+    optimizer: true
+    scheduler: true
+    config: true
+    metrics: true
+  max_checkpoints: 15                 # Keep more checkpoints
+  delete_old_checkpoints: true
+
+# Loss weights
+lm_weight: 0.01
+kl_base_weight: 1.0
+entropy_weight: 0.001                 # Small entropy bonus
+
+# Verbose samples for monitoring
+verbose_samples:
+  enabled: true
+  num_samples: 5
+  interval_type: "steps"
+  interval: 1000
+  top_n_predictions: 5
+  generate_continuation: true
+  continuation_tokens: 50
+
+# For multi-GPU: adjust per_device_batch_size in DeepSpeed config
+# Total batch_size = per_device_batch_size * num_gpus * gradient_accumulation_steps

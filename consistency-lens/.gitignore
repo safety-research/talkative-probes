@@ -1,1 +1,5 @@
 consistency-lens/data/.env
+consistency-lens/data/*
+data/*
+.env
+outputs/*

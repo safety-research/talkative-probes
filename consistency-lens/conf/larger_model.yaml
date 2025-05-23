@@ -1,0 +1,9 @@
+# Override for using a larger model
+# Usage: python scripts/01_train.py +larger_model
+
+model_name: "microsoft/phi-2"
+tokenizer_name: "microsoft/phi-2"
+layer_l: 10
+
+# Adjust batch size for larger model
+batch_size: 256 

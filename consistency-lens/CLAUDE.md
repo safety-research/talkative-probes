@@ -18,24 +18,61 @@ uv pip install -e .
 ### Main Workflow
 ```bash
 # 1. Extract activations from corpus
+# Option A: Single GPU (slower)
 python scripts/00_dump_activations.py --config config/lens_simple.yaml
 
+# Option B: Multi-GPU (recommended for production)
+./scripts/launch_multigpu_dump_optimized.sh
+
+# Option C: Pre-tokenize first for maximum speed
+python scripts/pretokenize_dataset.py  # One-time preprocessing
+./scripts/launch_multigpu_dump_pretokenized.sh  # 5x faster!
+
 # 2. Train the lens  
-python scripts/01_train.py --config config/lens_simple.yaml
+export TORCHINDUCTOR_CACHE_DIR="${HOME}/.cache/torchinductor"
+python scripts/01_train.py
 # Training creates run-specific output directories like: outputs/5M_L5_SimpleStories_lr1e-4_t10_1222_1430/
 
 # 3. Evaluate trained model
-python scripts/02_eval.py --checkpoint outputs/RUN_NAME/ckpt_step_X.pt --save_results
+python scripts/02_eval.py checkpoint=outputs/RUN_NAME/ckpt_step_X.pt evaluation.save_results=true
 # Evaluation results saved to: outputs/evaluations/RUN_NAME_stepX_TIMESTAMP/
+```
+
+### Evaluation Examples
+```bash
+# Basic evaluation
+python scripts/02_eval.py checkpoint=outputs/checkpoints/SimpleStories-5M_L5_S_lr1e-3_t5_resume_0523_0009/checkpoint_step7000_epoch4.pt
+
+# With custom parameters
+python scripts/02_eval.py \
+    checkpoint=outputs/checkpoints/SimpleStories-5M_L5_S_lr1e-3_t5_resume_0523_0009/checkpoint_step7000_epoch4.pt \
+    evaluation.verbose_samples=5 \
+    evaluation.batch_size=8 \
+    evaluation.num_batches=50 \
+    evaluation.save_results=true
+
+# Save results to specific directory
+python scripts/02_eval.py \
+    checkpoint=outputs/checkpoints/SimpleStories-5M_L5_S_lr1e-3_t5_resume_0523_0009/checkpoint_step7000_epoch4.pt \
+    evaluation.output_dir=outputs/my_evaluation \
+    evaluation.save_results=true
+
+# Override activation directory
+python scripts/02_eval.py \
+    checkpoint=outputs/checkpoints/SimpleStories-5M_L5_S_lr1e-3_t5_resume_0523_0009/checkpoint_step7000_epoch4.pt \
+    evaluation.activation_dir=./data/activations/different_dataset_test
 ```
 
 ### Resuming Training
 ```bash
 # Resume from checkpoint (automatically resumes WandB run if available)
-python scripts/01_train.py --config config/lens_simple.yaml --resume outputs/ckpt_step_1000.pt
+python scripts/01_train.py \
+    resume=outputs/ckpt_step_1000.pt
 
 # Resume with explicit WandB run ID override
-python scripts/01_train.py --config config/lens_simple.yaml --resume outputs/ckpt_step_1000.pt --wandb_resume_id abc123xyz
+python scripts/01_train.py \
+    resume=outputs/ckpt_step_1000.pt \
+    wandb_resume_id=abc123xyz
 ```
 
 ### Example Learning Rate Schedules
@@ -68,6 +105,59 @@ python tests/test_dataset.py
 python tests/test_swap_hook.py
 ```
 
+### SLURM Cluster Usage
+
+For HPC clusters with SLURM, use the provided submission scripts that handle dependencies automatically:
+
+#### Quick Start (Recommended)
+```bash
+# Submit experiments with automatic activation dumping
+./scripts/submit_with_dumping.sh ss-frozen         # SimpleStories frozen
+./scripts/submit_with_dumping.sh ss-unfreeze       # SimpleStories progressive unfreeze
+./scripts/submit_with_dumping.sh gpt2-frozen       # GPT-2 with OpenWebText
+./scripts/submit_with_dumping.sh gpt2-unfreeze     # GPT-2 with OpenWebText + unfreeze
+./scripts/submit_with_dumping.sh gpt2-pile         # GPT-2 with The Pile
+./scripts/submit_with_dumping.sh gpt2-pile-unfreeze # GPT-2 with The Pile + unfreeze
+
+# Force re-dump activations even if they exist
+./scripts/submit_with_dumping.sh ss-frozen force-redump
+```
+
+The wrapper script automatically:
+- Checks if activations exist
+- Submits 8-GPU dumping job if needed
+- Submits 1-GPU training job with dependency
+- Ensures GPU doesn't sit idle waiting
+
+#### Available Experiments
+- **SimpleStories**: 5M parameter model, faster experiments (~12-18 hours)
+  - `ss-frozen`: Base model frozen throughout
+  - `ss-unfreeze`: Base model unfrozen after 1st epoch
+- **GPT-2**: 124M parameters, longer experiments (~24-36 hours)
+  - `gpt2-frozen`: Frozen model with OpenWebText
+  - `gpt2-pile`: Frozen model with The Pile dataset
+
+#### Manual Submission (Not Recommended)
+```bash
+# Step 1: Dump activations (8 GPUs)
+sbatch scripts/slurm_dump_activations.sh conf/config.yaml 5
+
+# Step 2: Submit training (1 GPU) - will fail if activations don't exist
+sbatch scripts/slurm_simplestories_frozen.sh
+```
+
+#### Monitoring Jobs
+```bash
+# Check job status
+squeue -u $USER
+
+# Monitor specific job output
+tail -f logs/simplestories_frozen_*.out
+
+# Check for errors
+grep -i error logs/*.err
+```
+
 ### Performance Configuration
 
 #### torch.compile Setup
@@ -82,10 +172,10 @@ If you encounter cache permission issues:
 ```bash
 # Set cache directory before training
 export TORCHINDUCTOR_CACHE_DIR="${HOME}/.cache/torchinductor"
-python scripts/01_train.py --config config/lens_simple.yaml
+python scripts/01_train.py
 
 # Or use the provided wrapper script
-./scripts/train_with_compile.sh --config config/lens_simple.yaml
+./scripts/train_with_compile.sh
 ```
 
 #### TensorFloat32 (TF32)
@@ -108,8 +198,8 @@ Automatically enabled for NVIDIA Ampere GPUs (A100/H100):
 - **Collation** (`lens/data/collate.py`): Efficient batching with padding and tensor management
 
 ### Configuration System
-All training controlled via YAML configs in `config/`:
-- `lens_simple.yaml`: Main training configuration
+All training controlled via YAML configs in `conf/`:
+- `config.yaml`: Main training and evaluation configuration
 - `ds_stage2.yaml`: DeepSpeed distributed settings  
 - `wandb.yaml`: Experiment tracking
 
@@ -152,6 +242,30 @@ The table includes columns for:
 - Heavy reliance on proven libraries (HuggingFace, DeepSpeed, Flash Attention)
 - `torch.compile` support for additional performance gains
 
+## Evaluation Configuration
+
+The evaluation script `02_eval.py` uses Hydra configuration with the following available parameters:
+
+### Required Parameters
+- `checkpoint`: Path to checkpoint file (required)
+
+### Optional Evaluation Parameters
+- `evaluation.activation_dir`: Override activation directory for evaluation
+- `evaluation.batch_size`: Batch size for evaluation (default: 4)
+- `evaluation.num_batches`: Number of batches to evaluate (default: 25)
+- `evaluation.verbose_samples`: Number of verbose samples to print (default: 3)
+- `evaluation.top_n_analysis`: Number of top predictions to show (default: 3)
+- `evaluation.val_fraction`: Validation split fraction (default: uses main config)
+- `evaluation.split_seed`: Random seed for splits (default: uses main config)
+- `evaluation.output_dir`: Output directory for results (default: auto-generated)
+- `evaluation.save_results`: Save JSON results file (default: false)
+
+### Usage Notes
+- Use Hydra syntax: `key=value` instead of `--flag value`
+- Use dot notation for nested parameters: `evaluation.verbose_samples=5`
+- All evaluation parameters are optional except `checkpoint`
+- Results automatically saved to timestamped directories when `evaluation.save_results=true`
+
 ## Important Patterns
 
 ### Code Organization
@@ -176,7 +290,6 @@ The table includes columns for:
 - **Verbose Sample Tables**: Training samples automatically logged to W&B tables for inspection
 
 ### Run Organization
-- **Automatic Run Naming**: Training runs are named with format `{model}_{layer}_{dataset}_lr{lr}_t{t_text}_{timestamp}`
-- **Run-Specific Outputs**: Each training run gets its own checkpoint directory under `outputs/`
-- **Evaluation Results**: Evaluation outputs include JSON metrics and human-readable summaries
-- **Dataset-Aware**: Scripts automatically extract model/layer/dataset info from activation paths
+- **Automatic Run Naming**: Training runs are named with format `{dataset}_{model}_{layer}_{learning_rate}_{timestamp}`
+- **Structured Outputs**: All outputs saved to timestamped directories under `outputs/`
+- **Evaluation Tracking**: Evaluation results automatically organized by checkpoint and timestamp

@@ -29,6 +29,22 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
 from tqdm import tqdm
 
+
+def get_project_root() -> Path:
+    """Get the project root directory (consistency-lens folder)."""
+    script_dir = Path(__file__).parent.absolute()
+    project_root = script_dir.parent
+    return project_root
+
+
+def resolve_path(path_str: str) -> Path:
+    """Resolve a path relative to the project root if it's a relative path."""
+    path = Path(path_str)
+    if not path.is_absolute():
+        project_root = get_project_root()
+        return project_root / path
+    return path
+
 # Enable tokenizer parallelism
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
@@ -47,7 +63,9 @@ def iter_hf_text(dataset_name: str, cache_dir: str | None, split: str, num_sampl
     if num_samples == 0: # Avoid issues if 0 samples requested
         return iter([])
 
-    ds = load_dataset(dataset_name, split=split, streaming=True, cache_dir=cache_dir)
+    # Resolve cache directory path if provided
+    resolved_cache_dir = str(resolve_path(cache_dir)) if cache_dir else None
+    ds = load_dataset(dataset_name, split=split, streaming=True, cache_dir=resolved_cache_dir)
     count = 0
     for item in ds:
         if num_samples is not None and count >= num_samples: # Ensure we don't overshoot
@@ -70,7 +88,7 @@ def main() -> None:  # noqa: D401
     parser.add_argument("--num_samples", type=int, help="Override number of samples, otherwise from config")
     parser.add_argument("--seq_len", type=int, help="Override sequence length, otherwise from config")
     parser.add_argument("--layer_idx", type=int, help="Override layer index, otherwise from config")
-    parser.add_argument("--config_path", type=str, default="consistency-lens/config/lens_simple.yaml")
+    parser.add_argument("--config_path", type=str, default="config/lens_simple.yaml")
     parser.add_argument("--seed", type=int, default=0)
 
     # HuggingFace dataset options
@@ -103,8 +121,9 @@ def main() -> None:  # noqa: D401
 
     args = parser.parse_args()
 
-    # Load YAML config
-    with open(args.config_path, "r") as f:
+    # Load YAML config - resolve path relative to script location
+    config_path = resolve_path(args.config_path)
+    with open(config_path, "r") as f:
         cfg = yaml.safe_load(f)
     
     activation_dumper_cfg = cfg["activation_dumper"]
@@ -113,13 +132,18 @@ def main() -> None:  # noqa: D401
     # Get base output_dir (CLI or YAML)
     base_output_dir_str = args.output_dir if args.output_dir is not None else activation_dumper_cfg["output_dir"]
     seq_len = args.seq_len if args.seq_len is not None else activation_dumper_cfg["seq_len"]
-    # If num_samples not provided via CLI or YAML, process the ENTIRE dataset
-    num_samples = args.num_samples if args.num_samples is not None else activation_dumper_cfg.get("num_samples", None)
+    # If num_samples not provided or is -1, process the ENTIRE dataset
+    num_samples_cfg = activation_dumper_cfg.get("num_samples", -1)
+    if args.num_samples is not None:
+        num_samples = None if args.num_samples == -1 else args.num_samples
+    else:
+        num_samples = None if num_samples_cfg == -1 else num_samples_cfg
     layer_idx = args.layer_idx if args.layer_idx is not None else cfg["layer_l"]
     
     # Construct final path with tokenizer_name and layer index
     tokenizer_name = cfg.get("tokenizer_name", cfg["model_name"])
-    effective_output_dir = Path(Path(base_output_dir_str).parent / tokenizer_name / f"layer_{layer_idx}" / Path(base_output_dir_str).name)
+    base_output_path = resolve_path(base_output_dir_str)
+    effective_output_dir = base_output_path.parent / tokenizer_name / f"layer_{layer_idx}" / base_output_path.name
     
     # effective_use_hf: True if CLI flag set, else YAML value (defaulting to False if not in YAML)
     effective_use_hf = args.use_hf_dataset or activation_dumper_cfg.get("use_hf_dataset", False)
@@ -151,10 +175,15 @@ def main() -> None:  # noqa: D401
         base_val_output_dir_str = val_out_base_cfg
 
     if base_val_output_dir_str: # If a base validation output dir is specified (CLI or YAML)
-        val_out_dir = Path(Path(base_val_output_dir_str).parent / tokenizer_name / f"layer_{layer_idx}" / Path(base_val_output_dir_str).name)
+        base_val_path = resolve_path(base_val_output_dir_str)
+        val_out_dir = base_val_path.parent / tokenizer_name / f"layer_{layer_idx}" / base_val_path.name
         val_split = args.val_hf_split if args.val_hf_split else val_split_cfg
         # Default val_num_samples to main num_samples if not specified
-        val_samples = args.val_num_samples if args.val_num_samples is not None else activation_dumper_cfg.get("val_num_samples", num_samples)
+        val_samples_cfg = activation_dumper_cfg.get("val_num_samples", -1)
+        if args.val_num_samples is not None:
+            val_samples = None if args.val_num_samples == -1 else args.val_num_samples
+        else:
+            val_samples = None if val_samples_cfg == -1 else val_samples_cfg
         splits_to_dump.append({
             "name": val_split,
             "output_dir": val_out_dir,

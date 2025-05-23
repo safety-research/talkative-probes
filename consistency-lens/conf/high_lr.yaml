@@ -1,0 +1,11 @@
+# Higher learning rate experiment
+# Usage: python scripts/01_train.py +high_lr
+
+learning_rate: 5.0e-3
+
+# More aggressive gradient clipping for stability
+grad_clip: 0.5
+
+# Custom LR multipliers
+custom_lr_multipliers:
+  projection_layers: 2.0  # Even higher LR for projection layers 

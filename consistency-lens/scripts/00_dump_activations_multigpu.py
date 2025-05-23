@@ -6,22 +6,23 @@ Includes layer labeling in output directories and supports distributed processin
 
 from __future__ import annotations
 
-import argparse
 import logging
 import random
-import yaml
 import json
 from pathlib import Path
 from typing import Iterator, Callable
 import os
 import socket
 import time
+from types import SimpleNamespace
 
+import hydra
+from omegaconf import DictConfig, OmegaConf
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from datasets import load_dataset
+from datasets import load_dataset, load_from_disk
 from tqdm import tqdm
 
 # Enable tokenizer parallelism within each process (we handle multi-process coordination)
@@ -34,8 +35,30 @@ try:
         torch.set_num_threads(_req_threads)
         # Force HF tokenizers to use requested threads
         os.environ["RAYON_NUM_THREADS"] = str(_req_threads)
+        # Also set for potential nested parallelism
+        os.environ["MKL_NUM_THREADS"] = str(_req_threads)
+        os.environ["NUMEXPR_NUM_THREADS"] = str(_req_threads)
+        os.environ["OMP_NUM_THREADS"] = str(_req_threads)  # Ensure it's set
 except Exception:
     pass
+
+
+def get_project_root() -> Path:
+    """Get the project root directory (consistency-lens folder)."""
+    # This script is in consistency-lens/scripts/, so go up one level
+    script_dir = Path(__file__).parent.absolute()
+    project_root = script_dir.parent
+    return project_root
+
+
+def resolve_path(path_str: str) -> Path:
+    """Resolve a path relative to the project root if it's a relative path."""
+    path = Path(path_str)
+    if not path.is_absolute():
+        # Make it relative to project root
+        project_root = get_project_root()
+        return project_root / path
+    return path
 
 
 def setup_distributed():
@@ -127,51 +150,88 @@ def iter_hf_text_distributed(
         global_count += 1
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Multi-GPU optimized activation dumper")
-    parser.add_argument("--output_dir", type=str, help="Override output directory")
-    parser.add_argument("--num_samples", type=int, help="Override number of samples")
-    parser.add_argument("--seq_len", type=int, help="Override sequence length")
-    parser.add_argument("--layer_idx", type=int, help="Override layer index")
-    parser.add_argument("--config_path", type=str, default="consistency-lens/config/lens_simple.yaml")
-    parser.add_argument("--seed", type=int, default=0)
+def iter_pretokenized_distributed(
+    dataset_path: str,
+    split: str,
+    num_samples: int | None,
+    rank: int,
+    world_size: int
+) -> Iterator[dict]:
+    """Stream pre-tokenized data, distributed across ranks."""
+    
+    # Load the dataset
+    dataset = load_from_disk(f"{dataset_path}/{split}")
+    
+    if num_samples is None:
+        # Process entire dataset
+        for idx, item in enumerate(dataset):
+            if idx % world_size == rank:
+                yield item
+    else:
+        # Process fixed number
+        samples_per_rank = (num_samples + world_size - 1) // world_size
+        start_idx = rank * samples_per_rank
+        end_idx = min(start_idx + samples_per_rank, num_samples, len(dataset))
+        
+        for idx in range(start_idx, end_idx):
+            yield dataset[idx]
+
+
+@hydra.main(version_base=None, config_path="../conf", config_name="config")
+def main(cfg: DictConfig) -> None:
+    """Hydra-powered multi-GPU activation dumper."""
+    
+    # Build args namespace from Hydra config for compatibility
+    args = SimpleNamespace()
+    
+    # Extract activation_dumper config
+    activation_dumper_cfg = cfg.activation_dumper
+    
+    # Command-line overrides (these are automatically handled by Hydra if specified)
+    args.output_dir = activation_dumper_cfg.get('output_dir')
+    args.num_samples = activation_dumper_cfg.get('num_samples', -1)
+    args.seq_len = activation_dumper_cfg.get('seq_len', 64)
+    args.layer_idx = cfg.get('layer_l', 5)
+    args.seed = cfg.get('seed', 0)
     
     # Multi-GPU options
-    parser.add_argument("--model_parallel", action="store_true", help="Use model parallelism across GPUs")
-    parser.add_argument("--pipeline_parallel_size", type=int, default=1, help="Pipeline parallelism size")
+    args.model_parallel = cfg.get('model_parallel', False)
+    args.pipeline_parallel_size = cfg.get('pipeline_parallel_size', 1)
     
     # HuggingFace dataset options
-    parser.add_argument("--hf_dataset_name", type=str, help="Override HF dataset")
-    parser.add_argument("--use_hf_dataset", action="store_true", help="Use HF dataset")
-    parser.add_argument("--dataset_cache_dir", type=str, help="Override HF dataset cache dir")
-    parser.add_argument("--hf_split", type=str, default=None, help="Override HF dataset split")
+    args.hf_dataset_name = activation_dumper_cfg.get('hf_dataset_name')
+    args.use_hf_dataset = activation_dumper_cfg.get('use_hf_dataset', False)
+    args.use_pretokenized = activation_dumper_cfg.get('use_pretokenized', False)
+    args.pretokenized_path = activation_dumper_cfg.get('pretokenized_path')
+    args.dataset_cache_dir = activation_dumper_cfg.get('dataset_cache_dir')
+    args.hf_split = activation_dumper_cfg.get('hf_split', 'train')
     
     # Validation split options
-    parser.add_argument("--val_hf_split", type=str, help="HF split for validation")
-    parser.add_argument("--val_output_dir", type=str, help="Output directory for validation")
-    parser.add_argument("--val_num_samples", type=int, help="Number of validation samples")
-    
-    args = parser.parse_args()
+    args.val_hf_split = activation_dumper_cfg.get('val_hf_split')
+    args.val_output_dir = activation_dumper_cfg.get('val_output_dir')
+    args.val_num_samples = activation_dumper_cfg.get('val_num_samples')
     
     # Setup distributed
     rank, world_size, local_rank = setup_distributed()
     
-    # Load config
-    with open(args.config_path, "r") as f:
-        cfg = yaml.safe_load(f)
-    
-    activation_dumper_cfg = cfg["activation_dumper"]
+    # Convert OmegaConf to dict for compatibility with existing code
+    config = OmegaConf.to_container(cfg, resolve=True)
     
     # Determine effective config
-    base_output_dir_str = args.output_dir if args.output_dir is not None else activation_dumper_cfg["output_dir"]
-    seq_len = args.seq_len if args.seq_len is not None else activation_dumper_cfg["seq_len"]
-    # If num_samples not provided, we'll process the entire dataset
-    num_samples = args.num_samples if args.num_samples is not None else None
-    layer_idx = args.layer_idx if args.layer_idx is not None else cfg["layer_l"]
+    base_output_dir_str = args.output_dir if args.output_dir is not None else activation_dumper_cfg['output_dir']
+    seq_len = args.seq_len if args.seq_len is not None else activation_dumper_cfg['seq_len']
+    # If num_samples not provided or is -1, we'll process the entire dataset
+    num_samples_cfg = activation_dumper_cfg.get("num_samples", -1)
+    if args.num_samples is not None:
+        num_samples = None if args.num_samples == -1 else args.num_samples
+    else:
+        num_samples = None if num_samples_cfg == -1 else num_samples_cfg
+    layer_idx = args.layer_idx if args.layer_idx is not None else cfg['layer_l']
     
     # Include layer index in output directory name
     tokenizer_name = cfg.get("tokenizer_name", cfg["model_name"])
-    effective_output_dir = Path(Path(base_output_dir_str).parent / tokenizer_name / f"layer_{layer_idx}" / Path(base_output_dir_str).name)
+    base_output_path = resolve_path(base_output_dir_str)
+    effective_output_dir = base_output_path.parent / tokenizer_name / f"layer_{layer_idx}" / base_output_path.name
     
     effective_use_hf = args.use_hf_dataset or activation_dumper_cfg.get("use_hf_dataset", False)
     effective_hf_dataset_name = args.hf_dataset_name if args.hf_dataset_name is not None else activation_dumper_cfg.get("hf_dataset_name")
@@ -206,6 +266,16 @@ def main() -> None:
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
+    
+    # Test tokenizer parallelism on rank 0
+    if rank == 0:
+        test_texts = ["Test sentence for thread verification"] * 100
+        import time as _time
+        _start = _time.time()
+        _ = tokenizer(test_texts, padding="max_length", max_length=64, truncation=True, return_tensors="pt")
+        _elapsed = _time.time() - _start
+        log.info(f"Tokenizer test: 100 samples in {_elapsed:.3f}s = {100/_elapsed:.0f} samples/sec")
+        log.info(f"Actual PyTorch threads in use: {torch.get_num_threads()}")
     
     # Load model with optimizations
     if rank == 0:
@@ -270,9 +340,14 @@ def main() -> None:
         base_val_output_dir_str = val_out_base_cfg
     
     if base_val_output_dir_str:
-        val_out_dir = Path(Path(base_val_output_dir_str).parent / tokenizer_name / f"layer_{layer_idx}" / Path(base_val_output_dir_str).name)
+        base_val_path = resolve_path(base_val_output_dir_str)
+        val_out_dir = base_val_path.parent / tokenizer_name / f"layer_{layer_idx}" / base_val_path.name
         val_split = args.val_hf_split if args.val_hf_split else val_split_cfg
-        val_samples = args.val_num_samples if args.val_num_samples is not None else activation_dumper_cfg.get("val_num_samples", num_samples)
+        val_samples_cfg = activation_dumper_cfg.get("val_num_samples", -1)
+        if args.val_num_samples is not None:
+            val_samples = None if args.val_num_samples == -1 else args.val_num_samples
+        else:
+            val_samples = None if val_samples_cfg == -1 else val_samples_cfg
         splits_to_dump.append({
             "name": val_split,
             "output_dir": val_out_dir,
@@ -326,23 +401,57 @@ def main() -> None:
             }
         }
         
-        batch_size_cfg = activation_dumper_cfg.get("batch_size", 8)
+        batch_size_cfg = activation_dumper_cfg.get("batch_size", 256)  # Match single-GPU default
         
-        # Setup text iterator
-        get_next_text_fn: Callable[[], str | None]
-        if effective_use_hf:
-            text_iter = iter_hf_text_distributed(
-                effective_hf_dataset_name,
-                effective_dataset_cache_dir,
+        # Adapt batch size based on model size if not explicitly set
+        model_params = sum(p.numel() for p in model.parameters())
+        if rank == 0:
+            log.info(f"Model has {model_params/1e6:.1f}M parameters")
+            if model_params < 100e6:  # < 100M params
+                suggested_batch = 128
+            elif model_params < 1e9:  # < 1B params
+                suggested_batch = 256
+            else:  # >= 1B params
+                suggested_batch = 512
+            
+            if batch_size_cfg > suggested_batch * 2:
+                log.warning(f"Batch size {batch_size_cfg} may be too large for {model_params/1e6:.1f}M model. Consider {suggested_batch}")
+        
+        # Setup data iterator
+        use_pretokenized = args.use_pretokenized
+        pretokenized_path = args.pretokenized_path or f"data/pretokenized/{effective_hf_dataset_name.replace('/', '_')}"
+        
+        if use_pretokenized:
+            # Use pre-tokenized data - much faster!
+            if rank == 0:
+                log.info(f"Using pre-tokenized data from: {pretokenized_path}")
+            pretok_iter = iter_pretokenized_distributed(
+                pretokenized_path,
                 split_name_arg,
                 n_samples_for_split,
                 rank,
                 world_size
             )
-            get_next_text_fn = lambda: next(text_iter, None)
+            get_next_data_fn = lambda: next(pretok_iter, None)
+            data_type = "pretokenized"
         else:
-            # For fixed prompts, we never return None
-            get_next_text_fn = lambda: random.choice(fixed_prompts)
+            # Original text-based approach
+            get_next_text_fn: Callable[[], str | None]
+            if effective_use_hf:
+                text_iter = iter_hf_text_distributed(
+                    effective_hf_dataset_name,
+                    effective_dataset_cache_dir,
+                    split_name_arg,
+                    n_samples_for_split,
+                    rank,
+                    world_size
+                )
+                get_next_text_fn = lambda: next(text_iter, None)
+            else:
+                # For fixed prompts, we never return None
+                get_next_text_fn = lambda: random.choice(fixed_prompts)
+            get_next_data_fn = get_next_text_fn
+            data_type = "text"
         
         if rank_num_samples is None:
             # We'll process until the iterator is exhausted
@@ -378,58 +487,97 @@ def main() -> None:
             
             batch_txt_A = []
             batch_txt_Ap = []
+            batch_tokens_A = []
+            batch_tokens_Ap = []
             
             # Collect texts for batch
-            if batch_size_cfg > 1 and current_batch_actual_size > 1:
-                batch_base_texts = []
+            if use_pretokenized:
+                # Direct token loading
                 for _ in range(current_batch_actual_size):
-                    text = get_next_text_fn()
-                    if text is None:
-                        break
-                    batch_base_texts.append(text)
-                
-                if len(batch_base_texts) < current_batch_actual_size:
-                    current_batch_actual_size = len(batch_base_texts)
-                
-                for i in range(current_batch_actual_size):
-                    text_A = batch_base_texts[i]
-                    possible_j_indices = [j for j in range(current_batch_actual_size) if j != i]
-                    chosen_j = random.choice(possible_j_indices)
-                    text_Ap = batch_base_texts[chosen_j]
+                    data_A = get_next_data_fn()
+                    data_Ap = get_next_data_fn()
                     
-                    batch_txt_A.append(text_A)
-                    batch_txt_Ap.append(text_Ap)
+                    if data_A is None or data_Ap is None:
+                        break
+                    
+                    batch_tokens_A.append(torch.tensor(data_A["input_ids"]))
+                    batch_tokens_Ap.append(torch.tensor(data_Ap["input_ids"]))
+                
+                current_batch_actual_size = len(batch_tokens_A)
+                if current_batch_actual_size == 0:
+                    break  # No more data
             else:
-                for _ in range(current_batch_actual_size):
-                    text_A = get_next_text_fn()
-                    text_Ap = get_next_text_fn()
+                # Original text-based collection
+                if batch_size_cfg > 1 and current_batch_actual_size > 1:
+                    batch_base_texts = []
+                    for _ in range(current_batch_actual_size):
+                        text = get_next_data_fn()
+                        if text is None:
+                            break
+                        batch_base_texts.append(text)
                     
-                    if text_A is None or text_Ap is None:
-                        break
+                    if len(batch_base_texts) < current_batch_actual_size:
+                        current_batch_actual_size = len(batch_base_texts)
                     
-                    if not effective_use_hf and len(set(fixed_prompts)) > 1 and text_A == text_Ap:
-                        while text_Ap == text_A:
-                            text_Ap = random.choice(fixed_prompts)
-                    
-                    batch_txt_A.append(text_A)
-                    batch_txt_Ap.append(text_Ap)
+                    for i in range(current_batch_actual_size):
+                        text_A = batch_base_texts[i]
+                        possible_j_indices = [j for j in range(current_batch_actual_size) if j != i]
+                        chosen_j = random.choice(possible_j_indices)
+                        text_Ap = batch_base_texts[chosen_j]
+                        
+                        batch_txt_A.append(text_A)
+                        batch_txt_Ap.append(text_Ap)
+                else:
+                    for _ in range(current_batch_actual_size):
+                        text_A = get_next_data_fn()
+                        text_Ap = get_next_data_fn()
+                        
+                        if text_A is None or text_Ap is None:
+                            break
+                        
+                        if not effective_use_hf and len(set(fixed_prompts)) > 1 and text_A == text_Ap:
+                            while text_Ap == text_A:
+                                text_Ap = random.choice(fixed_prompts)
+                        
+                        batch_txt_A.append(text_A)
+                        batch_txt_Ap.append(text_Ap)
             
-            if not batch_txt_A:
-                break
-            
-            current_batch_actual_size = len(batch_txt_A)
+            # Check if we have any data
+            if use_pretokenized:
+                if not batch_tokens_A:
+                    break
+                # current_batch_actual_size already updated above
+            else:
+                if not batch_txt_A:
+                    break
+                current_batch_actual_size = len(batch_txt_A)
             
             # Tokenize
-            all_texts = batch_txt_A + batch_txt_Ap
-            enc = tokenizer(
-                all_texts,
-                padding="max_length",
-                truncation=True,
-                max_length=seq_len,
-                return_tensors="pt",
-            )
-            toks_all = enc.input_ids.to(device)
-            toks_A_batch, toks_Ap_batch = toks_all.split(current_batch_actual_size, dim=0)
+            if use_pretokenized:
+                # Already have tokens, just stack and move to device
+                toks_A_batch = torch.stack(batch_tokens_A).to(device)
+                toks_Ap_batch = torch.stack(batch_tokens_Ap).to(device)
+            else:
+                # Tokenize text
+                all_texts = batch_txt_A + batch_txt_Ap
+                # Try to use multiple threads for tokenization
+                if hasattr(tokenizer, "_tokenizer"):
+                    # For fast tokenizers, try to set parallelism
+                    try:
+                        tokenizer._tokenizer.enable_truncation(seq_len)
+                        tokenizer._tokenizer.enable_padding(length=seq_len)
+                    except:
+                        pass
+                
+                enc = tokenizer(
+                    all_texts,
+                    padding="max_length",
+                    truncation=True,
+                    max_length=seq_len,
+                    return_tensors="pt",
+                )
+                toks_all = enc.input_ids.to(device)
+                toks_A_batch, toks_Ap_batch = toks_all.split(current_batch_actual_size, dim=0)
             
             # Forward pass
             with torch.no_grad():

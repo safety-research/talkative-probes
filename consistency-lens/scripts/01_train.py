@@ -1,24 +1,25 @@
-"""Minimal single-process training loop.
+#!/usr/bin/env python3
+"""Training script for Consistency Lens MVP."""
 
-The *real* entry-point will wire up DeepSpeed & read ``lens.yaml``.  For the MVP
-we just train Decoder/Encoder for a handful of steps to prove gradients flow.
-"""
-
-from __future__ import annotations
-
-import argparse
 import logging
-import math # For math.ceil if needed, or integer arithmetic for epochs
-from collections import Counter # Add this import
-from datetime import datetime
-import re
+import math
+import os
 import time
+from collections import Counter, deque
+from contextlib import contextmanager, nullcontext
+from pathlib import Path
+import sys
+import argparse
+import re
+from datetime import datetime
 import psutil
 try:
     import GPUtil
 except ImportError:
     GPUtil = None
 
+import hydra
+from omegaconf import DictConfig, OmegaConf
 import torch
 # Enable TF32 for better performance on Ampere GPUs (A100, H100)
 torch.set_float32_matmul_precision('high')
@@ -38,10 +39,7 @@ from lens.evaluation.verbose_samples import process_and_print_verbose_batch_samp
 from lens.evaluation.wandb_logger import verbose_samples_logger
 from transformers import AutoTokenizer # Not used in this selection
 from torch.amp import autocast, GradScaler
-from contextlib import nullcontext
-from pathlib import Path # This import is assumed to be at the module level. If not, it should be moved there.
 from tqdm import tqdm
-from collections import deque
 import math # For math.ceil
 import torch # For torch.utils.data, torch.Generator
 from torch.utils.data import DataLoader, random_split, Dataset, Subset # Explicit imports for clarity
@@ -50,6 +48,25 @@ from lens.data.dataset import ActivationDataset
 import logging # For type hinting Logger
 import torch.nn as nn
 from lens.utils.embedding_remap import remap_embeddings
+from types import SimpleNamespace
+
+
+def get_project_root() -> Path:
+    """Get the project root directory (consistency-lens folder)."""
+    # This script is in consistency-lens/scripts/, so go up one level
+    script_dir = Path(__file__).parent.absolute()
+    project_root = script_dir.parent
+    return project_root
+
+
+def resolve_path(path_str: str) -> Path:
+    """Resolve a path relative to the project root if it's a relative path."""
+    path = Path(path_str)
+    if not path.is_absolute():
+        # Make it relative to project root
+        project_root = get_project_root()
+        return project_root / path
+    return path
 
 
 def extract_dataset_info(activation_dir: str) -> dict:
@@ -316,27 +333,89 @@ def _prepare_dataloaders(
     return train_loader, val_loader, train_ds, val_ds
 
 
-def main() -> None:  # noqa: D401
-    parser = argparse.ArgumentParser(description="Train Consistency-Lens MVP")
-    parser.add_argument("--config_path", type=str, default="consistency-lens/config/lens_simple.yaml", help="Path to the simple lens config file.")
-    # Allow overriding some key parameters from the command line
-    parser.add_argument("--model_name", type=str, help="Override model_name from config.")
-    parser.add_argument("--activation_dir", type=str, help="Override activation_dir from config.")
-    parser.add_argument("--val_activation_dir", type=str, help="Path to validation activations directory (skip split)")
-    parser.add_argument("--max_train_steps", type=int, help="Override max_train_steps from config.")
-    parser.add_argument("--learning_rate", type=float, help="Override learning_rate from config.")
-    parser.add_argument("--t_text", type=int, help="Override t_text from config.")
-    parser.add_argument("--log_interval", type=int, help="Log metrics every N steps.")
-    parser.add_argument("--wandb_log_interval", type=int, help="Log metrics to WandB every N steps.")
-    parser.add_argument("--resume", type=str, help="Path to checkpoint to resume from.")
-    parser.add_argument("--val_fraction", type=float, help="Fraction of dataset for validation")
-    parser.add_argument("--split_seed", type=int,   help="Seed for train/val split")
-    parser.add_argument("--val_interval", type=int, help="Validate every N steps") # Retained for use later in training loop
-    parser.add_argument("--max_train_samples", type=int, help="Maximum number of training samples to load.")
-    parser.add_argument("--max_val_samples", type=int, help="Maximum number of validation samples to load.")
-    parser.add_argument("--wandb_resume_id", type=str, help="WandB run ID to resume from (usually loaded from checkpoint)")
-    parser.add_argument("--run_name", type=str, help="Override the auto-generated run name")
-    args = parser.parse_args()
+def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr_multiplier, opt_state_dict=None):
+    """Unfreeze non-adapter parameters and create new optimizer with all parameters."""
+    log = logging.getLogger(__name__)
+    
+    # Get original trainable settings from config
+    decoder_train_cfg = config.get('trainable_components', {}).get('decoder', {})
+    encoder_train_cfg = config.get('trainable_components', {}).get('encoder', {})
+    
+    # Unfreeze based on original config
+    for name, param in dec_raw.named_parameters():
+        if 'base' in name:
+            param.requires_grad = decoder_train_cfg.get('base_model', False)
+        elif 'out' in name:
+            param.requires_grad = decoder_train_cfg.get('output_head', False)
+        # proj layers remain as they were
+    
+    for name, param in enc_raw.named_parameters():
+        if 'base' in name:
+            param.requires_grad = encoder_train_cfg.get('base_model', False)
+        # proj layers remain as they were
+    
+    # Update trainable params list
+    dec = dec_raw if not isinstance(dec_raw, torch._dynamo.eval_frame.OptimizedModule) else dec_raw
+    enc = enc_raw if not isinstance(enc_raw, torch._dynamo.eval_frame.OptimizedModule) else enc_raw
+    
+    trainable_params = [p for p in dec.parameters() if p.requires_grad] + \
+                       [p for p in enc.parameters() if p.requires_grad]
+    
+    # Create new optimizer with updated parameters
+    optimizer_groups = param_groups([dec, enc], learning_rate, projection_lr_multiplier)
+    new_opt = torch.optim.AdamW(optimizer_groups)
+    
+    # Restore optimizer state if provided
+    if opt_state_dict is not None:
+        try:
+            new_opt.load_state_dict(opt_state_dict)
+            log.info("Restored optimizer state after unfreezing")
+        except Exception as e:
+            log.warning(f"Failed to restore optimizer state: {e}. Using fresh optimizer.")
+    
+    # Log parameter counts after unfreezing
+    total_trainable = sum(p.numel() for p in trainable_params)
+    log.info(f"After unfreezing: {total_trainable:,} trainable parameters")
+    
+    return new_opt, trainable_params
+
+
+@hydra.main(version_base=None, config_path="../conf", config_name="config")
+def main(cfg: DictConfig) -> None:  # noqa: D401
+    """Hydra-powered entry point replacing the legacy argparse-based CLI.
+
+    The body below relies on two legacy variables: `config` (dict) and `args`
+    (namespace with optional attributes).  We derive them from the Hydra
+    configuration so that the bulk of the original training logic remains
+    unchanged.
+    """
+
+    # ------------------------------------------------------------------
+    # Build the legacy `args` namespace from Hydra config values
+    # ------------------------------------------------------------------
+    args = SimpleNamespace()
+    for _k in [
+        "activation_dir",
+        "val_activation_dir",
+        "max_train_steps",
+        "learning_rate",
+        "t_text",
+        "log_interval",
+        "wandb_log_interval",
+        "resume",
+        "val_fraction",
+        "split_seed",
+        "val_interval",
+        "max_train_samples",
+        "max_val_samples",
+        "wandb_resume_id",
+        "run_name",
+        "model_name",
+    ]:
+        setattr(args, _k, cfg.get(_k, None))
+
+    # Convert Hydra config to a plain Python dict for the legacy code.
+    config = OmegaConf.to_container(cfg, resolve=True)
 
     # ---------------------------------------------------------------
     # Logging setup (console). W&B handled via lens.utils.logging.
@@ -348,37 +427,31 @@ def main() -> None:  # noqa: D401
     )
     log = logging.getLogger(__name__)
 
-    # Load config from YAML file
-    with open(args.config_path, 'r') as f:
-        config = yaml.safe_load(f)
-
-    # Override config with CLI arguments if provided
-    if args.model_name: config['model_name'] = args.model_name
-    if args.max_train_steps: config['max_train_steps'] = args.max_train_steps
-    if args.learning_rate: config['learning_rate'] = args.learning_rate
-    if args.t_text: config['t_text'] = args.t_text
-    if args.log_interval: config['log_interval'] = args.log_interval
-    if hasattr(args, 'wandb_log_interval') and args.wandb_log_interval is not None:
-        config['wandb_log_interval'] = args.wandb_log_interval
-    # val_fraction, split_seed, val_interval can also be overridden from CLI
-    if args.val_fraction is not None: config['val_fraction'] = args.val_fraction
-    if args.split_seed is not None: config['split_seed'] = args.split_seed
-    if args.val_interval is not None: config['val_interval'] = args.val_interval
-
+    # ------------------------------------------------------------------
+    # From this point onward the original training logic remains intact
+    # and can keep using `config` and `args`.
+    # ------------------------------------------------------------------
 
     # Use overridden values or defaults from config
     model_name = config['model_name']
     tokenizer_name = config.get("tokenizer_name", model_name) # Moved here for earlier access
+    layer_l = config.get('layer_l', 5)  # Get layer number from config
     
     # Handle activation_dir override carefully: CLI takes precedence over config.
     base_activation_dir_str = args.activation_dir if args.activation_dir is not None else config['activation_dumper']['output_dir']
-    activation_dir = str(Path(Path(base_activation_dir_str).parent / tokenizer_name / Path(base_activation_dir_str).name))
+    # Resolve path relative to project root
+    base_activation_path = resolve_path(base_activation_dir_str)
+    # Include layer in the path: parent / tokenizer_name / layer_X / name
+    activation_dir = str(base_activation_path.parent / tokenizer_name / f"layer_{layer_l}" / base_activation_path.name)
     
     # Handle val_activation_dir: CLI takes precedence over config.
     base_val_activation_dir_str = args.val_activation_dir if args.val_activation_dir is not None else config.get('val_activation_dir')
     effective_val_activation_dir: str | None = None
     if base_val_activation_dir_str:
-        effective_val_activation_dir = str(Path(Path(base_val_activation_dir_str).parent / tokenizer_name / Path(base_val_activation_dir_str).name))
+        # Resolve path relative to project root
+        base_val_path = resolve_path(base_val_activation_dir_str)
+        # Include layer in the validation path too
+        effective_val_activation_dir = str(base_val_path.parent / tokenizer_name / f"layer_{layer_l}" / base_val_path.name)
     
     max_steps = config['max_train_steps']
     learning_rate = config['learning_rate']
@@ -418,7 +491,7 @@ def main() -> None:  # noqa: D401
     
     # Update checkpoint output directory to include run name
     checkpoint_config = config.get('checkpoint', {})
-    base_checkpoint_dir = Path(checkpoint_config.get('output_dir', 'outputs'))
+    base_checkpoint_dir = resolve_path(checkpoint_config.get('output_dir', 'outputs'))
     run_checkpoint_dir = base_checkpoint_dir / run_name
     checkpoint_config['output_dir'] = str(run_checkpoint_dir)
     config['checkpoint'] = checkpoint_config
@@ -569,6 +642,33 @@ def main() -> None:  # noqa: D401
         log.info("Remapped Orig model embeddings to new tokenizer")
     orig.model.to(device)
 
+    # Handle freeze schedule
+    freeze_schedule_config = config.get('freeze_schedule', {})
+    freeze_schedule_enabled = freeze_schedule_config.get('enabled', False)
+    if freeze_schedule_enabled:
+        # Determine unfreeze step
+        if 'unfreeze_at_epoch' in freeze_schedule_config and freeze_schedule_config['unfreeze_at_epoch'] is not None:
+            unfreeze_at_step = steps_per_epoch * freeze_schedule_config['unfreeze_at_epoch']
+            log.info(f"Freeze schedule enabled: will unfreeze non-adapters at epoch {freeze_schedule_config['unfreeze_at_epoch']} (step {unfreeze_at_step})")
+        else:
+            unfreeze_at_step = freeze_schedule_config.get('unfreeze_at_step', 0)
+            log.info(f"Freeze schedule enabled: will unfreeze non-adapters at step {unfreeze_at_step}")
+        
+        # Initially freeze non-adapter parameters (base_model and output_head)
+        # We'll freeze them regardless of the config settings, then unfreeze later
+        for name, param in dec_raw.named_parameters():
+            if 'base' in name or 'out' in name:
+                param.requires_grad = False
+        
+        for name, param in enc_raw.named_parameters():
+            if 'base' in name:
+                param.requires_grad = False
+        
+        log.info("Froze non-adapter parameters (base models and output head) for initial training phase")
+    else:
+        unfreeze_at_step = -1  # Never unfreeze
+        log.info("Freeze schedule disabled - using standard trainable component settings")
+
     # Consolidate all parameters from dec and enc that require gradients.
     # This list is used for gradient clipping and for parameter counting.
     trainable_params = [p for p in dec.parameters() if p.requires_grad] + \
@@ -677,15 +777,45 @@ def main() -> None:  # noqa: D401
     start_time = time.time()
     last_log_time = start_time
     
+    # Track freeze schedule state
+    non_adapters_frozen = freeze_schedule_enabled and (start_step < unfreeze_at_step)
+    
     # Create progress bar
-    pbar = tqdm(range(start_step, max_steps), 
-                initial=start_step, 
+    pbar = tqdm(range(start_step, max_steps),
+                initial=start_step,
                 total=max_steps,
                 desc=f"Training",
-                ncols=120,
+                ncols=None,  # Fallback width if not TTY or if width detection fails
+                dynamic_ncols=True,  # Adjust to terminal width changes; helps ensure description text fits well, supporting multi-line.
+                mininterval=1.0,  # Update progress bar no more than once per second
                 leave=True)
     
     for step in pbar:
+        # Check if we should unfreeze non-adapter parameters
+        if freeze_schedule_enabled and non_adapters_frozen and step >= unfreeze_at_step:
+            log.info(f"Unfreezing non-adapter parameters at step {step}")
+            
+            # Save current optimizer state
+            opt_state = opt.state_dict()
+            
+            # Unfreeze and recreate optimizer
+            opt, trainable_params = unfreeze_non_adapters(
+                dec_raw, enc_raw, config, learning_rate, projection_lr_multiplier, opt_state
+            )
+            
+            # Recreate LR scheduler with new optimizer
+            if lr_scheduler:
+                lr_scheduler = get_lr_scheduler(opt, lr_scheduler_config, max_steps, last_epoch=step-1)
+            
+            # Update frozen state
+            non_adapters_frozen = False
+            
+            # Log the transition
+            log_metrics({
+                "freeze_schedule/transition_step": step,
+                "freeze_schedule/non_adapters_frozen": 0,  # 0 = unfrozen
+            }, step=step)
+        
         step_start_time = time.time()
         current_epoch_num = (step // steps_per_epoch) + 1 if steps_per_epoch > 0 else 1
         epoch_just_finished = False
@@ -797,7 +927,9 @@ def main() -> None:  # noqa: D401
             'loss': f'{loss.item():.4f}',
             'lr': f'{lr_current:.1e}',
             'samples/s': f'{samples_per_second:.1f}',
-            'eta': format_time((max_steps - step - 1) * avg_step_time)
+            'eta': format_time((max_steps - step - 1) * avg_step_time),
+            'tau': f'{current_tau:.2f}',
+            'alpha': f'{current_alpha:.2f}',
         })
 
         # Log metrics at specified interval or at the last step
@@ -837,6 +969,10 @@ def main() -> None:  # noqa: D401
                 "performance/tokens_per_second": tokens_per_second,
                 "performance/avg_step_time": avg_step_time,
             }
+            
+            # Add freeze schedule state
+            if freeze_schedule_enabled:
+                metrics_to_log["freeze_schedule/non_adapters_frozen"] = 1 if non_adapters_frozen else 0
             
             # Add system metrics if available
             if sys_metrics:

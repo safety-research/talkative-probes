@@ -1,0 +1,10 @@
+Fri 23 May 01:57:37 UTC 2025: ss-frozen - dump:[1;33mSubmitting activation dumping job...[0m
+[0;32mDumping job submitted with ID: [0m train:[1;33mSubmitting training job with dependency on job [1;33mSubmitting activation dumping job...[0m
+[0;32mDumping job submitted with ID: [0m...[0m
+[0;32mTraining job submitted with ID:  (will start after job [1;33mSubmitting activation dumping job...[0m
+[0;32mDumping job submitted with ID: [0m completes)[0m
+Fri 23 May 01:57:37 UTC 2025: ss-unfreeze - dump:[1;33mSubmitting activation dumping job...[0m
+[0;32mDumping job submitted with ID: [0m train:[1;33mSubmitting training job with dependency on job [1;33mSubmitting activation dumping job...[0m
+[0;32mDumping job submitted with ID: [0m...[0m
+[0;32mTraining job submitted with ID:  (will start after job [1;33mSubmitting activation dumping job...[0m
+[0;32mDumping job submitted with ID: [0m completes)[0m

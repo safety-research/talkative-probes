@@ -1,0 +1,102 @@
+Fri 23 May 01:58:16 UTC 2025: ss-frozen - dump:[1;33mSubmitting activation dumping job...[0m
+[0;32mDumping job submitted with ID: [0m train:[1;33mSubmitting training job with dependency on job [1;33mSubmitting activation dumping job...[0m
+[0;32mDumping job submitted with ID: [0m...[0m
+[0;32mTraining job submitted with ID:  (will start after job [1;33mSubmitting activation dumping job...[0m
+[0;32mDumping job submitted with ID: [0m completes)[0m
+Fri 23 May 01:58:16 UTC 2025: ss-unfreeze - dump:[1;33mSubmitting activation dumping job...[0m
+[0;32mDumping job submitted with ID: [0m train:[1;33mSubmitting training job with dependency on job [1;33mSubmitting activation dumping job...[0m
+[0;32mDumping job submitted with ID: [0m...[0m
+[0;32mTraining job submitted with ID:  (will start after job [1;33mSubmitting activation dumping job...[0m
+[0;32mDumping job submitted with ID: [0m completes)[0m
+Fri 23 May 02:02:48 UTC 2025: ss-frozen - dump:[1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_frozen.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m train:[1;33mSubmitting training job with dependency on job [1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_frozen.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m...[0m
+[0;32mTraining job submitted with ID:  (will start after job [1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_frozen.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m completes)[0m
+Fri 23 May 02:02:48 UTC 2025: ss-unfreeze - dump:[1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_unfreeze.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m train:[1;33mSubmitting training job with dependency on job [1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_unfreeze.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m...[0m
+[0;32mTraining job submitted with ID:  (will start after job [1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_unfreeze.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m completes)[0m
+Fri 23 May 02:03:05 UTC 2025: ss-frozen - dump:[1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_frozen.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m train:[1;33mSubmitting training job with dependency on job [1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_frozen.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m...[0m
+[0;32mTraining job submitted with ID:  (will start after job [1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_frozen.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m completes)[0m
+Fri 23 May 02:03:05 UTC 2025: ss-unfreeze - dump:[1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_unfreeze.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m train:[1;33mSubmitting training job with dependency on job [1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_unfreeze.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m...[0m
+[0;32mTraining job submitted with ID:  (will start after job [1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_unfreeze.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m completes)[0m
+Fri 23 May 02:04:17 UTC 2025: ss-frozen - dump:[1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_frozen.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m train:[1;33mSubmitting training job with dependency on job [1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_frozen.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m...[0m
+[0;32mTraining job submitted with ID:  (will start after job [1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_frozen.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m completes)[0m
+Fri 23 May 02:04:17 UTC 2025: ss-unfreeze - dump:[1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_unfreeze.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m train:[1;33mSubmitting training job with dependency on job [1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_unfreeze.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m...[0m
+[0;32mTraining job submitted with ID:  (will start after job [1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_unfreeze.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m completes)[0m
+Fri 23 May 02:06:17 UTC 2025: ss-frozen - dump:[1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_frozen.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m train:[1;33mSubmitting training job with dependency on job [1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_frozen.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m...[0m
+[0;32mTraining job submitted with ID:  (will start after job [1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_frozen.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m completes)[0m
+Fri 23 May 02:06:17 UTC 2025: ss-unfreeze - dump:[1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_unfreeze.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m train:[1;33mSubmitting training job with dependency on job [1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_unfreeze.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m...[0m
+[0;32mTraining job submitted with ID:  (will start after job [1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_unfreeze.yaml, Layer: 5
+[0;32mDumping job submitted with ID: [0m completes)[0m
+Fri 23 May 02:07:03 UTC 2025: ss-frozen - dump:[1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_frozen.yaml, Layer: 5
+[0;32mDumping job submitted with ID: 1471[0m
+1471 train:[1;33mSubmitting training job with dependency on job [1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_frozen.yaml, Layer: 5
+[0;32mDumping job submitted with ID: 1471[0m
+1471...[0m
+[0;32mTraining job submitted with ID:  (will start after job [1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_frozen.yaml, Layer: 5
+[0;32mDumping job submitted with ID: 1471[0m
+1471 completes)[0m
+Fri 23 May 02:07:03 UTC 2025: ss-unfreeze - dump:[1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_unfreeze.yaml, Layer: 5
+[0;32mDumping job submitted with ID: 1472[0m
+1472 train:[1;33mSubmitting training job with dependency on job [1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_unfreeze.yaml, Layer: 5
+[0;32mDumping job submitted with ID: 1472[0m
+1472...[0m
+[0;32mTraining job submitted with ID:  (will start after job [1;33mSubmitting activation dumping job...[0m
+Config: conf/simplestories_unfreeze.yaml, Layer: 5
+[0;32mDumping job submitted with ID: 1472[0m
+1472 completes)[0m
+Fri 23 May 03:12:01 UTC 2025: ss-frozen - dump:none train:[1;33mSubmitting training job...[0m
+[0;32mTraining job submitted with ID: 1499[0m
+1499
+Fri 23 May 03:12:01 UTC 2025: ss-unfreeze - dump:none train:[1;33mSubmitting training job...[0m
+[0;32mTraining job submitted with ID: 1500[0m
+1500

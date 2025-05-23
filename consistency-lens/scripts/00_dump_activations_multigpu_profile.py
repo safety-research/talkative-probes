@@ -121,7 +121,7 @@ def main() -> None:
     parser.add_argument("--num_samples", type=int, help="Override number of samples")
     parser.add_argument("--seq_len", type=int, help="Override sequence length")
     parser.add_argument("--layer_idx", type=int, help="Override layer index")
-    parser.add_argument("--config_path", type=str, default="consistency-lens/config/lens_simple.yaml")
+    parser.add_argument("--config_path", type=str, default="config/lens_simple.yaml")
     parser.add_argument("--seed", type=int, default=0)
     
     # Multi-GPU options
