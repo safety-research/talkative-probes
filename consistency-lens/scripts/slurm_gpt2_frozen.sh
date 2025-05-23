@@ -39,12 +39,12 @@ echo "GPUs: $(nvidia-smi -L | wc -l)"
 echo "Start time: $(date)"
 
 # Configuration variables
-MODEL_NAME="gpt2"
+MODEL_NAME="openai-community/gpt2"
 LAYER=6
 FORCE_REDUMP="${FORCE_REDUMP:-false}"
 
 # Step 1: Check if we need to pretokenize
-PRETOKENIZED_PATH="./data/corpus/openwebtext/pretokenized"
+PRETOKENIZED_PATH="./data/pretokenized/openwebtext"
 if [ ! -d "$PRETOKENIZED_PATH" ] || [ "$FORCE_REDUMP" == "true" ]; then
     echo "=== Pretokenizing OpenWebText dataset ==="
     python scripts/pretokenize_dataset.py \
@@ -55,8 +55,8 @@ fi
 
 # Step 2: Check if we need to dump activations
 ACTIVATION_DIR="./data/activations"
-TRAIN_DIR="${ACTIVATION_DIR}/openwebtext/${MODEL_NAME}/layer_${LAYER}/openwebtext_train"
-VAL_DIR="${ACTIVATION_DIR}/openwebtext/${MODEL_NAME}/layer_${LAYER}/openwebtext_validation"
+TRAIN_DIR="${ACTIVATION_DIR}/${MODEL_NAME}/layer_${LAYER}/openwebtext_train"
+VAL_DIR="${ACTIVATION_DIR}/${MODEL_NAME}/layer_${LAYER}/openwebtext_validation"
 
 if [ ! -d "$TRAIN_DIR" ] || [ -z "$(ls -A $TRAIN_DIR 2>/dev/null)" ] || [ "$FORCE_REDUMP" == "true" ]; then
     echo "=== Dumping training activations using pretokenized data ==="

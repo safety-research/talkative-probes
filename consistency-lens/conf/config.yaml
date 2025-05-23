@@ -73,6 +73,10 @@ freeze_schedule:
   unfreeze_at_step: 1000       # Step at which to unfreeze non-adapter parameters
   # Alternative: use epochs instead of steps
   # unfreeze_at_epoch: 2       # Epoch at which to unfreeze (overrides unfreeze_at_step if set)
+  # Warmup settings for newly unfrozen parameters
+  unfreeze_warmup_steps: 100   # Number of steps to warmup newly unfrozen parameters
+  unfreeze_warmup_start_factor: 0.01  # Starting LR multiplier for warmup (1% of target LR)
+  # The learning rate will linearly increase from start_factor * lr to full lr over warmup_steps
 
 # Learning rate multiplier for specific parameter groups.
 # These multipliers are applied to the base learning_rate from above.
