@@ -1179,16 +1179,17 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                     printed_count_so_far=0,
                     generate_continuation=verbose_config.get('generate_continuation', True),
                     continuation_tokens=verbose_config.get('continuation_tokens', 30),
-                    return_structured_data=True
+                    return_structured_data=False,
+                    capture_output=True
                 )
                 
-                # Handle return value based on whether we got structured data
+                # Handle return value based on whether we got captured output
                 if isinstance(result, tuple):
-                    num_printed, samples_data = result
+                    num_printed, captured_text = result
                     # Log to wandb if available
-                    if samples_data and current_wandb_run_id:
+                    if captured_text and current_wandb_run_id:
                         verbose_samples_logger.log_verbose_samples(
-                            samples_data, 
+                            captured_text, 
                             step=step,
                             table_name="training_verbose_samples"
                         )

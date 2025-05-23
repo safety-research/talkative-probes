@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import torch
-from typing import Any, Dict, List, Optional, NamedTuple
+from typing import Any, Dict, List, Optional, NamedTuple, Union, Tuple
 from transformers import PreTrainedTokenizerBase
 from torch.nn import functional as F  # Added for gumbel_softmax
 
@@ -223,7 +223,8 @@ def process_and_print_verbose_batch_samples(
     generate_continuation: bool = True,
     continuation_tokens: int = 30,
     return_structured_data: bool = False,
-) -> int | tuple[int, List[Dict[str, Any]]]:
+    capture_output: bool = False,
+) -> Union[int, Tuple[int, List[Dict[str, Any]]], Tuple[int, str]]:
     """Processes and prints verbose samples from a batch.
     
     Args:
@@ -240,15 +241,18 @@ def process_and_print_verbose_batch_samples(
         generate_continuation: Whether to generate autoregressive continuation
         continuation_tokens: Number of tokens to generate for continuation
         return_structured_data: If True, return structured data for logging
+        capture_output: If True, capture console output and return it
         
     Returns:
-        If return_structured_data is False: Number of samples printed from this batch
+        If return_structured_data is False and capture_output is False: Number of samples printed from this batch
         If return_structured_data is True: Tuple of (num_printed, structured_samples_list)
+        If capture_output is True: Tuple of (num_printed, captured_output_string)
     """
     dec = models["dec"]
     enc = models["enc"]
     num_printed_this_batch = 0
     structured_samples = [] if return_structured_data else None
+    captured_output = [] if capture_output else None
 
     for i in range(min(num_samples - printed_count_so_far, batch["A"].size(0))):
         l = int(batch["layer_idx"][i].item())
@@ -472,28 +476,57 @@ def process_and_print_verbose_batch_samples(
             }
             structured_samples.append(sample_data)
         
-        print_verbose_sample_details(
-            l=l,
-            p=p,
-            original_token_at_p_str=original_token_at_p_str,
-            context_display_range=context_display_range,
-            context_labels=context_labels,
-            context_data_rows=context_data_rows,
-            analysis_predictions=analysis_preds_dict,
-            decoder_tokens=gen_tokens,
-            decoder_preds_by_rank=decoder_preds_by_rank,
-            base_tokens=base_gen_tokens,
-            base_preds_by_rank=base_preds_by_rank,
-            top_n_analysis_val=top_n_analysis,
-            original_string_cropped=original_string_cropped,
-            autoregressive_continuation=autoregressive_continuation,
-        )
+        if capture_output:
+            # Capture the output instead of printing directly
+            import io
+            from contextlib import redirect_stdout
+            
+            output_buffer = io.StringIO()
+            with redirect_stdout(output_buffer):
+                print_verbose_sample_details(
+                    l=l,
+                    p=p,
+                    original_token_at_p_str=original_token_at_p_str,
+                    context_display_range=context_display_range,
+                    context_labels=context_labels,
+                    context_data_rows=context_data_rows,
+                    analysis_predictions=analysis_preds_dict,
+                    decoder_tokens=gen_tokens,
+                    decoder_preds_by_rank=decoder_preds_by_rank,
+                    base_tokens=base_gen_tokens,
+                    base_preds_by_rank=base_preds_by_rank,
+                    top_n_analysis_val=top_n_analysis,
+                    original_string_cropped=original_string_cropped,
+                    autoregressive_continuation=autoregressive_continuation,
+                )
+            captured_output.append(output_buffer.getvalue())
+            # Also print to console
+            print(captured_output[-1], end='')
+        else:
+            print_verbose_sample_details(
+                l=l,
+                p=p,
+                original_token_at_p_str=original_token_at_p_str,
+                context_display_range=context_display_range,
+                context_labels=context_labels,
+                context_data_rows=context_data_rows,
+                analysis_predictions=analysis_preds_dict,
+                decoder_tokens=gen_tokens,
+                decoder_preds_by_rank=decoder_preds_by_rank,
+                base_tokens=base_gen_tokens,
+                base_preds_by_rank=base_preds_by_rank,
+                top_n_analysis_val=top_n_analysis,
+                original_string_cropped=original_string_cropped,
+                autoregressive_continuation=autoregressive_continuation,
+            )
         num_printed_this_batch += 1
         if (printed_count_so_far + num_printed_this_batch) >= num_samples:
             break
     
     if return_structured_data:
         return num_printed_this_batch, structured_samples
+    elif capture_output:
+        return num_printed_this_batch, "\n".join(captured_output)
     return num_printed_this_batch
 
 

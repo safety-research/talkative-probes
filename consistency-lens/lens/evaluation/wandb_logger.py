@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 
 
 @dataclasses.dataclass
@@ -14,7 +14,7 @@ class VerboseSamplesLogger:
         self.verbose_samples_table = None
         self.table_initialized = False
     
-    def log_verbose_samples(self, samples_data: List[Dict[str, Any]], step: int, table_name: str = "verbose_samples") -> None:
+    def log_verbose_samples(self, samples_data: Union[str, List[Dict[str, Any]]], step: int, table_name: str = "verbose_samples") -> None:
         """Write verbose-sample information to W&B.
 
         The table now has only:
@@ -22,6 +22,11 @@ class VerboseSamplesLogger:
           • details – a single long, raw-text blob (no markdown) that
                       concatenates the dumps for **all** samples logged
                       at this step.
+                      
+        Args:
+            samples_data: Either a raw text string (preferred) or list of structured data dicts
+            step: Training step
+            table_name: Name of the table in wandb
         """
         try:
             import wandb
@@ -31,22 +36,24 @@ class VerboseSamplesLogger:
         if not samples_data:
             return
 
-        # ------------------------------------------------------------------
-        # 1) Build one giant text blob for this step
-        # ------------------------------------------------------------------
-        blocks: list[str] = []
-        for idx, sample in enumerate(samples_data):
-            lines: list[str] = [f"--- Verbose sample {idx} ---"]
-            for key, val in sample.items():
-                if isinstance(val, list):
-                    lines.append(f"{key}:")
-                    for item in val:
-                        lines.append(f"  {item}")
-                else:
-                    lines.append(f"{key}: {val}")
-            blocks.append("\n".join(lines))
-
-        details_blob: str = "\n\n".join(blocks)
+        # Handle both raw text string and structured data
+        if isinstance(samples_data, str):
+            # Already formatted as raw text - use directly
+            details_blob = samples_data
+        else:
+            # Legacy structured data format - convert to text
+            blocks: list[str] = []
+            for idx, sample in enumerate(samples_data):
+                lines: list[str] = [f"--- Verbose sample {idx} ---"]
+                for key, val in sample.items():
+                    if isinstance(val, list):
+                        lines.append(f"{key}:")
+                        for item in val:
+                            lines.append(f"  {item}")
+                    else:
+                        lines.append(f"{key}: {val}")
+                blocks.append("\n".join(lines))
+            details_blob: str = "\n\n".join(blocks)
 
         # ------------------------------------------------------------------
         # 2) Create / update the 2-column table
