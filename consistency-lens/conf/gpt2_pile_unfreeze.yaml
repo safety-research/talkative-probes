@@ -84,7 +84,7 @@ activation_dumper:
   hf_split: "train"
   dataset_cache_dir: "./data/corpus/pile"
   output_dir: "./data/activations/pile_train"
-  batch_size: 2048                    # Large batch for dumping
+  batch_size: 256                    # Large batch for dumping
   # Validation split
   val_hf_split: "validation"          # Pile has proper validation split
   val_output_dir: "./data/activations/pile_val"

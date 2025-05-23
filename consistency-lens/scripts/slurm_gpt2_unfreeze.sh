@@ -40,10 +40,10 @@ echo "Start time: $(date)"
 
 # Step 1: Check if we need to dump activations (same as frozen)
 ACTIVATION_DIR="./data/activations"
-MODEL_NAME="gpt2"
+MODEL_NAME="openai-community/gpt2"
 LAYER=6
-TRAIN_DIR="${ACTIVATION_DIR}/openwebtext/${MODEL_NAME}/layer_${LAYER}/openwebtext_train"
-VAL_DIR="${ACTIVATION_DIR}/openwebtext/${MODEL_NAME}/layer_${LAYER}/openwebtext_validation"
+TRAIN_DIR="${ACTIVATION_DIR}/${MODEL_NAME}/layer_${LAYER}/openwebtext_train"
+VAL_DIR="${ACTIVATION_DIR}/${MODEL_NAME}/layer_${LAYER}/openwebtext_validation"
 
 if [ ! -d "$TRAIN_DIR" ] || [ -z "$(ls -A $TRAIN_DIR 2>/dev/null)" ]; then
     echo "=== Dumping training activations ==="

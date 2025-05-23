@@ -40,7 +40,7 @@ echo "GPUs: $(nvidia-smi -L | wc -l)"
 echo "Start time: $(date)"
 
 # Configuration variables
-MODEL_NAME="gpt2"
+MODEL_NAME="openai-community/gpt2"
 LAYER=6
 FORCE_REDUMP="${FORCE_REDUMP:-false}"
 

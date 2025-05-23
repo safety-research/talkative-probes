@@ -49,8 +49,8 @@ submit_pretokenize_job() {
     local config=$1
     local job_name=$2
     
-    echo -e "${YELLOW}Submitting pretokenization job...${NC}"
-    echo "Config: $config"
+    echo -e "${YELLOW}Submitting pretokenization job...${NC}" >&2
+    echo "Config: $config" >&2
     
     # Create a simple sbatch script inline
     local result=$(sbatch --parsable \
@@ -63,13 +63,13 @@ submit_pretokenize_job() {
         --wrap="bash -c 'cd /home/kitf/talkative-probes/consistency-lens && source .venv/bin/activate && python scripts/pretokenize_dataset.py --config_path $config --num_proc 32'" 2>&1)
     
     if [[ $? -ne 0 ]]; then
-        echo -e "${RED}ERROR: Failed to submit pretokenization job${NC}"
-        echo -e "${RED}Error message: $result${NC}"
+        echo -e "${RED}ERROR: Failed to submit pretokenization job${NC}" >&2
+        echo -e "${RED}Error message: $result${NC}" >&2
         exit 1
     fi
     
     local pretok_job_id="$result"
-    echo -e "${GREEN}Pretokenization job submitted with ID: $pretok_job_id${NC}"
+    echo -e "${GREEN}Pretokenization job submitted with ID: $pretok_job_id${NC}" >&2
     echo "$pretok_job_id"
 }
 
@@ -81,8 +81,8 @@ submit_dump_job() {
     local use_pretokenized=${4:-false}
     local dependency=$5
     
-    echo -e "${YELLOW}Submitting activation dumping job...${NC}"
-    echo "Config: $config, Layer: $layer, Use pretokenized: $use_pretokenized"
+    echo -e "${YELLOW}Submitting activation dumping job...${NC}" >&2
+    echo "Config: $config, Layer: $layer, Use pretokenized: $use_pretokenized" >&2
     
     # Build sbatch command
     local sbatch_cmd="sbatch --parsable --job-name=${job_name}-dump"
@@ -97,25 +97,26 @@ submit_dump_job() {
     fi
     
     # Submit job and capture both stdout and stderr
+    echo "submitting job" >&2
     local result=$($sbatch_cmd scripts/slurm_dump_activations_minimal.sh "$config" "$layer" "$extra_args" 2>&1)
     
     # Check if submission was successful
     if [[ $? -ne 0 ]]; then
-        echo -e "${RED}ERROR: Failed to submit dumping job${NC}"
-        echo -e "${RED}Error message: $result${NC}"
+        echo -e "${RED}ERROR: Failed to submit dumping job${NC}" >&2
+        echo -e "${RED}Error message: $result${NC}" >&2
         exit 1
     fi
     
     local dump_job_id="$result"
     if [[ -z "$dump_job_id" || ! "$dump_job_id" =~ ^[0-9]+$ ]]; then
-        echo -e "${RED}ERROR: Invalid job ID received: '$dump_job_id'${NC}"
+        echo -e "${RED}ERROR: Invalid job ID received: '$dump_job_id'${NC}" >&2
         exit 1
     fi
     
     if [ -n "$dependency" ]; then
-        echo -e "${GREEN}Dumping job submitted with ID: $dump_job_id (will start after job $dependency completes)${NC}"
+        echo -e "${GREEN}Dumping job submitted with ID: $dump_job_id (will start after job $dependency completes)${NC}" >&2
     else
-        echo -e "${GREEN}Dumping job submitted with ID: $dump_job_id${NC}"
+        echo -e "${GREEN}Dumping job submitted with ID: $dump_job_id${NC}" >&2
     fi
     echo "$dump_job_id"
 }
@@ -128,10 +129,10 @@ submit_train_job() {
     
     local sbatch_cmd
     if [ -n "$dependency" ]; then
-        echo -e "${YELLOW}Submitting training job with dependency on job $dependency...${NC}"
+        echo -e "${YELLOW}Submitting training job with dependency on job $dependency...${NC}" >&2
         sbatch_cmd="sbatch --parsable --dependency=afterok:$dependency --job-name=$job_name $script"
     else
-        echo -e "${YELLOW}Submitting training job...${NC}"
+        echo -e "${YELLOW}Submitting training job...${NC}" >&2
         sbatch_cmd="sbatch --parsable --job-name=$job_name $script"
     fi
     
@@ -140,21 +141,21 @@ submit_train_job() {
     
     # Check if submission was successful
     if [[ $? -ne 0 ]]; then
-        echo -e "${RED}ERROR: Failed to submit training job${NC}"
-        echo -e "${RED}Error message: $result${NC}"
+        echo -e "${RED}ERROR: Failed to submit training job${NC}" >&2
+        echo -e "${RED}Error message: $result${NC}" >&2
         exit 1
     fi
     
     local train_job_id="$result"
     if [[ -z "$train_job_id" || ! "$train_job_id" =~ ^[0-9]+$ ]]; then
-        echo -e "${RED}ERROR: Invalid job ID received: '$train_job_id'${NC}"
+        echo -e "${RED}ERROR: Invalid job ID received: '$train_job_id'${NC}" >&2
         exit 1
     fi
     
     if [ -n "$dependency" ]; then
-        echo -e "${GREEN}Training job submitted with ID: $train_job_id (will start after job $dependency completes)${NC}"
+        echo -e "${GREEN}Training job submitted with ID: $train_job_id (will start after job $dependency completes)${NC}" >&2
     else
-        echo -e "${GREEN}Training job submitted with ID: $train_job_id${NC}"
+        echo -e "${GREEN}Training job submitted with ID: $train_job_id${NC}" >&2
     fi
     echo "$train_job_id"
 }

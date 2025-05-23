@@ -100,3 +100,12 @@ Fri 23 May 03:12:01 UTC 2025: ss-frozen - dump:none train:[1;33mSubmitting trai
 Fri 23 May 03:12:01 UTC 2025: ss-unfreeze - dump:none train:[1;33mSubmitting training job...[0m
 [0;32mTraining job submitted with ID: 1500[0m
 1500
+Fri 23 May 04:41:26 UTC 2025: gpt2-frozen - dump:1515 train:[1;33mSubmitting training job with dependency on job 1515...[0m
+[0;32mTraining job submitted with ID: 1516 (will start after job 1515 completes)[0m
+1516
+Fri 23 May 04:45:32 UTC 2025: gpt2-frozen - dump:1518 train:1519
+Fri 23 May 04:47:38 UTC 2025: ss-unfreeze - dump:none train:1520
+Fri 23 May 04:59:34 UTC 2025: gpt2-frozen - dump:none train:1521
+Fri 23 May 05:01:11 UTC 2025: gpt2-frozen - dump:1523 train:1524
+Fri 23 May 05:09:28 UTC 2025: gpt2-frozen - dump:none train:1527
+Fri 23 May 05:10:26 UTC 2025: gpt2-frozen - dump:1529 train:1530

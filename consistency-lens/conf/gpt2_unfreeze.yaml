@@ -16,7 +16,7 @@ decoder_prompt: "Short explanation of <embed>:"       # Prompt for the Decoder
 # Training hyperparameters
 t_text: 10                            # Number of tokens to generate with the Decoder
 learning_rate: 1.0e-4                 # Starting LR for projections
-batch_size: 1024                      # Can go higher with 8xH100
+batch_size: 128                      # Can go higher with 8xH100
 
 # Learning rate scheduler
 lr_scheduler:
@@ -86,7 +86,7 @@ activation_dumper:
   hf_split: "train"
   dataset_cache_dir: "./data/corpus/openwebtext"
   output_dir: "./data/activations/openwebtext_train"
-  batch_size: 2048                    # Large batch for dumping
+  batch_size: 256                    # Large batch for dumping
   # Validation split
   val_hf_split: "train"               # OpenWebText only has train split
   val_output_dir: "./data/activations/openwebtext_val"
