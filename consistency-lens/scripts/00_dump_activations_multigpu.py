@@ -272,6 +272,7 @@ def main(cfg: DictConfig) -> None:
         log.info(f"Model name: {cfg['model_name']}")
         log.info(f"Layer index: {layer_idx}")
         log.info(f"Output directory will include layer: {effective_output_dir}")
+        log.info(f"Num samples: {num_samples}, per rank: {num_samples/world_size}")
     
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True)
