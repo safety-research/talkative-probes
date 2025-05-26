@@ -38,10 +38,21 @@ export VECLIB_MAXIMUM_THREADS=$THREADS_PER_PROC
 export NUMEXPR_NUM_THREADS=$THREADS_PER_PROC
 export RAYON_NUM_THREADS=$THREADS_PER_PROC
 
-# With pre-tokenized data, we can use larger batches efficiently
+# Determine base path for defaults based on current directory
+if [[ "$(pwd)" == */consistency-lens/scripts ]]; then
+    DEFAULT_CONFIG_PATH="../conf/config.yaml"
+    DEFAULT_OUTPUT_DIR="../data/activations"
+elif [[ "$(pwd)" == */consistency-lens ]]; then
+    DEFAULT_CONFIG_PATH="conf/config.yaml"
+    DEFAULT_OUTPUT_DIR="data/activations"
+else
+    DEFAULT_CONFIG_PATH="consistency-lens/conf/config.yaml"
+    DEFAULT_OUTPUT_DIR="data/activations"
+fi
+
 # Parse command line arguments
-CONFIG_PATH=${1:-"consistency-lens/config/lens_simple.yaml"}
-OUTPUT_DIR=${2:-"data/activations"}
+CONFIG_PATH=${1:-$DEFAULT_CONFIG_PATH}
+OUTPUT_DIR=${2:-$DEFAULT_OUTPUT_DIR}
 NUM_SAMPLES=${3:-""}  # Empty means use entire dataset
 LAYER_IDX=${4:-""}  # Optional
 PRETOKENIZED_PATH=${5:-""}  # Optional, will auto-detect if not provided
@@ -57,11 +68,21 @@ else
     echo "Samples: ALL (entire dataset)"
 fi
 
+# Determine the correct script path based on current directory
+SCRIPT_PATH="scripts/00_dump_activations_multigpu.py"
+if [[ "$(pwd)" == */consistency-lens/scripts ]]; then
+    SCRIPT_PATH="./00_dump_activations_multigpu.py"
+elif [[ "$(pwd)" == */consistency-lens ]]; then
+    SCRIPT_PATH="scripts/00_dump_activations_multigpu.py"
+else
+    SCRIPT_PATH="consistency-lens/scripts/00_dump_activations_multigpu.py"
+fi
+
 # Build command
 CMD="python -m torch.distributed.run \
     --nproc_per_node=$NUM_GPUS \
     --master_port=29500 \
-    consistency-lens/scripts/00_dump_activations_multigpu.py \
+    $SCRIPT_PATH \
     --config_path $CONFIG_PATH \
     --output_dir $OUTPUT_DIR \
     --activation_dumper.use_pretokenized true"

@@ -50,10 +50,13 @@ echo "Thread settings: OMP_NUM_THREADS=$OMP_NUM_THREADS"
 # Determine base path for defaults based on current directory
 # If running from consistency-lens/scripts, use relative paths
 if [[ "$(pwd)" == */consistency-lens/scripts ]]; then
-    DEFAULT_CONFIG_PATH="../config/lens_simple.yaml"
+    DEFAULT_CONFIG_PATH="../conf/config.yaml"
     DEFAULT_OUTPUT_DIR="../data/activations"
+elif [[ "$(pwd)" == */consistency-lens ]]; then
+    DEFAULT_CONFIG_PATH="conf/config.yaml"
+    DEFAULT_OUTPUT_DIR="data/activations"
 else
-    DEFAULT_CONFIG_PATH="consistency-lens/config/lens_simple.yaml"
+    DEFAULT_CONFIG_PATH="consistency-lens/conf/config.yaml"
     DEFAULT_OUTPUT_DIR="data/activations"
 fi
 
@@ -78,11 +81,21 @@ else
     echo "Samples: ALL (entire dataset)"
 fi
 
+# Determine the correct script path based on current directory
+SCRIPT_PATH="scripts/00_dump_activations_multigpu.py"
+if [[ "$(pwd)" == */consistency-lens/scripts ]]; then
+    SCRIPT_PATH="./00_dump_activations_multigpu.py"
+elif [[ "$(pwd)" == */consistency-lens ]]; then
+    SCRIPT_PATH="scripts/00_dump_activations_multigpu.py"
+else
+    SCRIPT_PATH="consistency-lens/scripts/00_dump_activations_multigpu.py"
+fi
+
 # Build command
 CMD="python -m torch.distributed.run \
     --nproc_per_node=$NUM_GPUS \
     --master_port=29500 \
-    consistency-lens/scripts/00_dump_activations_multigpu.py \
+    $SCRIPT_PATH \
     --config_path $CONFIG_PATH \
     --output_dir $OUTPUT_DIR"
 
