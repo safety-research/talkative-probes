@@ -1399,7 +1399,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
             )
 
         # run validation at interval
-        if val_loader and val_interval > 0 and step > 0 and step % val_interval == 0:
+        if val_loader and val_interval > 0 and step % val_interval == 0:
             dec.eval()
             enc.eval()
             val_loss = val_mse = val_lm = val_kl = 0.0
