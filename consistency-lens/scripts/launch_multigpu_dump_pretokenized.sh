@@ -78,30 +78,39 @@ else
     SCRIPT_PATH="consistency-lens/scripts/00_dump_activations_multigpu.py"
 fi
 
-# Build command
+# Extract config name from path (remove .yaml extension)
+CONFIG_NAME=$(basename "$CONFIG_PATH" .yaml)
+CONFIG_DIR=$(dirname "$CONFIG_PATH")
+
+# Build command with Hydra overrides
 CMD="python -m torch.distributed.run \
     --nproc_per_node=$NUM_GPUS \
     --master_port=29500 \
     $SCRIPT_PATH \
-    --config_path $CONFIG_PATH \
-    --output_dir $OUTPUT_DIR \
-    --activation_dumper.use_pretokenized true"
+    --config-path=$CONFIG_DIR \
+    --config-name=$CONFIG_NAME \
+    activation_dumper.use_pretokenized=true"
 
-# Add optional arguments
+# Add Hydra overrides for output directory
+if [ -n "$OUTPUT_DIR" ]; then
+    CMD="$CMD activation_dumper.output_dir=$OUTPUT_DIR"
+fi
+
+# Add optional arguments as Hydra overrides
 if [ -n "$NUM_SAMPLES" ]; then
-    CMD="$CMD --num_samples $NUM_SAMPLES"
+    CMD="$CMD activation_dumper.num_samples=$NUM_SAMPLES"
 fi
 
 if [ -n "$LAYER_IDX" ]; then
-    CMD="$CMD --layer_idx $LAYER_IDX"
+    CMD="$CMD layer_l=$LAYER_IDX"
 fi
 
 if [ -n "$PRETOKENIZED_PATH" ]; then
-    CMD="$CMD --pretokenized_path $PRETOKENIZED_PATH"
+    CMD="$CMD activation_dumper.pretokenized_path=$PRETOKENIZED_PATH"
 fi
 
 if [ -n "$MODEL_PARALLEL" ]; then
-    CMD="$CMD --model_parallel"
+    CMD="$CMD activation_dumper.model_parallel=true"
 fi
 
 echo "Note: Using pre-tokenized data eliminates tokenization bottleneck!"
