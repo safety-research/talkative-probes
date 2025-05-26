@@ -119,7 +119,7 @@ submit_pretokenize_job() {
         echo "Config: $config" >&2
         
         # Run pretokenization directly
-        if python scripts/pretokenize_dataset.py --config_path "$config" --num_proc 32; then
+        if source .venv/bin/activate && python scripts/pretokenize_dataset.py --config_path "$config" --num_proc 32; then
             echo -e "${GREEN}Pretokenization completed successfully${NC}" >&2
             echo "completed"
         else
