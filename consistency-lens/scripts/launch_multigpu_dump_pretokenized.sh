@@ -82,6 +82,11 @@ fi
 CONFIG_NAME=$(basename "$CONFIG_PATH" .yaml)
 CONFIG_DIR=$(dirname "$CONFIG_PATH")
 
+# Make config directory absolute if it's relative
+if [[ ! "$CONFIG_DIR" = /* ]]; then
+    CONFIG_DIR="$(pwd)/$CONFIG_DIR"
+fi
+
 # Build command with Hydra overrides
 CMD="python -m torch.distributed.run \
     --nproc_per_node=$NUM_GPUS \
