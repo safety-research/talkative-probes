@@ -12,7 +12,7 @@ from transformers import AutoTokenizer
 from tqdm import tqdm
 
 
-@hydra.main(version_base=None, config_path="../conf", config_name="pretokenize")
+@hydra.main(version_base=None, config_path="../../conf", config_name="pretokenize")
 def main(cfg: DictConfig) -> None:
     # Setup logging
     log = logging.getLogger(__name__)
