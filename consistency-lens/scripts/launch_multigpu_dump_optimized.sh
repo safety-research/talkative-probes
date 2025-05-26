@@ -91,34 +91,43 @@ else
     SCRIPT_PATH="consistency-lens/scripts/00_dump_activations_multigpu.py"
 fi
 
-# Build command
+# Extract config name from path (remove .yaml extension)
+CONFIG_NAME=$(basename "$CONFIG_PATH" .yaml)
+CONFIG_DIR=$(dirname "$CONFIG_PATH")
+
+# Build command with Hydra overrides
 CMD="python -m torch.distributed.run \
     --nproc_per_node=$NUM_GPUS \
     --master_port=29500 \
     $SCRIPT_PATH \
-    --config_path $CONFIG_PATH \
-    --output_dir $OUTPUT_DIR"
+    --config-path=$CONFIG_DIR \
+    --config-name=$CONFIG_NAME"
+
+# Add Hydra overrides for output directory
+if [ -n "$OUTPUT_DIR" ]; then
+    CMD="$CMD activation_dumper.output_dir=$OUTPUT_DIR"
+fi
 
 # Only add num_samples if specified
 if [ -n "$NUM_SAMPLES" ]; then
-    CMD="$CMD --num_samples $NUM_SAMPLES"
+    CMD="$CMD activation_dumper.num_samples=$NUM_SAMPLES"
 fi
 
-# Add optional arguments
+# Add optional arguments as Hydra overrides
 if [ -n "$LAYER_IDX" ]; then
-    CMD="$CMD --layer_idx $LAYER_IDX"
+    CMD="$CMD layer_l=$LAYER_IDX"
 fi
 
 if [ -n "$USE_HF_DATASET" ]; then
-    CMD="$CMD --use_hf_dataset"
+    CMD="$CMD activation_dumper.use_hf_dataset=true"
 fi
 
 if [ -n "$HF_DATASET_NAME" ]; then
-    CMD="$CMD --hf_dataset_name $HF_DATASET_NAME"
+    CMD="$CMD activation_dumper.hf_dataset_name=$HF_DATASET_NAME"
 fi
 
 if [ -n "$MODEL_PARALLEL" ]; then
-    CMD="$CMD --model_parallel"
+    CMD="$CMD activation_dumper.model_parallel=true"
 fi
 
 # Execute
