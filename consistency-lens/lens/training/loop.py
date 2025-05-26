@@ -158,7 +158,7 @@ def train_step(  # noqa: D401
 
         input_ids_batch = batch["input_ids_A"]
         layer_idx_batch = batch.get("layer_idx")  # (B,)
-        token_pos_batch = batch.get("token_pos")  # (B,)
+        token_pos_batch = batch.get("token_pos_A")  # (B,)
         B = A.shape[0]
 
         # Check if we can use vectorized approach (same layer across batch)
