@@ -25,6 +25,12 @@ class DecoderConfig:
     output_head: bool = True         # YAML `output_head`
     embedding_head: bool = False     # YAML `embedding_head`
     eye_init: bool = True            # YAML `eye_init`
+    trainable_prompts: bool = True   # YAML `trainable_prompts`
+    
+    def __post_init__(self):
+        """Validate configuration parameters."""
+        if self.n_prompt_tokens < 0:
+            raise ValueError(f"n_prompt_tokens must be non-negative, got {self.n_prompt_tokens}")
 
 
 class Decoder(nn.Module):
@@ -109,8 +115,8 @@ class Decoder(nn.Module):
                 log.warning("Could not access output embeddings for freezing control")
         
         # --- Prompt placeholders -------------------------------------------------
-        self.prompt_left_emb = None      # type: torch.Tensor | None
-        self.prompt_right_emb = None     # type: torch.Tensor | None
+        self.prompt_left_emb = None      # type: nn.Parameter | None
+        self.prompt_right_emb = None     # type: nn.Parameter | None
         self.prompt_len = 0
         self.prompt_text = []
         # keep prompt_ids only for logging/debug convenience
@@ -200,8 +206,10 @@ class Decoder(nn.Module):
             print(f"Prompt template: {self.prompt_text}")
 
         # Ensure dtype matches linear layer to avoid Half/Float mismatch during eval.
-        self.prompt_left_emb = self.prompt_left_emb.to(activation_input.device)
-        self.prompt_right_emb = self.prompt_right_emb.to(activation_input.device)
+        if self.prompt_left_emb is not None and self.prompt_left_emb.device != activation_input.device:
+            self.prompt_left_emb = self.prompt_left_emb.to(activation_input.device)
+        if self.prompt_right_emb is not None and self.prompt_right_emb.device != activation_input.device:
+            self.prompt_right_emb = self.prompt_right_emb.to(activation_input.device)
         activation_input = activation_input.to(self.proj.weight.dtype)
 
         B, d_model = activation_input.shape
@@ -282,8 +290,27 @@ class Decoder(nn.Module):
         self.prompt_ids.copy_(ids_tensor)
         self.prompt_text = tokenizer.decode(left_ids) + '<embed>' + tokenizer.decode(right_ids)
 
-        with torch.no_grad():
-            emb_table = self.base.get_output_embeddings().weight
-            self.prompt_left_emb  = emb_table[torch.tensor(left_ids,  device=emb_table.device)] if left_ids  else None
-            self.prompt_right_emb = emb_table[torch.tensor(right_ids, device=emb_table.device)] if right_ids else None
-            self.prompt_len = len(left_ids) + len(right_ids)
+        emb_table = self.base.get_input_embeddings().weight
+        
+        # Delete old parameters if they exist to avoid memory leaks
+        if hasattr(self, 'prompt_left_emb') and self.prompt_left_emb is not None:
+            delattr(self, 'prompt_left_emb')
+        if hasattr(self, 'prompt_right_emb') and self.prompt_right_emb is not None:
+            delattr(self, 'prompt_right_emb')
+            
+        # Create trainable parameters initialized from the embedding table
+        if left_ids:
+            left_emb_init = emb_table[torch.tensor(left_ids, device=emb_table.device)].clone()
+            self.prompt_left_emb = nn.Parameter(left_emb_init)
+            self.prompt_left_emb.requires_grad_(self.config.trainable_prompts)
+        else:
+            self.prompt_left_emb = None
+            
+        if right_ids:
+            right_emb_init = emb_table[torch.tensor(right_ids, device=emb_table.device)].clone()
+            self.prompt_right_emb = nn.Parameter(right_emb_init)
+            self.prompt_right_emb.requires_grad_(self.config.trainable_prompts)
+        else:
+            self.prompt_right_emb = None
+            
+        self.prompt_len = len(left_ids) + len(right_ids)

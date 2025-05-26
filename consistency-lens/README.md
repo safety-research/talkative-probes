@@ -8,6 +8,12 @@ The **fundamental objective** is the **KL divergence loss**, which measures how 
 
 The **language modeling (LM) loss** serves as a **linguistic fluency regularizer**, encouraging the generated explanations to be coherent and on-manifold text. The LM loss weight is ramped up during early training (via the alpha schedule) to gradually introduce this constraint while the model learns the core reconstruction task.
 
+**Natural Language Conditioning**: To ensure fair comparison in the LM loss, the base model is conditioned on a natural language prefix (configurable via `lm_loss_natural_prefix`) rather than the decoder's soft prompts and activation embeddings. For example:
+- **Decoder prompt**: `"Short explanation of <embed>:"` (with privileged activation access)
+- **Base model prefix**: `"Short explanation of something:"` (pure natural language)
+
+This creates a meaningful comparison where both models generate explanations, but the KL divergence encourages the decoder to produce linguistically coherent text that matches what the base model would naturally generate in explanation mode.
+
 ## Project Structure
 
 The project will be organized as follows:
@@ -89,6 +95,20 @@ python scripts/01_train.py                     # default config
 ```bash
 # change a couple of hyper-parameters on the fly
 python scripts/01_train.py learning_rate=5e-4 t_text=7
+
+# customize the natural language prefix for LM loss conditioning
+python scripts/01_train.py lm_loss_natural_prefix="Describe something:"
+
+# configure encoder soft prompts (4 trainable tokens by default)
+python scripts/01_train.py trainable_components.encoder.soft_prompt_length=8
+python scripts/01_train.py trainable_components.encoder.trainable_soft_prompt=false
+python scripts/01_train.py trainable_components.encoder.soft_prompt_init_std=0.05
+
+# initialize encoder soft prompt from text instead of random
+python scripts/01_train.py trainable_components.encoder.soft_prompt_init_text="reconstruct activation:"
+
+# control decoder prompt trainability
+python scripts/01_train.py trainable_components.decoder.trainable_prompts=false
 ```
 
 * Mini config fragments live in `conf/*.yaml` and are enabled with a leading `+`:
@@ -302,14 +322,14 @@ data/activations/
 
 The training dataloader (`lens.data.dataset.ActivationDataset`) automatically handles both single and multi-GPU output formats.
 
-## SLURM Submission on HPC Clusters
+## Job Management: SLURM and Non-SLURM Environments
 
-For HPC clusters with SLURM, we provide submission scripts that handle the complete workflow from activation dumping to training. See [scripts/README.md](scripts/README.md) for detailed usage.
+We provide a unified submission script that works on both SLURM HPC clusters and standalone systems. The script automatically detects your environment and adapts accordingly. See [scripts/README.md](scripts/README.md) for detailed usage.
 
 ### Quick Start
 
 ```bash
-# Start new experiments with automatic dependency management
+# Start new experiments (auto-detects environment and GPUs)
 ./scripts/submit_with_dumping.sh ss-frozen
 ./scripts/submit_with_dumping.sh gpt2-frozen
 
@@ -319,17 +339,32 @@ For HPC clusters with SLURM, we provide submission scripts that handle the compl
 # Resume with specific WandB run ID (get from WandB dashboard)
 ./scripts/submit_with_dumping.sh ss-frozen false outputs/checkpoints/run_name/checkpoint_step5000.pt abc123xyz
 
+# Specify GPU count for non-SLURM systems (auto-detected if omitted)
+./scripts/submit_with_dumping.sh ss-frozen false "" "" "" 4
+
+# Force direct execution even on SLURM systems
+FORCE_DIRECT=true ./scripts/submit_with_dumping.sh ss-frozen
+
 # Available experiments:
 # ss-frozen, ss-unfreeze, gpt2-frozen, gpt2-unfreeze, 
 # gpt2-pile-frozen, gpt2-pile-unfreeze
 ```
 
-This wrapper automatically:
-1. Checks if activations exist
-2. Submits 8-GPU dumping job if needed  
-3. Submits 1-GPU training job with dependency
+### How It Works
+
+**SLURM Environment**:
+1. Detects SLURM availability (`sbatch` command)
+2. Checks if activations exist
+3. Submits jobs with proper dependencies via job queue
 4. Supports resuming from checkpoints with WandB run continuation
 5. Handles job failures gracefully
+
+**Non-SLURM Environment**:
+1. Detects available GPUs automatically
+2. Checks if activations exist
+3. Runs tasks sequentially in foreground (pretokenization → dumping → training)
+4. Provides real-time output and progress feedback
+5. Same checkpoint and WandB resume functionality
 
 ### Performance Expectations
 
@@ -546,12 +581,19 @@ Core components reside in `lens.models/`.
 | Component  | Source & Implementation Details                                                                                                                                                                                                                                                                                                                                                           |
 |------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `LLM_orig` | `transformers.AutoModelForCausalLM`, wrapped in `lens.models.orig.OriginalModelWrapper`. Loaded in 8-bit and frozen. Custom `forward_with_replacement` hook allows swapping hidden state at layer `L`, position `P`.                                                                                                                                                                           |
-| Decoder `D`| Clone of `LLM_orig`, implemented in `lens.models.decoder.DecoderModel`. Prepends prompt tokens, incorporates `Proj_A_to_D_emb`. Output layer uses `torch.nn.functional.gumbel_softmax` + STE for differentiable token sampling. Trainable.                                                                                                                                               |
-| Encoder `E`| Another clone of `LLM_orig`, implemented in `lens.models.encoder.EncoderModel`. Receives the *STE-derived embeddings* of the discrete tokens chosen by `D` (Gumbel-Softmax with `hard=True`), i.e. differentiable representations of the generated text. It extracts the final token's hidden state and projects it through `Proj_E_hidden_to_A` to reconstruct `A_reconstructed`. Trainable. |
+| Decoder `D`| Clone of `LLM_orig`, implemented in `lens.models.decoder.DecoderModel`. Uses trainable prompt tokens with activation embedding insertion (`<embed>` marker). Incorporates `Proj_A_to_D_emb`. Output layer uses `torch.nn.functional.gumbel_softmax` + STE for differentiable token sampling. Trainable prompts provide learned context for explanation generation.                                                                                                                                               |
+| Encoder `E`| Another clone of `LLM_orig`, implemented in `lens.models.encoder.EncoderModel`. Receives STE-derived embeddings from `D` and optionally prepends trainable soft prompt tokens for improved contextualization. Processes the sequence and extracts the final token's hidden state, projecting it through `Proj_E_hidden_to_A` to reconstruct `A_reconstructed`. Both soft prompts and projection layer are trainable. |
+
+**Trainable Soft Prompts:**
+*   **Decoder Prompts**: Textual prompts with `<embed>` marker for activation insertion. Both left and right prompt segments are trainable parameters initialized from tokenized text.
+*   **Encoder Prompts**: Configurable number of trainable soft prompt tokens prepended to decoder-generated embeddings. Can be initialized from random values or meaningful text strings. Provides learned context for reconstruction.
+*   **Benefits**: Prompts can adapt during training to improve explanation quality and reconstruction accuracy without manual prompt engineering.
+*   **Initialization**: Encoder prompts support both random initialization (configurable variance) and text-based initialization from meaningful phrases.
 
 **Weight Sharing & Initialization:**
 *   Initial weights for `D` and `E` copied from `LLM_orig`. Helper functions in `lens.models.utils`.
 *   Projection layers initialized separately. `D` and `E` weights updated independently.
+*   Soft prompts initialized from embeddings (decoder) or small random values (encoder).
 
 **Memory Considerations:** Remain as previously outlined, feasible with DeepSpeed/FSDP.
 
@@ -600,7 +642,7 @@ for step, batch in enumerate(loader): # loader uses lens.data.dataset.Activation
             max_length=config.T_text,
             gumbel_tau=gumbel_temperature_schedule(step, config.lens_yaml) # from config/lens.yaml
         )
-        A_reconstructed = E_model(generated_output_D_A.generated_text_embeddings)
+        A_reconstructed = E_model(generated_output_D_A.generated_text_embeddings)  # Encoder may prepend soft prompt tokens
 
         # --- Auxiliary Path ---
         generated_output_D_A_prime = D_model.generate_soft(
@@ -639,6 +681,12 @@ for step, batch in enumerate(loader): # loader uses lens.data.dataset.Activation
         # for a D_model-generated explanation, and P_D are D_model's own next-token probabilities
         # for that same explanation. This encourages D_model's generation (P_D)
         # to align with the base model's linguistic knowledge (P_Orig), keeping explanations on-manifold.
+        #
+        # IMPORTANT: To ensure fair comparison, the original model is conditioned on natural language context
+        # rather than the decoder's soft prompts + activation embeddings. This is controlled by the
+        # 'lm_loss_natural_prefix' config option (e.g., "Short explanation of something:").
+        # Both models generate explanations, but the base model provides a natural reference without
+        # privileged access to the actual activation.
         if T_text > 1:  # need a next-token target for KL divergence
             # Logits from D_model for its own generation (predicting token t+1 given prefix 0..t from D)
             # generated_output_D_A.token_logits are (B, T_text, V)
@@ -724,3 +772,23 @@ for step, batch in enumerate(loader): # loader uses lens.data.dataset.Activation
         *   Critically, `logits_t` (which `D` uses to sample `token_t`) is a function of `A_proj` and all *preceding generated tokens* (`token_1_embedding, ..., token_{t-1}_embedding`). Therefore, the gradient `dL_KL / d(logits_t)` will backpropagate not only to the parameters of `D` involved in that specific step `t` but also to `A_proj` and to the embeddings of these preceding tokens.
         *   This ensures that `D` learns how its early token choices (`token_1`, `token_2`, etc.) affect the overall utility of the complete sequence `text` for `E`'s reconstruction task. The gradient signal from `L_KL` informs every decision in `D`'s generation process, enabling it to learn the complex temporal dependencies within the generated text that are vital for minimizing `L_KL`.
 *   `torch.compile` wraps the forward methods of `D`
+
+---
+
+## Future Work
+
+### Runtime Activation Computation
+
+Currently, the system pre-dumps activations to disk and loads them during training. An alternative approach would be to compute activations at runtime from pre-tokenized text data.
+
+**Potential benefits:**
+- Eliminates large storage requirements (multi-GB activation dumps)
+- Simplifies workflow to single-stage (no separate dumping step)
+- More flexible (can easily change layers/positions during training)
+
+**Considerations:**
+- Memory constraints: Need LLM + decoder/encoder to fit simultaneously
+- Compute overhead is less than initially assumed since training already requires 2-3 LLM forward passes per step for KL loss computation
+- Would benefit research scenarios prioritizing simplicity over storage/compute separation
+
+This could be valuable for single-shot training experiments or when storage is more constrained than compute/memory resources.

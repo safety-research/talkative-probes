@@ -28,7 +28,7 @@ lr_scheduler:
   T_mult: 2                           # Double period after each restart
 
 # Training duration
-num_train_epochs: 3                   # Extra epoch for fine-tuning phase
+num_train_epochs: 10                   # Extra epoch for fine-tuning phase
 max_train_steps: 0                    # Use epochs instead
 
 compile_models: true                  # Enable torch.compile for speed
@@ -53,7 +53,7 @@ trainable_components:
 freeze_schedule:
   enabled: true                       # ENABLE freeze schedule
   # unfreeze_at_step: 10000            # Unfreeze after 10k steps
-  unfreeze_at_epoch: 1               # Unfreeze after first epoch
+  unfreeze_at_epoch: 2               # Unfreeze after first epoch
   # Alternative: unfreeze_at_epoch: 1 # Unfreeze after first epoch
 
 # Custom learning rates - IMPORTANT for unfrozen models
@@ -65,7 +65,7 @@ custom_lr_multipliers:
 # Gumbel temperature schedule
 gumbel_tau_schedule:
   type: "linear_decay_after_constant"
-  constant_steps_before_linear_decay: 10000
+  constant_steps_before_linear_decay: 20000
   start_value: 1.0
   end_value: 0.1
   num_steps: -1                       # Use total training steps

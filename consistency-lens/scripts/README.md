@@ -4,8 +4,10 @@ This directory contains all scripts for running Consistency Lens experiments, fr
 
 ## Quick Start
 
+The `submit_with_dumping.sh` script works on both SLURM and non-SLURM environments:
+
 ```bash
-# Start new experiment with automatic dependency management
+# Start new experiment (auto-detects environment and GPUs)
 ./submit_with_dumping.sh ss-frozen
 
 # Resume from checkpoint (find path in outputs/checkpoints/)
@@ -14,14 +16,17 @@ This directory contains all scripts for running Consistency Lens experiments, fr
 # Resume with WandB run ID (get from WandB dashboard)
 ./submit_with_dumping.sh ss-frozen false outputs/checkpoints/run_name/checkpoint_step5000.pt abc123xyz
 
-# Use specific SLURM nodes
+# SLURM only: Use specific nodes
 ./submit_with_dumping.sh ss-frozen false "" "" node001,node002
 
-# Or manually: 
-# 1. Extract activations (8 GPUs)
-sbatch slurm_dump_activations_minimal.sh
+# Non-SLURM: Specify GPU count (auto-detected if omitted)
+./submit_with_dumping.sh ss-frozen false "" "" "" 4
 
-# 2. Train model (1 GPU) 
+# Force direct execution even on SLURM systems
+FORCE_DIRECT=true ./submit_with_dumping.sh ss-frozen
+
+# Manual SLURM submission (deprecated - use wrapper above):
+sbatch slurm_dump_activations_minimal.sh conf/config.yaml
 sbatch slurm_simplestories_frozen.sh
 ```
 
@@ -46,11 +51,11 @@ We provide 6 pre-configured experiments:
 - `01_train.py` - Main training script with Hydra configuration
 - `02_eval.py` - Model evaluation and metrics computation
 
-### 🚀 SLURM Submission
-- `submit_with_dumping.sh` - Smart wrapper with dependency management
-- `slurm_dump_activations_minimal.sh` - 8-GPU activation dumping job
-- `slurm_simplestories_*.sh` - SimpleStories experiment jobs
-- `slurm_gpt2_*.sh` - GPT-2 experiment jobs
+### 🚀 Job Management
+- `submit_with_dumping.sh` - Smart wrapper (SLURM + non-SLURM) with dependency management
+- `slurm_dump_activations_minimal.sh` - 8-GPU activation dumping job (SLURM only)
+- `slurm_simplestories_*.sh` - SimpleStories experiment jobs (SLURM only)
+- `slurm_gpt2_*.sh` - GPT-2 experiment jobs (SLURM only)
 
 ### 🔧 Utilities
 - `pretokenize_dataset.py` - Pre-tokenize for 5x faster dumping
@@ -59,21 +64,32 @@ We provide 6 pre-configured experiments:
 
 ## Workflow Details
 
-### Step 1: Activation Extraction (8 GPUs, ~30 min)
+### Step 1: Activation Extraction
 
 ```bash
-# Automatic with smart wrapper
+# Automatic with smart wrapper (works on both SLURM and non-SLURM)
 ./submit_with_dumping.sh experiment-name
 
-# Or manual submission
-sbatch slurm_dump_activations_minimal.sh
+# Non-SLURM: Direct execution with specified GPUs
+./submit_with_dumping.sh experiment-name false "" "" "" 8
+
+# SLURM: Manual submission (legacy approach)
+sbatch slurm_dump_activations_minimal.sh conf/config.yaml
 ```
+
+**Performance**: 
+- **SLURM**: 8 GPUs, ~30 min via job queue
+- **Non-SLURM**: N GPUs, runs immediately in foreground
 
 **Output**: Sharded `.pt` files in `data/activations/DATASET/MODEL/layer_X/`
 
-### Step 2: Model Training (1 GPU, 4-8 hours)
+### Step 2: Model Training
 
 Training automatically starts after dumping completes if using the wrapper.
+
+**Environment Differences**:
+- **SLURM**: Jobs submitted with dependencies, run when resources available  
+- **Non-SLURM**: Runs sequentially in foreground, immediate execution
 
 **Key features**:
 - torch.compile for 2x speedup (after initial compilation)
