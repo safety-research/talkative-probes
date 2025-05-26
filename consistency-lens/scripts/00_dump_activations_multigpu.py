@@ -228,10 +228,20 @@ def main(cfg: DictConfig) -> None:
         num_samples = None if num_samples_cfg == -1 else num_samples_cfg
     layer_idx = args.layer_idx if args.layer_idx is not None else cfg['layer_l']
     
-    # Include layer index in output directory name
-    tokenizer_name = cfg.get("tokenizer_name", cfg["model_name"])
-    base_output_path = resolve_path(base_output_dir_str)
-    effective_output_dir = base_output_path.parent / tokenizer_name / f"layer_{layer_idx}" / base_output_path.name
+    # Build output directory with model and layer information
+    # Start with the base path from config and add model/layer structure
+    base_path = resolve_path(base_output_dir_str)
+    model_name_clean = cfg["model_name"].replace("/", "_")
+    
+    # Insert model and layer info into the path
+    # If the path ends with _train or _test, preserve that
+    path_parts = base_path.parts
+    if path_parts[-1].endswith(('_train', '_test', '_val')):
+        dataset_suffix = path_parts[-1]
+        parent_path = Path(*path_parts[:-1])
+        effective_output_dir = parent_path / model_name_clean / f"layer_{layer_idx}" / dataset_suffix
+    else:
+        effective_output_dir = base_path.parent / model_name_clean / f"layer_{layer_idx}" / base_path.name
     
     effective_use_hf = args.use_hf_dataset or activation_dumper_cfg.get("use_hf_dataset", False)
     effective_hf_dataset_name = args.hf_dataset_name if args.hf_dataset_name is not None else activation_dumper_cfg.get("hf_dataset_name")
@@ -340,8 +350,17 @@ def main(cfg: DictConfig) -> None:
         base_val_output_dir_str = val_out_base_cfg
     
     if base_val_output_dir_str:
+        # Build validation output directory with model and layer information
         base_val_path = resolve_path(base_val_output_dir_str)
-        val_out_dir = base_val_path.parent / tokenizer_name / f"layer_{layer_idx}" / base_val_path.name
+        
+        # Insert model and layer info into the path
+        val_path_parts = base_val_path.parts
+        if val_path_parts[-1].endswith(('_train', '_test', '_val')):
+            val_dataset_suffix = val_path_parts[-1]
+            val_parent_path = Path(*val_path_parts[:-1])
+            val_out_dir = val_parent_path / model_name_clean / f"layer_{layer_idx}" / val_dataset_suffix
+        else:
+            val_out_dir = base_val_path.parent / model_name_clean / f"layer_{layer_idx}" / base_val_path.name
         val_split = args.val_hf_split if args.val_hf_split else val_split_cfg
         val_samples_cfg = activation_dumper_cfg.get("val_num_samples", -1)
         if args.val_num_samples is not None:

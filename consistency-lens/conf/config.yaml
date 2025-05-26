@@ -176,8 +176,9 @@ activation_dumper:
   # streaming: false
 
 # Validation activation directory (skip split when provided)
-# This path should also be salted with the tokenizer_name if it's used.
-val_activation_dir: "./data/activations/SimpleStories_test"
+# If specified, this overrides automatic train/val splitting
+# NOTE: This should match activation_dumper.val_output_dir above
+val_activation_dir: null  # Set to path to use pre-split validation data
 
 # WandB configuration (can also be in wandb.yaml)
 wandb:
