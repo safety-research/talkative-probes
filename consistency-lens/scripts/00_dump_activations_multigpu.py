@@ -232,6 +232,7 @@ def main(cfg: DictConfig) -> None:
     # Start with the base path from config and add model/layer structure
     base_path = resolve_path(base_output_dir_str)
     model_name_clean = cfg["model_name"].replace("/", "_")
+    tokenizer_name = cfg["tokenizer_name"]
     
     # Insert model and layer info into the path
     # If the path ends with _train or _test, preserve that
