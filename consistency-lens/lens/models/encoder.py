@@ -7,6 +7,8 @@ from dataclasses import dataclass
 import logging
 __all__ = ["Encoder", "EncoderConfig"]
 
+log = logging.getLogger(__name__)
+
 
 @dataclass
 class EncoderConfig:
@@ -30,8 +32,10 @@ class EncoderConfig:
         if self.soft_prompt_init_std <= 0:
             raise ValueError(f"soft_prompt_init_std must be positive, got {self.soft_prompt_init_std}")
         
-        if self.soft_prompt_length == 0 and self.soft_prompt_init_text is not None:
-            raise ValueError("soft_prompt_init_text specified but soft_prompt_length is 0")
+        # If text initialization is specified, soft_prompt_length is ignored (text determines length)
+        if self.soft_prompt_init_text is not None and self.soft_prompt_length > 0:
+            log.warning(f"soft_prompt_length={self.soft_prompt_length} will be ignored since "
+                       f"soft_prompt_init_text is specified (length will be determined by text)")
             
         # Can't train a base model if we're not using it
         if not self.use_base_model and self.base_model:
@@ -40,7 +44,6 @@ class EncoderConfig:
         # Can't train embedding heads if we're not using the base model
         if not self.use_base_model and self.embedding_head:
             raise ValueError("embedding_head=True requires use_base_model=True (can't train embeddings of a model that isn't being used)")
-log = logging.getLogger(__name__)
 
 
 class Encoder(nn.Module):
@@ -92,11 +95,17 @@ class Encoder(nn.Module):
                 else:
                     log.warning("Could not access output embeddings for freezing control")
 
-        # Initialize soft prompt tokens if specified
+        # Initialize soft prompt tokens
         self.soft_prompt_embeddings = None
-        if cfg.soft_prompt_length > 0:
+        self.cfg = cfg  # Store config for later use in set_soft_prompt_from_text
+        
+        # If text initialization is specified, we'll set the length based on the text
+        if cfg.soft_prompt_init_text is not None:
+            # We'll initialize this later after models are created, just set a placeholder
+            pass
+        elif cfg.soft_prompt_length > 0:
+            # Initialize with random values for the specified length
             d_model = self.base.config.hidden_size if self._use_base else self.proj.in_features
-            # Initialize soft prompt embeddings with random values by default
             self.soft_prompt_embeddings = nn.Parameter(
                 torch.randn(cfg.soft_prompt_length, d_model) * cfg.soft_prompt_init_std
             )
@@ -106,21 +115,30 @@ class Encoder(nn.Module):
 
     def set_soft_prompt_from_text(self, text: str, tokenizer) -> None:
         """Initialize soft prompt embeddings from text string using tokenizer.
+        When called, this will create or recreate the soft prompt with length matching the tokenized text.
         
         Args:
             text: Text string to convert to embeddings for soft prompt initialization
             tokenizer: Tokenizer to use for text conversion
         """
-        if self.soft_prompt_embeddings is None:
-            log.warning("No soft prompt embeddings to initialize (soft_prompt_length=0)")
-            return
-            
         # Tokenize the text
         token_ids = tokenizer(text, add_special_tokens=False, return_tensors="pt").input_ids.squeeze(0)
+        text_length = len(token_ids)
         
-        # Get device from existing soft prompt embeddings
-        device = self.soft_prompt_embeddings.device
+        # Get model dimensions
+        d_model = self.base.config.hidden_size if self._use_base else self.proj.in_features
+        
+        # Get device - use the model's device
+        device = next(self.parameters()).device
         token_ids = token_ids.to(device)
+        
+        # Delete old soft prompt if it exists
+        if hasattr(self, 'soft_prompt_embeddings') and self.soft_prompt_embeddings is not None:
+            delattr(self, 'soft_prompt_embeddings')
+        
+        # Create new soft prompt with the exact length of the text
+        self.soft_prompt_embeddings = nn.Parameter(torch.zeros(text_length, d_model, device=device))
+        self.soft_prompt_embeddings.requires_grad_(self.cfg.trainable_soft_prompt)
         
         # Get embeddings from the base model
         if self._use_base:
@@ -129,25 +147,13 @@ class Encoder(nn.Module):
             # If not using base model, we need some embedding table - use the base model anyway
             emb_table = self.base.get_input_embeddings().weight
             
-        # Handle length mismatch
-        target_length = self.soft_prompt_embeddings.shape[0]
-        if len(token_ids) > target_length:
-            # Truncate if text is too long
-            token_ids = token_ids[:target_length]
-            log.warning(f"Text too long for soft prompt, truncated to {target_length} tokens")
-        elif len(token_ids) < target_length:
-            # Repeat if text is too short
-            repeats = (target_length + len(token_ids) - 1) // len(token_ids)  # Ceiling division
-            token_ids = token_ids.repeat(repeats)[:target_length]
-            log.info(f"Text too short for soft prompt, repeated to {target_length} tokens")
-            
-        # Get embeddings and initialize the soft prompt
+        # Initialize the soft prompt with text embeddings
         with torch.no_grad():
-            text_embeddings = emb_table[token_ids]  # Shape: (target_length, d_model)
+            text_embeddings = emb_table[token_ids]  # Shape: (text_length, d_model)
             self.soft_prompt_embeddings.data.copy_(text_embeddings)
             
-        log.info(f"Initialized encoder soft prompt from text: '{text}' "
-                f"({len(tokenizer(text, add_special_tokens=False).input_ids)} -> {target_length} tokens)")
+        log.info(f"Initialized encoder soft prompt from text: '{text}' ({text_length} tokens, "
+                f"trainable: {self.cfg.trainable_soft_prompt})")
 
         # Store flag for forward()
 

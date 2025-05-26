@@ -439,7 +439,8 @@ def main(hcfg: DictConfig) -> None:
     effective_act_dir: str | None = None
     if base_eval_act_dir_str:
         base_path = resolve_path(base_eval_act_dir_str)
-        effective_act_dir = str(base_path.parent / tokenizer_name / f"layer_{layer_l}" / base_path.name)
+        model_name_clean = cfg['model_name'].replace("/", "_")
+        effective_act_dir = str(base_path.parent / model_name_clean / f"layer_{layer_l}" / base_path.name)
 
     if not effective_act_dir:
         log.critical("No effective activation directory could be determined for evaluation. Exiting.")

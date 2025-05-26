@@ -584,8 +584,9 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     base_activation_dir_str = args.activation_dir if args.activation_dir is not None else config['activation_dumper']['output_dir']
     # Resolve path relative to project root
     base_activation_path = resolve_path(base_activation_dir_str)
-    # Include layer in the path: parent / tokenizer_name / layer_X / name
-    activation_dir = str(base_activation_path.parent / tokenizer_name / f"layer_{layer_l}" / base_activation_path.name)
+    # Include layer in the path: parent / model_name / layer_X / name
+    model_name_clean = config['model_name'].replace("/", "_")
+    activation_dir = str(base_activation_path.parent / model_name_clean / f"layer_{layer_l}" / base_activation_path.name)
     
     # Handle val_activation_dir: CLI takes precedence over config.
     base_val_activation_dir_str = args.val_activation_dir if args.val_activation_dir is not None else config.get('val_activation_dir')
@@ -594,7 +595,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         # Resolve path relative to project root
         base_val_path = resolve_path(base_val_activation_dir_str)
         # Include layer in the validation path too
-        effective_val_activation_dir = str(base_val_path.parent / tokenizer_name / f"layer_{layer_l}" / base_val_path.name)
+        effective_val_activation_dir = str(base_val_path.parent / model_name_clean / f"layer_{layer_l}" / base_val_path.name)
     
     max_steps = config['max_train_steps']
     learning_rate = config['learning_rate']
