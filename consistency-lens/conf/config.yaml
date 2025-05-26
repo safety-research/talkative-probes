@@ -71,7 +71,7 @@ trainable_components:
     eye_init: true
     soft_prompt_length: 4     # Number of trainable soft prompt tokens (0 to disable)
     trainable_soft_prompt: true  # Whether soft prompt tokens are trainable
-    soft_prompt_init_std: 0.0  # Standard deviation for random initialization of soft prompt tokens
+    soft_prompt_init_std: 0.001  # Standard deviation for random initialization of soft prompt tokens
     soft_prompt_init_text: "Summary of the text:"  # Text to initialize soft prompt from (overrides random init, e.g. "reconstruct activation:")
 
 # Freeze schedule for non-adapter parameters
