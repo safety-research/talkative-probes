@@ -169,9 +169,10 @@ submit_dump_job() {
         echo -e "${YELLOW}Running activation dumping directly...${NC}" >&2
         echo "Config: $config, Layer: $layer, Use pretokenized: $use_pretokenized, GPUs: $NUM_GPUS" >&2
         
-        # Skip if dependency is not completed
+        # In non-SLURM mode, dependency="completed" means the previous step succeeded
+        # Only fail if dependency exists but is NOT "completed" 
         if [ -n "$dependency" ] && [ "$dependency" != "completed" ]; then
-            echo -e "${RED}ERROR: Dependency not completed in non-SLURM mode${NC}" >&2
+            echo -e "${RED}ERROR: Previous step (pretokenization) did not complete successfully${NC}" >&2
             exit 1
         fi
         
@@ -256,9 +257,10 @@ submit_train_job() {
     else
         echo -e "${YELLOW}Running training directly...${NC}" >&2
         
-        # Skip if dependency is not completed
+        # In non-SLURM mode, dependency="completed" means the previous step succeeded
+        # Only fail if dependency exists but is NOT "completed"
         if [ -n "$dependency" ] && [ "$dependency" != "completed" ]; then
-            echo -e "${RED}ERROR: Dependency not completed in non-SLURM mode${NC}" >&2
+            echo -e "${RED}ERROR: Previous step did not complete successfully${NC}" >&2
             exit 1
         fi
         
@@ -309,6 +311,7 @@ submit_train_job() {
 case $EXPERIMENT in
     "ss-frozen"|"simplestories-frozen")
         echo -e "${BLUE}=== SimpleStories Frozen Experiment ===${NC}"
+        echo -e "${BLUE}Using pretokenization for 5x faster dumping${NC}"
         
         # Check if activations exist
         if check_activations "SimpleStories/SimpleStories-5M" 5 "SimpleStories_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
@@ -316,13 +319,16 @@ case $EXPERIMENT in
             train_job=$(submit_train_job "scripts/slurm_simplestories_frozen.sh" "ss-frozen" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         else
             echo -e "${YELLOW}Activations not found or force redump requested${NC}"
-            dump_job=$(submit_dump_job "conf/simplestories_frozen.yaml" 5 "ss-frozen")
+            # First pretokenize, then dump with pretokenized data
+            pretok_job=$(submit_pretokenize_job "conf/simplestories_frozen.yaml" "ss-frozen")
+            dump_job=$(submit_dump_job "conf/simplestories_frozen.yaml" 5 "ss-frozen" true "$pretok_job")
             train_job=$(submit_train_job "scripts/slurm_simplestories_frozen.sh" "ss-frozen" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         fi
         ;;
         
     "ss-unfreeze"|"simplestories-unfreeze")
         echo -e "${BLUE}=== SimpleStories Unfreeze Experiment ===${NC}"
+        echo -e "${BLUE}Using pretokenization for 5x faster dumping${NC}"
         
         # Same activations as frozen
         if check_activations "SimpleStories/SimpleStories-5M" 5 "SimpleStories_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
@@ -330,7 +336,9 @@ case $EXPERIMENT in
             train_job=$(submit_train_job "scripts/slurm_simplestories_unfreeze.sh" "ss-unfreeze" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         else
             echo -e "${YELLOW}Activations not found or force redump requested${NC}"
-            dump_job=$(submit_dump_job "conf/simplestories_unfreeze.yaml" 5 "ss-unfreeze")
+            # First pretokenize, then dump with pretokenized data
+            pretok_job=$(submit_pretokenize_job "conf/simplestories_unfreeze.yaml" "ss-unfreeze")
+            dump_job=$(submit_dump_job "conf/simplestories_unfreeze.yaml" 5 "ss-unfreeze" true "$pretok_job")
             train_job=$(submit_train_job "scripts/slurm_simplestories_unfreeze.sh" "ss-unfreeze" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         fi
         ;;

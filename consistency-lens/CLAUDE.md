@@ -149,6 +149,7 @@ FORCE_DIRECT=true ./scripts/submit_with_dumping.sh ss-frozen
 The wrapper script automatically:
 - Detects SLURM vs non-SLURM environments
 - Checks if activations exist
+- **Pre-tokenizes datasets for 5x faster dumping** (all experiments)
 - On SLURM: Submits jobs with proper dependencies
 - On non-SLURM: Runs dumping and training sequentially in foreground
 - Auto-detects available GPUs (configurable)

@@ -215,8 +215,7 @@ class Decoder(nn.Module):
         B, d_model = activation_input.shape
         device = activation_input.device
         # Embedding table reference once.
-        #emb_table = self.base.get_input_embeddings().weight  # (V, d_model)
-        emb_table = self.base.get_output_embeddings().weight  # (V, d_model)
+        emb_table = self.base.get_input_embeddings().weight  # (V, d_model)
 
         # 0) prepend textual prompt (pre-computed at set_prompt)
         parts = []
