@@ -17,8 +17,18 @@ uv:
 
 # Setup environment
 setup: uv
+	@if [ -f /workspace/kitf/dotfiles/setup_env.sh ]; then \
+		echo "Running setup_env.sh..."; \
+		/workspace/kitf/dotfiles/setup_env.sh; \
+	fi
 	uv venv
 	uv pip install -e .
+	@if [ -f .env ]; then \
+		echo "Configuring wandb..."; \
+		. .venv/bin/activate && \
+		export $$(grep WANDB_API_KEY .env | xargs) && \
+		wandb login $$WANDB_API_KEY; \
+	fi
 	@echo "Setup complete! Activate with: source .venv/bin/activate"
 
 # Quick install (assumes venv exists)
