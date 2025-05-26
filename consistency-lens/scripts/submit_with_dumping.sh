@@ -333,15 +333,18 @@ case $EXPERIMENT in
         echo -e "${BLUE}=== SimpleStories Frozen Experiment ===${NC}"
         echo -e "${BLUE}Using pretokenization for 5x faster dumping${NC}"
         
-        # Check if activations exist (using the direct path from config)
-        if check_activations "" "" "SimpleStories_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
+        # Extract layer from config (defaults to 5 from config.yaml)
+        LAYER=$(python -c "import yaml; print(yaml.safe_load(open('conf/config.yaml'))['layer_l'])" 2>/dev/null || echo "5")
+        
+        # Check if activations exist (using the actual path structure)
+        if check_activations "SimpleStories/SimpleStories-5M" "$LAYER" "SimpleStories_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
             echo -e "${GREEN}Activations already exist, submitting training only${NC}"
             train_job=$(submit_train_job "scripts/slurm_simplestories_frozen.sh" "ss-frozen" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         else
             echo -e "${YELLOW}Activations not found or force redump requested${NC}"
             # First pretokenize, then dump with pretokenized data
             pretok_job=$(submit_pretokenize_job "conf/simplestories_frozen.yaml" "ss-frozen")
-            dump_job=$(submit_dump_job "conf/simplestories_frozen.yaml" 5 "ss-frozen" true "$pretok_job")
+            dump_job=$(submit_dump_job "conf/simplestories_frozen.yaml" "$LAYER" "ss-frozen" true "$pretok_job")
             train_job=$(submit_train_job "scripts/slurm_simplestories_frozen.sh" "ss-frozen" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         fi
         ;;
@@ -350,15 +353,18 @@ case $EXPERIMENT in
         echo -e "${BLUE}=== SimpleStories Unfreeze Experiment ===${NC}"
         echo -e "${BLUE}Using pretokenization for 5x faster dumping${NC}"
         
-        # Same activations as frozen (using the direct path from config)
-        if check_activations "" "" "SimpleStories_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
+        # Extract layer from config (defaults to 5 from config.yaml)
+        LAYER=$(python -c "import yaml; print(yaml.safe_load(open('conf/config.yaml'))['layer_l'])" 2>/dev/null || echo "5")
+        
+        # Same activations as frozen (using the actual path structure)
+        if check_activations "SimpleStories/SimpleStories-5M" "$LAYER" "SimpleStories_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
             echo -e "${GREEN}Activations already exist, submitting training only${NC}"
             train_job=$(submit_train_job "scripts/slurm_simplestories_unfreeze.sh" "ss-unfreeze" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         else
             echo -e "${YELLOW}Activations not found or force redump requested${NC}"
             # First pretokenize, then dump with pretokenized data
             pretok_job=$(submit_pretokenize_job "conf/simplestories_unfreeze.yaml" "ss-unfreeze")
-            dump_job=$(submit_dump_job "conf/simplestories_unfreeze.yaml" 5 "ss-unfreeze" true "$pretok_job")
+            dump_job=$(submit_dump_job "conf/simplestories_unfreeze.yaml" "$LAYER" "ss-unfreeze" true "$pretok_job")
             train_job=$(submit_train_job "scripts/slurm_simplestories_unfreeze.sh" "ss-unfreeze" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         fi
         ;;
@@ -368,14 +374,17 @@ case $EXPERIMENT in
         echo -e "${BLUE}Training GPT-2 on OpenWebText (its original training data)${NC}"
         echo -e "${BLUE}Using pretokenization for 5x faster dumping${NC}"
         
-        if check_activations "openai-community/gpt2" 6 "openwebtext_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
+        # Extract layer from config (GPT-2 uses layer 6)
+        LAYER=$(python -c "import yaml; cfg=yaml.safe_load(open('conf/gpt2_frozen.yaml')); print(cfg.get('layer_l', yaml.safe_load(open('conf/config.yaml'))['layer_l']))" 2>/dev/null || echo "6")
+        
+        if check_activations "openai-community/gpt2" "$LAYER" "openwebtext_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
             echo -e "${GREEN}Activations already exist, submitting training only${NC}"
             train_job=$(submit_train_job "scripts/slurm_gpt2_frozen.sh" "gpt2-frozen" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         else
             echo -e "${YELLOW}Activations not found or force redump requested${NC}"
             # First pretokenize, then dump with pretokenized data
             pretok_job=$(submit_pretokenize_job "conf/gpt2_frozen.yaml" "gpt2-frozen")
-            dump_job=$(submit_dump_job "conf/gpt2_frozen.yaml" 6 "gpt2-frozen" true "$pretok_job")
+            dump_job=$(submit_dump_job "conf/gpt2_frozen.yaml" "$LAYER" "gpt2-frozen" true "$pretok_job")
             train_job=$(submit_train_job "scripts/slurm_gpt2_frozen.sh" "gpt2-frozen" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         fi
         ;;
@@ -385,15 +394,18 @@ case $EXPERIMENT in
         echo -e "${BLUE}Training GPT-2 on OpenWebText with unfreezing after 10k steps${NC}"
         echo -e "${BLUE}Using pretokenization for 5x faster dumping${NC}"
         
+        # Extract layer from config (GPT-2 uses layer 6)
+        LAYER=$(python -c "import yaml; cfg=yaml.safe_load(open('conf/gpt2_unfreeze.yaml')); print(cfg.get('layer_l', yaml.safe_load(open('conf/config.yaml'))['layer_l']))" 2>/dev/null || echo "6")
+        
         # Same activations as frozen
-        if check_activations "openai-community/gpt2" 6 "openwebtext_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
+        if check_activations "openai-community/gpt2" "$LAYER" "openwebtext_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
             echo -e "${GREEN}Activations already exist, submitting training only${NC}"
             train_job=$(submit_train_job "scripts/slurm_gpt2_unfreeze.sh" "gpt2-unfreeze" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         else
             echo -e "${YELLOW}Activations not found or force redump requested${NC}"
             # First pretokenize, then dump with pretokenized data
             pretok_job=$(submit_pretokenize_job "conf/gpt2_unfreeze.yaml" "gpt2-unfreeze")
-            dump_job=$(submit_dump_job "conf/gpt2_unfreeze.yaml" 6 "gpt2-unfreeze" true "$pretok_job")
+            dump_job=$(submit_dump_job "conf/gpt2_unfreeze.yaml" "$LAYER" "gpt2-unfreeze" true "$pretok_job")
             train_job=$(submit_train_job "scripts/slurm_gpt2_unfreeze.sh" "gpt2-unfreeze" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         fi
         ;;
@@ -403,14 +415,17 @@ case $EXPERIMENT in
         echo -e "${BLUE}Training GPT-2 on The Pile (diverse text dataset)${NC}"
         echo -e "${BLUE}Using pretokenization for 5x faster dumping${NC}"
         
-        if check_activations "openai-community/gpt2" 6 "pile_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
+        # Extract layer from config (GPT-2 uses layer 6)
+        LAYER=$(python -c "import yaml; cfg=yaml.safe_load(open('conf/gpt2_pile_frozen.yaml')); print(cfg.get('layer_l', yaml.safe_load(open('conf/config.yaml'))['layer_l']))" 2>/dev/null || echo "6")
+        
+        if check_activations "openai-community/gpt2" "$LAYER" "pile_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
             echo -e "${GREEN}Activations already exist, submitting training only${NC}"
             train_job=$(submit_train_job "scripts/slurm_gpt2_pile.sh" "gpt2-pile" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         else
             echo -e "${YELLOW}Activations not found or force redump requested${NC}"
             # First pretokenize, then dump with pretokenized data
             pretok_job=$(submit_pretokenize_job "conf/gpt2_pile_frozen.yaml" "gpt2-pile")
-            dump_job=$(submit_dump_job "conf/gpt2_pile_frozen.yaml" 6 "gpt2-pile" true "$pretok_job")
+            dump_job=$(submit_dump_job "conf/gpt2_pile_frozen.yaml" "$LAYER" "gpt2-pile" true "$pretok_job")
             train_job=$(submit_train_job "scripts/slurm_gpt2_pile.sh" "gpt2-pile" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         fi
         ;;
@@ -420,15 +435,18 @@ case $EXPERIMENT in
         echo -e "${BLUE}Training GPT-2 on The Pile with unfreezing after 1st epoch${NC}"
         echo -e "${BLUE}Using pretokenization for 5x faster dumping${NC}"
         
+        # Extract layer from config (GPT-2 uses layer 6)
+        LAYER=$(python -c "import yaml; cfg=yaml.safe_load(open('conf/gpt2_pile_unfreeze.yaml')); print(cfg.get('layer_l', yaml.safe_load(open('conf/config.yaml'))['layer_l']))" 2>/dev/null || echo "6")
+        
         # Same activations as pile frozen
-        if check_activations "openai-community/gpt2" 6 "pile_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
+        if check_activations "openai-community/gpt2" "$LAYER" "pile_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
             echo -e "${GREEN}Activations already exist, submitting training only${NC}"
             train_job=$(submit_train_job "scripts/slurm_gpt2_pile_unfreeze.sh" "gpt2-pile-unfreeze" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         else
             echo -e "${YELLOW}Activations not found or force redump requested${NC}"
             # First pretokenize, then dump with pretokenized data
             pretok_job=$(submit_pretokenize_job "conf/gpt2_pile_unfreeze.yaml" "gpt2-pile-unfreeze")
-            dump_job=$(submit_dump_job "conf/gpt2_pile_unfreeze.yaml" 6 "gpt2-pile-unfreeze" true "$pretok_job")
+            dump_job=$(submit_dump_job "conf/gpt2_pile_unfreeze.yaml" "$LAYER" "gpt2-pile-unfreeze" true "$pretok_job")
             train_job=$(submit_train_job "scripts/slurm_gpt2_pile_unfreeze.sh" "gpt2-pile-unfreeze" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         fi
         ;;
