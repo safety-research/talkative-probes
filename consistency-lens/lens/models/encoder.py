@@ -32,6 +32,14 @@ class EncoderConfig:
         
         if self.soft_prompt_length == 0 and self.soft_prompt_init_text is not None:
             raise ValueError("soft_prompt_init_text specified but soft_prompt_length is 0")
+            
+        # Can't train a base model if we're not using it
+        if not self.use_base_model and self.base_model:
+            raise ValueError("base_model=True requires use_base_model=True (can't train a model that isn't being used)")
+            
+        # Can't train embedding heads if we're not using the base model
+        if not self.use_base_model and self.embedding_head:
+            raise ValueError("embedding_head=True requires use_base_model=True (can't train embeddings of a model that isn't being used)")
 log = logging.getLogger(__name__)
 
 

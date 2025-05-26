@@ -113,7 +113,9 @@ class OrigWrapper:
             def _vectorized_swap_hook(_, __, output):  # noqa: ANN001
                 hidden = output[0]  # (B, seq_len, dim)
                 batch_indices = torch.arange(hidden.shape[0], device=hidden.device)
-                hidden[batch_indices, token_positions] = new_activations
+                # Ensure token_positions is 1D - squeeze if needed
+                token_pos = token_positions.squeeze() if token_positions.ndim > 1 else token_positions
+                hidden[batch_indices, token_pos] = new_activations
                 return (hidden,) + output[1:]
 
             try:

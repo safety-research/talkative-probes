@@ -104,5 +104,10 @@ class ActivationDataset(Dataset):
         # Ensure all fields are tensors
         for k, v in list(sample.items()):
             if not torch.is_tensor(v):
-                sample[k] = torch.tensor(v)
+                # Convert scalars to tensors
+                # For token_pos fields, ensure they are at least 1D
+                if k in ["token_pos", "token_pos_A", "token_pos_A_prime"]:
+                    sample[k] = torch.tensor([v])
+                else:
+                    sample[k] = torch.tensor(v)
         return sample
