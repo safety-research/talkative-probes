@@ -768,7 +768,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         log.info("Remapped Decoder & Encoder embedding matrices to new tokenizer")
 
     # Reinitialise prompt ids to ensure they are within new vocab
-    dec_raw.set_prompt(config.get("decoder_prompt", "Explain: "), tokenizer)
+    dec_raw.set_prompt(config["decoder_prompt"], tokenizer)
     log.info("Prompt for decoder: %s",str([tokenizer.decode(d) for d in dec_raw.prompt_ids]))
 
     # Initialize encoder soft prompt from text if specified
@@ -1094,6 +1094,19 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
 
         # Move batch tensors to device
         batch = {k: v.to(device) for k, v in batch.items()}
+        
+        # Print first element of each batch item
+        if step == 0:
+            log.info("First batch contents:")
+            for k, v in batch.items():
+                if isinstance(v, torch.Tensor):
+                    if v.dim() > 0:
+                        log.info(f"  {k}: {str(v[0])[:100]}")
+                    else:
+                        log.info(f"  {k}: {v} (scalar tensor)")
+                else:
+                    log.info(f"  {k}: {v}")
+
 
         opt.zero_grad(set_to_none=True)
 
@@ -1505,7 +1518,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                 verbose_spec = parse_schedule_value(verbose_interval_str)
                 if verbose_spec.unit == "steps":
                     # Print every N steps
-                    if step > 0 and step % verbose_spec.value == 0:
+                    if step % verbose_spec.value == 0:
                         should_print = True
                 elif verbose_spec.unit == "epochs":
                     # Print at epoch boundaries
