@@ -32,9 +32,6 @@ class EncoderConfig:
         
         if self.soft_prompt_length == 0 and self.soft_prompt_init_text is not None:
             raise ValueError("soft_prompt_init_text specified but soft_prompt_length is 0")
-            
-        if not self.base_model and self.use_base_model:
-            raise ValueError("use_base_model requires base_model to be True")
 log = logging.getLogger(__name__)
 
 
