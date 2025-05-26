@@ -104,7 +104,7 @@ submit_pretokenize_job() {
             --time=2:00:00 \
             --output=logs/pretokenize_%j.out \
             --error=logs/pretokenize_%j.err \
-            --wrap="bash -c 'cd /home/kitf/talkative-probes/consistency-lens && source .venv/bin/activate && python scripts/pretokenize_dataset.py --config_path $config --num_proc 32'" 2>&1)
+            --wrap="bash -c 'cd /home/kitf/talkative-probes/consistency-lens && source .venv/bin/activate && python scripts/pretokenize_dataset.py --config-path=$(dirname $config) --config-name=$(basename $config .yaml) pretokenize.num_proc=32'" 2>&1)
         
         if [[ $? -ne 0 ]]; then
             echo -e "${RED}ERROR: Failed to submit pretokenization job${NC}" >&2
@@ -120,7 +120,7 @@ submit_pretokenize_job() {
         echo "Config: $config" >&2
         
         # Run pretokenization directly
-        if source .venv/bin/activate && python scripts/pretokenize_dataset.py --config_path "$config" --num_proc 32; then
+        if source .venv/bin/activate && python scripts/pretokenize_dataset.py --config-path=$(dirname "$config") --config-name=$(basename "$config" .yaml) pretokenize.num_proc=32; then
             echo -e "${GREEN}Pretokenization completed successfully${NC}" >&2
             echo "completed"
         else

@@ -59,7 +59,7 @@ if [ ! -d "$PRETOKENIZED_PATH" ] || [ "$FORCE_REDUMP" == "true" ]; then
     echo "=== Pretokenizing The Pile dataset ==="
     echo "=== NOTE: This will take longer due to larger dataset (10M samples) ==="
     python scripts/pretokenize_dataset.py \
-        --config_path conf/gpt2_pile_frozen.yaml
+        --config-path=conf --config-name=gpt2_pile_frozen
 else
     echo "=== Pretokenized data already exists, skipping ==="
 fi

@@ -57,7 +57,7 @@ PRETOKENIZED_PATH="./data/pretokenized/openwebtext"
 if [ ! -d "$PRETOKENIZED_PATH" ] || [ "$FORCE_REDUMP" == "true" ]; then
     echo "=== Pretokenizing OpenWebText dataset ==="
     python scripts/pretokenize_dataset.py \
-        --config_path conf/gpt2_frozen.yaml
+        --config-path=conf --config-name=gpt2_frozen
 else
     echo "=== Pretokenized data already exists, skipping ==="
 fi

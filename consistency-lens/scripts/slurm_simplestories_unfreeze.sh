@@ -57,7 +57,7 @@ PRETOKENIZED_PATH="./data/corpus/SimpleStories/pretokenized"
 if [ ! -d "$PRETOKENIZED_PATH" ] || [ "$FORCE_REDUMP" == "true" ]; then
     echo "=== Pretokenizing SimpleStories dataset ==="
     python scripts/pretokenize_dataset.py \
-        --config_path conf/simplestories_unfreeze.yaml
+        --config-path=conf --config-name=simplestories_unfreeze
 else
     echo "=== Pretokenized data already exists, skipping ==="
 fi
