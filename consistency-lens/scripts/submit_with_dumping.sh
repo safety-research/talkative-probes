@@ -65,14 +65,25 @@ check_activations() {
     local dataset=$3
     local split=$4
     
-    local activation_dir="./data/activations/${model_name}/layer_${layer}/${dataset}"
-    echo "Checking activations in $activation_dir"
+    # Check multiple possible locations due to path variations
+    local activation_dirs=(
+        "./data/activations/${model_name}/layer_${layer}/${dataset}"
+        "./data/activations/${dataset}"  # Direct path from config
+        "./data/${model_name}/layer_${layer}/activations"  # Alternative structure
+    )
     
-    if [ -d "$activation_dir" ] && [ -n "$(ls -A $activation_dir 2>/dev/null)" ]; then
-        return 0  # Activations exist
-    else
-        return 1  # Activations don't exist
-    fi
+    for activation_dir in "${activation_dirs[@]}"; do
+        echo "Checking activations in $activation_dir"
+        if [ -d "$activation_dir" ]; then
+            # Check if directory has content (including rank_* subdirectories)
+            if [ -n "$(find "$activation_dir" -name "*.pt" -o -name "rank_*" 2>/dev/null | head -1)" ]; then
+                echo "Found activations in $activation_dir"
+                return 0  # Activations exist
+            fi
+        fi
+    done
+    
+    return 1  # Activations don't exist
 }
 
 # Function to submit pretokenization job
@@ -289,7 +300,16 @@ submit_train_job() {
         echo -e "${GREEN}Running training with config: $config_file${NC}" >&2
         
         # Run training with resume parameters if set
-        local train_cmd="python scripts/01_train.py --config-path=. --config-name=$(basename "$config_file" .yaml)"
+        # The training script expects configs to be in ../conf relative to the script
+        local config_dir="$(dirname "$config_file")"
+        local config_name="$(basename "$config_file" .yaml)"
+        
+        # Make config directory absolute if it's relative
+        if [[ ! "$config_dir" = /* ]]; then
+            config_dir="$(pwd)/$config_dir"
+        fi
+        
+        local train_cmd="python scripts/01_train.py --config-path=$config_dir --config-name=$config_name"
         if [ -n "$resume_checkpoint" ]; then
             train_cmd="$train_cmd resume=\"$resume_checkpoint\""
         fi
@@ -313,8 +333,8 @@ case $EXPERIMENT in
         echo -e "${BLUE}=== SimpleStories Frozen Experiment ===${NC}"
         echo -e "${BLUE}Using pretokenization for 5x faster dumping${NC}"
         
-        # Check if activations exist
-        if check_activations "SimpleStories/SimpleStories-5M" 5 "SimpleStories_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
+        # Check if activations exist (using the direct path from config)
+        if check_activations "" "" "SimpleStories_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
             echo -e "${GREEN}Activations already exist, submitting training only${NC}"
             train_job=$(submit_train_job "scripts/slurm_simplestories_frozen.sh" "ss-frozen" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         else
@@ -330,8 +350,8 @@ case $EXPERIMENT in
         echo -e "${BLUE}=== SimpleStories Unfreeze Experiment ===${NC}"
         echo -e "${BLUE}Using pretokenization for 5x faster dumping${NC}"
         
-        # Same activations as frozen
-        if check_activations "SimpleStories/SimpleStories-5M" 5 "SimpleStories_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
+        # Same activations as frozen (using the direct path from config)
+        if check_activations "" "" "SimpleStories_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
             echo -e "${GREEN}Activations already exist, submitting training only${NC}"
             train_job=$(submit_train_job "scripts/slurm_simplestories_unfreeze.sh" "ss-unfreeze" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         else
