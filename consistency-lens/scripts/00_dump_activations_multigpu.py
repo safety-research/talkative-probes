@@ -181,61 +181,46 @@ def iter_pretokenized_distributed(
 def main(cfg: DictConfig) -> None:
     """Hydra-powered multi-GPU activation dumper."""
     
-    # Build args namespace from Hydra config for compatibility
-    args = SimpleNamespace()
-    
-    # Extract activation_dumper config
-    activation_dumper_cfg = cfg.activation_dumper
-    
-    # Command-line overrides (these are automatically handled by Hydra if specified)
-    args.output_dir = activation_dumper_cfg.get('output_dir')
-    args.num_samples = activation_dumper_cfg.get('num_samples', -1)
-    args.seq_len = activation_dumper_cfg.get('seq_len', 64)
-    args.layer_idx = cfg.get('layer_l', 5)
-    args.seed = cfg.get('seed', 0)
-    
-    # Multi-GPU options
-    args.model_parallel = cfg.get('model_parallel', False)
-    args.pipeline_parallel_size = cfg.get('pipeline_parallel_size', 1)
-    
-    # HuggingFace dataset options
-    args.hf_dataset_name = activation_dumper_cfg.get('hf_dataset_name')
-    args.use_hf_dataset = activation_dumper_cfg.get('use_hf_dataset', False)
-    args.use_pretokenized = activation_dumper_cfg.get('use_pretokenized', False)
-    args.pretokenized_path = activation_dumper_cfg.get('pretokenized_path')
-    args.dataset_cache_dir = activation_dumper_cfg.get('dataset_cache_dir')
-    args.hf_split = activation_dumper_cfg.get('hf_split', 'train')
-    
-    # Validation split options
-    args.val_hf_split = activation_dumper_cfg.get('val_hf_split')
-    args.val_output_dir = activation_dumper_cfg.get('val_output_dir')
-    args.val_num_samples = activation_dumper_cfg.get('val_num_samples')
-    
     # Setup distributed
     rank, world_size, local_rank = setup_distributed()
     
-    # Convert OmegaConf to dict for compatibility with existing code
-    config = OmegaConf.to_container(cfg, resolve=True)
+    # Determine effective config from Hydra cfg
+    # Top-level configs
+    layer_idx = cfg.get('layer_l', 5)
+    seed = cfg.get('seed', 0)
+    model_parallel = cfg.get('model_parallel', False)
+    # pipeline_parallel_size = cfg.get('pipeline_parallel_size', 1) # Not used in selection
+    model_name = cfg.model_name
+    tokenizer_name = cfg.tokenizer_name
+
+    # activation_dumper specific configs
+    activation_dumper_cfg = cfg.activation_dumper
     
-    # Determine effective config
-    base_output_dir_str = args.output_dir if args.output_dir is not None else activation_dumper_cfg['output_dir']
-    seq_len = args.seq_len if args.seq_len is not None else activation_dumper_cfg['seq_len']
-    # If num_samples not provided or is -1, we'll process the entire dataset
-    num_samples_cfg = activation_dumper_cfg.get("num_samples", -1)
-    if args.num_samples is not None:
-        num_samples = None if args.num_samples == -1 else args.num_samples
-    else:
-        num_samples = None if num_samples_cfg == -1 else num_samples_cfg
-    layer_idx = args.layer_idx if args.layer_idx is not None else cfg['layer_l']
+    base_output_dir_str = activation_dumper_cfg.output_dir
     
+    raw_num_samples = activation_dumper_cfg.get('num_samples', -1)
+    num_samples = None if raw_num_samples == -1 else raw_num_samples
+    
+    seq_len = activation_dumper_cfg.get('seq_len', 64)
+    
+    # HuggingFace dataset options
+    effective_hf_dataset_name = activation_dumper_cfg.get('hf_dataset_name')
+    effective_use_hf = activation_dumper_cfg.get('use_hf_dataset', False)
+    use_pretokenized_cfg = activation_dumper_cfg.get('use_pretokenized', False)
+    pretokenized_path_cfg = activation_dumper_cfg.get('pretokenized_path')
+    effective_dataset_cache_dir = activation_dumper_cfg.get('dataset_cache_dir')
+    effective_hf_split = activation_dumper_cfg.get('hf_split', 'train')
+    
+    # Validation split options
+    val_hf_split_cfg = activation_dumper_cfg.get('val_hf_split')
+    val_output_dir_cfg = activation_dumper_cfg.get('val_output_dir')
+    val_num_samples_cfg = activation_dumper_cfg.get('val_num_samples', -1)
+
     # Build output directory with model and layer information
-    # Start with the base path from config and add model/layer structure
     base_path = resolve_path(base_output_dir_str)
-    model_name_clean = cfg["model_name"].replace("/", "_")
-    tokenizer_name = cfg["tokenizer_name"]
+    model_name_clean = model_name.replace("/", "_")
     
     # Insert model and layer info into the path
-    # If the path ends with _train or _test, preserve that
     path_parts = base_path.parts
     if path_parts[-1].endswith(('_train', '_test', '_val')):
         dataset_suffix = path_parts[-1]
@@ -243,11 +228,6 @@ def main(cfg: DictConfig) -> None:
         effective_output_dir = parent_path / model_name_clean / f"layer_{layer_idx}" / dataset_suffix
     else:
         effective_output_dir = base_path.parent / model_name_clean / f"layer_{layer_idx}" / base_path.name
-    
-    effective_use_hf = args.use_hf_dataset or activation_dumper_cfg.get("use_hf_dataset", False)
-    effective_hf_dataset_name = args.hf_dataset_name if args.hf_dataset_name is not None else activation_dumper_cfg.get("hf_dataset_name")
-    effective_dataset_cache_dir = args.dataset_cache_dir if args.dataset_cache_dir is not None else activation_dumper_cfg.get("dataset_cache_dir")
-    effective_hf_split = args.hf_split if args.hf_split is not None else activation_dumper_cfg.get("hf_split", "train")
     
     # Logging setup
     logging.basicConfig(
@@ -258,9 +238,9 @@ def main(cfg: DictConfig) -> None:
     log = logging.getLogger(__name__)
     
     # Set seeds with rank offset for diversity
-    torch.manual_seed(args.seed + rank)
-    random.seed(args.seed + rank)
-    torch.cuda.manual_seed(args.seed + rank)
+    torch.manual_seed(seed + rank)
+    random.seed(seed + rank)
+    torch.cuda.manual_seed(seed + rank)
     
     device = torch.device(f"cuda:{local_rank}") if local_rank >= 0 else torch.device("cpu")
     
@@ -269,10 +249,10 @@ def main(cfg: DictConfig) -> None:
         log.info(f"CPU threads per process: torch.get_num_threads()={torch.get_num_threads()}, OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS', 'not set')}")
         log.info(f"Tokenizer parallelism: TOKENIZERS_PARALLELISM={os.environ.get('TOKENIZERS_PARALLELISM')}, RAYON_NUM_THREADS={os.environ.get('RAYON_NUM_THREADS', 'not set')}")
         log.info(f"Tokenizer name: {tokenizer_name}")
-        log.info(f"Model name: {cfg['model_name']}")
+        log.info(f"Model name: {model_name}")
         log.info(f"Layer index: {layer_idx}")
         log.info(f"Output directory will include layer: {effective_output_dir}")
-        log.info(f"Num samples: {num_samples}, per rank: {num_samples/world_size}")
+        log.info(f"Num samples: {num_samples}, per rank: {num_samples/world_size if num_samples is not None else 'None'}")
     
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True)
@@ -284,7 +264,7 @@ def main(cfg: DictConfig) -> None:
         test_texts = ["Test sentence for thread verification"] * 100
         import time as _time
         _start = _time.time()
-        _ = tokenizer(test_texts, padding="max_length", max_length=64, truncation=True, return_tensors="pt")
+        _ = tokenizer(test_texts, padding="max_length", max_length=seq_len, truncation=True, return_tensors="pt")
         _elapsed = _time.time() - _start
         log.info(f"Tokenizer test: 100 samples in {_elapsed:.3f}s = {100/_elapsed:.0f} samples/sec")
         log.info(f"Actual PyTorch threads in use: {torch.get_num_threads()}")
@@ -299,13 +279,13 @@ def main(cfg: DictConfig) -> None:
     }
     
     # Load model efficiently
-    if args.model_parallel and world_size > 1:
+    if model_parallel and world_size > 1:
         # Model parallelism: split model across GPUs
         model_kwargs["device_map"] = "auto"
-        model = AutoModelForCausalLM.from_pretrained(cfg["model_name"], **model_kwargs)
+        model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
     else:
         # Data parallelism: replicate model on each GPU
-        model = AutoModelForCausalLM.from_pretrained(cfg["model_name"], **model_kwargs)
+        model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
         model = model.to(device)
     
     # Ensure embedding size matches
@@ -342,14 +322,7 @@ def main(cfg: DictConfig) -> None:
     ]
     
     # Add validation split if specified
-    val_out_base_cfg = activation_dumper_cfg.get("val_output_dir")
-    val_split_cfg = activation_dumper_cfg.get("val_hf_split", "validation")
-    
-    base_val_output_dir_str = None
-    if args.val_output_dir:
-        base_val_output_dir_str = args.val_output_dir
-    elif val_out_base_cfg:
-        base_val_output_dir_str = val_out_base_cfg
+    base_val_output_dir_str = val_output_dir_cfg # This is cfg.activation_dumper.get('val_output_dir')
     
     if base_val_output_dir_str:
         # Build validation output directory with model and layer information
@@ -363,12 +336,12 @@ def main(cfg: DictConfig) -> None:
             val_out_dir = val_parent_path / model_name_clean / f"layer_{layer_idx}" / val_dataset_suffix
         else:
             val_out_dir = base_val_path.parent / model_name_clean / f"layer_{layer_idx}" / base_val_path.name
-        val_split = args.val_hf_split if args.val_hf_split else val_split_cfg
-        val_samples_cfg = activation_dumper_cfg.get("val_num_samples", -1)
-        if args.val_num_samples is not None:
-            val_samples = None if args.val_num_samples == -1 else args.val_num_samples
-        else:
-            val_samples = None if val_samples_cfg == -1 else val_samples_cfg
+        
+        val_split = val_hf_split_cfg if val_hf_split_cfg is not None else "validation"
+        
+        raw_val_samples = val_num_samples_cfg # This is cfg.activation_dumper.get('val_num_samples', -1)
+        val_samples = None if raw_val_samples == -1 else raw_val_samples
+        
         splits_to_dump.append({
             "name": val_split,
             "output_dir": val_out_dir,
@@ -376,7 +349,7 @@ def main(cfg: DictConfig) -> None:
         })
     
     # Dump helper function adapted for distributed
-    def dump_split_distributed(split_name_arg: str, out_path: Path, n_samples_for_split: int):
+    def dump_split_distributed(split_name_arg: str, out_path: Path, n_samples_for_split: int | None):
         MIN_TOKEN_IDX_INCLUSIVE = 5
         
         if rank == 0:
@@ -391,6 +364,7 @@ def main(cfg: DictConfig) -> None:
             dist.barrier()
         
         # Calculate samples per rank
+        rank_num_samples: int | None
         if n_samples_for_split is None:
             # When processing entire dataset, we don't know exact count
             rank_num_samples = None
@@ -399,7 +373,9 @@ def main(cfg: DictConfig) -> None:
             rank_start_idx = rank * samples_per_rank
             rank_num_samples = min(samples_per_rank, n_samples_for_split - rank_start_idx)
             
-            if rank_num_samples <= 0:
+            if rank_num_samples <= 0: # type: ignore
+                if rank == 0:
+                    log.info(f"Rank {rank} has no samples to process for split '{split_name_arg}'. Skipping.")
                 return
         
         # Initialize metadata for this rank
@@ -409,20 +385,20 @@ def main(cfg: DictConfig) -> None:
             "shards": [],
             "config": {
                 "split_name": split_name_arg,
-                "num_samples": rank_num_samples,
+                "num_samples": rank_num_samples, # This is per-rank num_samples
                 "seq_len": seq_len,
                 "layer_idx": layer_idx,
-                "model_name": cfg["model_name"],
+                "model_name": model_name,
                 "tokenizer_name": tokenizer_name,
                 "use_hf_dataset": effective_use_hf,
                 "hf_dataset_name": effective_hf_dataset_name if effective_use_hf else None,
                 "dataset_cache_dir": effective_dataset_cache_dir if effective_use_hf else None,
                 "min_token_idx_inclusive": MIN_TOKEN_IDX_INCLUSIVE,
-                "seed": args.seed + rank,
+                "seed": seed + rank, # Seed per rank
             }
         }
         
-        batch_size_cfg = activation_dumper_cfg.get("batch_size", 256)  # Match single-GPU default
+        batch_size_cfg = activation_dumper_cfg.get("batch_size", 256)
         
         # Adapt batch size based on model size if not explicitly set
         model_params = sum(p.numel() for p in model.parameters())
@@ -435,30 +411,37 @@ def main(cfg: DictConfig) -> None:
             else:  # >= 1B params
                 suggested_batch = 512
             
-            if batch_size_cfg > suggested_batch * 2:
+            if batch_size_cfg > suggested_batch * 2: # type: ignore
                 log.warning(f"Batch size {batch_size_cfg} may be too large for {model_params/1e6:.1f}M model. Consider {suggested_batch}")
         
         # Setup data iterator
-        use_pretokenized = args.use_pretokenized
-        pretokenized_path = args.pretokenized_path or f"data/pretokenized/{effective_hf_dataset_name.replace('/', '_')}"
+        # use_pretokenized_cfg is from cfg.activation_dumper.get('use_pretokenized', False)
+        # pretokenized_path_cfg is from cfg.activation_dumper.get('pretokenized_path')
         
-        if use_pretokenized:
-            # Use pre-tokenized data - much faster!
+        current_pretokenized_path = pretokenized_path_cfg
+        if use_pretokenized_cfg and not current_pretokenized_path and effective_hf_dataset_name:
+            current_pretokenized_path = f"data/pretokenized/{effective_hf_dataset_name.replace('/', '_')}"
+
+        get_next_data_fn: Callable[[], dict | str | None]
+        if use_pretokenized_cfg:
+            if not current_pretokenized_path:
+                raise ValueError("use_pretokenized is True, but pretokenized_path is not set and cannot be derived.")
             if rank == 0:
-                log.info(f"Using pre-tokenized data from: {pretokenized_path}")
+                log.info(f"Using pre-tokenized data from: {current_pretokenized_path}")
             pretok_iter = iter_pretokenized_distributed(
-                pretokenized_path,
+                current_pretokenized_path,
                 split_name_arg,
                 n_samples_for_split,
                 rank,
                 world_size
             )
             get_next_data_fn = lambda: next(pretok_iter, None)
-            data_type = "pretokenized"
         else:
             # Original text-based approach
             get_next_text_fn: Callable[[], str | None]
             if effective_use_hf:
+                if not effective_hf_dataset_name:
+                    raise ValueError("use_hf_dataset is True, but hf_dataset_name is not set.")
                 text_iter = iter_hf_text_distributed(
                     effective_hf_dataset_name,
                     effective_dataset_cache_dir,
@@ -471,14 +454,14 @@ def main(cfg: DictConfig) -> None:
             else:
                 # For fixed prompts, we never return None
                 get_next_text_fn = lambda: random.choice(fixed_prompts)
-            get_next_data_fn = get_next_text_fn
-            data_type = "text"
+            get_next_data_fn = get_next_text_fn # type: ignore
         
+        num_batches_total: float | int
         if rank_num_samples is None:
             # We'll process until the iterator is exhausted
-            num_batches = float('inf')
+            num_batches_total = float('inf')
         else:
-            num_batches = (rank_num_samples + batch_size_cfg - 1) // batch_size_cfg
+            num_batches_total = (rank_num_samples + batch_size_cfg - 1) // batch_size_cfg # type: ignore
         saved_samples_count = 0
         
         # Create rank-specific subdirectory
@@ -491,7 +474,7 @@ def main(cfg: DictConfig) -> None:
             disable=(rank != 0),
             unit="batch",
             unit_scale=False,
-            total=int(num_batches) if num_batches != float('inf') else None,
+            total=int(num_batches_total) if num_batches_total != float('inf') else None,
             bar_format="{desc}: {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}"
         )
         batch_start_time = time.time()
@@ -499,57 +482,64 @@ def main(cfg: DictConfig) -> None:
         samples_since_update = 0
         
         while True:
+            current_batch_target_size: int
             if rank_num_samples is not None:
-                current_batch_actual_size = min(batch_size_cfg, rank_num_samples - saved_samples_count)
-                if current_batch_actual_size <= 0:
+                current_batch_target_size = min(batch_size_cfg, rank_num_samples - saved_samples_count) # type: ignore
+                if current_batch_target_size <= 0:
                     break
             else:
-                current_batch_actual_size = batch_size_cfg
+                current_batch_target_size = batch_size_cfg # type: ignore
             
-            batch_txt_A = []
-            batch_txt_Ap = []
-            batch_tokens_A = []
-            batch_tokens_Ap = []
+            batch_txt_A: list[str] = []
+            batch_txt_Ap: list[str] = []
+            batch_tokens_A: list[torch.Tensor] = []
+            batch_tokens_Ap: list[torch.Tensor] = []
             
+            current_batch_actual_size = 0
             # Collect texts for batch
-            if use_pretokenized:
+            if use_pretokenized_cfg:
                 # Direct token loading
-                for _ in range(current_batch_actual_size):
+                for _ in range(current_batch_target_size):
                     data_A = get_next_data_fn()
                     data_Ap = get_next_data_fn()
                     
                     if data_A is None or data_Ap is None:
                         break
                     
-                    batch_tokens_A.append(torch.tensor(data_A["input_ids"]))
-                    batch_tokens_Ap.append(torch.tensor(data_Ap["input_ids"]))
+                    batch_tokens_A.append(torch.tensor(data_A["input_ids"])) # type: ignore
+                    batch_tokens_Ap.append(torch.tensor(data_Ap["input_ids"])) # type: ignore
                 
                 current_batch_actual_size = len(batch_tokens_A)
                 if current_batch_actual_size == 0:
                     break  # No more data
             else:
                 # Original text-based collection
-                if batch_size_cfg > 1 and current_batch_actual_size > 1:
+                if batch_size_cfg > 1 and current_batch_target_size > 1: # type: ignore
                     batch_base_texts = []
-                    for _ in range(current_batch_actual_size):
+                    for _ in range(current_batch_target_size):
                         text = get_next_data_fn()
                         if text is None:
                             break
-                        batch_base_texts.append(text)
+                        batch_base_texts.append(text) # type: ignore
                     
-                    if len(batch_base_texts) < current_batch_actual_size:
-                        current_batch_actual_size = len(batch_base_texts)
-                    
+                    current_batch_actual_size = len(batch_base_texts)
+                    if current_batch_actual_size == 0:
+                        break
+
                     for i in range(current_batch_actual_size):
                         text_A = batch_base_texts[i]
                         possible_j_indices = [j for j in range(current_batch_actual_size) if j != i]
-                        chosen_j = random.choice(possible_j_indices)
-                        text_Ap = batch_base_texts[chosen_j]
+                        if not possible_j_indices: # Should only happen if current_batch_actual_size is 1
+                            if rank == 0: log.warning("Not enough unique texts in batch to form A/A' pairs, reusing A.")
+                            text_Ap = text_A
+                        else:
+                            chosen_j = random.choice(possible_j_indices)
+                            text_Ap = batch_base_texts[chosen_j]
                         
                         batch_txt_A.append(text_A)
                         batch_txt_Ap.append(text_Ap)
-                else:
-                    for _ in range(current_batch_actual_size):
+                else: # Single item batch or batch_size_cfg is 1
+                    for _ in range(current_batch_target_size):
                         text_A = get_next_data_fn()
                         text_Ap = get_next_data_fn()
                         
@@ -558,37 +548,31 @@ def main(cfg: DictConfig) -> None:
                         
                         if not effective_use_hf and len(set(fixed_prompts)) > 1 and text_A == text_Ap:
                             while text_Ap == text_A:
-                                text_Ap = random.choice(fixed_prompts)
+                                text_Ap = random.choice(fixed_prompts) # type: ignore
                         
-                        batch_txt_A.append(text_A)
-                        batch_txt_Ap.append(text_Ap)
-            
-            # Check if we have any data
-            if use_pretokenized:
-                if not batch_tokens_A:
-                    break
-                # current_batch_actual_size already updated above
-            else:
-                if not batch_txt_A:
-                    break
+                        batch_txt_A.append(text_A) # type: ignore
+                        batch_txt_Ap.append(text_Ap) # type: ignore
+                
                 current_batch_actual_size = len(batch_txt_A)
+                if current_batch_actual_size == 0:
+                    break
             
             # Tokenize
-            if use_pretokenized:
+            toks_A_batch: torch.Tensor
+            toks_Ap_batch: torch.Tensor
+            if use_pretokenized_cfg:
                 # Already have tokens, just stack and move to device
                 toks_A_batch = torch.stack(batch_tokens_A).to(device)
                 toks_Ap_batch = torch.stack(batch_tokens_Ap).to(device)
             else:
                 # Tokenize text
                 all_texts = batch_txt_A + batch_txt_Ap
-                # Try to use multiple threads for tokenization
-                if hasattr(tokenizer, "_tokenizer"):
-                    # For fast tokenizers, try to set parallelism
+                if hasattr(tokenizer, "_tokenizer") and tokenizer._tokenizer is not None: # type: ignore
                     try:
-                        tokenizer._tokenizer.enable_truncation(seq_len)
-                        tokenizer._tokenizer.enable_padding(length=seq_len)
-                    except:
-                        pass
+                        tokenizer._tokenizer.enable_truncation(seq_len) # type: ignore
+                        tokenizer._tokenizer.enable_padding(length=seq_len) # type: ignore
+                    except Exception:
+                        pass # Ignore if it fails, e.g. for non-fast tokenizers
                 
                 enc = tokenizer(
                     all_texts,
@@ -602,7 +586,7 @@ def main(cfg: DictConfig) -> None:
             
             # Forward pass
             with torch.no_grad():
-                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                with torch.amp.autocast('cuda', dtype=torch.bfloat16): # type: ignore
                     out_A_batch = model(toks_A_batch, output_hidden_states=True)
                     out_Ap_batch = model(toks_Ap_batch, output_hidden_states=True)
             
@@ -616,16 +600,16 @@ def main(cfg: DictConfig) -> None:
             upper_bound_A_b = nonpad_len_A_b - 1
             _temp_min_idx_A = torch.full_like(upper_bound_A_b, MIN_TOKEN_IDX_INCLUSIVE)
             _temp_min_idx_A = torch.minimum(_temp_min_idx_A, upper_bound_A_b)
-            effective_min_idx_A_b = torch.maximum(_temp_min_idx_A, torch.zeros_like(upper_bound_A_b))
+            effective_min_idx_A_b = torch.maximum(_temp_min_idx_A, torch.zeros_like(upper_bound_A_b)) # type: ignore
             token_pos_A_b = (effective_min_idx_A_b + upper_bound_A_b) // 2
-            token_pos_A_b = torch.maximum(token_pos_A_b, torch.zeros_like(token_pos_A_b))
+            token_pos_A_b = torch.maximum(token_pos_A_b, torch.zeros_like(token_pos_A_b)) # type: ignore
             
             upper_bound_Ap_b = nonpad_len_Ap_b - 1
             _temp_min_idx_Ap = torch.full_like(upper_bound_Ap_b, MIN_TOKEN_IDX_INCLUSIVE)
             _temp_min_idx_Ap = torch.minimum(_temp_min_idx_Ap, upper_bound_Ap_b)
-            effective_min_idx_Ap_b = torch.maximum(_temp_min_idx_Ap, torch.zeros_like(upper_bound_Ap_b))
+            effective_min_idx_Ap_b = torch.maximum(_temp_min_idx_Ap, torch.zeros_like(upper_bound_Ap_b)) # type: ignore
             token_pos_Ap_b = (effective_min_idx_Ap_b + upper_bound_Ap_b) // 2
-            token_pos_Ap_b = torch.maximum(token_pos_Ap_b, torch.zeros_like(token_pos_Ap_b))
+            token_pos_Ap_b = torch.maximum(token_pos_Ap_b, torch.zeros_like(token_pos_Ap_b)) # type: ignore
             
             batch_indices = torch.arange(current_batch_actual_size, device=device)
             A_selected_b = hidden_A_batch[batch_indices, token_pos_A_b].cpu().half()
@@ -646,16 +630,16 @@ def main(cfg: DictConfig) -> None:
                 batch_samples_to_save.append(sample)
             
             # Global batch index includes rank offset
-            global_batch_idx = rank * 10000 + batch_idx
+            global_batch_idx = rank * 10000 + batch_idx # type: ignore
             shard_filename = f"shard_{global_batch_idx:08d}.pt"
             torch.save(batch_samples_to_save, rank_out_path / shard_filename)
             
             # Update metadata
-            rank_metadata["shards"].append({
+            rank_metadata["shards"].append({ # type: ignore
                 "name": shard_filename,
                 "num_samples": current_batch_actual_size
             })
-            rank_metadata["total_samples"] += current_batch_actual_size
+            rank_metadata["total_samples"] += current_batch_actual_size # type: ignore
             
             saved_samples_count += current_batch_actual_size
             samples_since_update += current_batch_actual_size
@@ -673,12 +657,13 @@ def main(cfg: DictConfig) -> None:
                 instant_samples_per_sec = samples_since_update / instant_elapsed if instant_elapsed > 0 else 0
                 
                 # Estimate total samples and ETA
+                eta_str: str
+                pct_complete_val: float | int = 0
                 if rank_num_samples is not None:
-                    pct_complete = (saved_samples_count / rank_num_samples) * 100
+                    pct_complete_val = (saved_samples_count / rank_num_samples) * 100
                     eta_seconds = (rank_num_samples - saved_samples_count) / instant_samples_per_sec if instant_samples_per_sec > 0 else 0
                     eta_str = f"{int(eta_seconds//60)}m{int(eta_seconds%60)}s"
                 else:
-                    pct_complete = 0
                     eta_str = "unknown"
                 
                 pbar.set_postfix({
@@ -686,7 +671,7 @@ def main(cfg: DictConfig) -> None:
                     "avg_s/s": f"{avg_samples_per_sec:.0f}",
                     "cur_s/s": f"{instant_samples_per_sec:.0f}",
                     "done": f"{saved_samples_count:,}",
-                    "%": f"{pct_complete:.1f}" if pct_complete > 0 else "?",
+                    "%": f"{pct_complete_val:.1f}" if pct_complete_val > 0 else "?",
                     "ETA": eta_str
                 })
                 
@@ -710,21 +695,21 @@ def main(cfg: DictConfig) -> None:
         
         if rank == 0:
             # Combine all rank metadata into global metadata
-            global_metadata = {
+            global_metadata: dict = {
                 "total_samples": 0,
                 "shards": [],
                 "ranks": world_size,
-                "config": rank_metadata["config"],
+                "config": rank_metadata["config"], # Use config from one of the ranks (should be same)
             }
             
-            for r in range(world_size):
-                rank_path = out_path / f"rank_{r}" / "metadata.json"
-                if rank_path.exists():
-                    with open(rank_path, "r") as f:
+            for r_idx in range(world_size):
+                r_path = out_path / f"rank_{r_idx}" / "metadata.json"
+                if r_path.exists():
+                    with open(r_path, "r") as f:
                         r_meta = json.load(f)
                     global_metadata["total_samples"] += r_meta["total_samples"]
                     for shard in r_meta["shards"]:
-                        shard["rank"] = r
+                        shard["rank"] = r_idx # Ensure rank is correctly set
                         global_metadata["shards"].append(shard)
             
             # Save global metadata
@@ -738,9 +723,9 @@ def main(cfg: DictConfig) -> None:
     # Main dumping loop
     for split_cfg_item in splits_to_dump:
         dump_split_distributed(
-            split_cfg_item["name"],
-            Path(split_cfg_item["output_dir"]),
-            split_cfg_item["num_samples"]
+            split_cfg_item["name"], # type: ignore
+            Path(split_cfg_item["output_dir"]), # type: ignore
+            split_cfg_item["num_samples"] # type: ignore
         )
     
     if rank == 0:
@@ -750,4 +735,4 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
-    main() 
+    main()

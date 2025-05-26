@@ -1,44 +1,25 @@
 #!/usr/bin/env python3
 """Pre-tokenize datasets to eliminate tokenization bottleneck during activation dumping."""
 
-import argparse
 import logging
 from pathlib import Path
-import yaml
-from hydra import compose, initialize_config_dir
-import os
+import json
+import hydra
+from omegaconf import DictConfig, OmegaConf
 
 from datasets import load_dataset
 from transformers import AutoTokenizer
 from tqdm import tqdm
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Pre-tokenize dataset for fast activation dumping")
-    parser.add_argument("--config_path", type=str, default="conf/config.yaml")
-    parser.add_argument("--output_dir", type=str, help="Override output directory")
-    parser.add_argument("--num_proc", type=int, default=32, help="Number of processes for tokenization")
-    parser.add_argument("--batch_size", type=int, default=10000, help="Batch size for tokenization")
-    
-    args = parser.parse_args()
-    
+@hydra.main(version_base=None, config_path="../conf", config_name="pretokenize")
+def main(cfg: DictConfig) -> None:
     # Setup logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(message)s",
-        datefmt="%H:%M:%S",
-    )
     log = logging.getLogger(__name__)
     
-    # Load config using Hydra to resolve inheritance
-    config_path = Path(args.config_path)
-    config_dir = str(config_path.parent.absolute())
-    config_name = config_path.stem
-    
-    with initialize_config_dir(config_dir=config_dir, version_base="1.3"):
-        cfg = compose(config_name=config_name)
-    
-    activation_dumper_cfg = cfg.get("activation_dumper", {})
+    # Get config values
+    pretokenize_cfg = cfg.pretokenize
+    activation_dumper_cfg = cfg.activation_dumper
     
     # Get dataset info
     dataset_name = activation_dumper_cfg.get("hf_dataset_name", "SimpleStories/SimpleStories")
@@ -46,16 +27,22 @@ def main():
     seq_len = activation_dumper_cfg["seq_len"]
     
     # Output directory
-    if args.output_dir:
-        output_dir = Path(args.output_dir)
+    if pretokenize_cfg.output_dir:
+        output_dir = Path(pretokenize_cfg.output_dir)
     else:
         output_dir = Path("data/pretokenized") / dataset_name.replace("/", "_")
+    
+    # Check if already exists and force flag
+    if output_dir.exists() and not pretokenize_cfg.force:
+        log.info(f"Pretokenized data already exists at {output_dir}")
+        log.info("Use pretokenize.force=true to re-tokenize")
+        return
     
     log.info(f"Pre-tokenizing dataset: {dataset_name}")
     log.info(f"Using tokenizer: {tokenizer_name}")
     log.info(f"Sequence length: {seq_len}")
     log.info(f"Output directory: {output_dir}")
-    log.info(f"Using {args.num_proc} processes")
+    log.info(f"Using {pretokenize_cfg.num_proc} processes")
     
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True)
@@ -114,8 +101,8 @@ def main():
         tokenized_dataset = dataset.map(
             tokenize_function,
             batched=True,
-            batch_size=args.batch_size,
-            num_proc=args.num_proc,
+            batch_size=pretokenize_cfg.batch_size,
+            num_proc=pretokenize_cfg.num_proc,
             remove_columns=dataset.column_names,  # Keep only tokenized data
             desc=f"Tokenizing {split}",
         )
@@ -137,7 +124,6 @@ def main():
             "columns": tokenized_dataset.column_names,
         }
         
-        import json
         with open(split_output_dir / "metadata.json", "w") as f:
             json.dump(metadata, f, indent=2)
         
