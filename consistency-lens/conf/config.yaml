@@ -10,8 +10,6 @@ tokenizer_name: "SimpleStories/SimpleStories-5M"
 layer_l: 5                      # Target layer for activation extraction (LLM_orig)
 #token_pos_p: 0                   # Target token position for activation extraction (LLM_orig) - currently fixed in MVP dumper
 
-# Decoder parameters
-decoder_prompt: "Short explanation of <embed>:"       # Prompt for the Decoder
 
 # Training hyperparameters
 t_text: 5                       # Number of tokens to generate with the Decoder
@@ -52,6 +50,10 @@ wandb_log_interval: 1         # Log metrics every N training steps to WandB
 grad_clip: 1.0
 
 stop_grad_aprime: false
+
+# Decoder parameters
+decoder_prompt: "short explanation of <embed>:"       # Prompt for the Decoder
+lm_loss_natural_prefix: "short explanation of something:"  # Natural language prefix for base model in LM loss
 # Trainable components configuration
 trainable_components:
   decoder:
@@ -60,12 +62,17 @@ trainable_components:
     output_head: false # Train the Decoder's output LM head (self.out)
     embedding_head: false      # Train the input/output embeddings of the base model (may be tied)
     eye_init: true
+    trainable_prompts: true   # Train the decoder's soft prompt embeddings
   encoder:
     base_model: false          # Train the underlying LLM weights of the Encoder
     use_base_model: true      # Use the base model to process the embeddings
     projection_layer: true   # Train Proj_E_hidden_to_A (self.proj)
     embedding_head: false      # Train the input/output embeddings of the base model (may be tied)
     eye_init: true
+    soft_prompt_length: 4     # Number of trainable soft prompt tokens (0 to disable)
+    trainable_soft_prompt: true  # Whether soft prompt tokens are trainable
+    soft_prompt_init_std: 0.1  # Standard deviation for random initialization of soft prompt tokens
+    soft_prompt_init_text: null  # Text to initialize soft prompt from (overrides random init, e.g. "reconstruct activation:")
 
 # Freeze schedule for non-adapter parameters
 # When enabled, non-adapter parameters (base_model, output_head, embedding_head) will be frozen

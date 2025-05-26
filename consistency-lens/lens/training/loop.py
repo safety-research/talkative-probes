@@ -14,6 +14,9 @@ def train_step(  # noqa: D401
     batch: Dict[str, torch.Tensor],
     models: Dict[str, nn.Module],
     _loss_fns: Dict[str, nn.Module] | None = None,  # (e.g. {"T_text": 8, "tau": 1.0, "alpha": 0.1})
+    lm_loss_natural_prefix: str | None = None,  # Natural language prefix for base model in LM loss
+    tokenizer = None,  # Tokenizer for natural prefix
+    cached_prefix_ids: torch.Tensor | None = None  # Pre-tokenized prefix to avoid re-tokenization
 ) -> Dict[str, torch.Tensor]:
     """Composite loss (MSE + CE + KL) as per README formula.
 
@@ -50,21 +53,56 @@ def train_step(  # noqa: D401
     # This loss regularizes the decoder's (D_model) linguistic knowledge with the base model's (LLM_orig_model)
     # linguistic knowledge, aiming to keep explanations on-manifold.
     # It computes KL(P_D || P_Orig) where P_D are predictions from the decoder on its own generated sequence,
-    # and P_Orig are predictions from the original LLM on that same sequence.
+    # and P_Orig are predictions from the original LLM on natural language tokens only.
     if lm_w > 0 and orig is not None:
         if T_text > 1:  # need a next-token target for KL divergence
             # Logits from D_model for its own generation (predicting token t+1 given prefix 0..t from D)
-            # gen.raw_lm_logits are (B, T_text, V)
+            # gen.raw_lm_logits are (B, T_text, V) - these correspond to generated natural language tokens only
             d_model_pred_logits = gen.raw_lm_logits[:, :-1, :] # Shape: (B, T_text-1, V)
 
-            # Logits from LLM_orig_model for D_model's generated sequence
-            # (predicting token t+1 given prefix 0..t from D)
-            with torch.no_grad(): # Ensure orig model isn't updated by this loss component
-                orig_model_pred_logits_all_pos = orig.model(
-                    input_ids=gen.hard_token_ids # discrete_token_ids is (B, T_text)
-                ).logits # Shape: (B, T_text, V)
-            # We need the logits that predict the same tokens as d_model_pred_logits
-            orig_model_pred_logits = orig_model_pred_logits_all_pos[:, :-1, :] # Shape: (B, T_text-1, V)
+            # Create natural language conditioning for base model
+            if cached_prefix_ids is not None or (lm_loss_natural_prefix and tokenizer):
+                if cached_prefix_ids is not None:
+                    # Use cached prefix tokens
+                    B = gen.hard_token_ids.shape[0]
+                    natural_prefix_expanded = cached_prefix_ids.expand(B, -1).to(A.device)  # Shape: (B, prefix_len)
+                else:
+                    # Tokenize the natural language prefix (fallback if not cached)
+                    natural_prefix_ids = tokenizer(lm_loss_natural_prefix, add_special_tokens=False, return_tensors="pt").input_ids
+                    natural_prefix_ids = natural_prefix_ids.to(A.device)
+                    B = gen.hard_token_ids.shape[0]
+                    natural_prefix_expanded = natural_prefix_ids.expand(B, -1)  # Shape: (B, prefix_len)
+                
+                # Concatenate prefix with generated tokens
+                base_model_input = torch.cat([natural_prefix_expanded, gen.hard_token_ids], dim=1)  # Shape: (B, prefix_len + T_text)
+                
+                # Logits from LLM_orig_model conditioned on natural language prefix + generated tokens
+                # (predicting token t+1 given natural prefix + generated tokens 0..t)
+                with torch.no_grad(): # Ensure orig model isn't updated by this loss component
+                    orig_model_pred_logits_all_pos = orig.model(
+                        input_ids=base_model_input
+                    ).logits # Shape: (B, prefix_len + T_text, V)
+                
+                # Extract logits corresponding to predictions for the generated portion
+                # We want predictions for positions [prefix_len : prefix_len + T_text - 1]
+                prefix_len = natural_prefix_expanded.shape[1]
+                start_idx = prefix_len
+                end_idx = prefix_len + T_text - 1
+                orig_model_pred_logits = orig_model_pred_logits_all_pos[:, start_idx:end_idx, :] # Shape: (B, T_text-1, V)
+            else:
+                # Fallback to old behavior if no natural prefix provided
+                # Extract only the natural language tokens (excluding prompts and activation embedding)
+                # gen.hard_token_ids contains only the generated natural language portion
+                natural_lang_tokens = gen.hard_token_ids # Shape: (B, T_text)
+                
+                # Logits from LLM_orig_model conditioned on natural language tokens only
+                # (predicting token t+1 given prefix 0..t of natural language)
+                with torch.no_grad(): # Ensure orig model isn't updated by this loss component
+                    orig_model_pred_logits_all_pos = orig.model(
+                        input_ids=natural_lang_tokens
+                    ).logits # Shape: (B, T_text, V)
+                # We need the logits that predict the same tokens as d_model_pred_logits
+                orig_model_pred_logits = orig_model_pred_logits_all_pos[:, :-1, :] # Shape: (B, T_text-1, V)
 
             # log_P_D: Log-distribution from D_model (this is the distribution we are training, q).
             # This will be the `input` to F.kl_div.
@@ -123,42 +161,77 @@ def train_step(  # noqa: D401
         token_pos_batch = batch.get("token_pos")  # (B,)
         B = A.shape[0]
 
-        logits_orig_chunks = []
-        logits_target_chunks = []
-
-        unique_pairs = {}
-        for i in range(B):
-            l = int(layer_idx_batch[i].item()) if layer_idx_batch is not None else 0
-            p = int(token_pos_batch[i].item()) if token_pos_batch is not None else 0
-            unique_pairs.setdefault((l, p), []).append(i)
-
-        for (l_idx, t_pos), idx_list in unique_pairs.items():
-            ids_subset = input_ids_batch[idx_list]
-            A_subset = A[idx_list]
-            A_target_subset = A_target[idx_list]
-
+        # Check if we can use vectorized approach (same layer across batch)
+        layer_idx = int(layer_idx_batch[0].item()) if layer_idx_batch is not None else 0
+        use_vectorized = True
+        
+        if layer_idx_batch is not None and not torch.all(layer_idx_batch == layer_idx):
+            # Mixed layers in batch - fall back to original grouped approach
+            use_vectorized = False
+            
+        if use_vectorized:
+            # Vectorized approach: single forward pass with multi-position hook
+            # Get logits with original activations
             with torch.no_grad():
-                lo = orig.forward_with_replacement(
+                logits_orig = orig.forward_with_replacement_vectorized(
+                    input_ids=input_ids_batch,
+                    new_activations=A,
+                    layer_idx=layer_idx,
+                    token_positions=token_pos_batch,
+                    no_grad=True,
+                ).logits
+                # Extract logits at target positions for each sample
+                batch_indices = torch.arange(B, device=A.device)
+                logits_orig = logits_orig[batch_indices, token_pos_batch]  # (B, V)
+
+            # Get logits with reconstructed activations  
+            logits_target_full = orig.forward_with_replacement_vectorized(
+                input_ids=input_ids_batch,
+                new_activations=A_target,
+                layer_idx=layer_idx,
+                token_positions=token_pos_batch,
+                no_grad=False,
+            ).logits
+            # Extract logits at target positions for each sample
+            logits_target = logits_target_full[batch_indices, token_pos_batch]  # (B, V)
+        else:
+            # Fallback: Original grouped approach for mixed-layer batches
+            logits_orig_chunks = []
+            logits_target_chunks = []
+
+            unique_pairs = {}
+            for i in range(B):
+                l = int(layer_idx_batch[i].item()) if layer_idx_batch is not None else 0
+                p = int(token_pos_batch[i].item()) if token_pos_batch is not None else 0
+                unique_pairs.setdefault((l, p), []).append(i)
+
+            for (l_idx, t_pos), idx_list in unique_pairs.items():
+                ids_subset = input_ids_batch[idx_list]
+                A_subset = A[idx_list]
+                A_target_subset = A_target[idx_list]
+
+                with torch.no_grad():
+                    lo = orig.forward_with_replacement(
+                        input_ids=ids_subset,
+                        new_activation=A_subset,
+                        layer_idx=l_idx,
+                        token_pos=t_pos,
+                        no_grad=True,
+                    ).logits[:, t_pos]
+
+                lt = orig.forward_with_replacement(
                     input_ids=ids_subset,
-                    new_activation=A_subset,
+                    new_activation=A_target_subset,
                     layer_idx=l_idx,
                     token_pos=t_pos,
-                    no_grad=True,
+                    no_grad=False,
                 ).logits[:, t_pos]
 
-            lt = orig.forward_with_replacement(
-                input_ids=ids_subset,
-                new_activation=A_target_subset,
-                layer_idx=l_idx,
-                token_pos=t_pos,
-                no_grad=False,
-            ).logits[:, t_pos]
+                logits_orig_chunks.append(lo)
+                logits_target_chunks.append(lt)
 
-            logits_orig_chunks.append(lo)
-            logits_target_chunks.append(lt)
-
-        logits_orig = torch.cat(logits_orig_chunks, dim=0)  # (B, V)
-        logits_target = torch.cat(logits_target_chunks, dim=0)
+            logits_orig = torch.cat(logits_orig_chunks, dim=0)  # (B, V)
+            logits_target = torch.cat(logits_target_chunks, dim=0)
 
         # For D_KL(P || Q):
         # P = softmax(logits_orig)

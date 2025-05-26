@@ -126,7 +126,8 @@ def _build_models(
     logging.getLogger(__name__).info(f"Tokenizer name: {tokenizer_name}")
 
     # Encoder (created before remap)
-    enc_cfg = EncoderConfig(model_name=model_name)
+    encoder_train_cfg = cfg.get('trainable_components', {}).get('encoder', {})
+    enc_cfg = EncoderConfig(model_name=model_name, **encoder_train_cfg)
     enc = Encoder(enc_cfg)
 
     # Original Model Wrapper
@@ -143,6 +144,12 @@ def _build_models(
             remap_embeddings(enc.base, base_tok, tok)
         remap_embeddings(orig.model, base_tok, tok)
         logging.getLogger(__name__).info("Remapped all model embeddings to new tokenizer")
+
+    # Initialize encoder soft prompt from text if specified
+    encoder_soft_prompt_text = encoder_train_cfg.get('soft_prompt_init_text')
+    if encoder_soft_prompt_text:
+        enc.set_soft_prompt_from_text(encoder_soft_prompt_text, tok)
+        logging.getLogger(__name__).info(f"Initialized encoder soft prompt from text: {encoder_soft_prompt_text}")
 
     # Ensure Decoder's independent LM head matches new vocab
     if dec.out.weight.size(0) != new_vocab_size:
@@ -316,7 +323,9 @@ def _evaluate_model(
             }
             
             current_models_for_step = {"dec": models["dec"], "enc": models["enc"], "orig": orig}
-            losses = train_step(batch, current_models_for_step, sch_args)
+            losses = train_step(batch, current_models_for_step, sch_args,
+                              lm_loss_natural_prefix=cfg.get('lm_loss_natural_prefix'),
+                              tokenizer=tok)
             
             if printed_verbose_total < verbose_samples:
                 num_printed_this_batch = _process_and_print_verbose_batch_samples(

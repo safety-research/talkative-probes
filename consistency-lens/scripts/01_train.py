@@ -448,6 +448,13 @@ def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr
             param.requires_grad = should_enable and should_unfreeze_now
             if was_frozen and param.requires_grad:
                 newly_unfrozen_params.add(param)
+        elif 'prompt_left_emb' in name or 'prompt_right_emb' in name:  # Trainable prompts
+            was_frozen = not param.requires_grad
+            should_enable = get_effective_config('decoder', 'trainable_prompts', decoder_train_cfg)
+            should_unfreeze_now = should_unfreeze_component('decoder', 'trainable_prompts')
+            param.requires_grad = should_enable and should_unfreeze_now
+            if was_frozen and param.requires_grad:
+                newly_unfrozen_params.add(param)
         # proj layers remain as they were
     
     # Handle decoder embedding heads separately
@@ -461,6 +468,13 @@ def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr
             was_frozen = not param.requires_grad
             should_enable = get_effective_config('encoder', 'base_model', encoder_train_cfg)
             should_unfreeze_now = should_unfreeze_component('encoder', 'base_model')
+            param.requires_grad = should_enable and should_unfreeze_now
+            if was_frozen and param.requires_grad:
+                newly_unfrozen_params.add(param)
+        elif 'soft_prompt_embeddings' in name:  # Soft prompt embeddings
+            was_frozen = not param.requires_grad
+            should_enable = get_effective_config('encoder', 'trainable_soft_prompt', encoder_train_cfg)
+            should_unfreeze_now = should_unfreeze_component('encoder', 'trainable_soft_prompt')
             param.requires_grad = should_enable and should_unfreeze_now
             if was_frozen and param.requires_grad:
                 newly_unfrozen_params.add(param)
@@ -757,6 +771,12 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     dec_raw.set_prompt(config.get("decoder_prompt", "Explain: "), tokenizer)
     log.info("Prompt for decoder: %s",str([tokenizer.decode(d) for d in dec_raw.prompt_ids]))
 
+    # Initialize encoder soft prompt from text if specified
+    encoder_soft_prompt_text = encoder_train_cfg.get('soft_prompt_init_text')
+    if encoder_soft_prompt_text:
+        enc_raw.set_soft_prompt_from_text(encoder_soft_prompt_text, tokenizer)
+        log.info("Initialized encoder soft prompt from text: %s", encoder_soft_prompt_text)
+
     # Ensure Decoder's standalone LM head matches new vocab
     if dec_raw.out.weight.size(0) != new_vocab_size:
         d_model = dec_raw.base.config.hidden_size
@@ -976,6 +996,13 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     start_time = time.time()
     last_log_time = start_time
     
+    # Cache tokenized natural language prefix if specified
+    cached_prefix_ids = None
+    lm_loss_natural_prefix = config.get('lm_loss_natural_prefix')
+    if lm_loss_natural_prefix:
+        cached_prefix_ids = tokenizer(lm_loss_natural_prefix, add_special_tokens=False, return_tensors="pt").input_ids
+        log.info(f"Cached natural language prefix: '{lm_loss_natural_prefix}' ({cached_prefix_ids.shape[1]} tokens)")
+    
     # Track freeze schedule state
     non_adapters_frozen = freeze_schedule_enabled and not should_unfreeze_any_component(start_step, start_epoch)
     
@@ -1090,6 +1117,9 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                     "kl_base_weight": kl_base_weight,
                     "entropy_weight": entropy_weight,
                 },
+                lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'),
+                tokenizer=tokenizer,
+                cached_prefix_ids=cached_prefix_ids
             )
             loss = losses["total"]
             
@@ -1385,7 +1415,10 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                         "kl_base_weight": kl_base_weight,
                         "entropy_weight": entropy_weight,
                     }
-                    v_losses = train_step(vbatch, {"dec": dec, "enc": enc, "orig": orig}, sch_args)
+                    v_losses = train_step(vbatch, {"dec": dec, "enc": enc, "orig": orig}, sch_args, 
+                                         lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'),
+                                         tokenizer=tokenizer,
+                                         cached_prefix_ids=cached_prefix_ids)
                     bsz = vbatch["A"].size(0)
                     val_loss += v_losses["total"].item() * bsz
                     val_mse  += v_losses["mse"].item()   * bsz

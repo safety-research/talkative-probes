@@ -116,6 +116,8 @@ python tests/test_swap_hook.py
 For HPC clusters with SLURM, use the provided submission scripts that handle dependencies automatically:
 
 #### Quick Start (Recommended)
+The `submit_with_dumping.sh` script now works on both SLURM and non-SLURM environments:
+
 ```bash
 # Submit new experiments with automatic activation dumping
 ./scripts/submit_with_dumping.sh ss-frozen         # SimpleStories frozen
@@ -131,18 +133,26 @@ For HPC clusters with SLURM, use the provided submission scripts that handle dep
 # Resume with specific WandB run ID (get ID from WandB dashboard)
 ./scripts/submit_with_dumping.sh ss-frozen false outputs/checkpoints/run_name/checkpoint_step5000.pt abc123xyz
 
-# Use specific SLURM nodes (optional - defaults to 330702be7061)
+# Use specific SLURM nodes (optional - defaults to 330702be7061, SLURM only)
 ./scripts/submit_with_dumping.sh ss-frozen false "" "" node001,node002
+
+# Specify number of GPUs for non-SLURM environments (auto-detected if not specified)
+./scripts/submit_with_dumping.sh ss-frozen false "" "" "" 4
 
 # Force re-dump activations even if they exist
 ./scripts/submit_with_dumping.sh ss-frozen force-redump
+
+# Force direct execution even on SLURM systems
+FORCE_DIRECT=true ./scripts/submit_with_dumping.sh ss-frozen
 ```
 
 The wrapper script automatically:
+- Detects SLURM vs non-SLURM environments
 - Checks if activations exist
-- Submits 8-GPU dumping job if needed
-- Submits 1-GPU training job with dependency
-- Ensures GPU doesn't sit idle waiting
+- On SLURM: Submits jobs with proper dependencies
+- On non-SLURM: Runs dumping and training sequentially in foreground
+- Auto-detects available GPUs (configurable)
+- Ensures efficient resource utilization
 
 #### Available Experiments
 - **SimpleStories**: 5M parameter model, faster experiments (~12-18 hours)
@@ -308,3 +318,25 @@ The evaluation script `02_eval.py` uses Hydra configuration with the following a
 - **Automatic Run Naming**: Training runs are named with format `{dataset}_{model}_{layer}_{learning_rate}_{timestamp}`
 - **Structured Outputs**: All outputs saved to timestamped directories under `outputs/`
 - **Evaluation Tracking**: Evaluation results automatically organized by checkpoint and timestamp
+
+## Future Architecture Considerations
+
+### Runtime Activation Computation
+
+The current system pre-dumps activations to disk before training. An alternative approach would be to compute activations at runtime from pre-tokenized datasets.
+
+**Current approach (pre-dumping):**
+- Pros: One-time LLM forward pass per sequence, consistent activations, storage of intermediate results
+- Cons: Large storage requirements (multi-GB), two-stage workflow complexity
+
+**Alternative approach (runtime computation):**
+- Pros: No storage overhead, single-stage workflow, more flexible layer/position changes
+- Cons: Need LLM + decoder/encoder in memory simultaneously
+
+**Key insight**: Training already requires 2-3 LLM forward passes per step for KL loss computation, so the compute overhead argument for pre-dumping is weaker than initially assumed.
+
+This alternative could be valuable for:
+- Single-shot training experiments
+- Storage-constrained environments  
+- Research scenarios prioritizing workflow simplicity
+- Cases where memory is more abundant than storage

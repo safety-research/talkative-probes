@@ -122,3 +122,4 @@ Fri 23 May 15:18:51 UTC 2025: gpt2-unfreeze - dump:none train:1598
 Fri 23 May 15:21:48 UTC 2025: gpt2-frozen - dump:none train:1599
 Fri 23 May 15:34:45 UTC 2025: ss-unfreeze - dump:none train:1600 resume:./outputs/checkpoints/ss_unfreeze_t10_1581/checkpoint_step103349_epoch50.pt
 Fri 23 May 15:38:03 UTC 2025: ss-unfreeze - dump:none train:1601 resume:./outputs/checkpoints/ss_unfreeze_t10_1581/checkpoint_step103349_epoch50.pt
+Fri 23 May 19:17:55 UTC 2025: gpt2-unfreeze - dump:none train:1636 resume:outputs/checkpoints/gpt2_L6_O_lr1e-4_t10_0523_1518/gpt2_unfreeze_step9500_epoch1.pt
