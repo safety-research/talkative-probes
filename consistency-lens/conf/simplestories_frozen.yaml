@@ -9,6 +9,9 @@ defaults:
 # Override specific settings for this experiment
 t_text: 10                            # Width-10 explanations as requested
 
+activation_dumper:
+  num_samples: 20000
+
 # Ensure base model stays frozen
 trainable_components:
   decoder:
