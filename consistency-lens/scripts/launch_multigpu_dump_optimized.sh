@@ -62,7 +62,7 @@ fi
 
 # Parse command line arguments
 CONFIG_PATH=${1:-$DEFAULT_CONFIG_PATH}
-OUTPUT_DIR=${2:-$DEFAULT_OUTPUT_DIR}
+OUTPUT_DIR=${2:-""}  # Empty means use config default
 NUM_SAMPLES=${3:-""}  # Empty means use entire dataset
 LAYER_IDX=${4:-""}  # Optional, will use config default if not provided
 

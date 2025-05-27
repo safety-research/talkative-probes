@@ -52,7 +52,7 @@ fi
 
 # Parse command line arguments
 CONFIG_PATH=${1:-$DEFAULT_CONFIG_PATH}
-OUTPUT_DIR=${2:-$DEFAULT_OUTPUT_DIR}
+OUTPUT_DIR=${2:-""}  # Empty means use config default
 NUM_SAMPLES=${3:-""}  # Empty means use entire dataset
 LAYER_IDX=${4:-""}  # Optional
 PRETOKENIZED_PATH=${5:-""}  # Optional, will auto-detect if not provided
@@ -96,7 +96,8 @@ CMD="python -m torch.distributed.run \
     --config-name=$CONFIG_NAME \
     activation_dumper.use_pretokenized=true"
 
-# Add Hydra overrides for output directory
+# Add Hydra overrides for output directory only if explicitly provided
+# Empty string means use the config default
 if [ -n "$OUTPUT_DIR" ]; then
     CMD="$CMD activation_dumper.output_dir=$OUTPUT_DIR"
 fi
