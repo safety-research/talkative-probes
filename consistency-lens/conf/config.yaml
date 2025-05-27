@@ -150,6 +150,12 @@ alpha_schedule:
 # loss_kl_weight: 0.1 # This is superseded by alpha_schedule if used as the direct multiplier
 
 # Activation dumper config (for 00_dump_activations.py)
+pretokenize:
+  output_dir: null 
+  num_proc: 32
+  batch_size: 10000
+  force: False
+
 activation_dumper:
   num_samples: -1  # -1 means process entire dataset
   seq_len: 64

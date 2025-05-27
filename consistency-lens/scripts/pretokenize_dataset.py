@@ -18,30 +18,19 @@ def main(cfg: DictConfig) -> None:
     log = logging.getLogger(__name__)
     
     # Get config values - use defaults if pretokenize section doesn't exist
-    pretokenize_cfg = cfg.get('pretokenize', {
-        'output_dir': None,
-        'num_proc': 32,
-        'batch_size': 10000,
-        'force': False
-    })
+    pretokenize_cfg = cfg.pretokenize
     activation_dumper_cfg = cfg.activation_dumper
     
     # Get dataset info
-    dataset_name = activation_dumper_cfg.get("hf_dataset_name", "SimpleStories/SimpleStories")
-    tokenizer_name = cfg.get("tokenizer_name", cfg["model_name"])
+    dataset_name = activation_dumper_cfg["hf_dataset_name"]
+    tokenizer_name = cfg["tokenizer_name"]
     seq_len = activation_dumper_cfg["seq_len"]
     
     # Handle both dict and DictConfig
-    if isinstance(pretokenize_cfg, dict):
-        output_dir_cfg = pretokenize_cfg.get('output_dir')
-        num_proc = pretokenize_cfg.get('num_proc', 32)
-        batch_size = pretokenize_cfg.get('batch_size', 10000)
-        force = pretokenize_cfg.get('force', False)
-    else:
-        output_dir_cfg = pretokenize_cfg.output_dir
-        num_proc = pretokenize_cfg.num_proc
-        batch_size = pretokenize_cfg.batch_size
-        force = pretokenize_cfg.force
+    output_dir_cfg = pretokenize_cfg.output_dir
+    num_proc = pretokenize_cfg.num_proc
+    batch_size = pretokenize_cfg.batch_size
+    force = pretokenize_cfg.force
     
     # Output directory
     if output_dir_cfg:
