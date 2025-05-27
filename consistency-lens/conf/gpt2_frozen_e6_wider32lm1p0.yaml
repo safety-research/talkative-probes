@@ -6,7 +6,7 @@ defaults:
   - _self_
 
 # Training hyperparameters
-t_text: 16                        # Number of tokens to generate with the Decoder
+t_text: 32                        # Number of tokens to generate with the Decoder
 
 # Trainable components - FROZEN base model
 trainable_components:
