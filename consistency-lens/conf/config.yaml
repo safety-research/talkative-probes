@@ -127,6 +127,7 @@ freeze_schedule:
 custom_lr_multipliers:
   projection_layers: 1.0 # Set > 1.0 to use a higher LR for these layers.
   embedding_layers: 1.0  # Set different LR for embedding heads (input/output embeddings)
+  prompt_layers: 1.0     # Set different LR for prompt layers
 
 # Gumbel-Softmax temperature (tau) schedule
 gumbel_tau_schedule:

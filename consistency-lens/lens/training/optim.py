@@ -12,6 +12,7 @@ def param_groups(
     lr: float,
     proj_lr_mult: float = 10.0,
     embedding_lr_mult: float = 1.0,
+    prompt_lr_mult: float = 10.0,
 ) -> List[dict]:  # noqa: D401
     """Create parameter groups for AdamW.
 
@@ -45,7 +46,9 @@ def param_groups(
                 ("embed" in n) or 
                 ("wte" in n) or 
                 ("wpe" in n) or 
-                ("lm_head" in n and "weight" in n) or
+                ("lm_head" in n and "weight" in n) 
+            )
+            is_prompt = (
                 ("prompt_left_emb" in n) or 
                 ("prompt_right_emb" in n) or 
                 ("soft_prompt_embeddings" in n)
@@ -55,6 +58,8 @@ def param_groups(
                 lr_scale = proj_lr_mult
             elif is_embedding:
                 lr_scale = embedding_lr_mult
+            elif is_prompt:
+                lr_scale = prompt_lr_mult
             else:
                 lr_scale = 1.0
 

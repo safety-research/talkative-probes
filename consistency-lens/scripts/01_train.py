@@ -547,7 +547,7 @@ def log_parameter_counts(dec_raw, enc_raw, orig, decoder_config, encoder_config,
     }
 
 
-def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr_multiplier, embedding_lr_multiplier, opt_state_dict=None, current_step=None, current_epoch=None):
+def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr_multiplier, embedding_lr_multiplier, prompt_lr_multiplier, opt_state_dict=None, current_step=None, current_epoch=None):
     """Unfreeze non-adapter parameters and create new optimizer with all parameters."""
     log = logging.getLogger(__name__)
     
@@ -708,7 +708,7 @@ def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr
                        [p for p in enc.parameters() if p.requires_grad]
     
     # Create new optimizer with updated parameters
-    optimizer_groups = param_groups([dec, enc], learning_rate, projection_lr_multiplier, embedding_lr_multiplier)
+    optimizer_groups = param_groups([dec, enc], learning_rate, projection_lr_multiplier, embedding_lr_multiplier, prompt_lr_multiplier)
     new_opt = torch.optim.AdamW(optimizer_groups)
     
     # Set initial_lr for each parameter group (required for LR scheduler)
@@ -844,7 +844,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     custom_lr_multipliers = config.get('custom_lr_multipliers', {})
     projection_lr_multiplier = custom_lr_multipliers.get('projection_layers', 1.0)
     embedding_lr_multiplier = custom_lr_multipliers.get('embedding_layers', 1.0)
-
+    prompt_lr_multiplier = custom_lr_multipliers.get('prompt_layers', 1.0)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -1130,12 +1130,13 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     total_trainable_params_val = param_stats['total_trainable']
     
     log.info(f"Hyperparameters: lm_weight={lm_weight}, kl_base_weight={kl_base_weight}, entropy_weight={entropy_weight}")
-    log.info(f"Learning rate: {learning_rate}, Projection LR Multiplier: {projection_lr_multiplier}, Embedding LR Multiplier: {embedding_lr_multiplier}")
+    log.info(f"Learning rate: {learning_rate}, Projection LR Multiplier: {projection_lr_multiplier}, Embedding LR Multiplier: {embedding_lr_multiplier}, Prompt LR Multiplier: {prompt_lr_multiplier}")
+    log.info(f"Prompt LR Multiplier: {prompt_lr_multiplier}")
     log.info(f"Stop-grad on A′: {config['stop_grad_aprime']}")
     log.info(f"Grad clip: {config['grad_clip']}")
     
     # Create optimizer groups with potentially different LRs
-    optimizer_groups = param_groups([dec, enc], learning_rate, projection_lr_multiplier, embedding_lr_multiplier)
+    optimizer_groups = param_groups([dec, enc], learning_rate, projection_lr_multiplier, embedding_lr_multiplier, prompt_lr_multiplier)
 
     # Verify that the number of parameters in optimizer groups matches the count from trainable_params list.
     num_params_in_optimizer_groups = sum(p.numel() for group in optimizer_groups for p in group['params'])
@@ -1236,7 +1237,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
             
             # Unfreeze and recreate optimizer
             opt, trainable_params, newly_unfrozen_params = unfreeze_non_adapters(
-                dec_raw, enc_raw, config, learning_rate, projection_lr_multiplier, embedding_lr_multiplier, opt_state, step, epoch
+                dec_raw, enc_raw, config, learning_rate, projection_lr_multiplier, embedding_lr_multiplier, prompt_lr_multiplier, opt_state, step, epoch
             )
             
             # Recreate LR scheduler with new optimizer
