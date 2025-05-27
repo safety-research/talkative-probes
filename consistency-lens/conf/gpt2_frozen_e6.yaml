@@ -1,0 +1,138 @@
+# Configuration for GPT-2 Frozen Base Model Experiment
+# This config trains consistency lens on GPT-2 with the base model frozen throughout
+
+defaults:
+  - config
+  - _self_
+
+# Model parameters
+model_name: "openai-community/gpt2"  # GPT-2 124M parameters
+tokenizer_name: "openai-community/gpt2"
+layer_l: 6                            # Middle layer (GPT-2 has 12 layers, 0-indexed)
+
+# Decoder parameters
+decoder_prompt: "Short explanation of <embed>:"       # Prompt for the Decoder
+
+# Training hyperparameters
+t_text: 10                            # Number of tokens to generate with the Decoder
+learning_rate: 1.0e-4                 # Good starting point for transformers
+batch_size: 128                     # Can go higher with 8xH100
+
+# Learning rate scheduler
+lr_scheduler:
+  type: "cosine"                      # Cosine annealing works well
+  warmup_steps: 1000                  # 1k warmup steps
+  warmup_start_factor: 0.1            # Start at 10% of target LR
+  eta_min: 1.0e-5                     # Min LR at end of cosine
+
+# Training duration
+num_train_epochs: 2                   # 2 epochs should be plenty for OpenWebText
+max_train_steps: 0                    # Use epochs instead
+
+compile_models: true                  # Enable torch.compile for speed
+log_interval: 100                     # Log every 100 steps
+wandb_log_interval: 10                # WandB every 10 steps
+grad_clip: 1.0
+
+# Trainable components - FROZEN base model
+trainable_components:
+  decoder:
+    base_model: false                 # FROZEN throughout
+    projection_layer: true            # Train projection
+    eye_init: true
+    output_head: false                # Keep LM head frozen too
+  encoder:
+    base_model: false                 # FROZEN throughout
+    use_base_model: true
+    projection_layer: true            # Train projection
+    eye_init: true
+    output_layer: 6
+
+# No freeze schedule needed since we're keeping it frozen
+freeze_schedule:
+  enabled: false
+
+# Custom learning rates
+custom_lr_multipliers:
+  projection_layers: 1.0              # Same LR for projections
+
+# Gumbel temperature schedule
+gumbel_tau_schedule:
+  type: "linear_decay_after_constant"
+  constant_steps_before_linear_decay: 10000
+  start_value: 1.0
+  end_value: 0.1
+  num_steps: -1                       # Use total training steps
+
+# LM weight schedule (alpha)
+# Ramps up language modeling constraint to gradually introduce linguistic fluency
+# while KL loss (functional preservation) remains the constant fundamental objective  
+alpha_schedule:
+  type: "linear_warmup"
+  start_value: 0.0
+  end_value: 0.1
+  num_steps: 5000                     # Warmup LM constraint over 5k steps
+
+# Activation dumper config for OpenWebText
+activation_dumper:
+  num_samples: 5000000                # 5M samples from OpenWebText
+  seq_len: 128                        # Longer sequences for GPT-2
+  use_hf_dataset: true
+  hf_dataset_name: "openwebtext"      # OpenWebText dataset
+  hf_split: "train"
+  dataset_cache_dir: "./data/corpus/openwebtext"
+  output_dir: "./data/openwebtext_train"
+  batch_size:  256                    # Large batch for dumping
+  # Validation split
+  val_hf_split: "train"               # OpenWebText only has train split
+  val_output_dir: "./data/openwebtext_val"
+  val_num_samples: 50000              # 50k validation samples
+
+# Validation settings
+val_activation_dir: "./data/openwebtext_val"
+val_fraction: 0.01                    # Only used if separate val dir doesn't exist
+split_seed: 42
+val_interval: 500                     # Validate every 500 steps
+
+# WandB configuration
+wandb:
+  project: "consistency-lens-gpt2"
+  mode: "online"
+
+# Checkpoint configuration
+checkpoint:
+  enabled: true
+  output_dir: "outputs/checkpoints"
+  name_pattern: "gpt2_frozen_step{step}_epoch{epoch}"
+  save_every_n_steps: 5000
+  save_every_n_epochs: 1
+  save_at_end: true
+  track_best_n: 3
+  best_metric: "val_loss"
+  best_mode: "min"
+  save_components:
+    models: true
+    optimizer: true
+    scheduler: true
+    config: true
+    metrics: true
+  max_checkpoints: 10
+  delete_old_checkpoints: true
+
+# Loss weights
+lm_weight: 1.0                  # Base LM weight; final LM multiplier = lm_weight * alpha_schedule
+kl_base_weight: 1.0
+entropy_weight: 0.000                 # Small entropy bonus
+
+# Verbose samples for monitoring
+verbose_samples:
+  enabled: true
+  num_samples: 5
+  interval_type: "steps"
+  interval: 1000
+  top_n_predictions: 5
+  generate_continuation: true
+  continuation_tokens: 50
+
+# For multi-GPU: adjust per_device_batch_size in DeepSpeed config
+# Total batch_size = per_device_batch_size * num_gpus * gradient_accumulation_steps

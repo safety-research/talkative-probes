@@ -421,8 +421,9 @@ elif [[ "$MODEL_SHORT" == "gpt2" ]]; then
     MODEL_SHORT="GPT2"
 fi
 
-# Build job name: dataset_model_layer_freeze
-JOB_NAME="${DATASET_NAME}_${MODEL_SHORT}_L${LAYER}_${FREEZE_TYPE}"
+# Build job name: config_dataset_model_layer_freeze
+# Use the config basename as prefix for better tracking
+JOB_NAME="${CONFIG_BASENAME}_${DATASET_NAME}_${MODEL_SHORT}_L${LAYER}_${FREEZE_TYPE}"
 
 # Always use pretokenization for efficiency (5x faster)
 # The config setting is ignored - we always pretokenize
@@ -444,6 +445,7 @@ fi
 # Summary
 echo -e "\n${BLUE}=== Job Summary ===${NC}"
 echo "Config: $CONFIG_FILE"
+echo "Config Name: $CONFIG_BASENAME"
 echo "Job Name: $JOB_NAME"
 echo "Dataset: $DATASET_NAME"
 echo "Model: $MODEL_NAME (${MODEL_SHORT})"

@@ -19,6 +19,7 @@ except ImportError:
     GPUtil = None
 
 import hydra
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 import torch
 # Enable TF32 for better performance on Ampere GPUs (A100, H100)
@@ -175,11 +176,17 @@ def format_time(seconds: float) -> str:
         return f"{hours:.1f}h"
 
 
-def generate_run_name(config: dict, dataset_info: dict, resume_from: str = None) -> str:
+def generate_run_name(config: dict, dataset_info: dict, resume_from: str = None, config_name: str = None) -> str:
     """Generate a descriptive run name based on config and dataset info."""
     components = []
     
-    # Dataset name first (more important than model for experiments)
+    # Config name first (if provided and not default)
+    if config_name and config_name != 'config':
+        # Remove common suffixes
+        clean_config = config_name.replace('_config', '').replace('.yaml', '')
+        components.append(clean_config)
+    
+    # Dataset name (more important than model for experiments)
     if dataset_info['dataset']:
         dataset_name = dataset_info['dataset']
         # Handle common dataset names
@@ -412,12 +419,12 @@ def _prepare_dataloaders(
 
 # ... existing imports and helper functions ...
 
-def log_parameter_counts(dec, enc, orig, decoder_config, encoder_config, log):
+def log_parameter_counts(dec_raw, enc_raw, orig, decoder_config, encoder_config, log):
     """Log detailed parameter counts for all models.
     
     Args:
-        dec: Decoder model (potentially compiled)
-        enc: Encoder model (potentially compiled)
+        dec_raw: Raw Decoder model (before compilation)
+        enc_raw: Raw Encoder model (before compilation)
         orig: Original model wrapper
         decoder_config: Decoder configuration
         encoder_config: Encoder configuration
@@ -426,37 +433,37 @@ def log_parameter_counts(dec, enc, orig, decoder_config, encoder_config, log):
     Returns:
         dict: Summary statistics including total trainable parameters
     """
-    # Get trainable params list
-    trainable_params = [p for p in dec.parameters() if p.requires_grad] + \
-                       [p for p in enc.parameters() if p.requires_grad]
+    # Get trainable params list from raw models
+    trainable_params = [p for p in dec_raw.parameters() if p.requires_grad] + \
+                       [p for p in enc_raw.parameters() if p.requires_grad]
     
     total_trainable_params_val = sum(p.numel() for p in trainable_params)
     num_params_orig_total = sum(p.numel() for p in orig.model.parameters())
 
     log.info(f"Total trainable parameters (Decoder + Encoder combined): {total_trainable_params_val:,}")
 
-    # Decoder parameter counts
-    num_params_dec_total = sum(p.numel() for p in dec.parameters())
+    # Decoder parameter counts - use dec_raw for accurate names
+    num_params_dec_total = sum(p.numel() for p in dec_raw.parameters())
     
     # Use mutually exclusive filters to avoid double counting
     # Priority order: prompts > proj (top-level) > out (top-level) > base
-    num_params_dec_base_trainable = sum(p.numel() for n, p in dec.named_parameters() 
+    num_params_dec_base_trainable = sum(p.numel() for n, p in dec_raw.named_parameters() 
         if p.requires_grad and 'base.' in n and not ('proj' in n or 'out' in n))
-    num_params_dec_proj_trainable = sum(p.numel() for n, p in dec.named_parameters() 
+    num_params_dec_proj_trainable = sum(p.numel() for n, p in dec_raw.named_parameters() 
         if p.requires_grad and n.startswith('proj.'))
-    num_params_dec_out_trainable = sum(p.numel() for n, p in dec.named_parameters() 
+    num_params_dec_out_trainable = sum(p.numel() for n, p in dec_raw.named_parameters() 
         if p.requires_grad and n.startswith('out.'))
-    num_params_dec_prompts_trainable = sum(p.numel() for n, p in dec.named_parameters() 
+    num_params_dec_prompts_trainable = sum(p.numel() for n, p in dec_raw.named_parameters() 
         if p.requires_grad and ('prompt_left_emb' in n or 'prompt_right_emb' in n))
     
     # Count frozen parameters for decoder with same exclusive logic
-    num_params_dec_base_frozen = sum(p.numel() for n, p in dec.named_parameters() 
+    num_params_dec_base_frozen = sum(p.numel() for n, p in dec_raw.named_parameters() 
         if not p.requires_grad and 'base.' in n and not ('proj' in n or 'out' in n))
-    num_params_dec_proj_frozen = sum(p.numel() for n, p in dec.named_parameters() 
+    num_params_dec_proj_frozen = sum(p.numel() for n, p in dec_raw.named_parameters() 
         if not p.requires_grad and n.startswith('proj.'))
-    num_params_dec_out_frozen = sum(p.numel() for n, p in dec.named_parameters() 
+    num_params_dec_out_frozen = sum(p.numel() for n, p in dec_raw.named_parameters() 
         if not p.requires_grad and n.startswith('out.'))
-    num_params_dec_prompts_frozen = sum(p.numel() for n, p in dec.named_parameters() 
+    num_params_dec_prompts_frozen = sum(p.numel() for n, p in dec_raw.named_parameters() 
         if not p.requires_grad and ('prompt_left_emb' in n or 'prompt_right_emb' in n))
     
     current_dec_trainable_total = num_params_dec_base_trainable + num_params_dec_proj_trainable + num_params_dec_out_trainable + num_params_dec_prompts_trainable
@@ -474,23 +481,23 @@ def log_parameter_counts(dec, enc, orig, decoder_config, encoder_config, log):
     log.info(f"    Decoder out frozen: {num_params_dec_out_frozen:,}")
     log.info(f"    Decoder prompts frozen: {num_params_dec_prompts_frozen:,}")
 
-    # Encoder parameter counts with exclusive filters
-    num_params_enc_total = sum(p.numel() for p in enc.parameters())
+    # Encoder parameter counts with exclusive filters - use enc_raw
+    num_params_enc_total = sum(p.numel() for p in enc_raw.parameters())
     
     # Priority: soft_prompt_embeddings > proj (top-level) > base
-    num_params_enc_base_trainable = sum(p.numel() for n, p in enc.named_parameters() 
+    num_params_enc_base_trainable = sum(p.numel() for n, p in enc_raw.named_parameters() 
         if p.requires_grad and 'base.' in n and 'proj' not in n)
-    num_params_enc_proj_trainable = sum(p.numel() for n, p in enc.named_parameters() 
+    num_params_enc_proj_trainable = sum(p.numel() for n, p in enc_raw.named_parameters() 
         if p.requires_grad and n.startswith('proj.'))
-    num_params_enc_prompts_trainable = sum(p.numel() for n, p in enc.named_parameters() 
+    num_params_enc_prompts_trainable = sum(p.numel() for n, p in enc_raw.named_parameters() 
         if p.requires_grad and 'soft_prompt_embeddings' in n)
     
     # Count frozen parameters for encoder with same exclusive logic
-    num_params_enc_base_frozen = sum(p.numel() for n, p in enc.named_parameters() 
+    num_params_enc_base_frozen = sum(p.numel() for n, p in enc_raw.named_parameters() 
         if not p.requires_grad and 'base.' in n and 'proj' not in n)
-    num_params_enc_proj_frozen = sum(p.numel() for n, p in enc.named_parameters() 
+    num_params_enc_proj_frozen = sum(p.numel() for n, p in enc_raw.named_parameters() 
         if not p.requires_grad and n.startswith('proj.'))
-    num_params_enc_prompts_frozen = sum(p.numel() for n, p in enc.named_parameters() 
+    num_params_enc_prompts_frozen = sum(p.numel() for n, p in enc_raw.named_parameters() 
         if not p.requires_grad and 'soft_prompt_embeddings' in n)
     
     current_enc_trainable_total = num_params_enc_base_trainable + num_params_enc_proj_trainable + num_params_enc_prompts_trainable
@@ -839,12 +846,26 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     # Extract dataset info from activation directory
     dataset_info = extract_dataset_info(activation_dir)
     
+    # Get config name from Hydra if available
+    config_name = None
+    try:
+        hydra_cfg = HydraConfig.get()
+        # Get the config name from command line overrides or defaults
+        if hasattr(hydra_cfg, 'job') and hasattr(hydra_cfg.job, 'config_name'):
+            config_name = hydra_cfg.job.config_name
+        elif hasattr(hydra_cfg, 'runtime') and hasattr(hydra_cfg.runtime, 'choices'):
+            # Try to get from runtime choices
+            config_name = hydra_cfg.runtime.choices.get('config_name', 'config')
+    except:
+        # HydraConfig might not be available in some contexts (e.g., testing)
+        pass
+    
     # Generate run name (or use override)
     if args.run_name:
         run_name = args.run_name
         log.info(f"Using user-specified run name: {run_name}")
     else:
-        run_name = generate_run_name(config, dataset_info, args.resume)
+        run_name = generate_run_name(config, dataset_info, args.resume, config_name)
     
     # Update checkpoint output directory to include run name
     checkpoint_config = config.get('checkpoint', {})
@@ -988,6 +1009,22 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
             dec_raw.out.weight.copy_(dec_raw.base.get_output_embeddings().weight)
         log.info("Resized Decoder.out to new vocab size")
 
+    # ... after model initialization but before compilation ...
+
+    # Original model wrapper (remap after creation)
+    orig = OrigWrapper(model_name, load_in_8bit=False)
+    if config["tokenizer_name"] != model_name:
+        remap_embeddings(orig.model, base_tok, tokenizer)
+        log.info("Remapped Orig model embeddings to new tokenizer")
+    orig.model.to(device)
+    
+    # Get trainable params and log parameter counts (do this BEFORE compilation)
+    param_stats = log_parameter_counts(dec_raw, enc_raw, orig, decoder_config, encoder_config, log)
+    trainable_params = param_stats['trainable_params']
+    total_trainable_params_val = param_stats['total_trainable']
+    
+
+
     # Now compile models if requested
     if config.get('compile_models', True):
         log.info("Compiling models")
@@ -997,13 +1034,6 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         log.info("Not compiling models")
         dec = dec_raw.to(device)
         enc = enc_raw.to(device)
-
-    # Original model wrapper (remap after creation)
-    orig = OrigWrapper(model_name, load_in_8bit=False)
-    if config["tokenizer_name"] != model_name:
-        remap_embeddings(orig.model, base_tok, tokenizer)
-        log.info("Remapped Orig model embeddings to new tokenizer")
-    orig.model.to(device)
 
     # Handle freeze schedule
     freeze_schedule_config = config.get('freeze_schedule', {})
@@ -1088,7 +1118,6 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         log.info("Freeze schedule disabled - using standard trainable component settings")
 
     # Get trainable params and log parameter counts
-    param_stats = log_parameter_counts(dec, enc, orig, decoder_config, encoder_config, log)
     trainable_params = param_stats['trainable_params']
     total_trainable_params_val = param_stats['total_trainable']
     

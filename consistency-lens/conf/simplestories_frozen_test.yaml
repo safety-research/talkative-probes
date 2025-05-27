@@ -9,6 +9,8 @@ defaults:
 # Override specific settings for this experiment
 t_text: 10                            # Width-10 explanations as requested
 
+layer_l: 4
+
 activations_dumper:
     num_samples: 10000
 

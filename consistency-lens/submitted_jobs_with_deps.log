@@ -132,3 +132,7 @@ Fri 23 May 19:17:55 UTC 2025: gpt2-unfreeze - dump:none train:1636 resume:output
 2025-05-27 13:37:26: SimpleStories_5M_L4_frozen [SimpleStories/5M/L4/frozen] - config:conf/simplestories_frozenl4.yaml dump:none train:1788
 2025-05-27 13:44:36: openwebtext_GPT2_L6_frozen [openwebtext/GPT2/L6/frozen] - config:conf/gpt2_frozen.yaml dump:none train:1789
 2025-05-27 14:09:18: SimpleStories_5M_L4_frozen [SimpleStories/5M/L4/frozen] - config:conf/simplestories_frozenl4e4.yaml dump:none train:1790
+2025-05-27 14:22:07: gpt2_frozen_e6_openwebtext_GPT2_L6_frozen [openwebtext/GPT2/L6/frozen] - config:conf/gpt2_frozen_e6.yaml dump:none train:1791
+2025-05-27 14:36:06: simplestories_frozen_test_SimpleStories_5M_L5_frozen [SimpleStories/5M/L5/frozen] - config:conf/simplestories_frozen_test.yaml dump:none train:1792
+2025-05-27 14:37:07: simplestories_frozen_test_SimpleStories_5M_L4_frozen [SimpleStories/5M/L4/frozen] - config:conf/simplestories_frozen_test.yaml dump:none train:1793
+2025-05-27 14:37:37: simplestories_frozen_test_SimpleStories_5M_L4_frozen [SimpleStories/5M/L4/frozen] - config:conf/simplestories_frozen_test.yaml dump:none train:1794
