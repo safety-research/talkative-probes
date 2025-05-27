@@ -19,8 +19,9 @@ def param_groups(
         • All parameters get the base ``lr``.
         • Parameters whose *name* contains ``.proj`` **or** ``.out`` get
           ``lr * proj_lr_mult`` — these are the lightweight adapters / heads.
-        • Parameters whose *name* contains ``embed`` get
-          ``lr * embedding_lr_mult`` — these are the embedding layers.
+        • Parameters whose *name* contains ``embed``, ``prompt_left_emb``, 
+          ``prompt_right_emb``, or ``soft_prompt_embeddings`` get
+          ``lr * embedding_lr_mult`` — these are the embedding layers and soft prompts.
         • Weight-decay is 0.01 for matrix weights, 0.0 for biases / LayerNorm.
 
     The function accepts either a single ``nn.Module`` or a sequence. Only
@@ -40,7 +41,15 @@ def param_groups(
             
             # Check parameter type for learning rate scaling
             is_adapter = ("proj" in n) or (".out" in n)
-            is_embedding = ("embed" in n) or ("wte" in n) or ("wpe" in n) or ("lm_head" in n and "weight" in n)
+            is_embedding = (
+                ("embed" in n) or 
+                ("wte" in n) or 
+                ("wpe" in n) or 
+                ("lm_head" in n and "weight" in n) or
+                ("prompt_left_emb" in n) or 
+                ("prompt_right_emb" in n) or 
+                ("soft_prompt_embeddings" in n)
+            )
             
             if is_adapter:
                 lr_scale = proj_lr_mult
