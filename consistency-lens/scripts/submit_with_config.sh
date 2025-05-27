@@ -79,6 +79,25 @@ if [ -z "$NUM_GPUS" ]; then
     else
         NUM_GPUS=1
     fi
+else
+    # If NUM_GPUS is specified and CUDA_VISIBLE_DEVICES is set, use the lesser
+    if [ -n "$CUDA_VISIBLE_DEVICES" ]; then
+        IFS=',' read -ra DEV_ARR <<< "$CUDA_VISIBLE_DEVICES"
+        CUDA_GPU_COUNT=${#DEV_ARR[@]}
+        if [ "$CUDA_GPU_COUNT" -lt "$NUM_GPUS" ]; then
+            NUM_GPUS=$CUDA_GPU_COUNT
+        else
+            # Re-set CUDA_VISIBLE_DEVICES to only use the first NUM_GPUS devices
+            NEW_CUDA_DEVICES=""
+            for ((i=0; i<NUM_GPUS; i++)); do
+                if [ $i -gt 0 ]; then
+                    NEW_CUDA_DEVICES="$NEW_CUDA_DEVICES,"
+                fi
+                NEW_CUDA_DEVICES="$NEW_CUDA_DEVICES${DEV_ARR[$i]}"
+            done
+            export CUDA_VISIBLE_DEVICES="$NEW_CUDA_DEVICES"
+        fi
+    fi
 fi
 echo "Using $NUM_GPUS GPUs"
 

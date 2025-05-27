@@ -10,6 +10,13 @@ layer_l: 4
 # Override specific settings for this experiment
 t_text: 20                            # Width-10 explanations as requested
 
+alpha_schedule:
+    value: 1.0
+
+
+
+
+
 # Ensure base model stays frozen
 trainable_components:
   decoder:
