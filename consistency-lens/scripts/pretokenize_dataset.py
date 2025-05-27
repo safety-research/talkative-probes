@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Pre-tokenize datasets to eliminate tokenization bottleneck during activation dumping."""
 
 import logging
