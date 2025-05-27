@@ -17,16 +17,18 @@ RESUME_CHECKPOINT="${3:-}"
 WANDB_RESUME_ID="${4:-}"
 NODELIST="${5:-330702be7061}"  # Default to current cluster node (only used for SLURM)
 NUM_GPUS="${6:-}"  # Number of GPUs to use (auto-detect if not specified)
+RUN_SUFFIX="${7:-}"  # Optional suffix to add to run name
 
 # Check if config file provided
 if [ -z "$CONFIG_FILE" ]; then
     echo "Error: No config file specified"
-    echo "Usage: $0 <config.yaml> [force-redump] [resume_checkpoint] [wandb_resume_id] [nodelist] [num_gpus]"
+    echo "Usage: $0 <config.yaml> [force-redump] [resume_checkpoint] [wandb_resume_id] [nodelist] [num_gpus] [run_suffix]"
     echo ""
     echo "Examples:"
     echo "  $0 conf/simplestories_frozen.yaml                    # New experiment"
     echo "  $0 conf/gpt2_frozen.yaml force-redump                # Force re-dump activations"
     echo "  $0 conf/simplestories_frozen.yaml false outputs/ckpt_step_1000.pt  # Resume"
+    echo "  $0 conf/simplestories_frozen.yaml false \"\" \"\" \"\" \"\" exp1  # Add suffix 'exp1'"
     echo ""
     echo "Available configs:"
     ls -1 conf/*.yaml | grep -E "(simplestories|gpt2)" | sed 's/^/  /'
@@ -275,6 +277,7 @@ submit_train_job() {
     local resume_checkpoint=$3
     local wandb_resume_id=$4
     local config_file=$5
+    local run_suffix=$6
     
     if [ "$USE_SLURM" = true ]; then
         echo -e "${YELLOW}Submitting training job via SLURM...${NC}" >&2
@@ -301,6 +304,9 @@ submit_train_job() {
         fi
         if [ -n "$wandb_resume_id" ]; then
             train_cmd="$train_cmd wandb_resume_id=\"$wandb_resume_id\""
+        fi
+        if [ -n "$run_suffix" ]; then
+            train_cmd="$train_cmd run_suffix=\"$run_suffix\""
         fi
         
         # Submit job using array to avoid quote issues
@@ -387,6 +393,9 @@ submit_train_job() {
         if [ -n "$wandb_resume_id" ]; then
             train_cmd="$train_cmd wandb_resume_id=\"$wandb_resume_id\""
         fi
+        if [ -n "$run_suffix" ]; then
+            train_cmd="$train_cmd run_suffix=\"$run_suffix\""
+        fi
         
         if eval "$train_cmd"; then
             echo -e "${GREEN}Training completed successfully${NC}" >&2
@@ -421,9 +430,12 @@ elif [[ "$MODEL_SHORT" == "gpt2" ]]; then
     MODEL_SHORT="GPT2"
 fi
 
-# Build job name: config_dataset_model_layer_freeze
+# Build job name: config_dataset_model_layer_freeze[_suffix]
 # Use the config basename as prefix for better tracking
 JOB_NAME="${CONFIG_BASENAME}_${DATASET_NAME}_${MODEL_SHORT}_L${LAYER}_${FREEZE_TYPE}"
+if [ -n "$RUN_SUFFIX" ]; then
+    JOB_NAME="${JOB_NAME}_${RUN_SUFFIX}"
+fi
 
 # Always use pretokenization for efficiency (5x faster)
 # The config setting is ignored - we always pretokenize
@@ -433,13 +445,13 @@ echo -e "${BLUE}Using pretokenization for 5x faster dumping${NC}"
 # Check if activations exist
 if check_activations "$MODEL_NAME" "$LAYER" "$OUTPUT_DIR" && [ "$FORCE_REDUMP" != "true" ]; then
     echo -e "${GREEN}Activations already exist, submitting training only${NC}"
-    train_job=$(submit_train_job "$JOB_NAME" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE")
+    train_job=$(submit_train_job "$JOB_NAME" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE" "$RUN_SUFFIX")
 else
     echo -e "${YELLOW}Activations not found or force redump requested${NC}"
     # Always pretokenize first for efficiency
     pretok_job=$(submit_pretokenize_job "$CONFIG_FILE" "$JOB_NAME")
     dump_job=$(submit_dump_job "$CONFIG_FILE" "$LAYER" "$JOB_NAME" "$pretok_job")
-    train_job=$(submit_train_job "$JOB_NAME" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE")
+    train_job=$(submit_train_job "$JOB_NAME" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE" "$RUN_SUFFIX")
 fi
 
 # Summary
@@ -461,6 +473,9 @@ if [ -n "$RESUME_CHECKPOINT" ]; then
 fi
 if [ -n "$WANDB_RESUME_ID" ]; then
     echo "WandB Resume ID: $WANDB_RESUME_ID"
+fi
+if [ -n "$RUN_SUFFIX" ]; then
+    echo "Run Suffix: $RUN_SUFFIX"
 fi
 echo ""
 echo "Job Pipeline:"

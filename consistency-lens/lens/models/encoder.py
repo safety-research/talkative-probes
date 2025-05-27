@@ -192,10 +192,12 @@ class Encoder(nn.Module):
                 # Input embeddings (before any transformer layers)
                 processed_embeddings = outputs.hidden_states[0]
             else:
-                # Specific layer (1-indexed to match typical layer numbering)
-                # Note: hidden_states includes the input embeddings as layer 0
+                # Specific layer (0-indexed, where 0 = input embeddings)
+                # hidden_states[0] = input embeddings
+                # hidden_states[1] = output of first transformer layer
+                # hidden_states[n] = output of nth transformer layer
                 if self.config.output_layer > len(outputs.hidden_states) - 1:
-                    raise ValueError(f"Requested output_layer {self.config.output_layer} but model only has {len(outputs.hidden_states) - 1} layers")
+                    raise ValueError(f"Requested output_layer {self.config.output_layer} but model only has {len(outputs.hidden_states)} hidden states (0 to {len(outputs.hidden_states) - 1})")
                 processed_embeddings = outputs.hidden_states[self.config.output_layer]
             
             # Then take the embedding of the final token for projection

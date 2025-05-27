@@ -1,0 +1,25 @@
+# Example configuration for training with MSE loss instead of KL divergence
+# This config extends the base config.yaml with MSE-specific settings
+
+defaults:
+  - config  # Inherit all settings from config.yaml
+
+# Override loss weights to use MSE instead of KL
+kl_base_weight: 0.0    # Disable KL divergence loss
+mse_weight: 1.0        # Enable MSE reconstruction loss
+
+# You may want to adjust other hyperparameters for MSE training:
+# - Learning rate might need to be different
+# - Alpha schedule might need adjustment since MSE provides different gradients
+# - Consider whether to use LM loss alongside MSE
+
+# Example adjustments:
+learning_rate: 1.0e-4  # Might need different LR for MSE
+lm_weight: 0.5         # Maybe reduce LM weight when using MSE
+
+# Note: MSE loss directly optimizes for reconstructing activations A → Â
+# This is different from KL which optimizes for functional preservation
+# Choose based on your specific goals:
+# - MSE: Direct activation reconstruction (may not preserve functionality)
+# - KL: Functional behavior preservation (recommended by paper)
+# - Both: mse_weight > 0 and kl_base_weight > 0 (weighted combination)

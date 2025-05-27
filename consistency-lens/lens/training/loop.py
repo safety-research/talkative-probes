@@ -47,7 +47,11 @@ def train_step(  # noqa: D401
     decoded_token_ids_batch = gen.hard_token_ids.detach().cpu().view(-1)
 
     # loss_mse - just for monitoring! We do not train on this, as we need to allow the resample ablation to work
-    loss_mse = torch.nn.functional.mse_loss(A_hat, A)
+    if mse_w > 0:
+        loss_mse = torch.nn.functional.mse_loss(A_hat, A)
+    else:
+        with torch.no_grad():
+            loss_mse = torch.nn.functional.mse_loss(A_hat, A)
 
     lm_w = _loss_fns.get("lm_weight", 0.0) if _loss_fns else 0.0
     # ----------------------- language-model KL divergence (loss_lm) ------------------------------
@@ -143,7 +147,7 @@ def train_step(  # noqa: D401
     probs = torch.softmax(logits, dim=-1)
     entropy = (-probs * torch.log(probs + 1e-9)).sum(-1).mean()
 
-    # ----------------------- KL (optional) -----------------------------------
+    # ----------------------- KL -----------------------------------
     if orig is not None and all(k in batch for k in ("A_prime", "input_ids_A")):
         # Reconstruct A′ as well to get Δ
         Ap = batch["A_prime"].float()
@@ -253,12 +257,14 @@ def train_step(  # noqa: D401
 
     kl_base = _loss_fns.get("kl_base_weight", 1.0) if _loss_fns else 1.0
     ent_w = _loss_fns.get("entropy_weight", 0.0) if _loss_fns else 0.0
+    mse_w = _loss_fns.get("mse_weight", 0.0) if _loss_fns else 0.0
 
     # Total loss composition:
     # - KL loss (fundamental objective): fixed weight, measures functional preservation
     # - LM loss (linguistic regularizer): ramped up via alpha schedule for fluency
+    # - MSE loss (direct reconstruction): alternative/additional to KL for direct activation matching
     # - Alpha schedule gradually introduces linguistic constraints during training
-    total_loss = (lm_w * alpha) * loss_lm + kl_base * loss_kl - ent_w * entropy #+ loss_mse
+    total_loss = (lm_w * alpha) * loss_lm + kl_base * loss_kl - ent_w * entropy + mse_w * loss_mse
 
     return {
         "total": total_loss,
