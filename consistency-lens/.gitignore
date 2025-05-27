@@ -3,3 +3,4 @@ consistency-lens/data/*
 data/*
 .env
 outputs/*
+*.log

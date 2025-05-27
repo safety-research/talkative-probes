@@ -41,6 +41,9 @@ def extract_settings(config_path):
         'use_pretokenized': cfg.get('activation_dumper', {}).get('use_pretokenized', False),
         'seq_len': cfg.get('activation_dumper', {}).get('seq_len', 64),
         
+        # Pretokenize settings
+        'pretokenize_num_proc': cfg.get('pretokenize', {}).get('num_proc', 8),
+        
         # Training settings
         'num_train_epochs': cfg.get('num_train_epochs', 0),
         'max_train_steps': cfg.get('max_train_steps', 0),

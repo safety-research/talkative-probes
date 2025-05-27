@@ -167,16 +167,20 @@ submit_pretokenize_job() {
     local config=$1
     local job_name=$2
     
+    # Use the already extracted PRETOKENIZE_NUM_PROC variable
+    local num_proc="${PRETOKENIZE_NUM_PROC:-8}"
+    
     if [ "$USE_SLURM" = true ]; then
         echo -e "${YELLOW}Submitting pretokenization job via SLURM...${NC}" >&2
         echo "Config: $config" >&2
+        echo "Using $num_proc CPUs for pretokenization" >&2
         
         # Create a simple sbatch script inline
         local result=$(sbatch --parsable \
             --job-name="${job_name}-pretok" \
             --gres=gpu:0 \
             --nodelist="$NODELIST" \
-            --cpus-per-task=32 \
+            --cpus-per-task=$num_proc \
             --time=2:00:00 \
             --output=logs/pretokenize_%j.out \
             --error=logs/pretokenize_%j.err \
