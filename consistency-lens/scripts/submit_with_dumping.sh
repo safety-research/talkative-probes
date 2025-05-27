@@ -272,11 +272,13 @@ submit_train_job() {
         echo "$train_job_id"
     else
         echo -e "${YELLOW}Running training directly...${NC}" >&2
+        echo "DEBUG: Training dependency value: '$dependency'" >&2
         
         # In non-SLURM mode, dependency="completed" means the previous step succeeded
         # Only fail if dependency exists but is NOT "completed"
         if [ -n "$dependency" ] && [ "$dependency" != "completed" ]; then
             echo -e "${RED}ERROR: Previous step did not complete successfully${NC}" >&2
+            echo "DEBUG: Training dependency was '$dependency', expected 'completed' or empty" >&2
             exit 1
         fi
         
