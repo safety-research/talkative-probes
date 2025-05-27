@@ -9,6 +9,9 @@ defaults:
 # Override specific settings for this experiment
 t_text: 10                            # Width-10 explanations as requested
 
+alpha_schedule:
+    value: 0.0
+
 # Ensure base model stays frozen
 trainable_components:
   decoder:
