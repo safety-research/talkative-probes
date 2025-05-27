@@ -216,6 +216,7 @@ Automatically enabled for NVIDIA Ampere GPUs (A100/H100):
 - **Original Model** (`lens/models/orig.py`): Frozen HuggingFace LLM with activation replacement hooks
 - **Decoder** (`lens/models/decoder.py`): Converts activations → text via Gumbel-Softmax + STE  
 - **Encoder** (`lens/models/encoder.py`): Converts text embeddings → reconstructed activations
+  - Configurable output layer selection via `output_layer` parameter (-1 = last layer, 0 = embeddings, 1..n = specific layer)
 - **Training Loop** (`lens/training/loop.py`): Composite loss with L_LM + L_KL + entropy regularization
 
 ### Data Pipeline

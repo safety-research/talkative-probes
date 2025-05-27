@@ -107,6 +107,9 @@ python scripts/01_train.py trainable_components.encoder.soft_prompt_init_std=0.0
 # initialize encoder soft prompt from text instead of random
 python scripts/01_train.py trainable_components.encoder.soft_prompt_init_text="reconstruct activation:"
 
+# control which layer encoder extracts activations from (-1 = last layer, 0 = embeddings, 1..n = specific layer)
+python scripts/01_train.py trainable_components.encoder.output_layer=5
+
 # control decoder prompt trainability
 python scripts/01_train.py trainable_components.decoder.trainable_prompts=false
 ```
@@ -444,25 +447,24 @@ This can reduce the 42% tokenization overhead to near zero for subsequent runs.
 
 ### Pre-tokenization Pipeline
 
-We provide a complete pre-tokenization pipeline for maximum performance:
+Pre-tokenization is now automatically handled by our submission scripts for optimal performance. When using `submit_with_config.sh` or `launch_multigpu_dump.sh`, the system will:
 
+1. **Automatically pre-tokenize the dataset** if not already done
+2. **Use the pre-tokenized data** for 5x faster activation dumping
+3. **Cache the results** for future runs
+
+This eliminates the tokenization bottleneck entirely:
+- Tokenization time: 3,273ms → 0ms per batch
+- Total time per batch: 5,766ms → ~2,500ms
+- Throughput improvement: ~2.3x for small models, even more for CPU-bound scenarios
+
+For manual pre-tokenization (if needed):
 ```bash
-# Step 1: Pre-tokenize dataset (one-time, uses 32 CPU cores by default)
 python consistency-lens/scripts/pretokenize_dataset.py \
     --config_path consistency-lens/config/lens_simple.yaml \
     --num_proc 32 \
     --batch_size 10000
-
-# Step 2: Use the unified script which automatically leverages pre-tokenized data
-./consistency-lens/scripts/launch_multigpu_dump.sh \
-    consistency-lens/config/lens_simple.yaml \
-    data/activations
 ```
-
-Pre-tokenization eliminates the tokenization bottleneck entirely:
-- Tokenization time: 3,273ms → 0ms per batch
-- Total time per batch: 5,766ms → ~2,500ms
-- Throughput improvement: ~2.3x for small models, even more for CPU-bound scenarios
 
 ### Default Dataset Processing Behavior
 

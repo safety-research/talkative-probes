@@ -54,9 +54,7 @@ All experiments are now config-driven. Just pass the appropriate YAML file:
 ### 🔧 Utilities
 - `pretokenize_dataset.py` - Pre-tokenize for 5x faster dumping
 - `extract_config_settings.py` - Helper to extract settings from YAML configs
-- `launch_multigpu_dump_optimized.sh` - CPU-optimized multi-GPU launcher
-- `launch_multigpu_dump_pretokenized.sh` - Launcher for pre-tokenized data
-- `train_with_compile.sh` - Training with torch.compile wrapper
+- **`launch_multigpu_dump.sh`** - Unified multi-GPU launcher (always uses pretokenization)
 
 ### 📁 Legacy Scripts
 Scripts in `scripts/legacy/` have been replaced by the new extensible system. See [legacy/README_LEGACY.md](legacy/README_LEGACY.md) for migration guide.
@@ -84,8 +82,8 @@ python scripts/pretokenize_dataset.py --config-path=conf --config-name=your_expe
 
 #### Step 2: Activation Extraction
 ```bash
-# Multi-GPU dumping
-./scripts/launch_multigpu_dump_pretokenized.sh conf/your_experiment.yaml
+# Multi-GPU dumping (automatically uses pretokenization)
+./scripts/launch_multigpu_dump.sh conf/your_experiment.yaml
 
 # Or with SLURM
 sbatch scripts/slurm_dump_activations_flexible.sh conf/your_experiment.yaml
