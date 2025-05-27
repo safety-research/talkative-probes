@@ -65,7 +65,7 @@ def iter_hf_text(dataset_name: str, cache_dir: str | None, split: str, num_sampl
 
     # Resolve cache directory path if provided
     resolved_cache_dir = str(resolve_path(cache_dir)) if cache_dir else None
-    ds = load_dataset(dataset_name, split=split, streaming=True, cache_dir=resolved_cache_dir)
+    ds = load_dataset(dataset_name, split=split, streaming=True, cache_dir=resolved_cache_dir, trust_remote_code=True)
     count = 0
     for item in ds:
         if num_samples is not None and count >= num_samples: # Ensure we don't overshoot
