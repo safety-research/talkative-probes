@@ -80,15 +80,15 @@ activation_dumper:
   hf_dataset_name: "openwebtext"      # OpenWebText dataset
   hf_split: "train"
   dataset_cache_dir: "./data/corpus/openwebtext"
-  output_dir: "./data/activations/openwebtext_train"
+  output_dir: "./data/openwebtext_train"
   batch_size:  256                    # Large batch for dumping
   # Validation split
   val_hf_split: "train"               # OpenWebText only has train split
-  val_output_dir: "./data/activations/openwebtext_val"
+  val_output_dir: "./data/openwebtext_val"
   val_num_samples: 50000              # 50k validation samples
 
 # Validation settings
-val_activation_dir: "./data/activations/openwebtext_val"
+val_activation_dir: "./data/openwebtext_val"
 val_fraction: 0.01                    # Only used if separate val dir doesn't exist
 split_seed: 42
 val_interval: 500                     # Validate every 500 steps
