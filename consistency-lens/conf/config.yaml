@@ -225,6 +225,7 @@ checkpoint:
 # Loss weights
 lm_weight: 1.0                  # Base LM weight; final LM multiplier = lm_weight * alpha_schedule  
 kl_base_weight: 1.0             # Fixed weight on KL divergence (fundamental objective)
+mse_weight: 0.0                 # Weight for MSE reconstruction loss (0.0 to disable, use instead of KL for direct reconstruction)
 
 # Token entropy bonus (see loop.py). Positive values reward higher entropy to
 # avoid posterior collapse; set to 0.0 to disable.

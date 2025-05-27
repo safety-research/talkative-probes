@@ -176,7 +176,7 @@ def format_time(seconds: float) -> str:
         return f"{hours:.1f}h"
 
 
-def generate_run_name(config: dict, dataset_info: dict, resume_from: str = None, config_name: str = None) -> str:
+def generate_run_name(config: dict, dataset_info: dict, resume_from: str = None, config_name: str = None, run_suffix: str = None) -> str:
     """Generate a descriptive run name based on config and dataset info."""
     components = []
     
@@ -264,6 +264,10 @@ def generate_run_name(config: dict, dataset_info: dict, resume_from: str = None,
     # Add timestamp (shorter format)
     timestamp = datetime.now().strftime("%m%d_%H%M")
     components.append(timestamp)
+    
+    # Add suffix if provided
+    if run_suffix:
+        components.append(run_suffix)
     
     return "_".join(components)
 
@@ -760,6 +764,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         "wandb_resume_id",
         "run_name",
         "model_name",
+        "run_suffix",
     ]:
         setattr(args, _k, cfg.get(_k, None))
 
@@ -865,7 +870,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         run_name = args.run_name
         log.info(f"Using user-specified run name: {run_name}")
     else:
-        run_name = generate_run_name(config, dataset_info, args.resume, config_name)
+        run_name = generate_run_name(config, dataset_info, args.resume, config_name, args.run_suffix)
     
     # Update checkpoint output directory to include run name
     checkpoint_config = config.get('checkpoint', {})
@@ -914,6 +919,9 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     
     # Initialize wandb and get the run ID
     current_wandb_run_id = log_init(**wandb_init_kwargs)
+    
+    log.info(f"Current CUDA devices: {torch.cuda.current_device()}")
+    log.info(f"Current CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES')}")
 
     # Prepare DataLoaders by calling the helper function
     train_loader, val_loader, train_ds, val_ds = _prepare_dataloaders(
@@ -1317,6 +1325,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                     "lm_weight": lm_weight,
                     "kl_base_weight": kl_base_weight,
                     "entropy_weight": entropy_weight,
+                    "mse_weight": config.get('mse_weight', 0.0),
                 },
                 lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'),
                 tokenizer=tokenizer,
