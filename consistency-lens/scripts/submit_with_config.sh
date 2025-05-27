@@ -89,7 +89,7 @@ echo "Model: $MODEL_NAME"
 echo "Layer: $LAYER"
 echo "Dataset: $DATASET_NAME"
 echo "Output Dir: $OUTPUT_DIR"
-echo "Use Pretokenized: $USE_PRETOKENIZED"
+echo "Use Pretokenized: $USE_PRETOKENIZED (always true for 5x speedup)"
 echo "Training Script: ${TRAINING_SCRIPT:-<will be determined>}"
 echo "Freeze Schedule Enabled: $FREEZE_ENABLED"
 if [ "$FREEZE_ENABLED" = "true" ]; then
@@ -390,12 +390,10 @@ echo -e "${BLUE}=== Running experiment from $CONFIG_FILE ===${NC}"
 # Determine job name from config file
 JOB_NAME=$(basename "$CONFIG_FILE" .yaml)
 
-# Check if we should use pretokenization
-# If not explicitly set in config, default to true for faster processing
-if [ "$USE_PRETOKENIZED" != "true" ] && [ "$USE_PRETOKENIZED" != "false" ]; then
-    USE_PRETOKENIZED="true"
-    echo -e "${BLUE}Defaulting to pretokenization for faster dumping${NC}"
-fi
+# Always use pretokenization for efficiency (5x faster)
+# The config setting is ignored - we always pretokenize
+USE_PRETOKENIZED="true"
+echo -e "${BLUE}Using pretokenization for 5x faster dumping${NC}"
 
 # Determine training script
 TRAINING_SCRIPT=$(determine_training_script)
@@ -421,14 +419,9 @@ if check_activations "$MODEL_NAME" "$LAYER" "$OUTPUT_DIR" && [ "$FORCE_REDUMP" !
     train_job=$(submit_train_job "$TRAINING_SCRIPT" "$JOB_NAME" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE")
 else
     echo -e "${YELLOW}Activations not found or force redump requested${NC}"
-    if [ "$USE_PRETOKENIZED" = "true" ]; then
-        # First pretokenize, then dump with pretokenized data
-        pretok_job=$(submit_pretokenize_job "$CONFIG_FILE" "$JOB_NAME")
-        dump_job=$(submit_dump_job "$CONFIG_FILE" "$LAYER" "$JOB_NAME" true "$pretok_job")
-    else
-        # Direct dumping without pretokenization
-        dump_job=$(submit_dump_job "$CONFIG_FILE" "$LAYER" "$JOB_NAME" false "")
-    fi
+    # Always pretokenize first for efficiency
+    pretok_job=$(submit_pretokenize_job "$CONFIG_FILE" "$JOB_NAME")
+    dump_job=$(submit_dump_job "$CONFIG_FILE" "$LAYER" "$JOB_NAME" true "$pretok_job")
     train_job=$(submit_train_job "$TRAINING_SCRIPT" "$JOB_NAME" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE")
 fi
 
