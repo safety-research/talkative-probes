@@ -195,7 +195,7 @@ submit_dump_job() {
         # Run activation dumping directly
         export NUM_GPUS="$NUM_GPUS"
         if [ "$use_pretokenized" = "true" ]; then
-            if ./scripts/launch_multigpu_dump_pretokenized.sh "$config" "" "" "$layer"; then
+            if ./scripts/launch_multigpu_dump_pretokenized.sh "$config" "" "" "$layer" >&2; then
                 echo -e "${GREEN}Activation dumping completed successfully${NC}" >&2
                 echo "completed"
             else
@@ -203,7 +203,7 @@ submit_dump_job() {
                 exit 1
             fi
         else
-            if ./scripts/launch_multigpu_dump_optimized.sh "$config" "" "" "$layer"; then
+            if ./scripts/launch_multigpu_dump_optimized.sh "$config" "" "" "$layer" >&2; then
                 echo -e "${GREEN}Activation dumping completed successfully${NC}" >&2
                 echo "completed"
             else
