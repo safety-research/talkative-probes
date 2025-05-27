@@ -198,7 +198,7 @@ def print_verbose_sample_details(
     # Base model generation comparison
     # ------------------------------------------------------------------
 
-    print("\nGenerated Explanation (from BASE model using same context):")
+    print("\nGenerated Explanation (from BASE model using same context + still with soft tokens??? Perhaps should be with hard tokens... not sure.):")
     if base_tokens:
         base_labels = ["Token:"] + [f"Base Top {i+1}:" for i in range(len(base_preds_by_rank))]
         base_data_rows = [base_tokens] + base_preds_by_rank
