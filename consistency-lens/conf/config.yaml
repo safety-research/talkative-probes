@@ -163,11 +163,11 @@ activation_dumper:
   hf_dataset_name: "SimpleStories/SimpleStories"
   hf_split: "train"
   dataset_cache_dir: "./data/corpus/SimpleStories"
-  output_dir: "./data/activations/SimpleStories_train"
+  output_dir: "./data/SimpleStories_train"
   batch_size: 2048  # With pre-tokenization, we can use larger batches
   # Validation split dumping in the same run of 00_dump_activations.py
   val_hf_split: "test"
-  val_output_dir: "./data/activations/SimpleStories_test"
+  val_output_dir: "./data/SimpleStories_test"
   val_num_samples: -1  # -1 means process entire validation dataset
   use_pretokenized: false
   pretokenized_path: null
