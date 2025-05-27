@@ -13,6 +13,8 @@ t_text: 20                            # Width-10 explanations as requested
 alpha_schedule:
     value: 0.01
 
+learning_rate: 1.0e-3
+
 
 
 
