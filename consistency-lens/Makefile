@@ -26,8 +26,8 @@ setup: uv
 		echo "Running setup_env.sh..."; \
 		/workspace/kitf/dotfiles/setup_env.sh; \
 	fi
-	uv venv
-	uv pip install -e .
+	PATH="$$HOME/.local/bin:$$PATH" uv venv
+	PATH="$$HOME/.local/bin:$$PATH" uv pip install -e .
 	@if [ -f .env ]; then \
 		echo "Configuring wandb..."; \
 		. .venv/bin/activate && \
@@ -38,4 +38,4 @@ setup: uv
 
 # Quick install (assumes venv exists)
 install:
-	uv pip install -e .
+	PATH="$$HOME/.local/bin:$$PATH" uv pip install -e .
