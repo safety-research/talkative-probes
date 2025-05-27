@@ -6,9 +6,10 @@ import torch
 from torch import nn
 
 from lens.evaluation.metrics import kl as kl_fn
+import logging as _logging
 
 __all__ = ["train_step"]
-
+log = _logging.getLogger(__name__)
 
 def train_step(  # noqa: D401
     batch: Dict[str, torch.Tensor],
@@ -240,8 +241,8 @@ def train_step(  # noqa: D401
         # F.kl_div expects input=log_Q, target=P (if log_target=False)
         # Original: kl_fn(softmax(logits_orig), log_softmax(logits_target))
         #   This leads to log(log_Q) which is log(negative) = NaN
-        print('biggest value of abs logits_target', torch.max(torch.abs(logits_target)))
-        print('biggest value of abs logits_orig', torch.max(torch.abs(logits_orig)))
+        log.info(f'biggest value of abs logits_target: {torch.max(torch.abs(logits_target))}')
+        log.info(f'biggest value of abs logits_orig: {torch.max(torch.abs(logits_orig))}')
         # Corrected: kl_fn(log_softmax(logits_target), softmax(logits_orig))
         loss_kl = kl_fn(#kl_fn expect log y_pred, y_true - this is what we ahve here
             torch.log_softmax(logits_target, dim=-1),
