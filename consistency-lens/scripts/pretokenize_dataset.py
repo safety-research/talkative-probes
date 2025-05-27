@@ -107,7 +107,7 @@ def main(cfg: DictConfig) -> None:
             tokenize_function,
             batched=True,
             batch_size=batch_size,
-            num_proc=1,  # Force single process for dataset.map()
+            num_proc=num_proc,  # Use num_proc from config
             remove_columns=dataset.column_names,  # Keep only tokenized data
             desc=f"Tokenizing {split}",
         )
