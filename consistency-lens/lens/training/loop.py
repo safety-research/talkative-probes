@@ -243,6 +243,7 @@ def train_step(  # noqa: D401
         #   This leads to log(log_Q) which is log(negative) = NaN
         log.info(f'biggest value of abs logits_target: {torch.max(torch.abs(logits_target))}')
         log.info(f'biggest value of abs logits_orig: {torch.max(torch.abs(logits_orig))}')
+        log.info(f'biggest value of abs logits_target-logits_orig: {torch.max(torch.abs(logits_target-logits_orig))}')
         # Corrected: kl_fn(log_softmax(logits_target), softmax(logits_orig))
         loss_kl = kl_fn(#kl_fn expect log y_pred, y_true - this is what we ahve here
             torch.log_softmax(logits_target, dim=-1),
