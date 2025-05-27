@@ -214,8 +214,14 @@ class Decoder(nn.Module):
 
         B, d_model = activation_input.shape
         device = activation_input.device
-        # Embedding table reference once.
-        emb_table = self.base.get_output_embeddings().weight  # (V, d_model)
+        
+        # Get both input and output embedding tables
+        input_emb_table = self.base.get_input_embeddings().weight  # (V, d_model)
+        output_emb_table = self.base.get_output_embeddings().weight  # (V, d_model)
+        
+        # Check if embeddings are tied (same memory location)
+        embeddings_tied = (input_emb_table.data_ptr() == output_emb_table.data_ptr()) # TODO - better check?
+        
 
         # 0) prepend textual prompt (pre-computed at set_prompt)
         parts = []
@@ -233,6 +239,7 @@ class Decoder(nn.Module):
 
         logits_list = []
         hard_ids_list = []
+        output_embs_list = []  # Store embeddings for encoder
 
         for _ in range(max_length):
             out = self.base(inputs_embeds=seq_embs, output_hidden_states=True)
@@ -249,9 +256,21 @@ class Decoder(nn.Module):
                 tau=gumbel_tau,
                 hard=True
             )
-            emb_t = ste_token_dist @ emb_table  # (B, d_model)
-
-            seq_embs = torch.cat([seq_embs, emb_t.unsqueeze(1)], dim=1)
+            
+            # Use input embeddings for autoregressive feedback
+            emb_t_input = ste_token_dist @ input_emb_table  # (B, d_model)
+            
+            # Use output embeddings for the encoder (or reuse input if tied)
+            if embeddings_tied:
+                emb_t_output = emb_t_input
+            else:
+                emb_t_output = ste_token_dist @ output_emb_table  # (B, d_model)
+            
+            # Feed input embedding back for next autoregressive step
+            seq_embs = torch.cat([seq_embs, emb_t_input.unsqueeze(1)], dim=1)
+            
+            # Store output embedding for encoder
+            output_embs_list.append(emb_t_output)
 
             logits_list.append(logits_t)
             # Store hard token IDs derived from the STE output
@@ -260,10 +279,9 @@ class Decoder(nn.Module):
         # Stack along time dim (B, T, ...)
         logits_seq = torch.stack(logits_list, dim=1)
         hard_ids = torch.stack(hard_ids_list, dim=1)
-
-        # Expose only generated text (exclude prompt & A_proj)
-        start_idx = 1 + self.prompt_len  # 1 for A_proj
-        text_embs = seq_embs[:, start_idx:]
+        
+        # Stack output embeddings for encoder
+        text_embs = torch.stack(output_embs_list, dim=1)  # (B, T, d_model)
 
         return Generated(text_embs, logits_seq, hard_ids)
 

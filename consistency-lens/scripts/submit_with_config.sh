@@ -208,28 +208,24 @@ submit_dump_job() {
     local config=$1
     local layer=$2
     local job_name=$3
-    local use_pretokenized=${4:-false}
-    local dependency=$5
+    local dependency=$4
     
     if [ "$USE_SLURM" = true ]; then
         echo -e "${YELLOW}Submitting activation dumping job via SLURM...${NC}" >&2
-        echo "Config: $config, Layer: $layer, Use pretokenized: $use_pretokenized" >&2
+        echo "Config: $config, Layer: $layer" >&2
         
         # Build sbatch command
-        local sbatch_cmd="sbatch --parsable --job-name=${job_name}-dump --export=SLURM_NODELIST='$NODELIST'"
+        local sbatch_cmd="sbatch --parsable --job-name=${job_name}-dump --gres=gpu:$NUM_GPUS --nodelist=$NODELIST --export=SLURM_NODELIST='$NODELIST'"
         if [ -n "$dependency" ] && [ "$dependency" != "completed" ]; then
             sbatch_cmd="$sbatch_cmd --dependency=afterok:$dependency"
         fi
         
-        # Add pretokenized flag if requested
-        local extra_args=""
-        if [ "$use_pretokenized" = "true" ]; then
-            extra_args="pretokenized"
-        fi
+        # Always use pretokenized for efficiency
+        local extra_args="pretokenized"
         
         # Submit job and capture both stdout and stderr
         echo "Submitting dump job..." >&2
-        local result=$($sbatch_cmd scripts/slurm_dump_activations_minimal.sh "$config" "$layer" "$extra_args" 2>&1)
+        local result=$($sbatch_cmd scripts/slurm_dump_activations_flexible.sh "$config" "$layer" "$extra_args" 2>&1)
         
         # Check if submission was successful
         if [[ $? -ne 0 ]]; then
@@ -252,7 +248,7 @@ submit_dump_job() {
         echo "$dump_job_id"
     else
         echo -e "${YELLOW}Running activation dumping directly...${NC}" >&2
-        echo "Config: $config, Layer: $layer, Use pretokenized: $use_pretokenized, GPUs: $NUM_GPUS" >&2
+        echo "Config: $config, Layer: $layer, GPUs: $NUM_GPUS" >&2
         
         # In non-SLURM mode, dependency="completed" means the previous step succeeded
         if [ -n "$dependency" ] && [ "$dependency" != "completed" ]; then
@@ -260,24 +256,14 @@ submit_dump_job() {
             exit 1
         fi
         
-        # Run activation dumping directly
+        # Run activation dumping directly (always pretokenized)
         export NUM_GPUS="$NUM_GPUS"
-        if [ "$use_pretokenized" = "true" ]; then
-            if ./scripts/launch_multigpu_dump_pretokenized.sh "$config" "" "" "$layer" >&2; then
-                echo -e "${GREEN}Activation dumping completed successfully${NC}" >&2
-                echo "completed"
-            else
-                echo -e "${RED}ERROR: Activation dumping failed${NC}" >&2
-                exit 1
-            fi
+        if ./scripts/launch_multigpu_dump.sh "$config" "" "" "$layer" >&2; then
+            echo -e "${GREEN}Activation dumping completed successfully${NC}" >&2
+            echo "completed"
         else
-            if ./scripts/launch_multigpu_dump_optimized.sh "$config" "" "" "$layer" >&2; then
-                echo -e "${GREEN}Activation dumping completed successfully${NC}" >&2
-                echo "completed"
-            else
-                echo -e "${RED}ERROR: Activation dumping failed${NC}" >&2
-                exit 1
-            fi
+            echo -e "${RED}ERROR: Activation dumping failed${NC}" >&2
+            exit 1
         fi
     fi
 }
@@ -294,14 +280,11 @@ submit_train_job() {
         echo -e "${YELLOW}Submitting training job via SLURM...${NC}" >&2
         echo "Config: $config_file" >&2
         
-        # Build environment variables
-        local env_vars="--export=ALL"
+        # Show resume info
         if [ -n "$resume_checkpoint" ]; then
-            env_vars="$env_vars,RESUME_CHECKPOINT='$resume_checkpoint'"
             echo -e "${GREEN}Will resume from checkpoint: $resume_checkpoint${NC}" >&2
         fi
         if [ -n "$wandb_resume_id" ]; then
-            env_vars="$env_vars,WANDB_RESUME_ID='$wandb_resume_id'"
             echo -e "${GREEN}Will resume WandB run: $wandb_resume_id${NC}" >&2
         fi
         
@@ -312,31 +295,44 @@ submit_train_job() {
             config_dir="$(pwd)/$config_dir"
         fi
         
-        local train_cmd="cd /home/kitf/talkative-probes/consistency-lens && source .venv/bin/activate && python scripts/01_train.py --config-path=$config_dir --config-name=$config_name"
+        local train_cmd="cd /home/kitf/talkative-probes/consistency-lens && . .venv/bin/activate && python scripts/01_train.py --config-path=$config_dir --config-name=$config_name"
         if [ -n "$resume_checkpoint" ]; then
-            train_cmd="$train_cmd resume='$resume_checkpoint'"
+            train_cmd="$train_cmd resume=\"$resume_checkpoint\""
         fi
         if [ -n "$wandb_resume_id" ]; then
-            train_cmd="$train_cmd wandb_resume_id='$wandb_resume_id'"
+            train_cmd="$train_cmd wandb_resume_id=\"$wandb_resume_id\""
         fi
         
-        # Build sbatch command
-        local sbatch_cmd="sbatch --parsable --job-name=${job_name}-train"
-        sbatch_cmd="$sbatch_cmd --gres=gpu:1 --nodelist=$NODELIST"
-        sbatch_cmd="$sbatch_cmd --time=24:00:00"
-        sbatch_cmd="$sbatch_cmd --output=logs/${job_name}_train_%j.out"
-        sbatch_cmd="$sbatch_cmd --error=logs/${job_name}_train_%j.err"
-        sbatch_cmd="$sbatch_cmd $env_vars"
+        # Submit job using array to avoid quote issues
+        local sbatch_args=(
+            --parsable
+            --job-name="${job_name}-train"
+            --gres=gpu:1
+            --nodelist="$NODELIST"
+            --time=24:00:00
+            --output="logs/${job_name}_train_%j.out"
+            --error="logs/${job_name}_train_%j.err"
+        )
+        
+        # Add environment variables
+        local export_vars="ALL,TORCHINDUCTOR_CACHE_DIR=${HOME}/.cache/torchinductor"
+        if [ -n "$resume_checkpoint" ]; then
+            export_vars="$export_vars,RESUME_CHECKPOINT=$resume_checkpoint"
+        fi
+        if [ -n "$wandb_resume_id" ]; then
+            export_vars="$export_vars,WANDB_RESUME_ID=$wandb_resume_id"
+        fi
+        sbatch_args+=(--export="$export_vars")
         
         if [ -n "$dependency" ] && [ "$dependency" != "completed" ]; then
-            sbatch_cmd="$sbatch_cmd --dependency=afterok:$dependency"
+            sbatch_args+=(--dependency=afterok:"$dependency")
             echo -e "${YELLOW}Will start after job $dependency completes${NC}" >&2
         fi
         
-        sbatch_cmd="$sbatch_cmd --wrap=\"$train_cmd\""
+        sbatch_args+=(--wrap "$train_cmd")
         
         # Submit job and capture result
-        local result=$($sbatch_cmd 2>&1)
+        local result=$(sbatch "${sbatch_args[@]}" 2>&1)
         
         # Check if submission was successful
         if [[ $? -ne 0 ]]; then
@@ -363,6 +359,7 @@ submit_train_job() {
         fi
         
         # Set up environment variables for resume parameters
+        export TORCHINDUCTOR_CACHE_DIR="${HOME}/.cache/torchinductor"
         if [ -n "$resume_checkpoint" ]; then
             export RESUME_CHECKPOINT="$resume_checkpoint"
             echo -e "${GREEN}Will resume from checkpoint: $resume_checkpoint${NC}" >&2
@@ -404,8 +401,28 @@ submit_train_job() {
 # Main logic
 echo -e "${BLUE}=== Running experiment from $CONFIG_FILE ===${NC}"
 
-# Determine job name from config file
-JOB_NAME=$(basename "$CONFIG_FILE" .yaml)
+# Determine job name from config file and experiment type
+CONFIG_BASENAME=$(basename "$CONFIG_FILE" .yaml)
+
+# Create a more informative job name based on config
+if [[ "$CONFIG_BASENAME" == *"unfreeze"* ]]; then
+    FREEZE_TYPE="unfreeze"
+elif [[ "$FREEZE_ENABLED" == "true" ]]; then
+    FREEZE_TYPE="prog"
+else
+    FREEZE_TYPE="frozen"
+fi
+
+# Extract key info for job name
+MODEL_SHORT="${MODEL_NAME##*/}"  # Get last part after /
+if [[ "$MODEL_SHORT" == "SimpleStories-5M" ]]; then
+    MODEL_SHORT="5M"
+elif [[ "$MODEL_SHORT" == "gpt2" ]]; then
+    MODEL_SHORT="GPT2"
+fi
+
+# Build job name: dataset_model_layer_freeze
+JOB_NAME="${DATASET_NAME}_${MODEL_SHORT}_L${LAYER}_${FREEZE_TYPE}"
 
 # Always use pretokenization for efficiency (5x faster)
 # The config setting is ignored - we always pretokenize
@@ -420,47 +437,66 @@ else
     echo -e "${YELLOW}Activations not found or force redump requested${NC}"
     # Always pretokenize first for efficiency
     pretok_job=$(submit_pretokenize_job "$CONFIG_FILE" "$JOB_NAME")
-    dump_job=$(submit_dump_job "$CONFIG_FILE" "$LAYER" "$JOB_NAME" true "$pretok_job")
+    dump_job=$(submit_dump_job "$CONFIG_FILE" "$LAYER" "$JOB_NAME" "$pretok_job")
     train_job=$(submit_train_job "$JOB_NAME" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE")
 fi
 
 # Summary
 echo -e "\n${BLUE}=== Job Summary ===${NC}"
 echo "Config: $CONFIG_FILE"
-echo "Experiment: $JOB_NAME"
+echo "Job Name: $JOB_NAME"
+echo "Dataset: $DATASET_NAME"
+echo "Model: $MODEL_NAME (${MODEL_SHORT})"
+echo "Layer: $LAYER"
+echo "Freeze: $FREEZE_TYPE"
 echo "Environment: $([ "$USE_SLURM" = true ] && echo "SLURM" || echo "Direct execution")"
 echo "GPUs: $NUM_GPUS"
 if [ "$USE_SLURM" = true ]; then
     echo "Nodelist: $NODELIST"
 fi
 if [ -n "$RESUME_CHECKPOINT" ]; then
-    echo "Resume Checkpoint: $RESUME_CHECKPOINT"
+    echo "Resume Checkpoint: $(basename "$RESUME_CHECKPOINT")"
 fi
 if [ -n "$WANDB_RESUME_ID" ]; then
     echo "WandB Resume ID: $WANDB_RESUME_ID"
 fi
+echo ""
+echo "Job Pipeline:"
+if [ -n "${pretok_job:-}" ]; then
+    if [ "$USE_SLURM" = true ]; then
+        echo "  1. Pretokenization: Job $pretok_job"
+    else
+        echo "  1. Pretokenization: $pretok_job"
+    fi
+fi
 if [ -n "${dump_job:-}" ]; then
     if [ "$USE_SLURM" = true ]; then
-        echo "Dumping Job ID: $dump_job"
+        echo "  2. Activation Dumping: Job $dump_job"
     else
-        echo "Dumping: $dump_job"
+        echo "  2. Activation Dumping: $dump_job"
     fi
 fi
 if [ "$USE_SLURM" = true ]; then
-    echo "Training Job ID: $train_job"
-    echo -e "\n${BLUE}Monitor with:${NC} squeue -u $USER"
-    echo -e "${BLUE}Cancel with:${NC} scancel $train_job"
+    echo "  3. Training: Job $train_job"
+    echo -e "\n${BLUE}Monitor jobs:${NC} squeue -u $USER"
+    echo -e "${BLUE}Cancel all:${NC} scancel $train_job"
 else
-    echo "Training: $train_job"
-    echo -e "\n${BLUE}Execution completed in foreground${NC}"
+    echo "  3. Training: $train_job"
+    echo -e "\n${BLUE}All steps completed${NC}"
 fi
 
-# Save job IDs to log with resume info
-resume_info=""
+# Save job IDs to log with detailed info
+log_entry="$(date '+%Y-%m-%d %H:%M:%S'): $JOB_NAME"
+log_entry="$log_entry [${DATASET_NAME}/${MODEL_SHORT}/L${LAYER}/${FREEZE_TYPE}]"
+log_entry="$log_entry - config:$CONFIG_FILE"
+if [ -n "${pretok_job:-}" ]; then
+    log_entry="$log_entry pretok:$pretok_job"
+fi
+log_entry="$log_entry dump:${dump_job:-none} train:$train_job"
 if [ -n "$RESUME_CHECKPOINT" ]; then
-    resume_info=" resume:$RESUME_CHECKPOINT"
+    log_entry="$log_entry resume:$(basename "$RESUME_CHECKPOINT")"
 fi
 if [ -n "$WANDB_RESUME_ID" ]; then
-    resume_info="$resume_info wandb:$WANDB_RESUME_ID"
+    log_entry="$log_entry wandb:$WANDB_RESUME_ID"
 fi
-echo "$(date): $JOB_NAME (from $CONFIG_FILE) - dump:${dump_job:-none} train:$train_job$resume_info" >> submitted_jobs_with_deps.log
+echo "$log_entry" >> submitted_jobs_with_deps.log

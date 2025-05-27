@@ -168,13 +168,14 @@ python consistency-lens/scripts/00_dump_activations.py \
 For production-scale extraction on H100 clusters:
 
 ```bash
-# Using the optimized launch script (recommended) - processes ENTIRE dataset by default
-./consistency-lens/scripts/launch_multigpu_dump_optimized.sh \
+# Using the unified launch script (recommended) - processes ENTIRE dataset by default
+# Automatically uses pretokenization for 5x speedup!
+./consistency-lens/scripts/launch_multigpu_dump.sh \
     consistency-lens/config/lens_simple.yaml \
     data/activations
 
 # Process specific number of samples
-./consistency-lens/scripts/launch_multigpu_dump_optimized.sh \
+./consistency-lens/scripts/launch_multigpu_dump.sh \
     consistency-lens/config/lens_simple.yaml \
     data/activations \
     1000000 \
@@ -182,10 +183,10 @@ For production-scale extraction on H100 clusters:
 
 # With environment variables for additional options
 USE_HF_DATASET=1 HF_DATASET_NAME="SimpleStories/SimpleStories" \
-NUM_GPUS=8 ./consistency-lens/scripts/launch_multigpu_dump_optimized.sh
+NUM_GPUS=8 ./consistency-lens/scripts/launch_multigpu_dump.sh
 
-# Using optimized script for better tokenization performance (processes entire dataset)
-./consistency-lens/scripts/launch_multigpu_dump_optimized.sh \
+# The unified script always uses pretokenization for optimal performance
+./consistency-lens/scripts/launch_multigpu_dump.sh \
     consistency-lens/config/lens_simple.yaml \
     data/activations
 
@@ -231,7 +232,7 @@ We provide an optimized launch script that automatically configures CPU threadin
 
 ```bash
 # Automatically detects CPU count and allocates threads optimally
-./consistency-lens/scripts/launch_multigpu_dump_optimized.sh \
+./consistency-lens/scripts/launch_multigpu_dump.sh \
     consistency-lens/config/lens_simple.yaml \
     data/activations \
     1000000 \
@@ -269,15 +270,15 @@ The optimized script sets multiple threading variables:
 ```bash
 # Tiny models (< 100M params) on high-core systems
 # Prioritize CPU throughput over GPU count
-OMP_NUM_THREADS=112 NUM_GPUS=2 ./consistency-lens/scripts/launch_multigpu_dump_optimized.sh
+OMP_NUM_THREADS=112 NUM_GPUS=2 ./consistency-lens/scripts/launch_multigpu_dump.sh
 
 # Small models (100M - 1B params)
 # Balance CPU and GPU
-OMP_NUM_THREADS=56 NUM_GPUS=4 ./consistency-lens/scripts/launch_multigpu_dump_optimized.sh
+OMP_NUM_THREADS=56 NUM_GPUS=4 ./consistency-lens/scripts/launch_multigpu_dump.sh
 
 # Large models (7B+ params)
 # Maximize GPU usage, CPU becomes less critical
-OMP_NUM_THREADS=28 NUM_GPUS=8 ./consistency-lens/scripts/launch_multigpu_dump_optimized.sh
+OMP_NUM_THREADS=28 NUM_GPUS=8 ./consistency-lens/scripts/launch_multigpu_dump.sh
 ```
 
 #### Rule of Thumb
@@ -414,10 +415,10 @@ We profiled the activation dumping process to understand bottlenecks. Here's wha
 **Example configurations:**
 ```bash
 # Small model optimization (more CPU per process)
-OMP_NUM_THREADS=32 NUM_GPUS=4 ./consistency-lens/scripts/launch_multigpu_dump_optimized.sh
+OMP_NUM_THREADS=32 NUM_GPUS=4 ./consistency-lens/scripts/launch_multigpu_dump.sh
 
 # Large model optimization (maximize GPU usage)
-NUM_GPUS=8 ./consistency-lens/scripts/launch_multigpu_dump_optimized.sh
+NUM_GPUS=8 ./consistency-lens/scripts/launch_multigpu_dump.sh
 ```
 
 #### Pre-tokenization for Maximum Performance
@@ -452,8 +453,8 @@ python consistency-lens/scripts/pretokenize_dataset.py \
     --num_proc 32 \
     --batch_size 10000
 
-# Step 2: Use pre-tokenized data for activation dumping (5-10x faster!)
-./consistency-lens/scripts/launch_multigpu_dump_pretokenized.sh \
+# Step 2: Use the unified script which automatically leverages pre-tokenized data
+./consistency-lens/scripts/launch_multigpu_dump.sh \
     consistency-lens/config/lens_simple.yaml \
     data/activations
 ```

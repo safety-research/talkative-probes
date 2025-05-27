@@ -116,34 +116,34 @@ python tests/test_swap_hook.py
 For HPC clusters with SLURM, use the provided submission scripts that handle dependencies automatically:
 
 #### Quick Start (Recommended)
-The `submit_with_dumping.sh` script now works on both SLURM and non-SLURM environments:
+The `submit_with_config.sh` script now works on both SLURM and non-SLURM environments:
 
 ```bash
-# Submit new experiments with automatic activation dumping
-./scripts/submit_with_dumping.sh ss-frozen         # SimpleStories frozen
-./scripts/submit_with_dumping.sh ss-unfreeze       # SimpleStories progressive unfreeze
-./scripts/submit_with_dumping.sh gpt2-frozen       # GPT-2 with OpenWebText
-./scripts/submit_with_dumping.sh gpt2-unfreeze     # GPT-2 with OpenWebText + unfreeze
-./scripts/submit_with_dumping.sh gpt2-pile         # GPT-2 with The Pile
-./scripts/submit_with_dumping.sh gpt2-pile-unfreeze # GPT-2 with The Pile + unfreeze
+# Submit new experiments with automatic activation dumping - just pass a config!
+./scripts/submit_with_config.sh conf/simplestories_frozen.yaml      # SimpleStories frozen
+./scripts/submit_with_config.sh conf/simplestories_unfreeze.yaml    # SimpleStories progressive unfreeze
+./scripts/submit_with_config.sh conf/gpt2_frozen.yaml               # GPT-2 with OpenWebText
+./scripts/submit_with_config.sh conf/gpt2_unfreeze.yaml             # GPT-2 with OpenWebText + unfreeze
+./scripts/submit_with_config.sh conf/gpt2_pile_frozen.yaml          # GPT-2 with The Pile
+./scripts/submit_with_config.sh conf/gpt2_pile_unfreeze.yaml        # GPT-2 with The Pile + unfreeze
 
 # Resume from checkpoint (find checkpoint in outputs/ directory)
-./scripts/submit_with_dumping.sh ss-frozen false outputs/checkpoints/run_name/checkpoint_step5000.pt
+./scripts/submit_with_config.sh conf/simplestories_frozen.yaml false outputs/checkpoints/run_name/checkpoint_step5000.pt
 
 # Resume with specific WandB run ID (get ID from WandB dashboard)
-./scripts/submit_with_dumping.sh ss-frozen false outputs/checkpoints/run_name/checkpoint_step5000.pt abc123xyz
+./scripts/submit_with_config.sh conf/simplestories_frozen.yaml false outputs/checkpoints/run_name/checkpoint_step5000.pt abc123xyz
 
 # Use specific SLURM nodes (optional - defaults to 330702be7061, SLURM only)
-./scripts/submit_with_dumping.sh ss-frozen false "" "" node001,node002
+./scripts/submit_with_config.sh conf/gpt2_frozen.yaml false "" "" node001,node002
 
 # Specify number of GPUs for non-SLURM environments (auto-detected if not specified)
-./scripts/submit_with_dumping.sh ss-frozen false "" "" "" 4
+./scripts/submit_with_config.sh conf/gpt2_frozen.yaml false "" "" "" 4
 
 # Force re-dump activations even if they exist
-./scripts/submit_with_dumping.sh ss-frozen force-redump
+./scripts/submit_with_config.sh conf/simplestories_frozen.yaml force-redump
 
 # Force direct execution even on SLURM systems
-FORCE_DIRECT=true ./scripts/submit_with_dumping.sh ss-frozen
+FORCE_DIRECT=true ./scripts/submit_with_config.sh conf/simplestories_frozen.yaml
 ```
 
 The wrapper script automatically:
