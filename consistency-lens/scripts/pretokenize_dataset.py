@@ -42,7 +42,7 @@ def main(cfg: DictConfig) -> None:
     if output_dir.exists() and not force:
         log.info(f"Pretokenized data already exists at {output_dir}")
         log.info("Use pretokenize.force=true to re-tokenize")
-        return 1
+        return
     
     log.info(f"Pre-tokenizing dataset: {dataset_name}")
     log.info(f"Using tokenizer: {tokenizer_name}")
@@ -137,7 +137,6 @@ def main(cfg: DictConfig) -> None:
     
     log.info("\n✓ Pre-tokenization complete!")
     log.info(f"To use, update your config to load from: {output_dir}")
-    return 1
 
 
 if __name__ == "__main__":
