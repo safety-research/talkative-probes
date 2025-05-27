@@ -349,6 +349,7 @@ case $EXPERIMENT in
             echo -e "${YELLOW}Activations not found or force redump requested${NC}"
             # First pretokenize, then dump with pretokenized data
             pretok_job=$(submit_pretokenize_job "conf/simplestories_frozen.yaml" "ss-frozen")
+            echo "DEBUG: pretok_job returned: '$pretok_job'" >&2
             dump_job=$(submit_dump_job "conf/simplestories_frozen.yaml" "$LAYER" "ss-frozen" true "$pretok_job")
             train_job=$(submit_train_job "scripts/slurm_simplestories_frozen.sh" "ss-frozen" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         fi
