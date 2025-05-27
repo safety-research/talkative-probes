@@ -39,12 +39,12 @@ lr_scheduler:
 
 # Training duration - use either epochs OR steps, not both:
 # For epoch-based training:
-num_train_epochs: 10            # Number of epochs to train (set > 0 for epoch-based)
+num_train_epochs: 20            # Number of epochs to train (set > 0 for epoch-based)
 max_train_steps: 0              # Set to 0 when using num_train_epochs
 # For step-based training:
 # num_train_epochs: 0           # Set to 0 when using max_train_steps  
 # max_train_steps: 50000        # Number of training steps (set > 0 for step-based)
-compile_models: false             # Wrap Decoder & Encoder with torch.compile if True
+compile_models: true             # Wrap Decoder & Encoder with torch.compile if True
 log_interval: 10             # Log metrics every N training steps
 wandb_log_interval: 1         # Log metrics every N training steps to WandB
 grad_clip: 1.0
