@@ -181,10 +181,11 @@ submit_pretokenize_job() {
             --gres=gpu:0 \
             --nodelist="$NODELIST" \
             --cpus-per-task=$num_proc \
+            --cpu-bind=none \
             --time=2:00:00 \
             --output=logs/pretokenize_%j.out \
             --error=logs/pretokenize_%j.err \
-            --wrap="bash -c 'cd $CONSISTENCY_LENS_DIR && source .venv/bin/activate && python scripts/pretokenize_dataset.py --config-path=$CONSISTENCY_LENS_DIR/$(dirname $config) --config-name=$(basename $config .yaml)'" 2>&1)
+            --wrap="bash -c 'cd $CONSISTENCY_LENS_DIR && source .venv/bin/activate && export OMP_NUM_THREADS=1 && export TOKENIZERS_PARALLELISM=false && export SLURM_CPU_BIND=none && python scripts/pretokenize_dataset.py --config-path=$CONSISTENCY_LENS_DIR/$(dirname $config) --config-name=$(basename $config .yaml)'" 2>&1)
         
         if [[ $? -ne 0 ]]; then
             echo -e "${RED}ERROR: Failed to submit pretokenization job${NC}" >&2
