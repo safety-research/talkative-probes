@@ -1,0 +1,474 @@
+#!/bin/bash
+# Extensible wrapper script for submitting activation dumping followed by training
+# Takes a config YAML file and extracts all settings from it
+# Works on both SLURM and non-SLURM environments
+
+set -e
+
+# Change to script directory and then to project root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/.."
+echo "Running from $(pwd)"
+
+# Parse arguments
+CONFIG_FILE="${1}"
+FORCE_REDUMP="${2:-false}"
+RESUME_CHECKPOINT="${3:-}"
+WANDB_RESUME_ID="${4:-}"
+NODELIST="${5:-330702be7061}"  # Default to current cluster node (only used for SLURM)
+NUM_GPUS="${6:-}"  # Number of GPUs to use (auto-detect if not specified)
+
+# Check if config file provided
+if [ -z "$CONFIG_FILE" ]; then
+    echo "Error: No config file specified"
+    echo "Usage: $0 <config.yaml> [force-redump] [resume_checkpoint] [wandb_resume_id] [nodelist] [num_gpus]"
+    echo ""
+    echo "Examples:"
+    echo "  $0 conf/simplestories_frozen.yaml                    # New experiment"
+    echo "  $0 conf/gpt2_frozen.yaml force-redump                # Force re-dump activations"
+    echo "  $0 conf/simplestories_frozen.yaml false outputs/ckpt_step_1000.pt  # Resume"
+    echo ""
+    echo "Available configs:"
+    ls -1 conf/*.yaml | grep -E "(simplestories|gpt2)" | sed 's/^/  /'
+    exit 1
+fi
+
+# Check if config file exists
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "Error: Config file not found: $CONFIG_FILE"
+    exit 1
+fi
+
+# Extract settings from config using Python helper
+echo "Extracting settings from $CONFIG_FILE..."
+# Activate virtual environment if it exists
+if [ -f .venv/bin/activate ]; then
+    source .venv/bin/activate
+fi
+if ! source <(python scripts/extract_config_settings.py "$CONFIG_FILE" --all); then
+    echo "Error: Failed to extract settings from config file"
+    exit 1
+fi
+
+# Verify we got the required settings
+if [ -z "$MODEL_NAME" ] || [ -z "$LAYER" ]; then
+    echo "Error: Could not extract model_name or layer from config"
+    exit 1
+fi
+
+# Detect if SLURM is available (not necessarily if we're in a SLURM job)
+# Can be overridden with FORCE_DIRECT=true environment variable
+if [ "${FORCE_DIRECT:-false}" = "true" ]; then
+    USE_SLURM=false
+    echo "Forced direct execution mode (FORCE_DIRECT=true)"
+elif command -v sbatch >/dev/null 2>&1; then
+    USE_SLURM=true
+    echo "SLURM environment detected"
+else
+    USE_SLURM=false
+    echo "Non-SLURM environment detected"
+fi
+
+# Auto-detect GPU count if not specified
+if [ -z "$NUM_GPUS" ]; then
+    if [ -n "$CUDA_VISIBLE_DEVICES" ]; then
+        IFS=',' read -ra DEV_ARR <<< "$CUDA_VISIBLE_DEVICES"
+        NUM_GPUS=${#DEV_ARR[@]}
+    elif command -v nvidia-smi >/dev/null 2>&1; then
+        NUM_GPUS=$(nvidia-smi -L | wc -l)
+    else
+        NUM_GPUS=1
+    fi
+fi
+echo "Using $NUM_GPUS GPUs"
+
+# Display extracted settings
+echo ""
+echo "=== Extracted Configuration ==="
+echo "Model: $MODEL_NAME"
+echo "Layer: $LAYER"
+echo "Dataset: $DATASET_NAME"
+echo "Output Dir: $OUTPUT_DIR"
+echo "Use Pretokenized: $USE_PRETOKENIZED"
+echo "Training Script: ${TRAINING_SCRIPT:-<will be determined>}"
+echo "Freeze Schedule Enabled: $FREEZE_ENABLED"
+if [ "$FREEZE_ENABLED" = "true" ]; then
+    echo "Unfreeze At: $UNFREEZE_AT"
+fi
+echo "=============================="
+echo ""
+
+# Colors for output
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+# Function to check if activations exist
+check_activations() {
+    local model_name=$1
+    local layer=$2
+    local output_dir=$3
+    
+    echo "Checking for activations in $output_dir"
+    if [ -d "$output_dir" ]; then
+        # Check if directory has content (including rank_* subdirectories)
+        if [ -n "$(find "$output_dir" -name "*.pt" -o -name "rank_*" 2>/dev/null | head -1)" ]; then
+            echo "Found activations in $output_dir"
+            return 0  # Activations exist
+        fi
+    fi
+    
+    # Also check the model-specific path structure
+    local model_name_clean=$(echo "$model_name" | tr '/' '_')
+    local alt_dir="./data/${model_name_clean}/layer_${layer}/${DATASET_NAME}"
+    echo "Also checking $alt_dir"
+    if [ -d "$alt_dir" ]; then
+        if [ -n "$(find "$alt_dir" -name "*.pt" -o -name "rank_*" 2>/dev/null | head -1)" ]; then
+            echo "Found activations in $alt_dir"
+            return 0
+        fi
+    fi
+    
+    return 1  # Activations don't exist
+}
+
+# Function to determine training script if not already set
+determine_training_script() {
+    if [ -n "$TRAINING_SCRIPT" ]; then
+        echo "$TRAINING_SCRIPT"
+        return
+    fi
+    
+    # Try to determine from config name
+    local config_basename=$(basename "$CONFIG_FILE" .yaml)
+    
+    # First check if a corresponding SLURM script exists
+    local potential_script="scripts/slurm_${config_basename}.sh"
+    if [ -f "$potential_script" ]; then
+        echo "$potential_script"
+        return
+    fi
+    
+    # Otherwise, we'll need to error out
+    echo ""
+}
+
+# Function to submit pretokenization job
+submit_pretokenize_job() {
+    local config=$1
+    local job_name=$2
+    
+    if [ "$USE_SLURM" = true ]; then
+        echo -e "${YELLOW}Submitting pretokenization job via SLURM...${NC}" >&2
+        echo "Config: $config" >&2
+        
+        # Create a simple sbatch script inline
+        local result=$(sbatch --parsable \
+            --job-name="${job_name}-pretok" \
+            --gres=gpu:0 \
+            --nodelist="$NODELIST" \
+            --time=2:00:00 \
+            --output=logs/pretokenize_%j.out \
+            --error=logs/pretokenize_%j.err \
+            --wrap="bash -c 'cd /home/kitf/talkative-probes/consistency-lens && source .venv/bin/activate && python scripts/pretokenize_dataset.py --config-path=/home/kitf/talkative-probes/consistency-lens/$(dirname $config) --config-name=$(basename $config .yaml)'" 2>&1)
+        
+        if [[ $? -ne 0 ]]; then
+            echo -e "${RED}ERROR: Failed to submit pretokenization job${NC}" >&2
+            echo -e "${RED}Error message: $result${NC}" >&2
+            exit 1
+        fi
+        
+        local pretok_job_id="$result"
+        echo -e "${GREEN}Pretokenization job submitted with ID: $pretok_job_id${NC}" >&2
+        echo "$pretok_job_id"
+    else
+        echo -e "${YELLOW}Running pretokenization directly...${NC}" >&2
+        echo "Config: $config" >&2
+        
+        # Run pretokenization directly
+        # Get absolute path to config directory
+        local config_dir="$(pwd)/$(dirname "$config")"
+        if source .venv/bin/activate && python scripts/pretokenize_dataset.py --config-path="$config_dir" --config-name=$(basename "$config" .yaml) >&2; then
+            echo -e "${GREEN}Pretokenization completed successfully${NC}" >&2
+            echo "completed"
+        else
+            echo -e "${RED}ERROR: Pretokenization failed${NC}" >&2
+            exit 1
+        fi
+    fi
+}
+
+# Function to submit dumping job
+submit_dump_job() {
+    local config=$1
+    local layer=$2
+    local job_name=$3
+    local use_pretokenized=${4:-false}
+    local dependency=$5
+    
+    if [ "$USE_SLURM" = true ]; then
+        echo -e "${YELLOW}Submitting activation dumping job via SLURM...${NC}" >&2
+        echo "Config: $config, Layer: $layer, Use pretokenized: $use_pretokenized" >&2
+        
+        # Build sbatch command
+        local sbatch_cmd="sbatch --parsable --job-name=${job_name}-dump --export=SLURM_NODELIST='$NODELIST'"
+        if [ -n "$dependency" ] && [ "$dependency" != "completed" ]; then
+            sbatch_cmd="$sbatch_cmd --dependency=afterok:$dependency"
+        fi
+        
+        # Add pretokenized flag if requested
+        local extra_args=""
+        if [ "$use_pretokenized" = "true" ]; then
+            extra_args="pretokenized"
+        fi
+        
+        # Submit job and capture both stdout and stderr
+        echo "Submitting dump job..." >&2
+        local result=$($sbatch_cmd scripts/slurm_dump_activations_minimal.sh "$config" "$layer" "$extra_args" 2>&1)
+        
+        # Check if submission was successful
+        if [[ $? -ne 0 ]]; then
+            echo -e "${RED}ERROR: Failed to submit dumping job${NC}" >&2
+            echo -e "${RED}Error message: $result${NC}" >&2
+            exit 1
+        fi
+        
+        local dump_job_id="$result"
+        if [[ -z "$dump_job_id" || ! "$dump_job_id" =~ ^[0-9]+$ ]]; then
+            echo -e "${RED}ERROR: Invalid job ID received: '$dump_job_id'${NC}" >&2
+            exit 1
+        fi
+        
+        if [ -n "$dependency" ] && [ "$dependency" != "completed" ]; then
+            echo -e "${GREEN}Dumping job submitted with ID: $dump_job_id (will start after job $dependency completes)${NC}" >&2
+        else
+            echo -e "${GREEN}Dumping job submitted with ID: $dump_job_id${NC}" >&2
+        fi
+        echo "$dump_job_id"
+    else
+        echo -e "${YELLOW}Running activation dumping directly...${NC}" >&2
+        echo "Config: $config, Layer: $layer, Use pretokenized: $use_pretokenized, GPUs: $NUM_GPUS" >&2
+        
+        # In non-SLURM mode, dependency="completed" means the previous step succeeded
+        if [ -n "$dependency" ] && [ "$dependency" != "completed" ]; then
+            echo -e "${RED}ERROR: Previous step (pretokenization) did not complete successfully${NC}" >&2
+            exit 1
+        fi
+        
+        # Run activation dumping directly
+        export NUM_GPUS="$NUM_GPUS"
+        if [ "$use_pretokenized" = "true" ]; then
+            if ./scripts/launch_multigpu_dump_pretokenized.sh "$config" "" "" "$layer" >&2; then
+                echo -e "${GREEN}Activation dumping completed successfully${NC}" >&2
+                echo "completed"
+            else
+                echo -e "${RED}ERROR: Activation dumping failed${NC}" >&2
+                exit 1
+            fi
+        else
+            if ./scripts/launch_multigpu_dump_optimized.sh "$config" "" "" "$layer" >&2; then
+                echo -e "${GREEN}Activation dumping completed successfully${NC}" >&2
+                echo "completed"
+            else
+                echo -e "${RED}ERROR: Activation dumping failed${NC}" >&2
+                exit 1
+            fi
+        fi
+    fi
+}
+
+# Function to submit training job with optional dependency
+submit_train_job() {
+    local script=$1
+    local job_name=$2
+    local dependency=$3
+    local resume_checkpoint=$4
+    local wandb_resume_id=$5
+    local config_file=$6
+    
+    if [ "$USE_SLURM" = true ]; then
+        # Build environment variables for resume parameters
+        local env_vars=""
+        if [ -n "$resume_checkpoint" ]; then
+            env_vars="--export=RESUME_CHECKPOINT='$resume_checkpoint'"
+            echo -e "${GREEN}Will resume from checkpoint: $resume_checkpoint${NC}" >&2
+        fi
+        if [ -n "$wandb_resume_id" ]; then
+            if [ -n "$env_vars" ]; then
+                env_vars="$env_vars,WANDB_RESUME_ID='$wandb_resume_id'"
+            else
+                env_vars="--export=WANDB_RESUME_ID='$wandb_resume_id'"
+            fi
+            echo -e "${GREEN}Will resume WandB run: $wandb_resume_id${NC}" >&2
+        fi
+        echo -e "${BLUE}Using nodelist: $NODELIST${NC}" >&2
+        
+        local sbatch_cmd
+        if [ -n "$dependency" ] && [ "$dependency" != "completed" ]; then
+            echo -e "${YELLOW}Submitting training job with dependency on job $dependency...${NC}" >&2
+            sbatch_cmd="sbatch --parsable --dependency=afterok:$dependency --job-name=$job_name --nodelist=$NODELIST $env_vars $script"
+        else
+            echo -e "${YELLOW}Submitting training job...${NC}" >&2
+            sbatch_cmd="sbatch --parsable --job-name=$job_name --nodelist=$NODELIST $env_vars $script"
+        fi
+        
+        # Submit job and capture result
+        local result=$($sbatch_cmd 2>&1)
+        
+        # Check if submission was successful
+        if [[ $? -ne 0 ]]; then
+            echo -e "${RED}ERROR: Failed to submit training job${NC}" >&2
+            echo -e "${RED}Error message: $result${NC}" >&2
+            exit 1
+        fi
+        
+        local train_job_id="$result"
+        if [[ -z "$train_job_id" || ! "$train_job_id" =~ ^[0-9]+$ ]]; then
+            echo -e "${RED}ERROR: Invalid job ID received: '$train_job_id'${NC}" >&2
+            exit 1
+        fi
+        
+        if [ -n "$dependency" ] && [ "$dependency" != "completed" ]; then
+            echo -e "${GREEN}Training job submitted with ID: $train_job_id (will start after job $dependency completes)${NC}" >&2
+        else
+            echo -e "${GREEN}Training job submitted with ID: $train_job_id${NC}" >&2
+        fi
+        echo "$train_job_id"
+    else
+        echo -e "${YELLOW}Running training directly...${NC}" >&2
+        
+        # In non-SLURM mode, dependency="completed" means the previous step succeeded
+        if [ -n "$dependency" ] && [ "$dependency" != "completed" ]; then
+            echo -e "${RED}ERROR: Previous step did not complete successfully${NC}" >&2
+            exit 1
+        fi
+        
+        # Set up environment variables for resume parameters
+        if [ -n "$resume_checkpoint" ]; then
+            export RESUME_CHECKPOINT="$resume_checkpoint"
+            echo -e "${GREEN}Will resume from checkpoint: $resume_checkpoint${NC}" >&2
+        fi
+        if [ -n "$wandb_resume_id" ]; then
+            export WANDB_RESUME_ID="$wandb_resume_id"
+            echo -e "${GREEN}Will resume WandB run: $wandb_resume_id${NC}" >&2
+        fi
+        
+        echo -e "${GREEN}Running training with config: $config_file${NC}" >&2
+        
+        # Run training with resume parameters if set
+        local config_dir="$(dirname "$config_file")"
+        local config_name="$(basename "$config_file" .yaml)"
+        
+        # Make config directory absolute if it's relative
+        if [[ ! "$config_dir" = /* ]]; then
+            config_dir="$(pwd)/$config_dir"
+        fi
+        
+        local train_cmd="python scripts/01_train.py --config-path=$config_dir --config-name=$config_name"
+        if [ -n "$resume_checkpoint" ]; then
+            train_cmd="$train_cmd resume=\"$resume_checkpoint\""
+        fi
+        if [ -n "$wandb_resume_id" ]; then
+            train_cmd="$train_cmd wandb_resume_id=\"$wandb_resume_id\""
+        fi
+        
+        if eval "$train_cmd"; then
+            echo -e "${GREEN}Training completed successfully${NC}" >&2
+            echo "completed"
+        else
+            echo -e "${RED}ERROR: Training failed${NC}" >&2
+            exit 1
+        fi
+    fi
+}
+
+# Main logic
+echo -e "${BLUE}=== Running experiment from $CONFIG_FILE ===${NC}"
+
+# Determine job name from config file
+JOB_NAME=$(basename "$CONFIG_FILE" .yaml)
+
+# Check if we should use pretokenization
+# If not explicitly set in config, default to true for faster processing
+if [ "$USE_PRETOKENIZED" != "true" ] && [ "$USE_PRETOKENIZED" != "false" ]; then
+    USE_PRETOKENIZED="true"
+    echo -e "${BLUE}Defaulting to pretokenization for faster dumping${NC}"
+fi
+
+# Determine training script
+TRAINING_SCRIPT=$(determine_training_script)
+if [ -z "$TRAINING_SCRIPT" ]; then
+    echo -e "${RED}ERROR: Could not determine training script for config: $CONFIG_FILE${NC}"
+    echo "Please ensure the config name matches one of the expected patterns, or update the script mapping."
+    echo ""
+    echo "Expected patterns:"
+    echo "  simplestories_frozen.yaml -> scripts/slurm_simplestories_frozen.sh"
+    echo "  simplestories_unfreeze.yaml -> scripts/slurm_simplestories_unfreeze.sh"
+    echo "  gpt2_frozen.yaml -> scripts/slurm_gpt2_frozen.sh"
+    echo "  gpt2_unfreeze.yaml -> scripts/slurm_gpt2_unfreeze.sh"
+    echo "  gpt2_pile_frozen.yaml -> scripts/slurm_gpt2_pile.sh"
+    echo "  gpt2_pile_unfreeze.yaml -> scripts/slurm_gpt2_pile_unfreeze.sh"
+    exit 1
+fi
+
+echo -e "${BLUE}Using training script: $TRAINING_SCRIPT${NC}"
+
+# Check if activations exist
+if check_activations "$MODEL_NAME" "$LAYER" "$OUTPUT_DIR" && [ "$FORCE_REDUMP" != "true" ]; then
+    echo -e "${GREEN}Activations already exist, submitting training only${NC}"
+    train_job=$(submit_train_job "$TRAINING_SCRIPT" "$JOB_NAME" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE")
+else
+    echo -e "${YELLOW}Activations not found or force redump requested${NC}"
+    if [ "$USE_PRETOKENIZED" = "true" ]; then
+        # First pretokenize, then dump with pretokenized data
+        pretok_job=$(submit_pretokenize_job "$CONFIG_FILE" "$JOB_NAME")
+        dump_job=$(submit_dump_job "$CONFIG_FILE" "$LAYER" "$JOB_NAME" true "$pretok_job")
+    else
+        # Direct dumping without pretokenization
+        dump_job=$(submit_dump_job "$CONFIG_FILE" "$LAYER" "$JOB_NAME" false "")
+    fi
+    train_job=$(submit_train_job "$TRAINING_SCRIPT" "$JOB_NAME" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE")
+fi
+
+# Summary
+echo -e "\n${BLUE}=== Job Summary ===${NC}"
+echo "Config: $CONFIG_FILE"
+echo "Experiment: $JOB_NAME"
+echo "Environment: $([ "$USE_SLURM" = true ] && echo "SLURM" || echo "Direct execution")"
+echo "GPUs: $NUM_GPUS"
+if [ "$USE_SLURM" = true ]; then
+    echo "Nodelist: $NODELIST"
+fi
+if [ -n "$RESUME_CHECKPOINT" ]; then
+    echo "Resume Checkpoint: $RESUME_CHECKPOINT"
+fi
+if [ -n "$WANDB_RESUME_ID" ]; then
+    echo "WandB Resume ID: $WANDB_RESUME_ID"
+fi
+if [ -n "${dump_job:-}" ]; then
+    if [ "$USE_SLURM" = true ]; then
+        echo "Dumping Job ID: $dump_job"
+    else
+        echo "Dumping: $dump_job"
+    fi
+fi
+if [ "$USE_SLURM" = true ]; then
+    echo "Training Job ID: $train_job"
+    echo -e "\n${BLUE}Monitor with:${NC} squeue -u $USER"
+    echo -e "${BLUE}Cancel with:${NC} scancel $train_job"
+else
+    echo "Training: $train_job"
+    echo -e "\n${BLUE}Execution completed in foreground${NC}"
+fi
+
+# Save job IDs to log with resume info
+resume_info=""
+if [ -n "$RESUME_CHECKPOINT" ]; then
+    resume_info=" resume:$RESUME_CHECKPOINT"
+fi
+if [ -n "$WANDB_RESUME_ID" ]; then
+    resume_info="$resume_info wandb:$WANDB_RESUME_ID"
+fi
+echo "$(date): $JOB_NAME (from $CONFIG_FILE) - dump:${dump_job:-none} train:$train_job$resume_info" >> submitted_jobs_with_deps.log
