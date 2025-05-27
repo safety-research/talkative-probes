@@ -122,7 +122,7 @@ submit_pretokenize_job() {
         # Run pretokenization directly
         # Get absolute path to config directory
         local config_dir="$(pwd)/$(dirname "$config")"
-        if source .venv/bin/activate && python scripts/pretokenize_dataset.py --config-path="$config_dir" --config-name=$(basename "$config" .yaml); then
+        if source .venv/bin/activate && python scripts/pretokenize_dataset.py --config-path="$config_dir" --config-name=$(basename "$config" .yaml) >&2; then
             echo -e "${GREEN}Pretokenization completed successfully${NC}" >&2
             echo "completed"
         else
