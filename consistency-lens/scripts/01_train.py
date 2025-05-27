@@ -73,7 +73,10 @@ def resolve_path(path_str: str) -> Path:
 def extract_dataset_info(activation_dir: str) -> dict:
     """Extract model name, layer, and dataset info from activation directory path.
     
-    Expected format: .../dataset_name/model_name/layer_X/split_name/
+    Expected formats:
+    - .../SimpleStories_SimpleStories-5M/layer_5/SimpleStories_train
+    - .../dataset_name/model_name/layer_X/split_name/
+    - .../SimpleStories_train (direct path)
     """
     parts = Path(activation_dir).parts
     info = {
@@ -91,14 +94,41 @@ def extract_dataset_info(activation_dir: str) -> dict:
                 info['layer'] = int(layer_match.group(1))
                 # Model name should be one level up
                 if i > 0:
-                    info['model_name'] = parts[i-1]
-                # Dataset should be two levels up
-                if i > 1:
-                    info['dataset'] = parts[i-2]
-                # Split should be one level down
+                    model_part = parts[i-1]
+                    # Handle combined dataset_model names
+                    if '_' in model_part:
+                        # e.g., SimpleStories_SimpleStories-5M
+                        dataset_prefix, model_name = model_part.split('_', 1)
+                        info['dataset'] = dataset_prefix
+                        info['model_name'] = model_name.replace('_', '/')
+                    else:
+                        info['model_name'] = model_part
+                        # Dataset should be two levels up
+                        if i > 1:
+                            info['dataset'] = parts[i-2]
+                
+                # Split should be one level down or embedded in the name
                 if i < len(parts) - 1:
-                    info['split'] = parts[i+1]
+                    split_part = parts[i+1]
+                    # Handle names like SimpleStories_train
+                    if '_' in split_part:
+                        dataset_name, split = split_part.rsplit('_', 1)
+                        if split in ['train', 'test', 'val', 'validation']:
+                            info['split'] = split
+                            if not info['dataset']:
+                                info['dataset'] = dataset_name
+                    else:
+                        info['split'] = split_part
                 break
+    
+    # Fallback: try to extract from the final directory name
+    if not info['dataset'] and parts:
+        final_part = parts[-1]
+        if '_' in final_part:
+            dataset_name, split = final_part.rsplit('_', 1)
+            if split in ['train', 'test', 'val', 'validation']:
+                info['dataset'] = dataset_name
+                info['split'] = split
     
     return info
 
@@ -149,35 +179,82 @@ def generate_run_name(config: dict, dataset_info: dict, resume_from: str = None)
     """Generate a descriptive run name based on config and dataset info."""
     components = []
     
-    # Model name (abbreviated)
+    # Dataset name first (more important than model for experiments)
+    if dataset_info['dataset']:
+        dataset_name = dataset_info['dataset']
+        # Handle common dataset names
+        dataset_map = {
+            'SimpleStories': 'SS',
+            'openwebtext': 'OWT',
+            'pile': 'Pile',
+        }
+        dataset_short = dataset_map.get(dataset_name, dataset_name)
+        if len(dataset_short) > 8 and dataset_short not in dataset_map.values():
+            # Abbreviate long names not in map
+            dataset_short = ''.join([w[0].upper() for w in dataset_short.replace('_', ' ').replace('-', ' ').split()])
+        components.append(dataset_short)
+    
+    # Model name (clearer abbreviation)
     if dataset_info['model_name']:
-        model_short = dataset_info['model_name'].replace('/', '_').split('_')[-1]
+        model_name = dataset_info['model_name']
+        # Common model mappings
+        model_map = {
+            'SimpleStories/SimpleStories-5M': '5M',
+            'openai-community/gpt2': 'GPT2',
+            'gpt2': 'GPT2',
+            'gpt2-medium': 'GPT2-M',
+            'gpt2-large': 'GPT2-L',
+            'gpt2-xl': 'GPT2-XL',
+        }
+        model_short = model_map.get(model_name, model_name.split('/')[-1])
         components.append(model_short)
     
     # Layer
     if dataset_info['layer'] is not None:
         components.append(f"L{dataset_info['layer']}")
     
-    # Dataset (abbreviated)
-    if dataset_info['dataset']:
-        dataset_short = dataset_info['dataset'].replace('_', '').replace('-', '')
-        if len(dataset_short) > 10:
-            dataset_short = ''.join([w[0].upper() for w in dataset_short.split()])
-        components.append(dataset_short)
+    # Freeze status (important for experiments)
+    freeze_schedule = config.get('freeze_schedule', {})
+    if freeze_schedule.get('enabled', False):
+        # Progressive unfreeze
+        unfreeze_at = freeze_schedule.get('unfreeze_at', '')
+        if 'epoch' in str(unfreeze_at).lower():
+            components.append('unfreeze')
+        else:
+            components.append('prog-unfreeze')
+    else:
+        # Check if base models are trainable
+        decoder_cfg = config.get('trainable_components', {}).get('decoder', {})
+        encoder_cfg = config.get('trainable_components', {}).get('encoder', {})
+        if decoder_cfg.get('base_model', False) or encoder_cfg.get('base_model', False):
+            components.append('full')
+        else:
+            components.append('frozen')
     
     # Key hyperparameters
     lr = config.get('learning_rate', 1e-4)
     components.append(f"lr{lr:.0e}".replace('e-0', 'e-').replace('e+0', 'e'))
     
-    # Text position
+    # Text width (decoder output length)
     t_text = config.get('t_text', 10)
     components.append(f"t{t_text}")
+    
+    # Training duration info
+    num_epochs = config.get('num_train_epochs', 0)
+    max_steps = config.get('max_train_steps', 0)
+    if num_epochs > 0:
+        components.append(f"{num_epochs}ep")
+    elif max_steps > 0:
+        if max_steps >= 1000:
+            components.append(f"{max_steps//1000}k")
+        else:
+            components.append(f"{max_steps}s")
     
     # If resuming, add 'resume'
     if resume_from:
         components.append("resume")
     
-    # Add timestamp
+    # Add timestamp (shorter format)
     timestamp = datetime.now().strftime("%m%d_%H%M")
     components.append(timestamp)
     

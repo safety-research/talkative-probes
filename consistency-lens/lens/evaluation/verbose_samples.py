@@ -166,11 +166,16 @@ def print_verbose_sample_details(
     top_n_analysis_val: int,
     original_string_cropped: str,
     autoregressive_continuation: Optional[str] = None,
+    a_prime_string_cropped: Optional[str] = None,
 ) -> None:
     """Prints detailed information for a single verbose sample."""
     print("--- Verbose sample ---")
     # Print the wider text context, assumed to be pre-cropped appropriately
     print(f"Original Text (cropped): \"{escape_newlines(original_string_cropped)}\"")
+    
+    # Print A' context if provided
+    if a_prime_string_cropped:
+        print(f"A' Text (cropped): \"{escape_newlines(a_prime_string_cropped)}\"")
     
     # Print autoregressive continuation if provided
     if autoregressive_continuation:
@@ -282,6 +287,32 @@ def process_and_print_verbose_batch_samples(
         # Resample Ablation (A_hat+Δ) - prediction using A_target_i at (l,p)
         alt_idx = (i + 1) % batch["A_prime"].size(0)
         A_prime_i = batch["A_prime"][alt_idx : alt_idx + 1].to(device)
+        
+        # Get A_prime input sequence and position if available
+        a_prime_string_cropped = None
+        if "input_ids_A_prime" in batch and "token_pos_A_prime" in batch:
+            input_ids_A_prime_seq = batch["input_ids_A_prime"][alt_idx].to(device)
+            p_prime = int(batch["token_pos_A_prime"][alt_idx].item())
+            
+            # Create cropped string for A_prime
+            raw_prime_ids = input_ids_A_prime_seq.tolist()
+            crop_start_idx_prime = max(0, p_prime - 100)
+            crop_end_idx_prime = min(len(raw_prime_ids), p_prime + 30 + 1)
+            
+            # Decode the parts separately to insert stars around the analyzed token
+            before_p_prime = tok.decode(raw_prime_ids[crop_start_idx_prime:p_prime]) if p_prime > crop_start_idx_prime else ""
+            token_at_p_prime = tok.decode([raw_prime_ids[p_prime]]) if p_prime < len(raw_prime_ids) else ""
+            after_p_prime = tok.decode(raw_prime_ids[p_prime+1:crop_end_idx_prime]) if p_prime+1 < crop_end_idx_prime else ""
+            
+            # Build the cropped string with the analyzed token highlighted
+            a_prime_string_cropped = escape_newlines(before_p_prime + "*" + token_at_p_prime + "*" + after_p_prime)
+            
+            # Add ellipsis if cropped
+            if crop_start_idx_prime > 0:
+                a_prime_string_cropped = "..." + a_prime_string_cropped
+            if crop_end_idx_prime < len(raw_prime_ids):
+                a_prime_string_cropped = a_prime_string_cropped + "..."
+        
         gen_ap = dec.generate_soft(A_prime_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"])
         A_prime_hat = enc(gen_ap.generated_text_embeddings)
         delta_res = (A_prime_i - A_prime_hat).detach()
@@ -498,6 +529,7 @@ def process_and_print_verbose_batch_samples(
                     top_n_analysis_val=top_n_analysis,
                     original_string_cropped=original_string_cropped,
                     autoregressive_continuation=autoregressive_continuation,
+                    a_prime_string_cropped=a_prime_string_cropped,
                 )
             captured_output.append(output_buffer.getvalue())
             # Also print to console
@@ -518,6 +550,7 @@ def process_and_print_verbose_batch_samples(
                 top_n_analysis_val=top_n_analysis,
                 original_string_cropped=original_string_cropped,
                 autoregressive_continuation=autoregressive_continuation,
+                a_prime_string_cropped=a_prime_string_cropped,
             )
         num_printed_this_batch += 1
         if (printed_count_so_far + num_printed_this_batch) >= num_samples:
