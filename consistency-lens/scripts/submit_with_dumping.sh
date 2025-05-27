@@ -68,9 +68,9 @@ check_activations() {
     # Check multiple possible activation locations
     local model_name_clean=$(echo "$model_name" | tr '/' '_')
     local activation_dirs=(
-        "./data/activations/${model_name_clean}/layer_${layer}/${dataset}"  # New clean format
-        "./data/activations/${model_name}/layer_${layer}/${dataset}"        # Existing format with slashes
-        "./data/activations/${dataset}"                                      # Direct dataset path
+        "./data/${model_name_clean}/layer_${layer}/${dataset}"  # New clean format
+        "./data/${model_name}/layer_${layer}/${dataset}"        # Existing format with slashes
+        "./data/${dataset}"                                      # Direct dataset path
     )
     
     for activation_dir in "${activation_dirs[@]}"; do
