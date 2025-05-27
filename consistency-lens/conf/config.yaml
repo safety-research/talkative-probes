@@ -69,10 +69,10 @@ trainable_components:
     projection_layer: true   # Train Proj_E_hidden_to_A (self.proj)
     embedding_head: false      # Train the input/output embeddings of the base model (may be tied)
     eye_init: true
-    soft_prompt_length: 4     # Number of trainable soft prompt tokens (0 to disable)
-    trainable_soft_prompt: true  # Whether soft prompt tokens are trainable
+    soft_prompt_length: 0     # Number of trainable soft prompt tokens (0 to disable)
+    trainable_soft_prompt: false  # Whether soft prompt tokens are trainable
     soft_prompt_init_std: 0.1  # Standard deviation for random initialization of soft prompt tokens
-    soft_prompt_init_text: "Summary of the text:"  # Text to initialize soft prompt from (overrides random init, e.g. "reconstruct activation:")
+    soft_prompt_init_text: null #"Summary of the text:"  # Text to initialize soft prompt from (overrides random init, e.g. "reconstruct activation:")
 
 # Freeze schedule for non-adapter parameters
 # When enabled, non-adapter parameters (base_model, output_head, embedding_head) will be frozen
