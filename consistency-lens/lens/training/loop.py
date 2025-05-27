@@ -195,6 +195,7 @@ def train_step(  # noqa: D401
             # Extract logits at target positions for each sample
             logits_target = logits_target_full[batch_indices, token_pos_batch]  # (B, V)
         else:
+            raise ValueError("Mixed layers in batch")
             # Fallback: Original grouped approach for mixed-layer batches
             logits_orig_chunks = []
             logits_target_chunks = []
