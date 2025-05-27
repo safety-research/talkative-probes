@@ -176,6 +176,7 @@ submit_pretokenize_job() {
             --job-name="${job_name}-pretok" \
             --gres=gpu:0 \
             --nodelist="$NODELIST" \
+            --cpus-per-task=32 \
             --time=2:00:00 \
             --output=logs/pretokenize_%j.out \
             --error=logs/pretokenize_%j.err \
