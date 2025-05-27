@@ -104,7 +104,7 @@ submit_pretokenize_job() {
             --time=2:00:00 \
             --output=logs/pretokenize_%j.out \
             --error=logs/pretokenize_%j.err \
-            --wrap="bash -c 'cd /home/kitf/talkative-probes/consistency-lens && source .venv/bin/activate && python scripts/pretokenize_dataset.py --config-path=$(dirname $config) --config-name=$(basename $config .yaml) +pretokenize.num_proc=32'" 2>&1)
+            --wrap="bash -c 'cd /home/kitf/talkative-probes/consistency-lens && source .venv/bin/activate && python scripts/pretokenize_dataset.py --config-path=/home/kitf/talkative-probes/consistency-lens/conf --config-name=$(basename $config .yaml) +pretokenize.num_proc=32'" 2>&1)
         
         if [[ $? -ne 0 ]]; then
             echo -e "${RED}ERROR: Failed to submit pretokenization job${NC}" >&2
@@ -120,7 +120,9 @@ submit_pretokenize_job() {
         echo "Config: $config" >&2
         
         # Run pretokenization directly
-        if source .venv/bin/activate && python scripts/pretokenize_dataset.py --config-path=$(dirname "$config") --config-name=$(basename "$config" .yaml) +pretokenize.num_proc=32; then
+        # Get absolute path to config directory
+        local config_dir="$(pwd)/$(dirname "$config")"
+        if source .venv/bin/activate && python scripts/pretokenize_dataset.py --config-path="$config_dir" --config-name=$(basename "$config" .yaml) +pretokenize.num_proc=32; then
             echo -e "${GREEN}Pretokenization completed successfully${NC}" >&2
             echo "completed"
         else
@@ -191,7 +193,7 @@ submit_dump_job() {
         # Run activation dumping directly
         export NUM_GPUS="$NUM_GPUS"
         if [ "$use_pretokenized" = "true" ]; then
-            if ./scripts/launch_multigpu_dump_pretokenized.sh; then
+            if ./scripts/launch_multigpu_dump_pretokenized.sh "$config" "" "" "$layer"; then
                 echo -e "${GREEN}Activation dumping completed successfully${NC}" >&2
                 echo "completed"
             else
@@ -199,7 +201,7 @@ submit_dump_job() {
                 exit 1
             fi
         else
-            if ./scripts/launch_multigpu_dump_optimized.sh; then
+            if ./scripts/launch_multigpu_dump_optimized.sh "$config" "" "" "$layer"; then
                 echo -e "${GREEN}Activation dumping completed successfully${NC}" >&2
                 echo "completed"
             else
