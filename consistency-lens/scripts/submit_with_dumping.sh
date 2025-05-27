@@ -104,7 +104,7 @@ submit_pretokenize_job() {
             --time=2:00:00 \
             --output=logs/pretokenize_%j.out \
             --error=logs/pretokenize_%j.err \
-            --wrap="bash -c 'cd /home/kitf/talkative-probes/consistency-lens && source .venv/bin/activate && python scripts/pretokenize_dataset.py --config-path=/home/kitf/talkative-probes/consistency-lens/conf --config-name=$(basename $config .yaml)" 2>&1)
+            --wrap="bash -c 'cd /home/kitf/talkative-probes/consistency-lens && source .venv/bin/activate && python scripts/pretokenize_dataset.py --config-path=/home/kitf/talkative-probes/consistency-lens/conf --config-name=$(basename $config .yaml)'" 2>&1)
         
         if [[ $? -ne 0 ]]; then
             echo -e "${RED}ERROR: Failed to submit pretokenization job${NC}" >&2
@@ -182,11 +182,13 @@ submit_dump_job() {
     else
         echo -e "${YELLOW}Running activation dumping directly...${NC}" >&2
         echo "Config: $config, Layer: $layer, Use pretokenized: $use_pretokenized, GPUs: $NUM_GPUS" >&2
+        echo "DEBUG: Dependency value: '$dependency'" >&2
         
         # In non-SLURM mode, dependency="completed" means the previous step succeeded
         # Only fail if dependency exists but is NOT "completed" 
         if [ -n "$dependency" ] && [ "$dependency" != "completed" ]; then
             echo -e "${RED}ERROR: Previous step (pretokenization) did not complete successfully${NC}" >&2
+            echo "DEBUG: Dependency was '$dependency', expected 'completed' or empty" >&2
             exit 1
         fi
         
