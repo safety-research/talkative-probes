@@ -14,7 +14,7 @@ layer_l: 6                            # Middle layer (GPT-2 has 12 layers, 0-ind
 decoder_prompt: "Short explanation of <embed>:"       # Prompt for the Decoder
 
 # Training hyperparameters
-t_text: 100                            # Number of tokens to generate with the Decoder
+t_text: 10                            # Number of tokens to generate with the Decoder
 learning_rate: 1.0e-4                 # Starting LR for projections
 batch_size: 128                      # Can go higher with 8xH100
 
