@@ -109,7 +109,6 @@ echo "Layer: $LAYER"
 echo "Dataset: $DATASET_NAME"
 echo "Output Dir: $OUTPUT_DIR"
 echo "Use Pretokenized: $USE_PRETOKENIZED (always true for 5x speedup)"
-echo "Training Script: ${TRAINING_SCRIPT:-<will be determined>}"
 echo "Freeze Schedule Enabled: $FREEZE_ENABLED"
 if [ "$FREEZE_ENABLED" = "true" ]; then
     echo "Unfreeze At: $UNFREEZE_AT"
@@ -130,49 +129,34 @@ check_activations() {
     local layer=$2
     local output_dir=$3
     
-    echo "Checking for activations in $output_dir"
-    if [ -d "$output_dir" ]; then
-        # Check if directory has content (including rank_* subdirectories)
-        if [ -n "$(find "$output_dir" -name "*.pt" -o -name "rank_*" 2>/dev/null | head -1)" ]; then
-            echo "Found activations in $output_dir"
-            return 0  # Activations exist
-        fi
-    fi
-    
-    # Also check the model-specific path structure
+    # Clean model name for directory paths
     local model_name_clean=$(echo "$model_name" | tr '/' '_')
-    local alt_dir="./data/${model_name_clean}/layer_${layer}/${DATASET_NAME}"
-    echo "Also checking $alt_dir"
-    if [ -d "$alt_dir" ]; then
-        if [ -n "$(find "$alt_dir" -name "*.pt" -o -name "rank_*" 2>/dev/null | head -1)" ]; then
-            echo "Found activations in $alt_dir"
-            return 0
+    
+    # List of possible activation directory patterns based on your data tree
+    local activation_dirs=(
+        "$output_dir"  # e.g., ./data/SimpleStories_train
+        "./data/${model_name_clean}/layer_${layer}/${DATASET_NAME}_train"  # e.g., ./data/SimpleStories_SimpleStories-5M/layer_5/SimpleStories_train
+        "./data/${model_name_clean}/layer_${layer}/${DATASET_NAME}_test"   # Check test too
+        "./data/activations/${DATASET_NAME}/${model_name}/layer_${layer}/${DATASET_NAME}_train"  # Your tree structure
+        "./data/activations/${DATASET_NAME}/${model_name}/layer_${layer}/${DATASET_NAME}_test"
+    )
+    
+    for dir in "${activation_dirs[@]}"; do
+        echo "Checking: $dir"
+        if [ -d "$dir" ]; then
+            # Check for rank_* subdirectories (multi-GPU dumps) or .pt files
+            if [ -n "$(find "$dir" -maxdepth 2 -name "*.pt" -o -type d -name "rank_*" 2>/dev/null | head -1)" ]; then
+                echo -e "${GREEN}Found activations in $dir${NC}"
+                return 0  # Activations exist
+            fi
         fi
-    fi
+    done
     
     return 1  # Activations don't exist
 }
 
 # Function to determine training script if not already set
-determine_training_script() {
-    if [ -n "$TRAINING_SCRIPT" ]; then
-        echo "$TRAINING_SCRIPT"
-        return
-    fi
-    
-    # Try to determine from config name
-    local config_basename=$(basename "$CONFIG_FILE" .yaml)
-    
-    # First check if a corresponding SLURM script exists
-    local potential_script="scripts/slurm_${config_basename}.sh"
-    if [ -f "$potential_script" ]; then
-        echo "$potential_script"
-        return
-    fi
-    
-    # Otherwise, we'll need to error out
-    echo ""
-}
+# NO LONGER USED - we run training directly with the config
 
 # Function to submit pretokenization job
 submit_pretokenize_job() {
@@ -300,38 +284,56 @@ submit_dump_job() {
 
 # Function to submit training job with optional dependency
 submit_train_job() {
-    local script=$1
-    local job_name=$2
-    local dependency=$3
-    local resume_checkpoint=$4
-    local wandb_resume_id=$5
-    local config_file=$6
+    local job_name=$1
+    local dependency=$2
+    local resume_checkpoint=$3
+    local wandb_resume_id=$4
+    local config_file=$5
     
     if [ "$USE_SLURM" = true ]; then
-        # Build environment variables for resume parameters
-        local env_vars=""
+        echo -e "${YELLOW}Submitting training job via SLURM...${NC}" >&2
+        echo "Config: $config_file" >&2
+        
+        # Build environment variables
+        local env_vars="--export=ALL"
         if [ -n "$resume_checkpoint" ]; then
-            env_vars="--export=RESUME_CHECKPOINT='$resume_checkpoint'"
+            env_vars="$env_vars,RESUME_CHECKPOINT='$resume_checkpoint'"
             echo -e "${GREEN}Will resume from checkpoint: $resume_checkpoint${NC}" >&2
         fi
         if [ -n "$wandb_resume_id" ]; then
-            if [ -n "$env_vars" ]; then
-                env_vars="$env_vars,WANDB_RESUME_ID='$wandb_resume_id'"
-            else
-                env_vars="--export=WANDB_RESUME_ID='$wandb_resume_id'"
-            fi
+            env_vars="$env_vars,WANDB_RESUME_ID='$wandb_resume_id'"
             echo -e "${GREEN}Will resume WandB run: $wandb_resume_id${NC}" >&2
         fi
-        echo -e "${BLUE}Using nodelist: $NODELIST${NC}" >&2
         
-        local sbatch_cmd
-        if [ -n "$dependency" ] && [ "$dependency" != "completed" ]; then
-            echo -e "${YELLOW}Submitting training job with dependency on job $dependency...${NC}" >&2
-            sbatch_cmd="sbatch --parsable --dependency=afterok:$dependency --job-name=$job_name --nodelist=$NODELIST $env_vars $script"
-        else
-            echo -e "${YELLOW}Submitting training job...${NC}" >&2
-            sbatch_cmd="sbatch --parsable --job-name=$job_name --nodelist=$NODELIST $env_vars $script"
+        # Build the training command
+        local config_dir="$(dirname "$config_file")"
+        local config_name="$(basename "$config_file" .yaml)"
+        if [[ ! "$config_dir" = /* ]]; then
+            config_dir="$(pwd)/$config_dir"
         fi
+        
+        local train_cmd="cd /home/kitf/talkative-probes/consistency-lens && source .venv/bin/activate && python scripts/01_train.py --config-path=$config_dir --config-name=$config_name"
+        if [ -n "$resume_checkpoint" ]; then
+            train_cmd="$train_cmd resume='$resume_checkpoint'"
+        fi
+        if [ -n "$wandb_resume_id" ]; then
+            train_cmd="$train_cmd wandb_resume_id='$wandb_resume_id'"
+        fi
+        
+        # Build sbatch command
+        local sbatch_cmd="sbatch --parsable --job-name=${job_name}-train"
+        sbatch_cmd="$sbatch_cmd --gres=gpu:1 --nodelist=$NODELIST"
+        sbatch_cmd="$sbatch_cmd --time=24:00:00"
+        sbatch_cmd="$sbatch_cmd --output=logs/${job_name}_train_%j.out"
+        sbatch_cmd="$sbatch_cmd --error=logs/${job_name}_train_%j.err"
+        sbatch_cmd="$sbatch_cmd $env_vars"
+        
+        if [ -n "$dependency" ] && [ "$dependency" != "completed" ]; then
+            sbatch_cmd="$sbatch_cmd --dependency=afterok:$dependency"
+            echo -e "${YELLOW}Will start after job $dependency completes${NC}" >&2
+        fi
+        
+        sbatch_cmd="$sbatch_cmd --wrap=\"$train_cmd\""
         
         # Submit job and capture result
         local result=$($sbatch_cmd 2>&1)
@@ -349,11 +351,7 @@ submit_train_job() {
             exit 1
         fi
         
-        if [ -n "$dependency" ] && [ "$dependency" != "completed" ]; then
-            echo -e "${GREEN}Training job submitted with ID: $train_job_id (will start after job $dependency completes)${NC}" >&2
-        else
-            echo -e "${GREEN}Training job submitted with ID: $train_job_id${NC}" >&2
-        fi
+        echo -e "${GREEN}Training job submitted with ID: $train_job_id${NC}" >&2
         echo "$train_job_id"
     else
         echo -e "${YELLOW}Running training directly...${NC}" >&2
@@ -414,34 +412,16 @@ JOB_NAME=$(basename "$CONFIG_FILE" .yaml)
 USE_PRETOKENIZED="true"
 echo -e "${BLUE}Using pretokenization for 5x faster dumping${NC}"
 
-# Determine training script
-TRAINING_SCRIPT=$(determine_training_script)
-if [ -z "$TRAINING_SCRIPT" ]; then
-    echo -e "${RED}ERROR: Could not determine training script for config: $CONFIG_FILE${NC}"
-    echo "Please ensure the config name matches one of the expected patterns, or update the script mapping."
-    echo ""
-    echo "Expected patterns:"
-    echo "  simplestories_frozen.yaml -> scripts/slurm_simplestories_frozen.sh"
-    echo "  simplestories_unfreeze.yaml -> scripts/slurm_simplestories_unfreeze.sh"
-    echo "  gpt2_frozen.yaml -> scripts/slurm_gpt2_frozen.sh"
-    echo "  gpt2_unfreeze.yaml -> scripts/slurm_gpt2_unfreeze.sh"
-    echo "  gpt2_pile_frozen.yaml -> scripts/slurm_gpt2_pile.sh"
-    echo "  gpt2_pile_unfreeze.yaml -> scripts/slurm_gpt2_pile_unfreeze.sh"
-    exit 1
-fi
-
-echo -e "${BLUE}Using training script: $TRAINING_SCRIPT${NC}"
-
 # Check if activations exist
 if check_activations "$MODEL_NAME" "$LAYER" "$OUTPUT_DIR" && [ "$FORCE_REDUMP" != "true" ]; then
     echo -e "${GREEN}Activations already exist, submitting training only${NC}"
-    train_job=$(submit_train_job "$TRAINING_SCRIPT" "$JOB_NAME" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE")
+    train_job=$(submit_train_job "$JOB_NAME" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE")
 else
     echo -e "${YELLOW}Activations not found or force redump requested${NC}"
     # Always pretokenize first for efficiency
     pretok_job=$(submit_pretokenize_job "$CONFIG_FILE" "$JOB_NAME")
     dump_job=$(submit_dump_job "$CONFIG_FILE" "$LAYER" "$JOB_NAME" true "$pretok_job")
-    train_job=$(submit_train_job "$TRAINING_SCRIPT" "$JOB_NAME" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE")
+    train_job=$(submit_train_job "$JOB_NAME" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE")
 fi
 
 # Summary
