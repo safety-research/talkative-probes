@@ -58,9 +58,9 @@ freeze_schedule:
 
 # Custom learning rates - IMPORTANT for unfrozen models
 custom_lr_multipliers:
-  projection_layers: 1.0              # Full LR for projections
-  base_model: 0.1                     # 10x lower LR for base model when unfrozen
-  output_head: 0.1                    # 2x lower LR for output heads
+  projection_layers: 10.0              # Full LR for projections
+  prompt_layers: 10.0                 # 10x higher LR for prompt layers
+  embedding_layers: 1
 
 # Gumbel temperature schedule
 gumbel_tau_schedule:

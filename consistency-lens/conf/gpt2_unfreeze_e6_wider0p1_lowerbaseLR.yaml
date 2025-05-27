@@ -1,0 +1,28 @@
+# Configuration for GPT-2 Frozen Base Model Experiment
+# This config trains consistency lens on GPT-2 with the base model frozen throughout
+
+defaults:
+  - gpt2_unfreeze
+  - _self_
+
+learning_rate: 1.0e-5
+# Training hyperparameters
+t_text: 16                        # Number of tokens to generate with the Decoder
+
+# Trainable components - FROZEN base model
+trainable_components:
+  encoder:
+    output_layer: 6
+
+custom_lr_multipliers:
+  projection_layers: 100.0
+  prompt_layers: 100.0
+  embedding_layers: 1.0
+
+alpha_schedule:
+  type: "constant"
+  value: 0.1
+
+lm_weight: 1.0                  # Base LM weight; final LM multiplier = lm_weight * alpha_schedule  
+kl_base_weight: 1.0             # Fixed weight on KL divergence (fundamental objective)
+mse_weight: 0.0
