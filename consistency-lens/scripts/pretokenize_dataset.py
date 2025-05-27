@@ -12,13 +12,18 @@ from transformers import AutoTokenizer
 from tqdm import tqdm
 
 
-@hydra.main(version_base=None, config_path="../../conf", config_name="pretokenize")
+@hydra.main(version_base=None, config_path="../conf", config_name="config")
 def main(cfg: DictConfig) -> None:
     # Setup logging
     log = logging.getLogger(__name__)
     
-    # Get config values
-    pretokenize_cfg = cfg.pretokenize
+    # Get config values - use defaults if pretokenize section doesn't exist
+    pretokenize_cfg = cfg.get('pretokenize', {
+        'output_dir': None,
+        'num_proc': 32,
+        'batch_size': 10000,
+        'force': False
+    })
     activation_dumper_cfg = cfg.activation_dumper
     
     # Get dataset info
@@ -26,14 +31,26 @@ def main(cfg: DictConfig) -> None:
     tokenizer_name = cfg.get("tokenizer_name", cfg["model_name"])
     seq_len = activation_dumper_cfg["seq_len"]
     
+    # Handle both dict and DictConfig
+    if isinstance(pretokenize_cfg, dict):
+        output_dir_cfg = pretokenize_cfg.get('output_dir')
+        num_proc = pretokenize_cfg.get('num_proc', 32)
+        batch_size = pretokenize_cfg.get('batch_size', 10000)
+        force = pretokenize_cfg.get('force', False)
+    else:
+        output_dir_cfg = pretokenize_cfg.output_dir
+        num_proc = pretokenize_cfg.num_proc
+        batch_size = pretokenize_cfg.batch_size
+        force = pretokenize_cfg.force
+    
     # Output directory
-    if pretokenize_cfg.output_dir:
-        output_dir = Path(pretokenize_cfg.output_dir)
+    if output_dir_cfg:
+        output_dir = Path(output_dir_cfg)
     else:
         output_dir = Path("data/pretokenized") / dataset_name.replace("/", "_")
     
     # Check if already exists and force flag
-    if output_dir.exists() and not pretokenize_cfg.force:
+    if output_dir.exists() and not force:
         log.info(f"Pretokenized data already exists at {output_dir}")
         log.info("Use pretokenize.force=true to re-tokenize")
         return
@@ -42,7 +59,7 @@ def main(cfg: DictConfig) -> None:
     log.info(f"Using tokenizer: {tokenizer_name}")
     log.info(f"Sequence length: {seq_len}")
     log.info(f"Output directory: {output_dir}")
-    log.info(f"Using {pretokenize_cfg.num_proc} processes")
+    log.info(f"Using {num_proc} processes")
     
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, use_fast=True)
@@ -101,8 +118,8 @@ def main(cfg: DictConfig) -> None:
         tokenized_dataset = dataset.map(
             tokenize_function,
             batched=True,
-            batch_size=pretokenize_cfg.batch_size,
-            num_proc=pretokenize_cfg.num_proc,
+            batch_size=batch_size,
+            num_proc=num_proc,
             remove_columns=dataset.column_names,  # Keep only tokenized data
             desc=f"Tokenizing {split}",
         )
