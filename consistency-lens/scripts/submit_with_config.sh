@@ -10,6 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/.."
 echo "Running from $(pwd)"
 CONSISTENCY_LENS_DIR=$(pwd)
+echo "CONSISTENCY_LENS_DIR: $CONSISTENCY_LENS_DIR"
 
 # Parse arguments
 CONFIG_FILE="${1}"
