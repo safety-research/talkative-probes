@@ -23,6 +23,7 @@ class EncoderConfig:
     trainable_soft_prompt: bool = True  # YAML `trainable_soft_prompt` - whether soft prompt is trainable
     soft_prompt_init_std: float = 0.1   # YAML `soft_prompt_init_std` - standard deviation for random initialization
     soft_prompt_init_text: str | None = None  # YAML `soft_prompt_init_text` - text to initialize from (overrides random init)
+    output_layer: int = -1           # YAML `output_layer` - which layer to extract activations from (-1 = last layer)
     
     def __post_init__(self):
         """Validate configuration parameters."""
@@ -44,6 +45,10 @@ class EncoderConfig:
         # Can't train embedding heads if we're not using the base model
         if not self.use_base_model and self.embedding_head:
             raise ValueError("embedding_head=True requires use_base_model=True (can't train embeddings of a model that isn't being used)")
+            
+        # Validate output_layer - can only extract from specific layers if using base model
+        if not self.use_base_model and self.output_layer != -1:
+            raise ValueError(f"output_layer={self.output_layer} requires use_base_model=True (can't extract from specific layers without base model)")
 
 
 class Encoder(nn.Module):
@@ -178,7 +183,21 @@ class Encoder(nn.Module):
             outputs = self.base(inputs_embeds=embeddings, output_hidden_states=True)
             if outputs.hidden_states is None:
                 raise RuntimeError("Model did not return hidden_states despite request.")
-            processed_embeddings = outputs.hidden_states[-1]
+            
+            # Select the appropriate layer based on output_layer config
+            if self.config.output_layer == -1:
+                # Last layer (default behavior)
+                processed_embeddings = outputs.hidden_states[-1]
+            elif self.config.output_layer == 0:
+                # Input embeddings (before any transformer layers)
+                processed_embeddings = outputs.hidden_states[0]
+            else:
+                # Specific layer (1-indexed to match typical layer numbering)
+                # Note: hidden_states includes the input embeddings as layer 0
+                if self.config.output_layer > len(outputs.hidden_states) - 1:
+                    raise ValueError(f"Requested output_layer {self.config.output_layer} but model only has {len(outputs.hidden_states) - 1} layers")
+                processed_embeddings = outputs.hidden_states[self.config.output_layer]
+            
             # Then take the embedding of the final token for projection
             last_emb_to_proj = processed_embeddings[:, -1] # (B, d_model)
         else:
