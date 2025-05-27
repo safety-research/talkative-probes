@@ -46,6 +46,13 @@ def train_step(  # noqa: D401
     # We flatten it to count all tokens produced in the batch
     decoded_token_ids_batch = gen.hard_token_ids.detach().cpu().view(-1)
 
+
+    alpha = _loss_fns.get("alpha", 0.1) if _loss_fns else 0.1
+
+    kl_base = _loss_fns.get("kl_base_weight", 1.0) if _loss_fns else 1.0
+    ent_w = _loss_fns.get("entropy_weight", 0.0) if _loss_fns else 0.0
+    mse_w = _loss_fns.get("mse_weight", 0.0) if _loss_fns else 0.0
+
     # loss_mse - just for monitoring! We do not train on this, as we need to allow the resample ablation to work
     if mse_w > 0:
         loss_mse = torch.nn.functional.mse_loss(A_hat, A)
@@ -253,11 +260,6 @@ def train_step(  # noqa: D401
     else:
         raise ValueError("No KL loss")
 
-    alpha = _loss_fns.get("alpha", 0.1) if _loss_fns else 0.1
-
-    kl_base = _loss_fns.get("kl_base_weight", 1.0) if _loss_fns else 1.0
-    ent_w = _loss_fns.get("entropy_weight", 0.0) if _loss_fns else 0.0
-    mse_w = _loss_fns.get("mse_weight", 0.0) if _loss_fns else 0.0
 
     # Total loss composition:
     # - KL loss (fundamental objective): fixed weight, measures functional preservation
