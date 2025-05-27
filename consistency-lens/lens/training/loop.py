@@ -158,8 +158,8 @@ def train_step(  # noqa: D401
         A_target = A_hat + delta
 
         input_ids_batch = batch["input_ids_A"]
-        layer_idx_batch = batch.get("layer_idx")  # (B,)
-        token_pos_batch = batch.get("token_pos_A")  # (B,)
+        layer_idx_batch = batch.get("layer_idx").squeeze()  # (B,)
+        token_pos_batch = batch.get("token_pos_A").squeeze()  # (B,)
         B = A.shape[0]
 
         # Check if we can use vectorized approach (same layer across batch)
@@ -242,7 +242,6 @@ def train_step(  # noqa: D401
         # Original: kl_fn(softmax(logits_orig), log_softmax(logits_target))
         #   This leads to log(log_Q) which is log(negative) = NaN
         # Corrected: kl_fn(log_softmax(logits_target), softmax(logits_orig))
-        log.warning(f"shapes: {logits_target.shape}, {logits_orig.shape}")
         loss_kl = kl_fn(#kl_fn expect log y_pred, y_true - this is what we ahve here
             torch.log_softmax(logits_target, dim=-1),
             torch.softmax(logits_orig, dim=-1)
