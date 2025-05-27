@@ -1,10 +1,15 @@
-.PHONY: setup install uv help
+.PHONY: all setup install uv help
 
-# Default target
+# Default target - do everything
+all: setup
+
+# Help target
 help:
 	@echo "Consistency Lens Setup"
-	@echo "  make uv      - Install uv package manager"
+	@echo "  make         - Do everything (setup environment and install)"
+	@echo "  make all     - Same as make"
 	@echo "  make setup   - Create virtual environment and install dependencies"
+	@echo "  make uv      - Install uv package manager"
 	@echo "  make install - Install dependencies (assumes venv exists)"
 
 # Install uv if not present
