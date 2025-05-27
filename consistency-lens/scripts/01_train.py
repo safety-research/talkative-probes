@@ -901,36 +901,70 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     num_params_dec_base_trainable = sum(p.numel() for n, p in dec.named_parameters() if p.requires_grad and 'base' in n)
     num_params_dec_proj_trainable = sum(p.numel() for n, p in dec.named_parameters() if p.requires_grad and 'proj' in n)
     num_params_dec_out_trainable = sum(p.numel() for n, p in dec.named_parameters() if p.requires_grad and 'out' in n)
-    current_dec_trainable_total = num_params_dec_base_trainable + num_params_dec_proj_trainable + num_params_dec_out_trainable
-    num_params_dec_frozen = num_params_dec_total - current_dec_trainable_total
+    num_params_dec_prompts_trainable = sum(p.numel() for n, p in dec.named_parameters() if p.requires_grad and ('prompt_left_emb' in n or 'prompt_right_emb' in n))
+    
+    # Count frozen parameters for decoder
+    num_params_dec_base_frozen = sum(p.numel() for n, p in dec.named_parameters() if not p.requires_grad and 'base' in n)
+    num_params_dec_proj_frozen = sum(p.numel() for n, p in dec.named_parameters() if not p.requires_grad and 'proj' in n)
+    num_params_dec_out_frozen = sum(p.numel() for n, p in dec.named_parameters() if not p.requires_grad and 'out' in n)
+    num_params_dec_prompts_frozen = sum(p.numel() for n, p in dec.named_parameters() if not p.requires_grad and ('prompt_left_emb' in n or 'prompt_right_emb' in n))
+    
+    current_dec_trainable_total = num_params_dec_base_trainable + num_params_dec_proj_trainable + num_params_dec_out_trainable + num_params_dec_prompts_trainable
+    current_dec_frozen_total = num_params_dec_base_frozen + num_params_dec_proj_frozen + num_params_dec_out_frozen + num_params_dec_prompts_frozen
     
     log.info(f"Decoder - Total parameters: {num_params_dec_total:,}")
     log.info(f"  Decoder - Trainable parameters: {current_dec_trainable_total:,}")
     log.info(f"    Decoder base trainable: {num_params_dec_base_trainable:,} (Config: {decoder_config.base_model})")
     log.info(f"    Decoder proj trainable: {num_params_dec_proj_trainable:,} (Config: {decoder_config.projection_layer})")
     log.info(f"    Decoder out trainable: {num_params_dec_out_trainable:,} (Config: {decoder_config.output_head})")
-    log.info(f"  Decoder - Frozen parameters: {num_params_dec_frozen:,}")
+    log.info(f"    Decoder prompts trainable: {num_params_dec_prompts_trainable:,} (Config: {decoder_config.trainable_prompts})")
+    log.info(f"  Decoder - Frozen parameters: {current_dec_frozen_total:,}")
+    log.info(f"    Decoder base frozen: {num_params_dec_base_frozen:,}")
+    log.info(f"    Decoder proj frozen: {num_params_dec_proj_frozen:,}")
+    log.info(f"    Decoder out frozen: {num_params_dec_out_frozen:,}")
+    log.info(f"    Decoder prompts frozen: {num_params_dec_prompts_frozen:,}")
 
     # Encoder parameter counts
     num_params_enc_total = sum(p.numel() for p in enc.parameters())
     num_params_enc_base_trainable = sum(p.numel() for n, p in enc.named_parameters() if p.requires_grad and 'base' in n)
     num_params_enc_proj_trainable = sum(p.numel() for n, p in enc.named_parameters() if p.requires_grad and 'proj' in n)
-    current_enc_trainable_total = num_params_enc_base_trainable + num_params_enc_proj_trainable
-    num_params_enc_frozen = num_params_enc_total - current_enc_trainable_total
+    num_params_enc_prompts_trainable = sum(p.numel() for n, p in enc.named_parameters() if p.requires_grad and 'soft_prompt_embeddings' in n)
+    
+    # Count frozen parameters for encoder
+    num_params_enc_base_frozen = sum(p.numel() for n, p in enc.named_parameters() if not p.requires_grad and 'base' in n)
+    num_params_enc_proj_frozen = sum(p.numel() for n, p in enc.named_parameters() if not p.requires_grad and 'proj' in n)
+    num_params_enc_prompts_frozen = sum(p.numel() for n, p in enc.named_parameters() if not p.requires_grad and 'soft_prompt_embeddings' in n)
+    
+    current_enc_trainable_total = num_params_enc_base_trainable + num_params_enc_proj_trainable + num_params_enc_prompts_trainable
+    current_enc_frozen_total = num_params_enc_base_frozen + num_params_enc_proj_frozen + num_params_enc_prompts_frozen
 
     log.info(f"Encoder - Total parameters: {num_params_enc_total:,}")
     log.info(f"  Encoder - Trainable parameters: {current_enc_trainable_total:,}")
     log.info(f"    Encoder base trainable: {num_params_enc_base_trainable:,} (Config: {encoder_config.base_model}, present: {encoder_config.use_base_model})")
     log.info(f"    Encoder proj trainable: {num_params_enc_proj_trainable:,} (Config: {encoder_config.projection_layer})")
-    log.info(f"  Encoder - Frozen parameters: {num_params_enc_frozen:,}")
+    log.info(f"    Encoder prompts trainable: {num_params_enc_prompts_trainable:,} (Config: {encoder_config.trainable_soft_prompt})")
+    log.info(f"  Encoder - Frozen parameters: {current_enc_frozen_total:,}")
+    log.info(f"    Encoder base frozen: {num_params_enc_base_frozen:,}")
+    log.info(f"    Encoder proj frozen: {num_params_enc_proj_frozen:,}")
+    log.info(f"    Encoder prompts frozen: {num_params_enc_prompts_frozen:,}")
 
     # Sanity check: sum of categorized trainable parameters should match total_trainable_params_val
     sum_of_categorized_trainable = current_dec_trainable_total + current_enc_trainable_total
+    sum_of_categorized_frozen = current_dec_frozen_total + current_enc_frozen_total
+    sum_of_categorized_total = sum_of_categorized_trainable + sum_of_categorized_frozen
+    
     if total_trainable_params_val != sum_of_categorized_trainable:
         log.warning(
             f"Parameter count mismatch: total_trainable_params_val is {total_trainable_params_val:,}, "
             f"but sum of categorized trainable parameters (Decoder + Encoder) is {sum_of_categorized_trainable:,}. "
-            "This might indicate that some trainable parameters are not covered by the 'base', 'proj', 'out' categorization."
+            "This might indicate that some trainable parameters are not covered by the 'base', 'proj', 'out', 'prompts' categorization."
+        )
+    
+    total_model_params = num_params_dec_total + num_params_enc_total
+    if total_model_params != sum_of_categorized_total:
+        log.warning(
+            f"Total parameter count mismatch: actual total is {total_model_params:,}, "
+            f"but sum of categorized parameters is {sum_of_categorized_total:,}."
         )
 
     log.info(f"Original LLM (frozen) parameters: {num_params_orig_total:,}")
