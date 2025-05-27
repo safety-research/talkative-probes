@@ -115,7 +115,7 @@ def iter_hf_text_distributed(
         start_idx = rank * samples_per_rank
         end_idx = min(start_idx + samples_per_rank, num_samples)
     
-    ds = load_dataset(dataset_name, split=split, streaming=True, cache_dir=cache_dir)
+    ds = load_dataset(dataset_name, split=split, streaming=True, cache_dir=cache_dir, trust_remote_code=True)
     count = 0
     global_count = 0
     
