@@ -9,6 +9,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/.."
 echo "Running from $(pwd)"
+CONSISTENCY_LENS_DIR=$(pwd)
 
 # Parse arguments
 CONFIG_FILE="${1}"
@@ -177,7 +178,7 @@ submit_pretokenize_job() {
             --time=2:00:00 \
             --output=logs/pretokenize_%j.out \
             --error=logs/pretokenize_%j.err \
-            --wrap="bash -c 'cd /home/kitf/talkative-probes/consistency-lens && source .venv/bin/activate && python scripts/pretokenize_dataset.py --config-path=/home/kitf/talkative-probes/consistency-lens/$(dirname $config) --config-name=$(basename $config .yaml)'" 2>&1)
+            --wrap="bash -c 'cd $CONSISTENCY_LENS_DIR && source .venv/bin/activate && python scripts/pretokenize_dataset.py --config-path=$CONSISTENCY_LENS_DIR/$(dirname $config) --config-name=$(basename $config .yaml)'" 2>&1)
         
         if [[ $? -ne 0 ]]; then
             echo -e "${RED}ERROR: Failed to submit pretokenization job${NC}" >&2
@@ -298,7 +299,7 @@ submit_train_job() {
             config_dir="$(pwd)/$config_dir"
         fi
         
-        local train_cmd="cd /home/kitf/talkative-probes/consistency-lens && . .venv/bin/activate && python scripts/01_train.py --config-path=$config_dir --config-name=$config_name"
+        local train_cmd="cd $CONSISTENCY_LENS_DIR && . .venv/bin/activate && python scripts/01_train.py --config-path=$config_dir --config-name=$config_name"
         if [ -n "$resume_checkpoint" ]; then
             train_cmd="$train_cmd resume=\"$resume_checkpoint\""
         fi
