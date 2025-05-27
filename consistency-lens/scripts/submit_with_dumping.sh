@@ -296,6 +296,7 @@ submit_train_job() {
         local config_file=""
         case "$job_name" in
             "ss-frozen") config_file="conf/simplestories_frozen.yaml" ;;
+            "ss-frozen2") config_file="conf/simplestories_frozen2.yaml" ;;
             "ss-unfreeze") config_file="conf/simplestories_unfreeze.yaml" ;;
             "gpt2-frozen") config_file="conf/gpt2_frozen.yaml" ;;
             "gpt2-unfreeze") config_file="conf/gpt2_unfreeze.yaml" ;;
@@ -354,6 +355,27 @@ case $EXPERIMENT in
             echo "DEBUG: pretok_job returned: '$pretok_job'" >&2
             dump_job=$(submit_dump_job "conf/simplestories_frozen.yaml" "$LAYER" "ss-frozen" true "$pretok_job")
             train_job=$(submit_train_job "scripts/slurm_simplestories_frozen.sh" "ss-frozen" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
+        fi
+        ;;
+    
+    "ss-frozen2"|"simplestories-frozen2")
+        echo -e "${BLUE}=== SimpleStories Frozen Experiment ===${NC}"
+        echo -e "${BLUE}Using pretokenization for 5x faster dumping${NC}"
+        
+        # Extract layer from config (defaults to 5)
+        LAYER=$(python -c "import yaml; cfg=yaml.safe_load(open('conf/simplestories_frozen2.yaml')); print(cfg.get('layer_l', 5))" 2>/dev/null || echo "5")
+        
+        # Check if activations exist (using the actual path structure)
+        if check_activations "SimpleStories/SimpleStories-5M" "$LAYER" "SimpleStories_train" "train" && [ "$FORCE_REDUMP" != "true" ]; then
+            echo -e "${GREEN}Activations already exist, submitting training only${NC}"
+            train_job=$(submit_train_job "scripts/slurm_simplestories_frozen2.sh" "ss-frozen2" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
+        else
+            echo -e "${YELLOW}Activations not found or force redump requested${NC}"
+            # First pretokenize, then dump with pretokenized data
+            pretok_job=$(submit_pretokenize_job "conf/simplestories_frozen2.yaml" "ss-frozen2")
+            echo "DEBUG: pretok_job returned: '$pretok_job'" >&2
+            dump_job=$(submit_dump_job "conf/simplestories_frozen2.yaml" "$LAYER" "ss-frozen2" true "$pretok_job")
+            train_job=$(submit_train_job "scripts/slurm_simplestories_frozen2.sh" "ss-frozen2" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID")
         fi
         ;;
         
