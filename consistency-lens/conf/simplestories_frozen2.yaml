@@ -7,7 +7,7 @@ defaults:
   - _self_
 
 # Override specific settings for this experiment
-t_text: 10                            # Width-10 explanations as requested
+t_text: 20                            # Width-10 explanations as requested
 
 # Ensure base model stays frozen
 trainable_components:
