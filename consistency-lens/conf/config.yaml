@@ -15,6 +15,7 @@ layer_l: 5                      # Target layer for activation extraction (LLM_or
 t_text: 5                       # Number of tokens to generate with the Decoder
 learning_rate: 1.0e-3
 batch_size: 512               # Effective batch size (adjust with gradient_accumulation_steps if using DeepSpeed)
+gradient_accumulation_steps: 1  # Number of steps to accumulate gradients before optimizer step
 
 # Learning rate scheduler
 lr_scheduler:

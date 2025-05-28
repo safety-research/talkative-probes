@@ -41,7 +41,6 @@ from lens.training.schedules import (
     resolve_schedule_at_step,
     get_schedule_value_for_logging,
     get_autocast_context,
-    apply_gradient_scaling,
     optimizer_step,
     parse_schedule_to_steps,
     spec_to_steps
@@ -894,6 +893,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     lm_weight = config['lm_weight']
     kl_base_weight = config['kl_base_weight']
     entropy_weight = config['entropy_weight']
+    gradient_accumulation_steps = config['gradient_accumulation_steps']
 
     # Extract trainable_components and custom_lr_multipliers from config
     trainable_components_config = config.get('trainable_components', {})
@@ -1063,9 +1063,14 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
 
     log.info("Starting training run – Model: %s, Activations: %s", model_name, activation_dir)
     log.info(
-        "Configuration: %d total steps, Batch Size: %d, Train Dataset Size: %d, Val Dataset Size: %d samples",
-        max_steps, config['batch_size'], len(train_ds), len(val_ds)
+        "Configuration: %d total steps, Batch Size: %d, Gradient Accumulation: %d, Train Dataset Size: %d, Val Dataset Size: %d samples",
+        max_steps, config['batch_size'], gradient_accumulation_steps, len(train_ds), len(val_ds)
     )
+    if gradient_accumulation_steps > 1:
+        log.info(
+            "Effective batch size: %d (batch_size=%d × gradient_accumulation_steps=%d)",
+            config['batch_size'] * gradient_accumulation_steps, config['batch_size'], gradient_accumulation_steps
+        )
     if steps_per_epoch > 0 :
         log.info(
             "Derived: %d steps/epoch, Approx. %d total epochs",
@@ -1343,6 +1348,11 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         # Calculate current epoch from step
         epoch = step // steps_per_epoch if steps_per_epoch > 0 else 0
         
+        # Determine if this is the first step in an accumulation cycle
+        is_accumulation_start = (step % gradient_accumulation_steps == 0)
+        # Determine if we should perform optimizer step
+        is_accumulation_end = ((step + 1) % gradient_accumulation_steps == 0) or (step == max_steps - 1)
+        
         # Check if we should unfreeze non-adapter parameters
         if freeze_schedule_enabled and non_adapters_frozen and should_unfreeze_any_component(step, epoch):
             log.info(f"Unfreezing non-adapter parameters at step {step}")
@@ -1424,7 +1434,10 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                     log.info(f"  {k}: {v}")
 
 
-        opt.zero_grad(set_to_none=True)
+        # Only zero gradients at the start of accumulation cycles
+        if is_accumulation_start:
+            opt.zero_grad(set_to_none=True)
+        
         ctx = get_autocast_context(device)
         with ctx:
             current_tau = get_schedule_value(config['gumbel_tau_schedule'], step, max_steps,
@@ -1450,43 +1463,67 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
             )
             loss = losses["total"]
             
+            # Scale loss by gradient accumulation steps
+            if gradient_accumulation_steps > 1:
+                loss = loss / gradient_accumulation_steps
+            
             # Accumulate decoded tokens from the current step
             if "decoded_tokens_batch" in losses:
                 epoch_decoded_tokens.extend(losses["decoded_tokens_batch"].tolist())
 
-        # Apply gradient scaling and clipping
-        grad_norm, param_before = apply_gradient_scaling(
-            loss, opt, scaler, trainable_params, config['grad_clip'], device
-        )
+        # Apply gradient scaling and backward pass (but not clipping yet)
+        if device.type == "cuda":
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
         
-        # Apply warmup BEFORE optimizer step
-        unfreeze_transition_step, should_clear_params = apply_unfreeze_warmup(
-            opt, newly_unfrozen_params, unfreeze_transition_step, 
-            unfreeze_warmup_steps, step, freeze_schedule_config, 
-            log_interval, log
-        )
+        # Only perform gradient clipping and optimizer step at the end of accumulation
+        if is_accumulation_end:
+            # Unscale and clip gradients
+            if device.type == "cuda":
+                scaler.unscale_(opt)
+            grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, config['grad_clip'])
+            param_before = [p.detach().clone() for p in trainable_params]
+        else:
+            # Don't compute grad norm or param updates if not stepping
+            grad_norm = None
+            param_before = None
         
-        if should_clear_params:
-            newly_unfrozen_params.clear()
-        
-        # Perform optimizer step
-        optimizer_step(opt, scaler, device)
+        # Only perform optimizer step and related operations at the end of accumulation
+        if is_accumulation_end:
+            # Apply warmup BEFORE optimizer step
+            unfreeze_transition_step, should_clear_params = apply_unfreeze_warmup(
+                opt, newly_unfrozen_params, unfreeze_transition_step, 
+                unfreeze_warmup_steps, step, freeze_schedule_config, 
+                log_interval, log
+            )
+            
+            if should_clear_params:
+                newly_unfrozen_params.clear()
+            
+            # Perform optimizer step
+            optimizer_step(opt, scaler, device)
 
-        with torch.no_grad():
-            upd_sq = 0.0
-            param_sq = 0.0
-            for p, prev in zip(trainable_params, param_before):
-                diff = p.data - prev
-                upd_sq += diff.pow(2).sum().item()
-                param_sq += p.data.pow(2).sum().item()
-            update_norm = math.sqrt(upd_sq)
-            param_norm = math.sqrt(param_sq)
-            update_ratio = update_norm / (param_norm + 1e-12)
-        del param_before
-        
-        # Step the learning rate scheduler AFTER optimizer step
-        if lr_scheduler:
-            lr_scheduler.step()
+            with torch.no_grad():
+                upd_sq = 0.0
+                param_sq = 0.0
+                for p, prev in zip(trainable_params, param_before):
+                    diff = p.data - prev
+                    upd_sq += diff.pow(2).sum().item()
+                    param_sq += p.data.pow(2).sum().item()
+                update_norm = math.sqrt(upd_sq)
+                param_norm = math.sqrt(param_sq)
+                update_ratio = update_norm / (param_norm + 1e-12)
+            del param_before
+            
+            # Step the learning rate scheduler AFTER optimizer step
+            if lr_scheduler:
+                lr_scheduler.step()
+        else:
+            # Set dummy values for metrics when not stepping
+            update_norm = 0.0
+            param_norm = 0.0
+            update_ratio = 0.0
         
         # Get the current learning rate
         lr_current = opt.param_groups[0]["lr"]
@@ -1503,12 +1540,13 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         
         # Update progress bar with current metrics
         pbar.set_postfix({
-            'loss': f'{loss.item():.4f}',
+            'loss': f'{losses["total"].item():.4f}',  # Show unscaled loss
             'lr': f'{lr_current:.1e}',
             'samples/s': f'{samples_per_second:.1f}',
             'eta': format_time((max_steps - step - 1) * avg_step_time),
             'tau': f'{current_tau:.2f}',
             'alpha': f'{current_alpha:.2f}',
+            'acc': f'{(step % gradient_accumulation_steps) + 1}/{gradient_accumulation_steps}' if gradient_accumulation_steps > 1 else '',
         })
 
         # Log metrics at specified interval or at the last step
@@ -1516,10 +1554,12 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
             # Only log to file/console at intervals to reduce clutter
             log_msg_parts = [
                 f"Step {step}/{max_steps-1}",
-                f"loss {loss.item():.4f}",
+                f"loss {losses['total'].item():.4f}",
                 f"lr {lr_current:.1e}",
                 f"{samples_per_second:.1f} samples/s",
             ]
+            if gradient_accumulation_steps > 1:
+                log_msg_parts.append(f"acc_step {(step % gradient_accumulation_steps) + 1}/{gradient_accumulation_steps}")
             log.info(" | ".join(log_msg_parts))
         if step % wandb_log_interval == 0 or step == max_steps - 1:
             # Get system metrics periodically (not every step to avoid overhead)
@@ -1528,7 +1568,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                 sys_metrics = get_system_metrics(device)
             
             metrics_to_log = {
-                "loss/total": loss.item(),
+                "loss/total": losses["total"].item(),  # Use unscaled loss for logging
                 "loss/mse": losses["mse"].item(),
                 "loss/lm": losses["lm"].item(),
                 "loss/kl": losses["kl"].item(),
@@ -1539,9 +1579,12 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                 "params/kl_w": kl_base_weight,
                 "params/entropy_w": entropy_weight,
                 "optim/lr": lr_current,
-                "grads/norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else float(grad_norm),
+                "grads/norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else (float(grad_norm) if grad_norm is not None else None),
                 "updates/norm": update_norm,
                 "updates/ratio": update_ratio,
+                # Gradient accumulation
+                "gradient_accumulation/is_update_step": int(is_accumulation_end),
+                "gradient_accumulation/accumulation_step": step % gradient_accumulation_steps,
                 # Performance metrics
                 "performance/steps_per_second": steps_per_second,
                 "performance/samples_per_second": samples_per_second,
@@ -1585,7 +1628,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                 "params/tau": current_tau,
                 "params/alpha": current_alpha,
                 "optim/lr": lr_current,
-                "grads/norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else float(grad_norm),
+                "grads/norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else (float(grad_norm) if grad_norm is not None else None),
             }
             
             checkpoint_manager.save_checkpoint(
@@ -1613,7 +1656,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                 "params/tau": current_tau,
                 "params/alpha": current_alpha,
                 "optim/lr": lr_current,
-                "grads/norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else float(grad_norm),
+                "grads/norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else (float(grad_norm) if grad_norm is not None else None),
             }
             
             checkpoint_manager.save_checkpoint(
@@ -1706,7 +1749,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                     "params/tau": current_tau,
                     "params/alpha": current_alpha,
                     "optim/lr": lr_current,
-                    "grads/norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else float(grad_norm),
+                    "grads/norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else (float(grad_norm) if grad_norm is not None else None),
                 }
                 
                 checkpoint_manager.save_checkpoint(
