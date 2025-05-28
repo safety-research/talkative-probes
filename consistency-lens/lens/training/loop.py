@@ -19,14 +19,16 @@ def train_step(  # noqa: D401
     tokenizer = None,  # Tokenizer for natural prefix
     cached_prefix_ids: torch.Tensor | None = None  # Pre-tokenized prefix to avoid re-tokenization
 ) -> Dict[str, torch.Tensor]:
-    """Composite loss (MSE + CE + KL) as per README formula.
+    """Composite loss (MSE + LM + KL + entropy) with flexible weighting.
 
-    The function still *greatly* simplifies the original plan (single token,
-    fixed layer / position) but gives us:
+    All loss components are always computed for monitoring purposes.
+    When a component's weight is 0, it's computed with torch.no_grad() to prevent gradient flow.
 
-        • Reconstruction MSE  (A ↦ Â) #just for monitoring! We do not train on this, as we need to allow for non-semantic shifts
-        • Language-model CE  (soft token distribution ↦ hard id)
-        • KL                  (LLM_orig logits(original) ↦ logits(Â + Δ))
+    Loss components:
+        • Reconstruction MSE  (A ↦ Â) - Direct activation reconstruction
+        • Language-model KL   (Decoder distribution ↦ Original LLM distribution) 
+        • Functional KL       (LLM logits(original) ↦ logits(Â + Δ))
+        • Entropy bonus       (Encourage/discourage token diversity)
     """
 
     dec: nn.Module = models["dec"]
@@ -66,78 +68,80 @@ def train_step(  # noqa: D401
     # linguistic knowledge, aiming to keep explanations on-manifold.
     # It computes KL(P_D || P_Orig) where P_D are predictions from the decoder on its own generated sequence,
     # and P_Orig are predictions from the original LLM on natural language tokens only.
-    if lm_w > 0 and orig is not None:
-        if T_text > 1:  # need a next-token target for KL divergence
-            # Logits from D_model for its own generation (predicting token t+1 given prefix 0..t from D)
-            # gen.raw_lm_logits are (B, T_text, V) - these correspond to generated natural language tokens only
-            d_model_pred_logits = gen.raw_lm_logits[:, :-1, :] # Shape: (B, T_text-1, V)
+    # Always compute for monitoring, but detach gradients when weight is 0
+    if orig is not None and T_text > 1:  # need a next-token target for KL divergence
+        # Compute LM loss, using no_grad if weight is 0
+        # Logits from D_model for its own generation (predicting token t+1 given prefix 0..t from D)
+        # gen.raw_lm_logits are (B, T_text, V) - these correspond to generated natural language tokens only
+        d_model_pred_logits = gen.raw_lm_logits[:, :-1, :] # Shape: (B, T_text-1, V)
 
-            # Create natural language conditioning for base model
-            if cached_prefix_ids is not None or (lm_loss_natural_prefix and tokenizer):
-                if cached_prefix_ids is not None:
-                    # Use cached prefix tokens
-                    B = gen.hard_token_ids.shape[0]
-                    natural_prefix_expanded = cached_prefix_ids.expand(B, -1).to(A.device)  # Shape: (B, prefix_len)
-                else:
-                    # Tokenize the natural language prefix (fallback if not cached)
-                    natural_prefix_ids = tokenizer(lm_loss_natural_prefix, add_special_tokens=False, return_tensors="pt").input_ids
-                    natural_prefix_ids = natural_prefix_ids.to(A.device)
-                    B = gen.hard_token_ids.shape[0]
-                    natural_prefix_expanded = natural_prefix_ids.expand(B, -1)  # Shape: (B, prefix_len)
-                
-                # Concatenate prefix with generated tokens
-                base_model_input = torch.cat([natural_prefix_expanded, gen.hard_token_ids], dim=1)  # Shape: (B, prefix_len + T_text)
-                
-                # Logits from LLM_orig_model conditioned on natural language prefix + generated tokens
-                # (predicting token t+1 given natural prefix + generated tokens 0..t)
-                with torch.no_grad(): # Ensure orig model isn't updated by this loss component
-                    orig_model_pred_logits_all_pos = orig.model(
-                        input_ids=base_model_input
-                    ).logits # Shape: (B, prefix_len + T_text, V)
-                
-                # Extract logits corresponding to predictions for the generated portion
-                # We want predictions for positions [prefix_len : prefix_len + T_text - 1]
-                prefix_len = natural_prefix_expanded.shape[1]
-                start_idx = prefix_len
-                end_idx = prefix_len + T_text - 1
-                orig_model_pred_logits = orig_model_pred_logits_all_pos[:, start_idx:end_idx, :] # Shape: (B, T_text-1, V)
+        # Create natural language conditioning for base model
+        if cached_prefix_ids is not None or (lm_loss_natural_prefix and tokenizer):
+            if cached_prefix_ids is not None:
+                # Use cached prefix tokens
+                B = gen.hard_token_ids.shape[0]
+                natural_prefix_expanded = cached_prefix_ids.expand(B, -1).to(A.device)  # Shape: (B, prefix_len)
             else:
-                # Fallback to old behavior if no natural prefix provided
-                # Extract only the natural language tokens (excluding prompts and activation embedding)
-                # gen.hard_token_ids contains only the generated natural language portion
-                natural_lang_tokens = gen.hard_token_ids # Shape: (B, T_text)
-                
-                # Logits from LLM_orig_model conditioned on natural language tokens only
-                # (predicting token t+1 given prefix 0..t of natural language)
-                with torch.no_grad(): # Ensure orig model isn't updated by this loss component
-                    orig_model_pred_logits_all_pos = orig.model(
-                        input_ids=natural_lang_tokens
-                    ).logits # Shape: (B, T_text, V)
-                # We need the logits that predict the same tokens as d_model_pred_logits
-                orig_model_pred_logits = orig_model_pred_logits_all_pos[:, :-1, :] # Shape: (B, T_text-1, V)
-
-            # log_P_D: Log-distribution from D_model (this is the distribution we are training, q).
-            # This will be the `input` to F.kl_div.
-            # These are log-probabilities for tokens 1...T_text-1.
-            log_P_D_log_probs = torch.nn.functional.log_softmax(d_model_pred_logits, dim=-1)
-
-            # P_Orig: Distribution from LLM_orig_model (this is the reference distribution, p).
-            # This will be the `target` for F.kl_div.
-            # These are probabilities for tokens 1...T_text-1 (since log_target=False for kl_div).
-            P_Orig_probs = torch.nn.functional.softmax(orig_model_pred_logits, dim=-1)
+                # Tokenize the natural language prefix (fallback if not cached)
+                natural_prefix_ids = tokenizer(lm_loss_natural_prefix, add_special_tokens=False, return_tensors="pt").input_ids
+                natural_prefix_ids = natural_prefix_ids.to(A.device)
+                B = gen.hard_token_ids.shape[0]
+                natural_prefix_expanded = natural_prefix_ids.expand(B, -1)  # Shape: (B, prefix_len)
             
-            # Reshape for kl_div to (N, C) where N = B * (T_text-1), C = V.
-            # This ensures 'batchmean' reduction averages over token positions.
-            V_lm = d_model_pred_logits.size(-1) # Vocabulary size for language model
-            log_P_D_log_probs_flat = log_P_D_log_probs.reshape(-1, V_lm)
-            P_Orig_probs_flat = P_Orig_probs.reshape(-1, V_lm)
+            # Concatenate prefix with generated tokens
+            base_model_input = torch.cat([natural_prefix_expanded, gen.hard_token_ids], dim=1)  # Shape: (B, prefix_len + T_text)
+            
+            # Logits from LLM_orig_model conditioned on natural language prefix + generated tokens
+            # (predicting token t+1 given natural prefix + generated tokens 0..t)
+            with torch.no_grad(): # Ensure orig model isn't updated by this loss component
+                orig_model_pred_logits_all_pos = orig.model(
+                    input_ids=base_model_input
+                ).logits # Shape: (B, prefix_len + T_text, V)
+            
+            # Extract logits corresponding to predictions for the generated portion
+            # We want predictions for positions [prefix_len : prefix_len + T_text - 1]
+            prefix_len = natural_prefix_expanded.shape[1]
+            start_idx = prefix_len
+            end_idx = prefix_len + T_text - 1
+            orig_model_pred_logits = orig_model_pred_logits_all_pos[:, start_idx:end_idx, :] # Shape: (B, T_text-1, V)
+        else:
+            # Fallback to old behavior if no natural prefix provided
+            # Extract only the natural language tokens (excluding prompts and activation embedding)
+            # gen.hard_token_ids contains only the generated natural language portion
+            natural_lang_tokens = gen.hard_token_ids # Shape: (B, T_text)
+            
+            # Logits from LLM_orig_model conditioned on natural language tokens only
+            # (predicting token t+1 given prefix 0..t of natural language)
+            with torch.no_grad(): # Ensure orig model isn't updated by this loss component
+                orig_model_pred_logits_all_pos = orig.model(
+                    input_ids=natural_lang_tokens
+                ).logits # Shape: (B, T_text, V)
+            # We need the logits that predict the same tokens as d_model_pred_logits
+            orig_model_pred_logits = orig_model_pred_logits_all_pos[:, :-1, :] # Shape: (B, T_text-1, V)
 
-            # loss_lm = KL(P_Orig || P_D)
-            # F.kl_div(input, target) with log_target=False computes sum(target * (log(target) - input)).
-            # Here, input is log_P_D_log_probs_flat (log q: log-probabilities from Decoder), 
-            # and target is P_Orig_probs_flat (p: probabilities from Original LLM).
-            # So it computes sum(P_Orig * (log P_Orig - log_P_D)), which is KL(P_Orig || P_D).
-            # This regularizes the Decoder's distribution (P_D) to match the Original LLM's distribution (P_Orig).
+        # log_P_D: Log-distribution from D_model (this is the distribution we are training, q).
+        # This will be the `input` to F.kl_div.
+        # These are log-probabilities for tokens 1...T_text-1.
+        log_P_D_log_probs = torch.nn.functional.log_softmax(d_model_pred_logits, dim=-1)
+
+        # P_Orig: Distribution from LLM_orig_model (this is the reference distribution, p).
+        # This will be the `target` for F.kl_div.
+        # These are probabilities for tokens 1...T_text-1 (since log_target=False for kl_div).
+        P_Orig_probs = torch.nn.functional.softmax(orig_model_pred_logits, dim=-1)
+        
+        # Reshape for kl_div to (N, C) where N = B * (T_text-1), C = V.
+        # This ensures 'batchmean' reduction averages over token positions.
+        V_lm = d_model_pred_logits.size(-1) # Vocabulary size for language model
+        log_P_D_log_probs_flat = log_P_D_log_probs.reshape(-1, V_lm)
+        P_Orig_probs_flat = P_Orig_probs.reshape(-1, V_lm)
+
+        # loss_lm = KL(P_Orig || P_D)
+        # F.kl_div(input, target) with log_target=False computes sum(target * (log(target) - input)).
+        # Here, input is log_P_D_log_probs_flat (log q: log-probabilities from Decoder), 
+        # and target is P_Orig_probs_flat (p: probabilities from Original LLM).
+        # So it computes sum(P_Orig * (log P_Orig - log_P_D)), which is KL(P_Orig || P_D).
+        # This regularizes the Decoder's distribution (P_D) to match the Original LLM's distribution (P_Orig).
+        if lm_w > 0:
             loss_lm = torch.nn.functional.kl_div(
                 input=log_P_D_log_probs_flat,    # log q: log-probabilities of P_D (Decoder model output)
                 target=P_Orig_probs_flat,        # p: probabilities of P_Orig (Original LLM target distribution)
@@ -145,16 +149,31 @@ def train_step(  # noqa: D401
                 log_target=False                 # P_Orig_probs_flat contains probabilities, not log-probabilities
             )
         else:
-            loss_lm = torch.tensor(0.0, device=A.device)
+            # Compute without gradients for monitoring
+            with torch.no_grad():
+                loss_lm = torch.nn.functional.kl_div(
+                    input=log_P_D_log_probs_flat,
+                    target=P_Orig_probs_flat,
+                    reduction='batchmean',
+                    log_target=False
+                )
     else:
         loss_lm = torch.tensor(0.0, device=A.device)
 
     # ------------------ entropy (optional regulariser) ---------------------
+    # Always compute for monitoring, but detach gradients when weight is 0
     logits = gen.raw_lm_logits  # (B, T, V) from Decoder – still useful for entropy
-    probs = torch.softmax(logits, dim=-1)
-    entropy = (-probs * torch.log(probs + 1e-9)).sum(-1).mean()
+    if ent_w != 0:  # Can be positive (reward entropy) or negative (penalize entropy)
+        probs = torch.softmax(logits, dim=-1)
+        entropy = (-probs * torch.log(probs + 1e-9)).sum(-1).mean()
+    else:
+        # Compute without gradients for monitoring
+        with torch.no_grad():
+            probs = torch.softmax(logits, dim=-1)
+            entropy = (-probs * torch.log(probs + 1e-9)).sum(-1).mean()
 
-    # ----------------------- KL -----------------------------------
+    # ----------------------- KL divergence between original and reconstructed model outputs -----------------------------------
+    # Always compute for monitoring, but detach gradients when weight is 0
     if orig is not None and all(k in batch for k in ("A_prime", "input_ids_A")):
         # Reconstruct A′ as well to get Δ
         Ap = batch["A_prime"].float()
@@ -252,13 +271,25 @@ def train_step(  # noqa: D401
         # F.kl_div expects input=log_Q, target=P (if log_target=False)
         # Original: kl_fn(softmax(logits_orig), log_softmax(logits_target))
         #   This leads to log(log_Q) which is log(negative) = NaN
-        # Corrected: kl_fn(log_softmax(logits_target), softmax(logits_orig))
-        loss_kl = kl_fn(#kl_fn expect log y_pred, y_true - this is what we ahve here
-            torch.log_softmax(logits_target, dim=-1),
-            torch.softmax(logits_orig, dim=-1)
-        ) # KL(P||Q) penalises Q for assigning mass where P has none; encourages Q to cover P.
+        # For D_KL(P || Q):
+        # P = softmax(logits_orig)
+        # Q = softmax(logits_target) 
+        # Compute KL loss, using no_grad if weight is 0
+        if kl_base > 0:
+            loss_kl = kl_fn(  # kl_fn expects log y_pred, y_true
+                torch.log_softmax(logits_target, dim=-1),
+                torch.softmax(logits_orig, dim=-1)
+            ) # KL(P||Q) penalises Q for assigning mass where P has none; encourages Q to cover P.
+        else:
+            # Compute without gradients for monitoring
+            with torch.no_grad():
+                loss_kl = kl_fn(
+                    torch.log_softmax(logits_target, dim=-1),
+                    torch.softmax(logits_orig, dim=-1)
+                )
     else:
-        raise ValueError("No KL loss")
+        # If we can't compute KL (missing data), set to 0 for monitoring
+        loss_kl = torch.tensor(0.0, device=A.device)
 
 
     # Total loss composition:

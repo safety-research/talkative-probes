@@ -376,8 +376,8 @@ def main() -> None:
                     out_A_batch = model(toks_A_batch, output_hidden_states=True)
                     out_Ap_batch = model(toks_Ap_batch, output_hidden_states=True)
             
-            hidden_A_batch = out_A_batch.hidden_states[layer_idx]
-            hidden_Ap_batch = out_Ap_batch.hidden_states[layer_idx]
+            hidden_A_batch = out_A_batch.hidden_states[layer_idx+1]
+            hidden_Ap_batch = out_Ap_batch.hidden_states[layer_idx+1]
             gpu_time = timer.end("gpu_inference")
             
             # CPU postprocessing
@@ -400,8 +400,8 @@ def main() -> None:
             token_pos_Ap_b = torch.maximum(token_pos_Ap_b, torch.zeros_like(token_pos_Ap_b))
             
             batch_indices = torch.arange(current_batch_actual_size, device=device)
-            A_selected_b = hidden_A_batch[batch_indices, token_pos_A_b].cpu().half()
-            Ap_selected_b = hidden_Ap_batch[batch_indices, token_pos_Ap_b].cpu().half()
+            A_selected_b = hidden_A_batch[batch_indices, token_pos_A_b].cpu()
+            Ap_selected_b = hidden_Ap_batch[batch_indices, token_pos_Ap_b].cpu()
             
             batch_samples_to_save = []
             for i in range(current_batch_actual_size):

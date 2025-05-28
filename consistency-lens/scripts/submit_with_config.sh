@@ -21,11 +21,12 @@ export TOKENIZERS_PARALLELISM=true
 # Parse arguments
 CONFIG_FILE="${1}"
 FORCE_REDUMP="${2:-false}"
-RESUME_CHECKPOINT="${3:-}"
-WANDB_RESUME_ID="${4:-}"
-NODELIST="${5:-330702be7061}"  # Default to current cluster node (only used for SLURM)
-NUM_GPUS="${6:-}"  # Number of GPUs to use (auto-detect if not specified)
-RUN_SUFFIX="${7:-}"  # Optional suffix to add to run name
+FORCE_RETOKENIZE="${3:-false}"
+RESUME_CHECKPOINT="${4:-}"
+WANDB_RESUME_ID="${5:-}"
+NODELIST="${6:-330702be7061}"  # Default to current cluster node (only used for SLURM)
+NUM_GPUS="${7:-}"  # Number of GPUs to use (auto-detect if not specified)
+RUN_SUFFIX="${8:-}"  # Optional suffix to add to run name
 
 # Check if config file provided
 if [ -z "$CONFIG_FILE" ]; then
@@ -461,9 +462,13 @@ if check_activations "$MODEL_NAME" "$LAYER" "$OUTPUT_DIR" && [ "$FORCE_REDUMP" !
     train_job=$(submit_train_job "$JOB_NAME" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE" "$RUN_SUFFIX")
 else
     echo -e "${YELLOW}Activations not found or force redump requested${NC}"
-    # Always pretokenize first for efficiency
-    pretok_job=$(submit_pretokenize_job "$CONFIG_FILE" "$JOB_NAME")
-    dump_job=$(submit_dump_job "$CONFIG_FILE" "$LAYER" "$JOB_NAME" "$pretok_job")
+    # Only force pretokenization if FORCE_RETOKENIZE is true
+    if [ "$FORCE_RETOKENIZE" = "true" ]; then
+        pretok_job=$(submit_pretokenize_job "$CONFIG_FILE" "$JOB_NAME")
+        dump_job=$(submit_dump_job "$CONFIG_FILE" "$LAYER" "$JOB_NAME" "$pretok_job")
+    else
+        dump_job=$(submit_dump_job "$CONFIG_FILE" "$LAYER" "$JOB_NAME")
+    fi
     train_job=$(submit_train_job "$JOB_NAME" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE" "$RUN_SUFFIX")
 fi
 
