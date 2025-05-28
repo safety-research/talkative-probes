@@ -13,3 +13,9 @@ parameters:
   gumbel_tau_schedule:
     constant_steps_before_linear_decay:
       values: ["2e", "4e", "6e", "8e"]
+
+command:
+- ${env}
+- ${interpreter}
+- ${program}
+- ${args_no_hyphens}
