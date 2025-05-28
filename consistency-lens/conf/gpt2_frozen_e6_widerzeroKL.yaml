@@ -24,8 +24,7 @@ trainable_components:
 
 alpha_schedule: 
   type: "constant"
-  value: 0.0
+  value: 1.0
 
-
-kl_base_weight: 1.0
-lm_weight: 0.0
+kl_base_weight: 0.0
+lm_weight: 1.0
