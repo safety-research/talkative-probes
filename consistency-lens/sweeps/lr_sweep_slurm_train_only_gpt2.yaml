@@ -5,9 +5,9 @@ metric:
   name: train/loss
 parameters:
   learning_rate:
-    values: [1.0e-3, 3.3e-4, 1.0e-4]
+    values: [1.0e-3, 3.3e-4]
   gradient_accumulation_steps:
-    values: [1, 2, 4, 8, 16]
+    values: [1,  4,  16]
   config:
     value: conf/gpt2_frozen_e6_wider1p0.yaml
   num_train_epochs:
