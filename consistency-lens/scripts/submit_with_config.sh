@@ -28,16 +28,28 @@ NODELIST="${6:-$(hostname)}"  # Default to current cluster node (only used for S
 NUM_GPUS="${7:-}"  # Number of GPUs to use (auto-detect if not specified)
 RUN_SUFFIX="${8:-}"  # Optional suffix to add to run name
 
+# Capture any additional arguments as Hydra overrides
+# Only shift if we have at least 8 arguments
+if [ $# -ge 8 ]; then
+    shift 8
+    HYDRA_OVERRIDES="$@"
+else
+    # Shift only the number of args we have
+    shift $#
+    HYDRA_OVERRIDES=""
+fi
+
 # Check if config file provided
 if [ -z "$CONFIG_FILE" ]; then
     echo "Error: No config file specified"
-    echo "Usage: $0 <config.yaml> [force-redump] [resume_checkpoint] [wandb_resume_id] [nodelist] [num_gpus] [run_suffix]"
+    echo "Usage: $0 <config.yaml> [force-redump] [resume_checkpoint] [wandb_resume_id] [nodelist] [num_gpus] [run_suffix] [hydra_overrides...]"
     echo ""
     echo "Examples:"
     echo "  $0 conf/simplestories_frozen.yaml                    # New experiment"
     echo "  $0 conf/gpt2_frozen.yaml force-redump                # Force re-dump activations"
     echo "  $0 conf/simplestories_frozen.yaml false outputs/ckpt_step_1000.pt  # Resume"
     echo "  $0 conf/simplestories_frozen.yaml false \"\" \"\" \"\" \"\" exp1  # Add suffix 'exp1'"
+    echo "  $0 conf/gpt2_frozen.yaml false \"\" \"\" \"\" \"\" \"\" learning_rate=1e-3 batch_size=16  # With Hydra overrides"
     echo ""
     echo "Available configs:"
     ls -1 conf/*.yaml | grep -E "(simplestories|gpt2)" | sed 's/^/  /'
@@ -323,6 +335,10 @@ submit_train_job() {
         if [ -n "$run_suffix" ]; then
             train_cmd="$train_cmd run_suffix=\"$run_suffix\""
         fi
+        # Add any additional Hydra overrides
+        if [ -n "$HYDRA_OVERRIDES" ]; then
+            train_cmd="$train_cmd $HYDRA_OVERRIDES"
+        fi
         
         # Submit job using array to avoid quote issues
         local sbatch_args=(
@@ -411,6 +427,10 @@ submit_train_job() {
         if [ -n "$run_suffix" ]; then
             train_cmd="$train_cmd run_suffix=\"$run_suffix\""
         fi
+        # Add any additional Hydra overrides
+        if [ -n "$HYDRA_OVERRIDES" ]; then
+            train_cmd="$train_cmd $HYDRA_OVERRIDES"
+        fi
         
         if eval "$train_cmd"; then
             echo -e "${GREEN}Training completed successfully${NC}" >&2
@@ -495,6 +515,9 @@ if [ -n "$WANDB_RESUME_ID" ]; then
 fi
 if [ -n "$RUN_SUFFIX" ]; then
     echo "Run Suffix: $RUN_SUFFIX"
+fi
+if [ -n "$HYDRA_OVERRIDES" ]; then
+    echo "Hydra Overrides: $HYDRA_OVERRIDES"
 fi
 echo ""
 echo "Job Pipeline:"
