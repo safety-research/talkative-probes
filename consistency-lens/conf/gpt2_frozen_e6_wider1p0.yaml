@@ -1,0 +1,27 @@
+# Configuration for GPT-2 Frozen Base Model Experiment
+# This config trains consistency lens on GPT-2 with the base model frozen throughout
+
+defaults:
+  - gpt2_frozen
+  - _self_
+
+# Training hyperparameters
+t_text: 16                        # Number of tokens to generate with the Decoder
+
+# Trainable components - FROZEN base model
+trainable_components:
+  decoder:
+    base_model: false                 # FROZEN throughout
+    projection_layer: true            # Train projection
+    eye_init: true
+    output_head: false                # Keep LM head frozen too
+  encoder:
+    base_model: false                 # FROZEN throughout
+    use_base_model: true
+    projection_layer: true            # Train projection
+    eye_init: true
+    output_layer: 6
+
+alpha_schedule: 
+  type: "constant"
+  value: 1.0
