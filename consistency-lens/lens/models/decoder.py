@@ -60,10 +60,11 @@ class Decoder(nn.Module):
             p.requires_grad_(cfg.base_model)
         self.config = cfg
         d_model = self.base.config.hidden_size
-        self.proj = nn.Linear(d_model, d_model, bias=False)
+        self.proj = nn.Linear(d_model, d_model, bias=True)
         # Initialize as identity matrix
         if cfg.eye_init:
             nn.init.eye_(self.proj.weight)
+            nn.init.zeros_(self.proj.bias)
             log.info("Initialized projection layer as identity matrix")
         # Configure trainability of the input projection layer
         for p in self.proj.parameters():
@@ -139,6 +140,7 @@ class Decoder(nn.Module):
         # Store old projection weights if requested
         if keep_projection:
             old_proj_weight = self.proj.weight.data.clone()
+            old_proj_bias = self.proj.bias.data.clone()
         
         # Load new base model
         self.base = AutoModelForCausalLM.from_pretrained(model_name_or_path)
@@ -169,11 +171,13 @@ class Decoder(nn.Module):
         # Restore projection weights if requested and dimensions match
         if keep_projection and self.proj.weight.shape == (d_model, d_model):
             self.proj.weight.data = old_proj_weight.to(old_dtype)
+            self.proj.bias.data = old_proj_bias.to(old_dtype)
         else:
             # Reinitialize projection if dimensions changed
-            self.proj = nn.Linear(d_model, d_model, bias=False).to(old_device)
+            self.proj = nn.Linear(d_model, d_model, bias=True).to(old_device)
             if self.config.eye_init:
                 nn.init.eye_(self.proj.weight)
+                nn.init.zeros_(self.proj.bias)
             for p in self.proj.parameters():
                 p.requires_grad_(self.config.projection_layer)
         

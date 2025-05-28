@@ -68,7 +68,7 @@ class Encoder(nn.Module):
             self.base = None
 
         # This is Proj_E_hidden_to_A from the README
-        self.proj = nn.Linear(d_model, d_model, bias=False)
+        self.proj = nn.Linear(d_model, d_model, bias=True)
         # Initialize as identity matrix
         if cfg.eye_init:
             nn.init.eye_(self.proj.weight)
