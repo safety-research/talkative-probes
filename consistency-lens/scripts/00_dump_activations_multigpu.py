@@ -583,15 +583,21 @@ def main(cfg: DictConfig) -> None:
                 )
                 toks_all = enc.input_ids.to(device)
                 toks_A_batch, toks_Ap_batch = toks_all.split(current_batch_actual_size, dim=0)
-            
+            use_autocast = False # TODO: make this a config option
+            from contextlib import nullcontext
+
             # Forward pass
+            if use_autocast:
+                autocastcontext = torch.amp.autocast('cuda', dtype=torch.bfloat16) # type: ignore
+            else:
+                autocastcontext = nullcontext()
             with torch.no_grad():
-                with torch.amp.autocast('cuda', dtype=torch.bfloat16): # type: ignore
+                with autocastcontext:
                     out_A_batch = model(toks_A_batch, output_hidden_states=True)
                     out_Ap_batch = model(toks_Ap_batch, output_hidden_states=True)
             
-            hidden_A_batch = out_A_batch.hidden_states[layer_idx]
-            hidden_Ap_batch = out_Ap_batch.hidden_states[layer_idx]
+            hidden_A_batch = out_A_batch.hidden_states[layer_idx+1]
+            hidden_Ap_batch = out_Ap_batch.hidden_states[layer_idx+1]
             
             # Calculate positions
             nonpad_len_A_b = (toks_A_batch != tokenizer.pad_token_id).sum(dim=1)
@@ -612,8 +618,8 @@ def main(cfg: DictConfig) -> None:
             token_pos_Ap_b = torch.maximum(token_pos_Ap_b, torch.zeros_like(token_pos_Ap_b)) # type: ignore
             
             batch_indices = torch.arange(current_batch_actual_size, device=device)
-            A_selected_b = hidden_A_batch[batch_indices, token_pos_A_b].cpu().half()
-            Ap_selected_b = hidden_Ap_batch[batch_indices, token_pos_Ap_b].cpu().half()
+            A_selected_b = hidden_A_batch[batch_indices, token_pos_A_b].cpu()
+            Ap_selected_b = hidden_Ap_batch[batch_indices, token_pos_Ap_b].cpu()
             
             # Save batch
             batch_samples_to_save = []

@@ -5,7 +5,7 @@ defaults:
   - config  # Inherit all settings from config.yaml
 
 # Override loss weights to use MSE instead of KL
-kl_base_weight: 0.0    # Disable KL divergence loss
+kl_base_weight: 0.0    # Disable KL divergence loss for training (still computed for monitoring)
 mse_weight: 1.0        # Enable MSE reconstruction loss
 
 # You may want to adjust other hyperparameters for MSE training:
@@ -17,9 +17,18 @@ mse_weight: 1.0        # Enable MSE reconstruction loss
 learning_rate: 1.0e-4  # Might need different LR for MSE
 lm_weight: 0.5         # Maybe reduce LM weight when using MSE
 
-# Note: MSE loss directly optimizes for reconstructing activations A → Â
-# This is different from KL which optimizes for functional preservation
-# Choose based on your specific goals:
-# - MSE: Direct activation reconstruction (may not preserve functionality)
+# Note: All loss components are always computed for monitoring in wandb/tensorboard,
+# even when their weights are 0. This allows you to track all metrics without
+# affecting gradients.
+
+# Loss component behaviors:
+# - MSE: Direct activation reconstruction (A → Â)
 # - KL: Functional behavior preservation (recommended by paper)
-# - Both: mse_weight > 0 and kl_base_weight > 0 (weighted combination)
+# - LM: Linguistic fluency regularization (Decoder distribution → Original LLM)
+# - Entropy: Token diversity control (positive = encourage, negative = discourage)
+
+# Common configurations:
+# 1. Pure MSE: mse_weight=1.0, kl_base_weight=0.0
+# 2. Pure KL: mse_weight=0.0, kl_base_weight=1.0 (default)
+# 3. Combined: mse_weight=0.5, kl_base_weight=0.5
+# 4. MSE + LM: mse_weight=1.0, kl_base_weight=0.0, lm_weight=1.0

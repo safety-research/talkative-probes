@@ -9,7 +9,7 @@ __all__ = ["OrigWrapper"]
 class OrigWrapper:
     """Thin wrapper around HF CausalLM that supports `forward_with_replacement`."""
 
-    def __init__(self, model_name: str, load_in_8bit: bool = True) -> None:
+    def __init__(self, model_name: str, load_in_8bit: bool = False) -> None:
         self.model = AutoModelForCausalLM.from_pretrained(model_name, load_in_8bit=load_in_8bit)
         self.model.eval()
         self._monkeypatch_reshape_inputs()

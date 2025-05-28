@@ -897,6 +897,9 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     
     # If resuming from checkpoint and no explicit wandb ID provided, try to load from checkpoint
     if args.resume and not wandb_run_id:
+        # Check if checkpoint file exists
+        if not os.path.exists(args.resume):
+            raise FileNotFoundError(f"Checkpoint file not found: {args.resume}")
         # Peek into checkpoint to get wandb run ID if available
         checkpoint_data = torch.load(args.resume, map_location='cpu')
         wandb_run_id = checkpoint_data.get('wandb_run_id')
@@ -1708,6 +1711,40 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         # Verbose sample printing
         verbose_config = config.get('verbose_samples', {})
         if verbose_config.get('enabled', False):
+            # In your evaluation loop, after getting a batch:
+            if verbose_config.get('enabled', False) and step == 0:  # Test on first batch
+                from lens.training.test import diagnose_activation_mismatch
+                diagnosis = diagnose_activation_mismatch(
+                    batch, orig, tokenizer, device, sample_idx=0, verbose=True
+                )
+                log.warning(diagnosis)
+                # In your training script, after loading a batch:
+                from lens.training.test import diagnose_activation_save_load
+                from lens.training.test import check_dataset_activation_format
+                print("\n=== Save/Load Cycle Diagnosis ===")
+                i = 0  # First sample
+                l = int(batch["layer_idx"][i].item())
+                p = int(batch["token_pos_A"][i].item())
+                input_ids = batch["input_ids_A"][i].unsqueeze(0).to(device)
+
+                save_load_results, fresh_act = diagnose_activation_save_load(orig, input_ids, l, p, device)
+                for k, v in save_load_results.items():
+                    print(f"{k}: {v}")
+
+                print("\n=== Dataset Format Check ===")
+                # Replace with your dataset path
+                check_dataset_activation_format("path/to/your/activation/dataset")
+
+                print("\n=== Batch Activation Info ===")
+                print(f"Batch A shape: {batch['A'].shape}")
+                print(f"Batch A dtype: {batch['A'].dtype}")
+                print(f"Batch A[0] norm: {batch['A'][0].norm().item():.4f}")
+                from lens.training.test import test_autocast_difference
+                test_autocast_difference(orig, input_ids, l, p, device)
+
+                from lens.training.test import check_layer_indexing
+                check_layer_indexing(orig, input_ids, device)
+
             should_print = False
             
             # Check if we should print based on flexible interval notation
