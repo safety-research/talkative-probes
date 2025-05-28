@@ -12,8 +12,26 @@ class OrigWrapper:
     def __init__(self, model_name: str, load_in_8bit: bool = False) -> None:
         self.model = AutoModelForCausalLM.from_pretrained(model_name, load_in_8bit=load_in_8bit)
         self.model.eval()
+        # Ensure base model parameters do not require gradients
+        for param in self.model.parameters():
+            param.requires_grad = False
         self._monkeypatch_reshape_inputs()
-        self.valid_layer = False
+
+    def _validate_layer_idx(self, layer_idx: int) -> None:
+        """Checks if the provided layer_idx is valid for the model."""
+        try:
+            num_hidden_layers = self.model.config.num_hidden_layers
+            if not (0 <= layer_idx < num_hidden_layers):
+                raise ValueError(
+                    f"Invalid layer index: {layer_idx}. "
+                    f"Model has {num_hidden_layers} layers (indices 0 to {num_hidden_layers - 1})."
+                )
+        except AttributeError as e:
+            # This handles cases where model.config.num_hidden_layers might not exist
+            raise ValueError(
+                "Could not determine the number of hidden layers from model.config. "
+                f"AttributeError when checking layer {layer_idx}: {e}"
+            ) from e
 
     def forward_with_replacement(
         self,
@@ -27,17 +45,7 @@ class OrigWrapper:
         """Forward pass where hidden_state[layer_idx][:, token_pos] is replaced."""
 
         from contextlib import nullcontext
-        if not self.valid_layer:
-            try:
-                if layer_idx < self.model.config.num_hidden_layers:
-                    self.valid_layer = True
-                else:
-                    self.valid_layer = False
-            except AttributeError as e:
-                self.valid_layer = False
-                raise ValueError(f"AttributeError for layer {layer_idx}: {e}") from e
-            if not self.valid_layer:
-                raise ValueError(f"Invalid layer index: {layer_idx}")
+        self._validate_layer_idx(layer_idx)
 
 
         grad_ctx = torch.no_grad() if no_grad else nullcontext()
@@ -86,7 +94,8 @@ class OrigWrapper:
             new_activations: Activations to insert of shape (B, hidden_dim)
             layer_idx: Layer index to replace activations at (same for all samples)
             token_positions: Position indices of shape (B,) where activations are replaced
-            no_grad: Whether to run in no_grad context
+            no_grad: Whether to run in no_grad context. Set to False if gradients
+                     w.r.t. new_activations are needed.
             
         Returns:
             Model output with activations replaced at specified positions
@@ -96,17 +105,7 @@ class OrigWrapper:
         """
 
         from contextlib import nullcontext
-        if not self.valid_layer:
-            try:
-                if layer_idx < self.model.config.num_hidden_layers:
-                    self.valid_layer = True
-                else:
-                    self.valid_layer = False
-            except AttributeError as e:
-                self.valid_layer = False
-                raise ValueError(f"AttributeError for layer {layer_idx}: {e}") from e
-            if not self.valid_layer:
-                raise ValueError(f"Invalid layer index: {layer_idx}")
+        self._validate_layer_idx(layer_idx) # Validate layer index at the beginning
 
         grad_ctx = torch.no_grad() if no_grad else nullcontext()
         with grad_ctx:
