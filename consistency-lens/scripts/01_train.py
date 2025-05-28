@@ -33,9 +33,20 @@ from lens.training.loop import train_step
 from torch.utils.data import DataLoader, random_split
 from lens.training.optim import param_groups
 from lens.utils.logging import init as log_init, log as log_metrics
-from lens.training.schedules import get_schedule_value, get_lr_scheduler
+from lens.training.schedules import (
+    get_schedule_value, 
+    get_lr_scheduler,
+    parse_schedule_config, 
+    parse_schedule_value, 
+    resolve_schedule_at_step,
+    get_schedule_value_for_logging,
+    get_autocast_context,
+    apply_gradient_scaling,
+    optimizer_step,
+    parse_schedule_to_steps,
+    spec_to_steps
+)
 from lens.utils.checkpoint_manager import CheckpointManager
-from lens.utils.schedule_parser import parse_schedule_config, parse_schedule_value, resolve_schedule_at_step
 import yaml
 from lens.evaluation.verbose_samples import process_and_print_verbose_batch_samples
 from lens.evaluation.wandb_logger import verbose_samples_logger
@@ -733,6 +744,71 @@ def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr
     return new_opt, trainable_params, newly_unfrozen_params
 
 
+def apply_unfreeze_warmup(opt, newly_unfrozen_params, unfreeze_transition_step, 
+                         unfreeze_warmup_steps, step, freeze_schedule_config, 
+                         log_interval, log):
+    """Apply learning rate warmup for newly unfrozen parameters.
+    
+    Returns:
+        tuple: (unfreeze_transition_step, should_clear_params) where should_clear_params
+               indicates if newly_unfrozen_params should be cleared
+    """
+    if unfreeze_transition_step is None or not newly_unfrozen_params:
+        return unfreeze_transition_step, False
+        
+    steps_since_unfreeze = step - unfreeze_transition_step
+    
+    if steps_since_unfreeze < unfreeze_warmup_steps:
+        # Calculate warmup factor (linear warmup from start_factor to 1.0)
+        warmup_start_factor = freeze_schedule_config.get('unfreeze_warmup_start_factor', 0.01)
+        warmup_factor = warmup_start_factor + (1.0 - warmup_start_factor) * (steps_since_unfreeze / unfreeze_warmup_steps)
+        
+        # Apply warmup factor to newly unfrozen parameters
+        for group_idx, group in enumerate(opt.param_groups):
+            # Store the current LR as the base for warmup if not already stored
+            if not hasattr(opt, '_warmup_base_lrs'):
+                opt._warmup_base_lrs = {}
+            if group_idx not in opt._warmup_base_lrs:
+                opt._warmup_base_lrs[group_idx] = group['lr']
+            
+            # Apply warmup only to newly unfrozen params in this group
+            group_has_unfrozen = False
+            for param in group['params']:
+                if param in newly_unfrozen_params:
+                    group_has_unfrozen = True
+                    break
+            
+            if group_has_unfrozen:
+                # Apply warmup factor to entire group if it contains any newly unfrozen params
+                group['lr'] = opt._warmup_base_lrs[group_idx] * warmup_factor
+        
+        # Log warmup progress
+        if step % log_interval == 0:
+            log.info(f"Unfreeze warmup: step {steps_since_unfreeze}/{unfreeze_warmup_steps}, factor {warmup_factor:.3f}")
+        
+        # Log metrics
+        log_metrics({
+            "freeze_schedule/warmup_factor": warmup_factor,
+            "freeze_schedule/warmup_steps_remaining": unfreeze_warmup_steps - steps_since_unfreeze,
+        }, step=step)
+        
+        return unfreeze_transition_step, False
+        
+    elif steps_since_unfreeze == unfreeze_warmup_steps:
+        # Warmup complete, restore base learning rates
+        if hasattr(opt, '_warmup_base_lrs'):
+            for group_idx, group in enumerate(opt.param_groups):
+                if group_idx in opt._warmup_base_lrs:
+                    group['lr'] = opt._warmup_base_lrs[group_idx]
+            delattr(opt, '_warmup_base_lrs')
+        
+        log.info("Unfreeze warmup complete - all parameters now at full learning rate")
+        # Clear the newly unfrozen params set as warmup is done
+        return None, True  # Clear unfreeze_transition_step and signal to clear params
+    
+    return unfreeze_transition_step, False
+
+
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
 def main(cfg: DictConfig) -> None:  # noqa: D401
     """Hydra-powered entry point replacing the legacy argparse-based CLI.
@@ -815,14 +891,18 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     learning_rate = config['learning_rate']
     t_text = config['t_text']
     wandb_config = config.get('wandb', {}) # Ensure wandb_config is a dict
-    wandb_log_interval = config['wandb_log_interval']
+    # Parse intervals with flexible notation
+    wandb_log_interval = parse_schedule_to_steps(config['wandb_log_interval'], steps_per_epoch)
+    log_interval = parse_schedule_to_steps(config['log_interval'], steps_per_epoch)
+    
+    if log_interval <= 0:
+        raise ValueError(f"log_interval must be positive, got {config['log_interval']}")
+    if wandb_log_interval <= 0:
+        raise ValueError(f"wandb_log_interval must be positive, got {config['wandb_log_interval']}")
+    
     lm_weight = config['lm_weight']
     kl_base_weight = config['kl_base_weight']
     entropy_weight = config['entropy_weight']
-    log_interval = config['log_interval']
-    if log_interval <= 0:
-        log.warning(f"log_interval must be positive, got {log_interval}. Setting to 100.")
-        log_interval = 100
     
     # val_interval is used by the training loop, not dataset prep, but initialized here from config
     val_interval_str = config['val_interval']
@@ -880,7 +960,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     config['checkpoint'] = checkpoint_config
     
     # Initialize checkpoint manager with updated config
-    checkpoint_manager = CheckpointManager(config, log)
+    checkpoint_manager = CheckpointManager(config, log, steps_per_epoch)
     
     # Log run information
     log.info("=" * 60)
@@ -1182,21 +1262,26 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     # GradScaler enabled only when using CUDA
     scaler = GradScaler(enabled=(device.type == "cuda"))
     
-    # Create learning rate scheduler
+    # Create learning rate scheduler  
     lr_scheduler_config = config.get('lr_scheduler', {'type': 'constant'})
-    lr_scheduler = get_lr_scheduler(opt, lr_scheduler_config, max_steps)
+    scheduler_last_epoch = -1  # Default for new training
+    resume_epoch = 0  # Default for new training
+    lr_scheduler = get_lr_scheduler(opt, lr_scheduler_config, max_steps, 
+                                    last_epoch=scheduler_last_epoch,
+                                    current_epoch=0, steps_per_epoch=steps_per_epoch)
     if lr_scheduler:
         log.info(f"Using LR scheduler: {lr_scheduler_config['type']}")
         if lr_scheduler_config.get('warmup_steps', 0) > 0:
             log.info(f"  with {lr_scheduler_config['warmup_steps']} warmup steps")
 
     start_step = 0
-    scheduler_last_epoch = -1
     if args.resume:
         # Checkpoint stores the last completed step
         rec = checkpoint_manager.load_checkpoint(args.resume, models={"dec": dec, "enc": enc}, optimizer=opt, map_location=device)
         start_step = int(rec.get("step", -1)) + 1 # Resume from the next step
-        scheduler_last_epoch = int(rec.get("step", -1))  # Scheduler uses last completed step
+        resume_epoch = start_step // steps_per_epoch if steps_per_epoch > 0 else 0
+        # For LR scheduler, last_epoch should be the step count (it's misnamed in PyTorch)
+        scheduler_last_epoch = int(rec.get("step", -1))
         log.info(f"Resuming training from step {start_step}")
         
         # Load scheduler state if available
@@ -1206,7 +1291,10 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                 log.info("Loaded scheduler state from checkpoint")
             except Exception as e:
                 log.warning(f"Failed to load scheduler state: {e}. Creating new scheduler.")
-                lr_scheduler = get_lr_scheduler(opt, lr_scheduler_config, max_steps, last_epoch=scheduler_last_epoch)
+                lr_scheduler = get_lr_scheduler(opt, lr_scheduler_config, max_steps, 
+                                                last_epoch=scheduler_last_epoch,
+                                                current_epoch=resume_epoch, 
+                                                steps_per_epoch=steps_per_epoch)
 
     epoch_decoded_tokens = []  # Initialize accumulator for decoded tokens per epoch
     step_iter = iter(train_loader)
@@ -1232,6 +1320,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         log.info(f"Cached natural language prefix: '{lm_loss_natural_prefix}' ({cached_prefix_ids.shape[1]} tokens)")
     
     # Track freeze schedule state
+    start_epoch = start_step // steps_per_epoch if steps_per_epoch > 0 else 0
     non_adapters_frozen = freeze_schedule_enabled and not should_unfreeze_any_component(start_step, start_epoch)
     
     # Track warmup for newly unfrozen parameters
@@ -1273,7 +1362,10 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
             
             # Recreate LR scheduler with new optimizer
             if lr_scheduler:
-                lr_scheduler = get_lr_scheduler(opt, lr_scheduler_config, max_steps, last_epoch=step-1)
+                lr_scheduler = get_lr_scheduler(opt, lr_scheduler_config, max_steps, 
+                                                last_epoch=step-1,
+                                                current_epoch=current_epoch,
+                                                steps_per_epoch=steps_per_epoch)
             
             # Update frozen state
             non_adapters_frozen = False
@@ -1288,7 +1380,8 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
             }, step=step)
         
         step_start_time = time.time()
-        current_epoch_num = (step // steps_per_epoch) + 1 if steps_per_epoch > 0 else 1
+        current_epoch = step // steps_per_epoch if steps_per_epoch > 0 else 0  # 0-based epoch
+        current_epoch_num = current_epoch + 1  # 1-based epoch for display
         epoch_just_finished = False
         
         try:
@@ -1338,14 +1431,11 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
 
         opt.zero_grad(set_to_none=True)
 
-        if device.type == "cuda":
-            preferred_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-            cast_ctx = autocast(device_type="cuda", dtype=preferred_dtype)
-        else:
-            cast_ctx = nullcontext()
-        with cast_ctx:
-            current_tau = get_schedule_value(config['gumbel_tau_schedule'], step, max_steps)
-            current_alpha = get_schedule_value(config['alpha_schedule'], step, max_steps)
+        with get_autocast_context(device):
+            current_tau = get_schedule_value(config['gumbel_tau_schedule'], step, max_steps,
+                                            current_epoch, steps_per_epoch)
+            current_alpha = get_schedule_value(config['alpha_schedule'], step, max_steps,
+                                              current_epoch, steps_per_epoch)
 
             losses = train_step(
                 batch,
@@ -1369,118 +1459,23 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
             if "decoded_tokens_batch" in losses:
                 epoch_decoded_tokens.extend(losses["decoded_tokens_batch"].tolist())
 
-        if device.type == "cuda":
-            scaler.scale(loss).backward()
-            scaler.unscale_(opt)
-            grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, config['grad_clip'])
-            param_before = [p.detach().clone() for p in trainable_params]
-            
-            # Apply warmup BEFORE optimizer step
-            if unfreeze_transition_step is not None and newly_unfrozen_params:
-                steps_since_unfreeze = step - unfreeze_transition_step
-                if steps_since_unfreeze < unfreeze_warmup_steps:
-                    # Calculate warmup factor (linear warmup from start_factor to 1.0)
-                    warmup_start_factor = freeze_schedule_config.get('unfreeze_warmup_start_factor', 0.01)
-                    warmup_factor = warmup_start_factor + (1.0 - warmup_start_factor) * (steps_since_unfreeze / unfreeze_warmup_steps)
-                    
-                    # Apply warmup factor to newly unfrozen parameters
-                    for group_idx, group in enumerate(opt.param_groups):
-                        # Store the current LR as the base for warmup if not already stored
-                        if not hasattr(opt, '_warmup_base_lrs'):
-                            opt._warmup_base_lrs = {}
-                        if group_idx not in opt._warmup_base_lrs:
-                            opt._warmup_base_lrs[group_idx] = group['lr']
-                        
-                        # Apply warmup only to newly unfrozen params in this group
-                        group_has_unfrozen = False
-                        for param in group['params']:
-                            if param in newly_unfrozen_params:
-                                group_has_unfrozen = True
-                                break
-                        
-                        if group_has_unfrozen:
-                            # Apply warmup factor to entire group if it contains any newly unfrozen params
-                            group['lr'] = opt._warmup_base_lrs[group_idx] * warmup_factor
-                    
-                    # Log warmup progress
-                    if step % log_interval == 0:
-                        log.info(f"Unfreeze warmup: step {steps_since_unfreeze}/{unfreeze_warmup_steps}, factor {warmup_factor:.3f}")
-                    
-                    # Log metrics
-                    log_metrics({
-                        "freeze_schedule/warmup_factor": warmup_factor,
-                        "freeze_schedule/warmup_steps_remaining": unfreeze_warmup_steps - steps_since_unfreeze,
-                    }, step=step)
-                elif steps_since_unfreeze == unfreeze_warmup_steps:
-                    # Warmup complete, restore base learning rates
-                    if hasattr(opt, '_warmup_base_lrs'):
-                        for group_idx, group in enumerate(opt.param_groups):
-                            if group_idx in opt._warmup_base_lrs:
-                                group['lr'] = opt._warmup_base_lrs[group_idx]
-                        delattr(opt, '_warmup_base_lrs')
-                    
-                    log.info("Unfreeze warmup complete - all parameters now at full learning rate")
-                    # Clear the newly unfrozen params set as warmup is done
-                    newly_unfrozen_params.clear()
-                    unfreeze_transition_step = None  # Clear this to stop warmup logic
-            
-            scaler.step(opt)
-            scaler.update()
-        else:
-            loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, config['grad_clip'])
-            param_before = [p.detach().clone() for p in trainable_params]
-            
-            # Apply warmup BEFORE optimizer step (same logic as above)
-            if unfreeze_transition_step is not None and newly_unfrozen_params:
-                steps_since_unfreeze = step - unfreeze_transition_step
-                if steps_since_unfreeze < unfreeze_warmup_steps:
-                    # Calculate warmup factor (linear warmup from start_factor to 1.0)
-                    warmup_start_factor = freeze_schedule_config.get('unfreeze_warmup_start_factor', 0.01)
-                    warmup_factor = warmup_start_factor + (1.0 - warmup_start_factor) * (steps_since_unfreeze / unfreeze_warmup_steps)
-                    
-                    # Apply warmup factor to newly unfrozen parameters
-                    for group_idx, group in enumerate(opt.param_groups):
-                        # Store the current LR as the base for warmup if not already stored
-                        if not hasattr(opt, '_warmup_base_lrs'):
-                            opt._warmup_base_lrs = {}
-                        if group_idx not in opt._warmup_base_lrs:
-                            opt._warmup_base_lrs[group_idx] = group['lr']
-                        
-                        # Apply warmup only to newly unfrozen params in this group
-                        group_has_unfrozen = False
-                        for param in group['params']:
-                            if param in newly_unfrozen_params:
-                                group_has_unfrozen = True
-                                break
-                        
-                        if group_has_unfrozen:
-                            # Apply warmup factor to entire group if it contains any newly unfrozen params
-                            group['lr'] = opt._warmup_base_lrs[group_idx] * warmup_factor
-                    
-                    # Log warmup progress
-                    if step % log_interval == 0:
-                        log.info(f"Unfreeze warmup: step {steps_since_unfreeze}/{unfreeze_warmup_steps}, factor {warmup_factor:.3f}")
-                    
-                    # Log metrics
-                    log_metrics({
-                        "freeze_schedule/warmup_factor": warmup_factor,
-                        "freeze_schedule/warmup_steps_remaining": unfreeze_warmup_steps - steps_since_unfreeze,
-                    }, step=step)
-                elif steps_since_unfreeze == unfreeze_warmup_steps:
-                    # Warmup complete, restore base learning rates
-                    if hasattr(opt, '_warmup_base_lrs'):
-                        for group_idx, group in enumerate(opt.param_groups):
-                            if group_idx in opt._warmup_base_lrs:
-                                group['lr'] = opt._warmup_base_lrs[group_idx]
-                        delattr(opt, '_warmup_base_lrs')
-                    
-                    log.info("Unfreeze warmup complete - all parameters now at full learning rate")
-                    # Clear the newly unfrozen params set as warmup is done
-                    newly_unfrozen_params.clear()
-                    unfreeze_transition_step = None  # Clear this to stop warmup logic
-            
-            opt.step()
+        # Apply gradient scaling and clipping
+        grad_norm, param_before = apply_gradient_scaling(
+            loss, opt, scaler, trainable_params, config['grad_clip'], device
+        )
+        
+        # Apply warmup BEFORE optimizer step
+        unfreeze_transition_step, should_clear_params = apply_unfreeze_warmup(
+            opt, newly_unfrozen_params, unfreeze_transition_step, 
+            unfreeze_warmup_steps, step, freeze_schedule_config, 
+            log_interval, log
+        )
+        
+        if should_clear_params:
+            newly_unfrozen_params.clear()
+        
+        # Perform optimizer step
+        optimizer_step(opt, scaler, device)
 
         with torch.no_grad():
             upd_sq = 0.0
@@ -1650,9 +1645,11 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                 for vbatch in val_loader:
                     vbatch = {k: v.to(device) for k, v in vbatch.items()}
                     sch_args = {
-                        "tau": get_schedule_value(config['gumbel_tau_schedule'], step, max_steps),
+                        "tau": get_schedule_value(config['gumbel_tau_schedule'], step, max_steps,
+                                                 current_epoch, steps_per_epoch),
                         "T_text": t_text,
-                        "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps),
+                        "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps,
+                                                   current_epoch, steps_per_epoch),
                         "lm_weight": lm_weight,
                         "kl_base_weight": kl_base_weight,
                         "entropy_weight": entropy_weight,
@@ -1815,9 +1812,11 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                 
                 # Get schedule arguments
                 sch_args = {
-                    "tau": get_schedule_value(config['gumbel_tau_schedule'], step, max_steps),
+                    "tau": get_schedule_value(config['gumbel_tau_schedule'], step, max_steps,
+                                             current_epoch, steps_per_epoch),
                     "T_text": t_text,
-                    "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps),
+                    "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps,
+                                               current_epoch, steps_per_epoch),
                     "lm_weight": lm_weight,
                     "kl_base_weight": kl_base_weight,
                     "entropy_weight": entropy_weight,

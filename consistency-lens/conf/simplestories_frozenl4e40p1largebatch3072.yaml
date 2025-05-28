@@ -16,7 +16,14 @@ alpha_schedule:
 
 learning_rate: 1.0e-3
 
+num_train_epochs: 10
 
+gumbel_tau_schedule:
+  type: "linear_decay_after_constant"  # Options: constant, linear_decay, cosine_anneal, exponential_decay, linear_decay_after_constant
+  constant_steps_before_linear_decay: "2e"  # Duration of constant phase - Examples: "5000s", "2e", "10000steps", "5epochs"
+  start_value: 1.0
+  end_value: 0.1
+  num_steps: "-1" 
 
 
 # Ensure base model stays frozen

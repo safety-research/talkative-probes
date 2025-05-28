@@ -1,0 +1,15 @@
+program: scripts/wandb_sweep_train_only.py
+method: grid
+metric:
+  goal: minimize
+  name: train/loss
+parameters:
+  learning_rate:
+    values: [1.0e-3, 5.0e-4, 2.5e-4, 1.0e-4]
+  config:
+    value: conf/simplestories_frozenl4e40p1largebatch3072.yaml
+  num_train_epochs:
+    value: 10
+  gumbel_tau_schedule:
+    constant_steps_before_linear_decay:
+      values: ["2e", "4e", "6e", "8e"]
