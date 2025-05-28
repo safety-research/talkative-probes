@@ -1392,7 +1392,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                     most_common_token_id, most_common_count = token_counts.most_common(1)[0]
                     total_tokens_in_epoch = len(epoch_decoded_tokens)
                     frequency = most_common_count / total_tokens_in_epoch
-                    if step % config['log_interval'] == 0:
+                    if step % log_interval == 0:
                         log.info(
                             f"Epoch {current_epoch_num} most common token: ID {most_common_token_id} = `{tokenizer.decode([most_common_token_id])}` "
                             f"(Count: {most_common_count}/{total_tokens_in_epoch}, Freq: {frequency:.4f})"
