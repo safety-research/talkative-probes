@@ -891,31 +891,9 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     learning_rate = config['learning_rate']
     t_text = config['t_text']
     wandb_config = config.get('wandb', {}) # Ensure wandb_config is a dict
-    # Parse intervals with flexible notation
-    wandb_log_interval = parse_schedule_to_steps(config['wandb_log_interval'], steps_per_epoch)
-    log_interval = parse_schedule_to_steps(config['log_interval'], steps_per_epoch)
-    
-    if log_interval <= 0:
-        raise ValueError(f"log_interval must be positive, got {config['log_interval']}")
-    if wandb_log_interval <= 0:
-        raise ValueError(f"wandb_log_interval must be positive, got {config['wandb_log_interval']}")
-    
     lm_weight = config['lm_weight']
     kl_base_weight = config['kl_base_weight']
     entropy_weight = config['entropy_weight']
-    
-    # val_interval is used by the training loop, not dataset prep, but initialized here from config
-    val_interval_str = config['val_interval']
-    try:
-        val_interval_spec = parse_schedule_value(val_interval_str)
-        # Convert to steps for legacy compatibility with the validation check
-        if val_interval_spec.unit == "epochs":
-            val_interval = val_interval_spec.value * steps_per_epoch
-        else:
-            val_interval = val_interval_spec.value
-    except Exception as e:
-        print(f"Warning: Failed to parse val_interval '{val_interval_str}': {e}")
-        val_interval = int(val_interval_str) if isinstance(val_interval_str, str) else val_interval_str
 
     # Extract trainable_components and custom_lr_multipliers from config
     trainable_components_config = config.get('trainable_components', {})
@@ -958,9 +936,6 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     run_checkpoint_dir = base_checkpoint_dir / run_name
     checkpoint_config['output_dir'] = str(run_checkpoint_dir)
     config['checkpoint'] = checkpoint_config
-    
-    # Initialize checkpoint manager with updated config
-    checkpoint_manager = CheckpointManager(config, log, steps_per_epoch)
     
     # Log run information
     log.info("=" * 60)
@@ -1064,7 +1039,27 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         else:
             # Neither epochs nor steps specified
             raise ValueError("Either 'num_train_epochs' or 'max_train_steps' must be > 0 in config")
-
+    
+    # Parse intervals with flexible notation (now that we have steps_per_epoch)
+    wandb_log_interval = parse_schedule_to_steps(config['wandb_log_interval'], steps_per_epoch)
+    log_interval = parse_schedule_to_steps(config['log_interval'], steps_per_epoch)
+    
+    if log_interval <= 0:
+        raise ValueError(f"log_interval must be positive, got {config['log_interval']}")
+    if wandb_log_interval <= 0:
+        raise ValueError(f"wandb_log_interval must be positive, got {config['wandb_log_interval']}")
+    
+    # val_interval is used by the training loop
+    val_interval_str = config['val_interval']
+    try:
+        val_interval_spec = parse_schedule_value(val_interval_str)
+        val_interval = spec_to_steps(val_interval_spec, steps_per_epoch)
+    except Exception as e:
+        print(f"Warning: Failed to parse val_interval '{val_interval_str}': {e}")
+        val_interval = int(val_interval_str) if isinstance(val_interval_str, str) else val_interval_str
+    
+    # Initialize checkpoint manager with updated config (now that we have steps_per_epoch)
+    checkpoint_manager = CheckpointManager(config, log, steps_per_epoch)
 
     log.info("Starting training run – Model: %s, Activations: %s", model_name, activation_dir)
     log.info(
@@ -1430,8 +1425,8 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
 
 
         opt.zero_grad(set_to_none=True)
-
-        with get_autocast_context(device):
+        ctx = get_autocast_context(device)
+        with ctx:
             current_tau = get_schedule_value(config['gumbel_tau_schedule'], step, max_steps,
                                             current_epoch, steps_per_epoch)
             current_alpha = get_schedule_value(config['alpha_schedule'], step, max_steps,
