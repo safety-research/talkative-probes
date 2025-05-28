@@ -9,11 +9,12 @@ defaults:
 layer_l: 4
 # Override specific settings for this experiment
 t_text: 4                     # Width-10 explanations as requested
-batch_size: 4096
+batch_size: 3072 
 
 alpha_schedule:
     value: 0.1
 
+learning_rate: 1.0e-3
 
 
 

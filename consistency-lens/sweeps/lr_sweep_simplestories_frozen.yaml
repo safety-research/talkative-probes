@@ -1,0 +1,17 @@
+program: scripts/submit_with_config.sh
+method: grid
+metric:
+  goal: minimize
+  name: train/loss
+parameters:
+  learning_rate:
+    values: [1.0e-3, 7.0e-4, 5.0e-4, 3.0e-4, 1.0e-4, 7.0e-5, 5.0e-5, 1.0e-5]
+
+# Use the base config and override learning_rate
+command:
+  - ${env}
+  - ${program}
+  - config=conf/simplestories_frozenl4e40p1largebatch3072.yaml
+  - learning_rate=${learning_rate}
+  - run_suffix=lr_${learning_rate} 
+  - num_train_epochs=5

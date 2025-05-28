@@ -912,8 +912,36 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         'project': wandb_config.get('project', 'consistency-lens'),
         'name': run_name,  # Use our generated run name
         'config': config,
-        'mode': wandb_config.get('mode', 'online')
+        'mode': wandb_config.get('mode', 'online'),
+        'tags': []  # Initialize tags list
     }
+    
+    # Add SLURM environment info to config if available
+    slurm_job_id = os.environ.get('SLURM_JOB_ID', None)
+    if slurm_job_id:
+        slurm_info = {
+            'slurm_job_id': slurm_job_id,
+            'slurm_job_name': os.environ.get('SLURM_JOB_NAME', 'unknown'),
+            'slurm_nodelist': os.environ.get('SLURM_NODELIST', 'unknown'),
+            'slurm_array_task_id': os.environ.get('SLURM_ARRAY_TASK_ID', None),
+        }
+        wandb_init_kwargs['config']['slurm_info'] = slurm_info
+        wandb_init_kwargs['tags'].append(f"slurm-{slurm_job_id}")
+        wandb_init_kwargs['tags'].append(f"node-{slurm_info['slurm_nodelist']}")
+        log.info(f"Running under SLURM job ID: {slurm_job_id} on nodes: {slurm_info['slurm_nodelist']}")
+    
+    # Add dataset and model tags
+    if dataset_info.get('dataset'):
+        wandb_init_kwargs['tags'].append(f"dataset-{dataset_info['dataset']}")
+    if dataset_info.get('model_name'):
+        model_tag = dataset_info['model_name'].replace('/', '-')
+        wandb_init_kwargs['tags'].append(f"model-{model_tag}")
+    if dataset_info.get('layer') is not None:
+        wandb_init_kwargs['tags'].append(f"layer-{dataset_info['layer']}")
+    
+    # Add config name tag
+    if config_name and config_name != 'config':
+        wandb_init_kwargs['tags'].append(f"config-{config_name}")
     
     # Add resume parameters if we have a run ID
     if wandb_run_id:

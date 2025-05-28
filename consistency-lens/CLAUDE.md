@@ -119,31 +119,41 @@ For HPC clusters with SLURM, use the provided submission scripts that handle dep
 The `submit_with_config.sh` script now works on both SLURM and non-SLURM environments:
 
 ```bash
-# Submit new experiments with automatic activation dumping - just pass a config!
-./scripts/submit_with_config.sh conf/simplestories_frozen.yaml      # SimpleStories frozen
-./scripts/submit_with_config.sh conf/simplestories_unfreeze.yaml    # SimpleStories progressive unfreeze
-./scripts/submit_with_config.sh conf/gpt2_frozen.yaml               # GPT-2 with OpenWebText
-./scripts/submit_with_config.sh conf/gpt2_unfreeze.yaml             # GPT-2 with OpenWebText + unfreeze
-./scripts/submit_with_config.sh conf/gpt2_pile_frozen.yaml          # GPT-2 with The Pile
-./scripts/submit_with_config.sh conf/gpt2_pile_unfreeze.yaml        # GPT-2 with The Pile + unfreeze
+# Submit new experiments with automatic activation dumping
+# Uses Hydra-style key=value syntax for all arguments
+./scripts/submit_with_config.sh config=conf/simplestories_frozen.yaml      # SimpleStories frozen
+./scripts/submit_with_config.sh config=conf/simplestories_unfreeze.yaml    # SimpleStories progressive unfreeze
+./scripts/submit_with_config.sh config=conf/gpt2_frozen.yaml               # GPT-2 with OpenWebText
+./scripts/submit_with_config.sh config=conf/gpt2_unfreeze.yaml             # GPT-2 with OpenWebText + unfreeze
+./scripts/submit_with_config.sh config=conf/gpt2_pile_frozen.yaml          # GPT-2 with The Pile
+./scripts/submit_with_config.sh config=conf/gpt2_pile_unfreeze.yaml        # GPT-2 with The Pile + unfreeze
 
 # Resume from checkpoint (find checkpoint in outputs/ directory)
-./scripts/submit_with_config.sh conf/simplestories_frozen.yaml false outputs/checkpoints/run_name/checkpoint_step5000.pt
+./scripts/submit_with_config.sh config=conf/simplestories_frozen.yaml \
+    resume_checkpoint=outputs/checkpoints/run_name/checkpoint_step5000.pt
 
 # Resume with specific WandB run ID (get ID from WandB dashboard)
-./scripts/submit_with_config.sh conf/simplestories_frozen.yaml false outputs/checkpoints/run_name/checkpoint_step5000.pt abc123xyz
+./scripts/submit_with_config.sh config=conf/simplestories_frozen.yaml \
+    resume_checkpoint=outputs/checkpoints/run_name/checkpoint_step5000.pt \
+    wandb_resume_id=abc123xyz
 
-# Use specific SLURM nodes (optional - defaults to 330702be7061, SLURM only)
-./scripts/submit_with_config.sh conf/gpt2_frozen.yaml false "" "" node001,node002
+# Use specific SLURM nodes (optional - defaults to current node, SLURM only)
+./scripts/submit_with_config.sh config=conf/gpt2_frozen.yaml nodelist=node001,node002
 
 # Specify number of GPUs for non-SLURM environments (auto-detected if not specified)
-./scripts/submit_with_config.sh conf/gpt2_frozen.yaml false "" "" "" 4
+./scripts/submit_with_config.sh config=conf/gpt2_frozen.yaml num_gpus=4
 
 # Force re-dump activations even if they exist
-./scripts/submit_with_config.sh conf/simplestories_frozen.yaml force-redump
+./scripts/submit_with_config.sh config=conf/simplestories_frozen.yaml force_redump=true
+
+# Pass Hydra overrides to training script
+./scripts/submit_with_config.sh config=conf/gpt2_frozen.yaml \
+    learning_rate=1e-3 \
+    batch_size=16 \
+    gumbel_temperature.schedule.start_value=2.0
 
 # Force direct execution even on SLURM systems
-FORCE_DIRECT=true ./scripts/submit_with_config.sh conf/simplestories_frozen.yaml
+FORCE_DIRECT=true ./scripts/submit_with_config.sh config=conf/simplestories_frozen.yaml
 ```
 
 The wrapper script automatically:
@@ -315,6 +325,7 @@ The evaluation script `02_eval.py` uses Hydra configuration with the following a
 - **Clean Logging**: Reduced console clutter with informative periodic updates
 - **Automatic Metrics**: Performance stats calculated and logged without manual intervention
 - **Verbose Sample Tables**: Training samples automatically logged to W&B tables for inspection
+- **SLURM Integration**: SLURM job ID and node info automatically logged to W&B for easy tracking
 
 ### Run Organization
 - **Automatic Run Naming**: Training runs are named with format `{dataset}_{model}_{layer}_{learning_rate}_{timestamp}`

@@ -18,38 +18,84 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TOKENIZERS_PARALLELISM=true
 
 
-# Parse arguments
-CONFIG_FILE="${1}"
-FORCE_REDUMP="${2:-false}"
-FORCE_RETOKENIZE="${3:-false}"
-RESUME_CHECKPOINT="${4:-}"
-WANDB_RESUME_ID="${5:-}"
-NODELIST="${6:-$(hostname)}"  # Default to current cluster node (only used for SLURM)
-NUM_GPUS="${7:-}"  # Number of GPUs to use (auto-detect if not specified)
-RUN_SUFFIX="${8:-}"  # Optional suffix to add to run name
+# Default values
+CONFIG_FILE=""
+FORCE_REDUMP="false"
+FORCE_RETOKENIZE="false"
+RESUME_CHECKPOINT=""
+WANDB_RESUME_ID=""
+NODELIST="$(hostname)"  # Default to current cluster node (only used for SLURM)
+NUM_GPUS=""  # Number of GPUs to use (auto-detect if not specified)
+RUN_SUFFIX=""  # Optional suffix to add to run name
+HYDRA_OVERRIDES=""
 
-# Capture any additional arguments as Hydra overrides
-# Only shift if we have at least 8 arguments
-if [ $# -ge 8 ]; then
-    shift 8
-    HYDRA_OVERRIDES="$@"
-else
-    # Shift only the number of args we have
-    shift $#
-    HYDRA_OVERRIDES=""
-fi
+# Parse Hydra-style arguments
+for arg in "$@"; do
+    case $arg in
+        config=*)
+            CONFIG_FILE="${arg#*=}"
+            ;;
+        force_redump=*)
+            FORCE_REDUMP="${arg#*=}"
+            ;;
+        force_retokenize=*)
+            FORCE_RETOKENIZE="${arg#*=}"
+            ;;
+        resume_checkpoint=*)
+            RESUME_CHECKPOINT="${arg#*=}"
+            ;;
+        wandb_resume_id=*)
+            WANDB_RESUME_ID="${arg#*=}"
+            ;;
+        nodelist=*)
+            NODELIST="${arg#*=}"
+            ;;
+        num_gpus=*)
+            NUM_GPUS="${arg#*=}"
+            ;;
+        run_suffix=*)
+            RUN_SUFFIX="${arg#*=}"
+            ;;
+        # Special handling for positional config file (backwards compatibility)
+        *.yaml)
+            if [ -z "$CONFIG_FILE" ]; then
+                CONFIG_FILE="$arg"
+            else
+                # Treat as Hydra override
+                HYDRA_OVERRIDES="$HYDRA_OVERRIDES $arg"
+            fi
+            ;;
+        *)
+            # All other arguments are Hydra overrides
+            HYDRA_OVERRIDES="$HYDRA_OVERRIDES $arg"
+            ;;
+    esac
+done
+
+# Trim leading/trailing whitespace from HYDRA_OVERRIDES
+HYDRA_OVERRIDES=$(echo "$HYDRA_OVERRIDES" | xargs)
 
 # Check if config file provided
 if [ -z "$CONFIG_FILE" ]; then
     echo "Error: No config file specified"
-    echo "Usage: $0 <config.yaml> [force-redump] [resume_checkpoint] [wandb_resume_id] [nodelist] [num_gpus] [run_suffix] [hydra_overrides...]"
+    echo "Usage: $0 config=<config.yaml> [options...]"
+    echo ""
+    echo "Options (all use Hydra-style key=value syntax):"
+    echo "  config=<path>             Config file (required, or just pass <config.yaml> as first arg)"
+    echo "  force_redump=true         Force re-dump activations even if they exist"
+    echo "  force_retokenize=true     Force re-tokenize dataset"
+    echo "  resume_checkpoint=<path>  Resume from checkpoint"
+    echo "  wandb_resume_id=<id>      Resume specific WandB run"
+    echo "  nodelist=<nodes>          SLURM nodes to use (comma-separated)"
+    echo "  num_gpus=<n>              Number of GPUs (auto-detected if not set)"
+    echo "  run_suffix=<suffix>       Suffix to add to run name"
     echo ""
     echo "Examples:"
-    echo "  $0 conf/simplestories_frozen.yaml                    # New experiment"
-    echo "  $0 conf/gpt2_frozen.yaml force-redump                # Force re-dump activations"
-    echo "  $0 conf/simplestories_frozen.yaml false outputs/ckpt_step_1000.pt  # Resume"
-    echo "  $0 conf/simplestories_frozen.yaml false \"\" \"\" \"\" \"\" exp1  # Add suffix 'exp1'"
-    echo "  $0 conf/gpt2_frozen.yaml false \"\" \"\" \"\" \"\" \"\" learning_rate=1e-3 batch_size=16  # With Hydra overrides"
+    echo "  $0 conf/simplestories_frozen.yaml                    # New experiment (backwards compatible)"
+    echo "  $0 config=conf/simplestories_frozen.yaml             # New experiment (Hydra style)"
+    echo "  $0 config=conf/gpt2_frozen.yaml force_redump=true    # Force re-dump activations"
+    echo "  $0 config=conf/simplestories_frozen.yaml resume_checkpoint=outputs/ckpt_step_1000.pt"
+    echo "  $0 config=conf/gpt2_frozen.yaml learning_rate=1e-3 batch_size=16  # With Hydra overrides"
     echo ""
     echo "Available configs:"
     ls -1 conf/*.yaml | grep -E "(simplestories|gpt2)" | sed 's/^/  /'

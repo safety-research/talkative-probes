@@ -12,28 +12,65 @@ This script provides a more extensible and maintainable approach to submitting e
 
 ## Usage
 
+All arguments now use Hydra-style `key=value` syntax for cleaner command lines:
+
 ```bash
-# Basic usage - just pass a config file
+# Basic usage - config file as first positional arg (backwards compatible)
 ./scripts/submit_with_config.sh conf/simplestories_frozen.yaml
 
+# Or using Hydra style (recommended)
+./scripts/submit_with_config.sh config=conf/simplestories_frozen.yaml
+
 # Force re-dump activations
-./scripts/submit_with_config.sh conf/gpt2_frozen.yaml force-redump
+./scripts/submit_with_config.sh config=conf/gpt2_frozen.yaml force_redump=true
 
 # Resume from checkpoint
-./scripts/submit_with_config.sh conf/simplestories_frozen.yaml false outputs/ckpt_step_1000.pt
+./scripts/submit_with_config.sh config=conf/simplestories_frozen.yaml resume_checkpoint=outputs/ckpt_step_1000.pt
 
 # Resume with WandB ID
-./scripts/submit_with_config.sh conf/simplestories_frozen.yaml false outputs/ckpt_step_1000.pt abc123xyz
+./scripts/submit_with_config.sh config=conf/simplestories_frozen.yaml \
+    resume_checkpoint=outputs/ckpt_step_1000.pt \
+    wandb_resume_id=abc123xyz
 
 # Specify SLURM nodes (SLURM only)
-./scripts/submit_with_config.sh conf/gpt2_pile.yaml false "" "" node001,node002
+./scripts/submit_with_config.sh config=conf/gpt2_pile.yaml nodelist=node001,node002
 
 # Specify GPU count (non-SLURM)
-./scripts/submit_with_config.sh conf/gpt2_pile.yaml false "" "" "" 4
+./scripts/submit_with_config.sh config=conf/gpt2_pile.yaml num_gpus=4
+
+# Add run suffix for organization
+./scripts/submit_with_config.sh config=conf/gpt2_frozen.yaml run_suffix=experiment_v2
+
+# Pass Hydra overrides to training script
+./scripts/submit_with_config.sh config=conf/simplestories_frozen.yaml \
+    learning_rate=1e-3 \
+    batch_size=16 \
+    num_epochs=10
+
+# Combined example with multiple options
+./scripts/submit_with_config.sh config=conf/gpt2_frozen.yaml \
+    force_redump=true \
+    run_suffix=high_lr \
+    learning_rate=5e-4 \
+    gumbel_temperature.schedule.start_value=2.0
 
 # Force direct execution even on SLURM
-FORCE_DIRECT=true ./scripts/submit_with_config.sh conf/simplestories_frozen.yaml
+FORCE_DIRECT=true ./scripts/submit_with_config.sh config=conf/simplestories_frozen.yaml
 ```
+
+### Available Arguments
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `config` | Config file path (required) | - |
+| `force_redump` | Force re-dump activations even if they exist | false |
+| `force_retokenize` | Force re-tokenize dataset | false |
+| `resume_checkpoint` | Path to checkpoint to resume from | - |
+| `wandb_resume_id` | WandB run ID to resume | - |
+| `nodelist` | SLURM nodes to use (comma-separated) | current hostname |
+| `num_gpus` | Number of GPUs to use | auto-detected |
+| `run_suffix` | Suffix to add to run name | - |
+| Any other `key=value` | Passed as Hydra override to training script | - |
 
 ## How It Works
 
