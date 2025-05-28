@@ -36,3 +36,8 @@ freeze_schedule:
 wandb:
   project: "consistency-lens-simplestories"
   mode: "online"
+
+
+lm_weight: 0.0                  # Base LM weight; final LM multiplier = lm_weight * alpha_schedule  
+kl_base_weight: 0.0             # Fixed weight on KL divergence (fundamental objective)
+mse_weight: 1.0   
