@@ -432,7 +432,6 @@ def get_schedule_value_for_logging(spec: Optional[ScheduleSpec]) -> str:
     return f"{spec.value} {spec.unit}"
 
 
-@contextmanager
 def get_autocast_context(device: torch.device):
     """Get the appropriate autocast context for the given device.
     
@@ -453,7 +452,7 @@ def get_autocast_context(device: torch.device):
     """
     if device.type == "cuda":
         # Use bfloat16 if supported (better for training stability), otherwise float16
-        preferred_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        preferred_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
         return autocast(device_type="cuda", dtype=preferred_dtype)
     else:
         # No autocast for CPU or other devices
