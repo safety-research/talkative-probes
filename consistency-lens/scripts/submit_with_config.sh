@@ -227,7 +227,7 @@ submit_dump_job() {
     local dependency=$4
     
     if [ "$USE_SLURM" = true ]; then
-        echo -e "${YELLOW}Submitting activation dumping job via SLURM...${NC}" >&2
+        echo -e "${YELLOW}Submitting activation dumping job via SLURM...${NC} with dependency $dependency" >&2
         echo "Config: $config, Layer: $layer" >&2
         
         # Build sbatch command
