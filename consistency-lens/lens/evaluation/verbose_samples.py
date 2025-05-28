@@ -277,6 +277,15 @@ def process_and_print_verbose_batch_samples(
         logits_orig_at_p = logits_orig_all_pos[:, p].squeeze(0) # Shape [vocab_size]
         top_n_orig_A_tokens = get_top_n_tokens(logits_orig_at_p, tok, top_n_analysis)
         
+        # Get A_prime_i early for the intervention test
+        alt_idx = (i + 1) % batch["A_prime"].size(0)
+        A_prime_i = batch["A_prime"][alt_idx : alt_idx + 1].to(device)
+        
+        # Base Model (A') - prediction using A_prime_i at (l,p)
+        logits_aprime_all_pos = orig.forward_with_replacement(input_ids_seq, A_prime_i, l, p).logits # Shape [1, seq_len, vocab_size]
+        logits_aprime_at_p = logits_aprime_all_pos[:, p].squeeze(0) # Shape [vocab_size]
+        top_n_aprime_tokens = get_top_n_tokens(logits_aprime_at_p, tok, top_n_analysis)
+        
         # Lens Recon (A_hat) - prediction using A_hat_single at (l,p)
         gen_single = dec.generate_soft(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"])
         A_hat_single = enc(gen_single.generated_text_embeddings)
@@ -285,8 +294,7 @@ def process_and_print_verbose_batch_samples(
         top_n_lens_recon_tokens = get_top_n_tokens(logits_target_at_p, tok, top_n_analysis)
 
         # Resample Ablation (A_hat+Δ) - prediction using A_target_i at (l,p)
-        alt_idx = (i + 1) % batch["A_prime"].size(0)
-        A_prime_i = batch["A_prime"][alt_idx : alt_idx + 1].to(device)
+        # Note: A_prime_i already defined above
         
         # Get A_prime input sequence and position if available
         a_prime_string_cropped = None
@@ -444,6 +452,7 @@ def process_and_print_verbose_batch_samples(
             "Base Model's natural prediction": top_n_natural_base_preds_for_p_plus_1,
             "Logit Lens (from A_i)": top_n_logit_lens_tokens,
             "Base Model (orig A)": top_n_orig_A_tokens,
+            "Base Model (A')": top_n_aprime_tokens,
             "Log w/o Ablation (A_hat)": top_n_lens_recon_tokens,
             "Log w/Resample Ablation (A_hat+Δ)": top_n_resample_ablation_tokens,
         }
