@@ -7,7 +7,7 @@ defaults:
 
 # Training hyperparameters
 t_text: 8                        # Number of tokens to generate with the Decoder
-batch_size: 256
+batch_size:  512
 
 # Trainable components - FROZEN base model
 trainable_components:
