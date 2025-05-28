@@ -24,7 +24,7 @@ FORCE_REDUMP="${2:-false}"
 FORCE_RETOKENIZE="${3:-false}"
 RESUME_CHECKPOINT="${4:-}"
 WANDB_RESUME_ID="${5:-}"
-NODELIST="${6:-330702be7061}"  # Default to current cluster node (only used for SLURM)
+NODELIST="${6:-$(hostname)}"  # Default to current cluster node (only used for SLURM)
 NUM_GPUS="${7:-}"  # Number of GPUs to use (auto-detect if not specified)
 RUN_SUFFIX="${8:-}"  # Optional suffix to add to run name
 
@@ -227,12 +227,13 @@ submit_dump_job() {
     local dependency=$4
     
     if [ "$USE_SLURM" = true ]; then
-        echo -e "${YELLOW}Submitting activation dumping job via SLURM...${NC} with dependency `$dependency`" >&2
+        echo -e "${YELLOW}Submitting activation dumping job via SLURM...${NC} with dependency <$dependency>" >&2
         echo "Config: $config, Layer: $layer" >&2
         
         # Build sbatch command
         local sbatch_cmd="sbatch --parsable --job-name=${job_name}-dump --gres=gpu:$NUM_GPUS --nodelist=$NODELIST --export=SLURM_NODELIST='$NODELIST'"
         if [ -n "$dependency" ] && [ "$dependency" != "completed" ]; then
+            echo -e "${YELLOW}Adding dependency: <$dependency>${NC}" >&2
             sbatch_cmd="$sbatch_cmd --dependency=afterok:$dependency"
         fi
         
