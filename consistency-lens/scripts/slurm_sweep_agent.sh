@@ -4,7 +4,7 @@
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/sweep_%j.out
 #SBATCH --error=logs/sweep_%j.err
-#SBATCH --nodelist=node-1
+#SBATCH --nodelist=$(hostname)
 
 # =============================================================================
 # SLURM W&B Sweep Agent Script
@@ -74,8 +74,12 @@ if [ -z "$SWEEP_ID" ]; then
     echo "See script header for full workflow instructions."
     exit 1
 fi
-# Change to project directory (one up from script directory)
-cd /home/kitf/talkative-probes/consistency-lens
+
+# Dynamically determine project root (parent of script's directory)
+SCRIPT_PATH="$(readlink -f "$0")"
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+cd "$PROJECT_ROOT"
 echo "Current directory: $(pwd)"
 
 # Set up environment
