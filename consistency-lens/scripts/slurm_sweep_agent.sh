@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=wandb-sweep
 #SBATCH --gres=gpu:1
-#SBATCH --time=4:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=logs/sweep_%j.out
 #SBATCH --error=logs/sweep_%j.err
-#SBATCH --nodelist=330702be7061
+#SBATCH --nodelist=node-1
 
 # =============================================================================
 # SLURM W&B Sweep Agent Script
