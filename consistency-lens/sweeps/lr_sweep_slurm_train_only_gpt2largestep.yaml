@@ -5,21 +5,15 @@ metric:
   name: train/loss
 parameters:
   learning_rate:
-    value: 1e-4
+    values: [1.0e-3, 3.3e-4]
   gradient_accumulation_steps:
-    values: [ 4,  32, 128, 512]
+    values: [64, 256]
   config:
     value: conf/gpt2_frozen_e6_wider1p0.yaml
   num_train_epochs:
     value: 10
   gumbel_tau_schedule.constant_steps_before_linear_decay:
-      values: ["1000s",  "4000s"]
-  custom_lr_multipliers.projection_layers:
-    value: 10.0
-  custom_lr_multipliers.prompt_layers:
-    value: 10.0
-  custom_lr_multipliers.embedding_layers:
-    value: 1.0
+      values: ["1000s", "2000s", "4000s", "8000s"]
       
 
 command:

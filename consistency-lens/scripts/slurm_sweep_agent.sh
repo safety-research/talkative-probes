@@ -4,7 +4,7 @@
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/sweep_%j.out
 #SBATCH --error=logs/sweep_%j.err
-#SBATCH --nodelist=$(hostname)
+#SBATCH --nodelist=330702be7061
 
 # =============================================================================
 # SLURM W&B Sweep Agent Script
