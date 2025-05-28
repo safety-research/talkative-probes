@@ -1,0 +1,23 @@
+program: scripts/wandb_sweep_train_only.py
+method: grid
+metric:
+  goal: minimize
+  name: train/loss
+parameters:
+  learning_rate:
+    values: [1.0e-3, 3.3e-4, 1.0e-4]
+  gradient_accumulation_steps:
+    values: [1, 2, 4, 8, 16]
+  config:
+    value: conf/gpt2_frozen_e6_wider1p0.yaml
+  num_train_epochs:
+    value: 10
+  gumbel_tau_schedule.constant_steps_before_linear_decay:
+      values: ["1000s", "2000s", "4000s", "8000s"]
+      
+
+command:
+- ${env}
+- ${interpreter}
+- ${program}
+- ${args_no_hyphens}
