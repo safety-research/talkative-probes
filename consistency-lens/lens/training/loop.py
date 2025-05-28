@@ -69,7 +69,7 @@ def train_step(  # noqa: D401
     # It computes KL(P_D || P_Orig) where P_D are predictions from the decoder on its own generated sequence,
     # and P_Orig are predictions from the original LLM on natural language tokens only.
     # Always compute for monitoring, but detach gradients when weight is 0
-    if orig is not None and T_text > 1:  # need a next-token target for KL divergence
+    if orig is not None:#
         # Compute LM loss, using no_grad if weight is 0
         # Logits from D_model for its own generation (predicting token t+1 given prefix 0..t from D)
         # gen.raw_lm_logits are (B, T_text, V) - these correspond to generated natural language tokens only

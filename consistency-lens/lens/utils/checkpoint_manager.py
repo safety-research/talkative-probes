@@ -6,17 +6,18 @@ import os
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 import logging
 
 import torch
 from lens.utils import checkpoint
+from lens.training.schedules import parse_schedule_to_steps
 
 
 class CheckpointManager:
     """Manages checkpoint saving, loading, and cleanup during training."""
 
-    def __init__(self, config: dict, logger: logging.Logger):
+    def __init__(self, config: dict, logger: logging.Logger, steps_per_epoch: Optional[int] = None):
         """Initialize checkpoint manager from config."""
         self.config = config.get('checkpoint', {})
         self.logger = logger
@@ -28,8 +29,13 @@ class CheckpointManager:
         self.output_dir = Path(self.config.get('output_dir', 'outputs/checkpoints'))
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Save strategies
-        self.save_every_n_steps = self.config.get('save_every_n_steps', 0)
+        # Save strategies - parse flexible notation
+        save_steps_raw = self.config.get('save_every_n_steps', 0)
+        if isinstance(save_steps_raw, str) and save_steps_raw == "0":
+            self.save_every_n_steps = 0
+        else:
+            self.save_every_n_steps = parse_schedule_to_steps(save_steps_raw, steps_per_epoch)
+        
         self.save_every_n_epochs = self.config.get('save_every_n_epochs', 0)
         self.save_at_end = self.config.get('save_at_end', True)
         
