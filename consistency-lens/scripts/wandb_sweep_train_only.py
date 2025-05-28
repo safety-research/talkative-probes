@@ -36,6 +36,9 @@ def main():
         f"learning_rate={config.learning_rate}",
         f"num_train_epochs={config.num_train_epochs}"
     ]
+    for key, value in config.items():
+        if key not in ["config", "learning_rate", "num_train_epochs"]:
+            cmd.append(f"{key}={value}")
     
     print(f"Executing: {' '.join(cmd)}")
     
