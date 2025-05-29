@@ -26,6 +26,8 @@ alpha_schedule:
   type: "constant"
   value: 1.0
 
+num_train_epochs: 10                   # 2 epochs should be plenty for OpenWebText
+
 learning_rate: 1.0e-3
 # Learning rate scheduler
 lr_scheduler:

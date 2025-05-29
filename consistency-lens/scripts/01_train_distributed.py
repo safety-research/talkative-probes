@@ -473,19 +473,39 @@ def main(cfg: DictConfig) -> None:
         encoder_train_cfg = trainable_components_config.get('encoder', {})
         
         # Initialize models using the same pattern as the regular training script
-        decoder_config = DecoderConfig(
+        decoder_config_obj = DecoderConfig(
             model_name=model_name,
             **decoder_train_cfg
         )
-        decoder = Decoder(decoder_config)
+        decoder = Decoder(decoder_config_obj)
         
-        encoder_config = EncoderConfig(
+        encoder_config_obj = EncoderConfig(
             model_name=model_name,
             **encoder_train_cfg
         )
-        encoder = Encoder(encoder_config)
+        encoder = Encoder(encoder_config_obj)
         
         orig_model = OrigWrapper(model_name, load_in_8bit=False)
+        
+        # Initialize Decoder prompt
+        if 'decoder_prompt' in config and config['decoder_prompt']:
+            if is_main():
+                log.info(f"Setting decoder prompt: \"{config['decoder_prompt']}\"")
+            decoder.set_prompt(config['decoder_prompt'], tokenizer)
+        elif is_main():
+            log.warning("Decoder prompt ('decoder_prompt') not found in config or is empty. Decoder soft prompts will not be initialized from text.")
+
+        # Initialize Encoder soft prompt
+        # Check if soft_prompt_init_text is configured for the encoder
+        if encoder_config_obj.soft_prompt_init_text:
+            if is_main():
+                log.info(f"Setting encoder soft prompt from text: \"{encoder_config_obj.soft_prompt_init_text}\"")
+            encoder.set_soft_prompt_from_text(encoder_config_obj.soft_prompt_init_text, tokenizer)
+        elif encoder_config_obj.soft_prompt_length > 0:
+            if is_main():
+                log.info(f"Encoder using randomly initialized soft prompt of length {encoder_config_obj.soft_prompt_length}.")
+        elif is_main(): # No text and length is 0 (default)
+            log.warning("Encoder soft prompt not configured (neither 'soft_prompt_init_text' nor 'soft_prompt_length > 0'). Encoder soft prompts will be empty.")
         
         decoder, encoder, orig_model = setup_distributed_models(
             decoder, encoder, orig_model, device, rank, world_size

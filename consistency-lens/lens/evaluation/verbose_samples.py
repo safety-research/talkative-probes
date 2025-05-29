@@ -857,8 +857,8 @@ def format_soft_prompt_projections(projections: Dict[str, Any]) -> str:
             
             lines.append("  Left prompt:")
             # Show as a single line with <embed> marker
-            input_text = ''.join([t[0] for t, _ in left_input])
-            output_text = ''.join([t[0] for t, _ in left_output]) if left_output else ""
+            input_text = ''.join([t for t, _ in left_input])
+            output_text = ''.join([t for t, _ in left_output]) if left_output else ""
             
             lines.append(f"    Input emb:  \"{input_text}<embed>\"")
             lines.append(f"    Output emb: \"{output_text}<embed>\"")
@@ -875,8 +875,8 @@ def format_soft_prompt_projections(projections: Dict[str, Any]) -> str:
             right_output = dec_proj.get('right_output', [])
             
             lines.append("  Right prompt:")
-            input_text = ''.join([t[0] for t, _ in right_input])
-            output_text = ''.join([t[0] for t, _ in right_output]) if right_output else ""
+            input_text = ''.join([t for t, _ in right_input])
+            output_text = ''.join([t for t, _ in right_output]) if right_output else ""
             
             lines.append(f"    Input emb:  \"<embed>{input_text}\"")
             lines.append(f"    Output emb: \"<embed>{output_text}\"")
@@ -892,7 +892,7 @@ def format_soft_prompt_projections(projections: Dict[str, Any]) -> str:
         enc_proj = projections['encoder']
         
         # Show as a single line
-        prompt_text = ''.join([t[0] for t, _ in enc_proj])
+        prompt_text = ''.join([t for t, _ in enc_proj])
         lines.append(f"  Text: \"{prompt_text}\"")
         
         # Show top-3 for each token
