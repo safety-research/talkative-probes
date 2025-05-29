@@ -66,9 +66,9 @@ from lens.training.distributed import (
     reduce_dict,
 )
 from lens.utils.checkpoint_manager import CheckpointManager
-from lens.evaluation.verbose_samples import maybe_print_verbose_samples
 from lens.models.utils import prepare_inputs
 from lens.training.distributed import set_seed
+from lens.evaluation.wandb_logger import verbose_samples_logger
 
 # Import all the utility functions from the original training script
 sys.path.insert(0, str(Path(__file__).parent))
@@ -694,7 +694,87 @@ def main(cfg: DictConfig) -> None:
         # Validation (only on main process for now)
         if is_main() and val_loader and step % config.get('val_interval', 500) == 0:
             # TODO: Implement distributed validation
-            pass
+            log.info(f"Skipping validation at step {step} (TODO: Implement)")
+            pass # Placeholder for validation logic
+
+        # Verbose sample printing (adapting logic from 01_train.py)
+        if is_main():
+            verbose_config = config.get('verbose_samples', {})
+            if verbose_config.get('enabled', False):
+                should_print_verbose = False
+                # Condition for epoch end (approximation for distributed setup)
+                epoch_just_finished = (steps_per_epoch > 0 and (step + 1) % steps_per_epoch == 0)
+
+                # Check interval based on flexible schedule string
+                verbose_interval_str = verbose_config.get('interval', "1000s") # Default from 01_train.py
+                try:
+                    # Assuming train_module contains _resolve_schedule_to_steps
+                    verbose_interval = train_module._resolve_schedule_to_steps(
+                        verbose_interval_str, steps_per_epoch, log, "verbose_interval"
+                    )
+                    if step % verbose_interval == 0:
+                        should_print_verbose = True
+                except Exception as e:
+                    log.warning(f"Failed to parse verbose_samples interval '{verbose_interval_str}': {e}. Using step-based fallback if configured.")
+                
+                # Check for legacy epoch/step printing conditions
+                if verbose_config.get('print_every_epoch', False) and epoch_just_finished:
+                    should_print_verbose = True
+                
+                print_every_n_steps_val = verbose_config.get('print_every_n_steps', 0)
+                if print_every_n_steps_val > 0 and step > 0 and step % print_every_n_steps_val == 0:
+                    should_print_verbose = True
+
+                if should_print_verbose:
+                    log.info(f"Generating verbose samples at step {step}, epoch {current_epoch}")
+                    decoder.eval()
+                    encoder.eval()
+                    orig_model.model.eval() # Ensure orig model is also in eval
+
+                    # Get schedule arguments for verbose samples
+                    sch_args_verbose = {
+                        "tau": get_schedule_value(config, 'gumbel_temperature', step),
+                        "T_text": config.get('t_text', 8),
+                        "alpha": get_schedule_value(config, 'lm_weight', step), # Assuming lm_weight is alpha here
+                        "lm_weight": get_schedule_value(config, 'lm_weight', step),
+                        "kl_base_weight": config.get('kl_base_weight', 1.0),
+                        "entropy_weight": config.get('entropy_weight', 0.0),
+                        "mse_weight": config.get('mse_weight', 0.0), # Added for completeness
+                    }
+
+                    # Ensure batch is on the correct device (it should be already, but good practice)
+                    verbose_batch = {k: v.to(device) for k, v in batch.items()}
+
+                    # Assuming train_module contains process_and_print_verbose_batch_samples
+                    num_printed, captured_text = train_module.process_and_print_verbose_batch_samples(
+                        batch=verbose_batch,
+                        cfg=OmegaConf.create(config), # process_and_print_verbose_batch_samples might expect OmegaConf
+                        models={"dec": decoder_base, "enc": encoder_base}, # Pass base models
+                        orig=orig_model,
+                        tok=tokenizer,
+                        sch_args=sch_args_verbose,
+                        device=device,
+                        num_samples=verbose_config.get('num_samples', 2),
+                        top_n_analysis=verbose_config.get('top_n_predictions', 3),
+                        printed_count_so_far=0, # Reset for each call or manage globally if needed
+                        generate_continuation=verbose_config.get('generate_continuation', True),
+                        continuation_tokens=verbose_config.get('continuation_tokens', 30),
+                        return_structured_data=False, # As per 01_train.py default for this path
+                        capture_output=True
+                    )
+                    
+                    current_wandb_run_id = run_info.get('id') if run_info else None
+                    if captured_text and current_wandb_run_id:
+                        verbose_samples_logger.log_verbose_samples(
+                            captured_text,
+                            step=step,
+                            table_name="training_verbose_samples_dist" # Differentiate if needed
+                        )
+
+                    decoder.train()
+                    encoder.train()
+                    orig_model.model.train() # Set orig model back to train if it has trainable parts (usually not)
+
     
     # Final checkpoint
     if is_main() and checkpoint_manager.save_at_end:
