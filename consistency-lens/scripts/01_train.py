@@ -231,6 +231,21 @@ def format_time(seconds: float) -> str:
         return f"{hours:.1f}h"
 
 
+def _get_hydra_config_name() -> str | None:
+    """Attempts to get the config name from Hydra's context."""
+    config_name = None
+    try:
+        hydra_cfg = HydraConfig.get()
+        if hasattr(hydra_cfg, 'job') and hasattr(hydra_cfg.job, 'config_name'):
+            config_name = hydra_cfg.job.config_name
+        elif hasattr(hydra_cfg, 'runtime') and hasattr(hydra_cfg.runtime, 'choices'):
+            config_name = hydra_cfg.runtime.choices.get('config_name', 'config')
+    except Exception: # Broad exception as the original code does
+        # HydraConfig might not be available or might fail in some contexts
+        pass
+    return config_name
+
+
 def generate_run_name(config: dict, dataset_info: dict, resume_from: str = None, config_name: str = None, run_suffix: str = None) -> str:
     """Generate a descriptive run name based on config and dataset info."""
     components = []
@@ -802,18 +817,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     dataset_info = extract_dataset_info(activation_dir)
     
     # Get config name from Hydra if available
-    config_name = None
-    try:
-        hydra_cfg = HydraConfig.get()
-        # Get the config name from command line overrides or defaults
-        if hasattr(hydra_cfg, 'job') and hasattr(hydra_cfg.job, 'config_name'):
-            config_name = hydra_cfg.job.config_name
-        elif hasattr(hydra_cfg, 'runtime') and hasattr(hydra_cfg.runtime, 'choices'):
-            # Try to get from runtime choices
-            config_name = hydra_cfg.runtime.choices.get('config_name', 'config')
-    except:
-        # HydraConfig might not be available in some contexts (e.g., testing)
-        pass
+    config_name = _get_hydra_config_name()
     
     # Generate run name (or use override)
     run_name_override = config.get('run_name')
@@ -1574,7 +1578,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         if verbose_config.get('enabled', False):
             # In your evaluation loop, after getting a batch:
             if  step == 0:  # Test on first batch
-                do_all_initial_validation(batch, orig, tokenizer, device)
+                do_all_initial_validation(batch, orig, tokenizer, device, log, activation_dir)
 
             should_print = False
             
@@ -1693,7 +1697,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     
     log.info("=" * 60)
 
-def do_all_initial_validation(batch, orig, tokenizer, device, log):
+def do_all_initial_validation(batch, orig, tokenizer, device, log, activation_dir):
     from lens.training.test import diagnose_activation_mismatch
     diagnosis = diagnose_activation_mismatch(
         batch, orig, tokenizer, device, sample_idx=0, verbose=True
@@ -1713,8 +1717,8 @@ def do_all_initial_validation(batch, orig, tokenizer, device, log):
         print(f"{k}: {v}")
 
     print("\n=== Dataset Format Check ===")
-    # Replace with your dataset path
-    check_dataset_activation_format("path/to/your/activation/dataset")
+    # Use the actual activation directory
+    check_dataset_activation_format(activation_dir)
 
     print("\n=== Batch Activation Info ===")
     print(f"Batch A shape: {batch['A'].shape}")

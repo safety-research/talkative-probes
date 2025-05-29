@@ -33,6 +33,10 @@ class OrigWrapper:
                 f"AttributeError when checking layer {layer_idx}: {e}"
             ) from e
 
+    def to(self, device: torch.device) -> "OrigWrapper":
+        self.model.to(device)
+        return self
+
     def forward_with_replacement(
         self,
         input_ids: torch.Tensor,

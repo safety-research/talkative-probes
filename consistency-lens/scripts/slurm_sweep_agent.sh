@@ -75,13 +75,12 @@ if [ -z "$SWEEP_ID" ]; then
     exit 1
 fi
 
-# Dynamically determine project root (parent of script's directory)
-SCRIPT_PATH="$(readlink -f "$0")"
-SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-cd "$PROJECT_ROOT"
-cd ~/talkative-probes/consistency-lens
+# Navigate to project root
+cd /workspace/kitf/talkative-probes/consistency-lens
 echo "Current directory: $(pwd)"
+
+# Ensure environment is set up on this node
+source scripts/ensure_env.sh
 
 # Set up environment
 export OMP_NUM_THREADS=16
@@ -89,11 +88,6 @@ export TORCHINDUCTOR_CACHE_DIR="${HOME}/.cache/torchinductor"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TOKENIZERS_PARALLELISM=true
 export WANDB__SERVICE_WAIT=300
-
-# Activate virtual environment
-echo "Activating"
-source .venv/bin/activate
-echo "Activated virtual environment"
 
 # Logging metadata
 echo "=============================================="
@@ -108,5 +102,5 @@ echo "Time: $(date)"
 echo "=============================================="
 # Assume ~/.netrc or WANDB_API_KEY already present; skip interactive login
 
-# Run the sweep agent with --count flag for SLURM
-wandb agent --count $COUNT $SWEEP_ID 
+# Run the sweep agent with --count flag for SLURM using uv_run
+uv_run wandb agent --count $COUNT $SWEEP_ID 

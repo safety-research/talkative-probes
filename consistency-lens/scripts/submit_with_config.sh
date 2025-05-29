@@ -125,11 +125,9 @@ fi
 
 # Extract settings from config using Python helper
 echo "Extracting settings from $CONFIG_FILE..."
-# Activate virtual environment if it exists
-if [ -f .venv/bin/activate ]; then
-    source .venv/bin/activate
-fi
-if ! source <(python scripts/extract_config_settings.py "$CONFIG_FILE" --all); then
+# Ensure environment is set up
+source scripts/ensure_env.sh
+if ! source <(uv_run python scripts/extract_config_settings.py "$CONFIG_FILE" --all); then
     echo "Error: Failed to extract settings from config file"
     exit 1
 fi
@@ -264,7 +262,7 @@ submit_pretokenize_job() {
             --time=2:00:00 \
             --output=logs/pretokenize_%j.out \
             --error=logs/pretokenize_%j.err \
-            --wrap="bash -c 'cd $CONSISTENCY_LENS_DIR && source .venv/bin/activate && export OMP_NUM_THREADS=1 && export TOKENIZERS_PARALLELISM=false && python scripts/pretokenize_dataset.py --config-path=$CONSISTENCY_LENS_DIR/$(dirname $config) --config-name=$(basename $config .yaml)'" 2>&1)
+            --wrap="bash -c 'cd $CONSISTENCY_LENS_DIR && source scripts/ensure_env.sh && export OMP_NUM_THREADS=1 && export TOKENIZERS_PARALLELISM=false && uv_run python scripts/pretokenize_dataset.py --config-path=$CONSISTENCY_LENS_DIR/$(dirname $config) --config-name=$(basename $config .yaml)'" 2>&1)
         
         if [[ $? -ne 0 ]]; then
             echo -e "${RED}ERROR: Failed to submit pretokenization job${NC}" >&2
@@ -282,7 +280,7 @@ submit_pretokenize_job() {
         # Run pretokenization directly
         # Get absolute path to config directory
         local config_dir="$(pwd)/$(dirname "$config")"
-        if source .venv/bin/activate && python scripts/pretokenize_dataset.py --config-path="$config_dir" --config-name=$(basename "$config" .yaml) >&2; then
+        if uv_run python scripts/pretokenize_dataset.py --config-path="$config_dir" --config-name=$(basename "$config" .yaml) >&2; then
             echo -e "${GREEN}Pretokenization completed successfully${NC}" >&2
             echo "completed"
         else
@@ -393,26 +391,32 @@ submit_train_job() {
         fi
         
         # Build command based on distributed mode
+        local base_cmd="cd $CONSISTENCY_LENS_DIR && source scripts/ensure_env.sh && "
         if [ "$USE_DISTRIBUTED" = "true" ] || [ "$NUM_GPUS_TRAIN" -gt 1 ]; then
-            # Use torchrun for distributed training
-            local train_cmd="cd $CONSISTENCY_LENS_DIR && . .venv/bin/activate && torchrun --nproc_per_node=$NUM_GPUS_TRAIN scripts/$train_script --config-path=$config_dir --config-name=$config_name"
+            # Use torchrun for distributed training with random port to avoid conflicts
+            # Generate random port between 29500-29999
+            local random_port=$((29500 + RANDOM % 500))
+            base_cmd="${base_cmd}uv_run torchrun --nproc_per_node=$NUM_GPUS_TRAIN --master_port=$random_port scripts/$train_script --config-path=$config_dir --config-name=$config_name"
         else
             # Regular single-GPU training
-            local train_cmd="cd $CONSISTENCY_LENS_DIR && . .venv/bin/activate && python scripts/$train_script --config-path=$config_dir --config-name=$config_name"
+            base_cmd="${base_cmd}uv_run python scripts/$train_script --config-path=$config_dir --config-name=$config_name"
         fi
         if [ -n "$resume_checkpoint" ]; then
-            train_cmd="$train_cmd resume=\"$resume_checkpoint\""
+            base_cmd="$base_cmd resume=\"$resume_checkpoint\""
         fi
         if [ -n "$wandb_resume_id" ]; then
-            train_cmd="$train_cmd wandb_resume_id=\"$wandb_resume_id\""
+            base_cmd="$base_cmd wandb_resume_id=\"$wandb_resume_id\""
         fi
         if [ -n "$run_suffix" ]; then
-            train_cmd="$train_cmd run_suffix=\"$run_suffix\""
+            base_cmd="$base_cmd run_suffix=\"$run_suffix\""
         fi
         # Add any additional Hydra overrides
         if [ -n "$HYDRA_OVERRIDES" ]; then
-            train_cmd="$train_cmd $HYDRA_OVERRIDES"
+            base_cmd="$base_cmd $HYDRA_OVERRIDES"
         fi
+        
+        # Wrap in bash -c for proper shell execution
+        local train_cmd="bash -c '$base_cmd'"
         
         # Submit job using array to avoid quote issues
         local sbatch_args=(
@@ -530,11 +534,11 @@ submit_train_job() {
         # Build command based on distributed mode
         if [ "$USE_DISTRIBUTED" = "true" ] || [ "$NUM_GPUS_TRAIN" -gt 1 ]; then
             # Use torchrun for distributed training
-            local train_cmd="torchrun --nproc_per_node=$NUM_GPUS_TRAIN scripts/$train_script --config-path=$config_dir --config-name=$config_name"
+            local train_cmd="uv_run torchrun --nproc_per_node=$NUM_GPUS_TRAIN scripts/$train_script --config-path=$config_dir --config-name=$config_name"
             echo -e "${GREEN}Running distributed training with $NUM_GPUS_TRAIN GPUs${NC}" >&2
         else
             # Regular single-GPU training
-            local train_cmd="python scripts/$train_script --config-path=$config_dir --config-name=$config_name"
+            local train_cmd="uv_run python scripts/$train_script --config-path=$config_dir --config-name=$config_name"
         fi
         if [ -n "$resume_checkpoint" ]; then
             train_cmd="$train_cmd resume=\"$resume_checkpoint\""

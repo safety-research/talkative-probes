@@ -17,40 +17,83 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Setup
 ```bash
 cd consistency-lens
-uv venv
-uv pip install -e .
+make  # One-time setup: installs uv and configures shared cache
 ```
+
+#### Multi-Node Environment Setup (RunPod/SLURM)
+
+This project uses `uv` for seamless multi-node Python environment management.
+
+**How it works**:
+- `uv run` automatically manages Python environments per-project
+- Virtual environments stored in node-local locations via `UV_PROJECT_ENVIRONMENT`:
+  - Compute nodes: `$SLURM_TMPDIR/uv-venv-consistency-lens` (fast local SSD)
+  - Login nodes: `~/.cache/uv/envs/consistency-lens` (persistent)
+- Downloaded packages cached in shared `/workspace/.uv_cache` (fast with hardlinks)
+- No manual venv activation needed - just prefix commands with `uv run`
+
+**Initial Setup** (once total, on any node):
+```bash
+make  # Installs uv to ~/.local/bin and sets up shared cache
+source ~/.cargo/env  # Add uv to PATH (or restart shell)
+```
+
+**That's it!** No need to run setup on each node. When you first use `uv run` on a new node, it will automatically create the environment for that node.
+
+**Usage Examples**:
+```bash
+# Training
+uv run python scripts/01_train.py
+
+# Evaluation  
+uv run python scripts/02_eval.py checkpoint=outputs/ckpt.pt
+
+# Running tests
+uv run pytest tests/
+
+# Using torchrun for distributed training
+uv run torchrun --nproc_per_node=8 scripts/01_train_distributed.py
+```
+
+**Key Benefits**:
+- **True node isolation**: Each node has its own venv (no symlink conflicts!)
+- **Fast installs**: Shared package cache with hardlinking
+- **No activation needed**: Just use `uv run` prefix
+- **Optimized storage**: Compute nodes use fast local SSD, login nodes use persistent cache
+- **Self-healing**: Environments recreated if corrupted
+
+**Performance Note**: First `uv run` on a new node will be slower (~1-2 min) as it installs PyTorch and other packages. Subsequent runs are instant.
 
 ### Main Workflow
 ```bash
 # 1. Extract activations from corpus
 # Option A: Single GPU (slower)
-python scripts/00_dump_activations.py --config config/lens_simple.yaml
+uv run python scripts/00_dump_activations.py --config config/lens_simple.yaml
 
 # Option B: Multi-GPU (recommended for production)
-./scripts/launch_multigpu_dump_optimized.sh
+./scripts/launch_multigpu_dump.sh
 
 # Option C: Pre-tokenize first for maximum speed
-python scripts/pretokenize_dataset.py  # One-time preprocessing
-./scripts/launch_multigpu_dump_pretokenized.sh  # 5x faster!
+uv run python scripts/pretokenize_dataset.py  # One-time preprocessing
+./scripts/launch_multigpu_dump.sh  # Uses pretokenized data automatically
 
 # 2. Train the lens  
 export TORCHINDUCTOR_CACHE_DIR="${HOME}/.cache/torchinductor"
-python scripts/01_train.py
+uv run python scripts/01_train.py
 # Training creates run-specific output directories like: outputs/5M_L5_SimpleStories_lr1e-4_t10_1222_1430/
 
 # 3. Evaluate trained model
-python scripts/02_eval.py checkpoint=outputs/RUN_NAME/ckpt_step_X.pt evaluation.save_results=true
+uv run python scripts/02_eval.py checkpoint=outputs/RUN_NAME/ckpt_step_X.pt evaluation.save_results=true
 # Evaluation results saved to: outputs/evaluations/RUN_NAME_stepX_TIMESTAMP/
 ```
 
 ### Evaluation Examples
 ```bash
 # Basic evaluation
-python scripts/02_eval.py checkpoint=outputs/checkpoints/SimpleStories-5M_L5_S_lr1e-3_t5_resume_0523_0009/checkpoint_step7000_epoch4.pt
+uv run python scripts/02_eval.py checkpoint=outputs/checkpoints/SimpleStories-5M_L5_S_lr1e-3_t5_resume_0523_0009/checkpoint_step7000_epoch4.pt
 
 # With custom parameters
-python scripts/02_eval.py \
+uv run python scripts/02_eval.py \
     checkpoint=outputs/checkpoints/SimpleStories-5M_L5_S_lr1e-3_t5_resume_0523_0009/checkpoint_step7000_epoch4.pt \
     evaluation.verbose_samples=5 \
     evaluation.batch_size=8 \
@@ -58,13 +101,13 @@ python scripts/02_eval.py \
     evaluation.save_results=true
 
 # Save results to specific directory
-python scripts/02_eval.py \
+uv run python scripts/02_eval.py \
     checkpoint=outputs/checkpoints/SimpleStories-5M_L5_S_lr1e-3_t5_resume_0523_0009/checkpoint_step7000_epoch4.pt \
     evaluation.output_dir=outputs/my_evaluation \
     evaluation.save_results=true
 
 # Override activation directory
-python scripts/02_eval.py \
+uv run python scripts/02_eval.py \
     checkpoint=outputs/checkpoints/SimpleStories-5M_L5_S_lr1e-3_t5_resume_0523_0009/checkpoint_step7000_epoch4.pt \
     evaluation.activation_dir=./data/activations/different_dataset_test
 ```
@@ -72,11 +115,11 @@ python scripts/02_eval.py \
 ### Resuming Training
 ```bash
 # Resume from checkpoint (automatically resumes WandB run if available)
-python scripts/01_train.py \
+uv run python scripts/01_train.py \
     resume=outputs/ckpt_step_1000.pt
 
 # Resume with explicit WandB run ID override
-python scripts/01_train.py \
+uv run python scripts/01_train.py \
     resume=outputs/ckpt_step_1000.pt \
     wandb_resume_id=abc123xyz
 ```
@@ -106,9 +149,9 @@ lr_scheduler:
 ### Testing
 ```bash
 # Run smoke tests
-python tests/smoke_train.py
-python tests/test_dataset.py
-python tests/test_swap_hook.py
+uv run python tests/smoke_train.py
+uv run python tests/test_dataset.py
+uv run python tests/test_swap_hook.py
 ```
 
 ### SLURM Cluster Usage

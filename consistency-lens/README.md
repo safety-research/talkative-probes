@@ -70,9 +70,10 @@ the package in editable mode:
 
 ```bash
 cd consistency-lens
-uv venv
-uv pip install -e .
+make  # Handles everything: uv installation, venv creation, dependencies
 ```
+
+For detailed multi-node setup instructions, see [CLAUDE.md](CLAUDE.md).
 
 Extra dependencies for the Docker image can be installed with:
 
@@ -1038,7 +1039,7 @@ parameters:
 cat logs/sweep_*.err
 
 # Common fixes:
-# 1. Ensure virtual environment exists: source .venv/bin/activate
+# 1. Ensure environment is set up: make
 # 2. Check GPU availability: nvidia-smi
 # 3. Verify sweep ID format: user/project/sweep_id
 ```

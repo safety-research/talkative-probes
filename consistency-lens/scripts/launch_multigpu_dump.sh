@@ -2,6 +2,11 @@
 # Optimized launch script for multi-GPU activation dumping with pretokenization
 # This script ALWAYS uses pretokenization for 5x faster dumping
 
+# Navigate to project root and ensure environment
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/.."
+source scripts/ensure_env.sh
+
 # Auto-detect GPUs
 if [ -z "$NUM_GPUS" ]; then
     if [ -n "$CUDA_VISIBLE_DEVICES" ]; then
@@ -90,7 +95,7 @@ fi
 
 # Build command with Hydra overrides
 # ALWAYS use pretokenization for efficiency
-CMD="python -m torch.distributed.run \
+CMD="uv_run python -m torch.distributed.run \
     --nproc_per_node=$NUM_GPUS \
     --master_port=29500 \
     $SCRIPT_PATH \

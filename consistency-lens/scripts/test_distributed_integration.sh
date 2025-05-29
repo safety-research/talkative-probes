@@ -15,10 +15,13 @@ NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/.."
 
+# Ensure environment is set up
+source scripts/ensure_env.sh
+
 # Test 1: Single GPU baseline
 echo "Test 1: Single GPU training (baseline)"
 echo "======================================"
-python scripts/01_train.py --config-name=test_distributed max_train_steps=5 \
+uv_run python scripts/01_train.py --config-name=test_distributed max_train_steps=5 \
     wandb.mode=disabled batch_size=2 > /tmp/single_gpu_test.log 2>&1
 
 if [ $? -eq 0 ]; then
@@ -33,7 +36,7 @@ fi
 echo
 echo "Test 2: Multi-GPU training with 2 GPUs"
 echo "======================================="
-CUDA_VISIBLE_DEVICES=0,1 torchrun --nproc_per_node=2 \
+CUDA_VISIBLE_DEVICES=0,1 uv_run torchrun --nproc_per_node=2 \
     scripts/01_train_distributed.py --config-name=test_distributed \
     max_train_steps=5 wandb.mode=disabled batch_size=2 > /tmp/multi_gpu_test.log 2>&1
 

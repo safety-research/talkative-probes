@@ -4,6 +4,11 @@
 
 set -e
 
+# Navigate to project root and ensure environment
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR/.."
+source scripts/ensure_env.sh
+
 # Default values
 CONFIG_PATH=""
 CONFIG_NAME=""
@@ -59,14 +64,14 @@ if [ -n "$SLURM_JOB_ID" ]; then
     srun --ntasks=$NUM_GPUS \
          --ntasks-per-node=$NUM_GPUS \
          --cpus-per-task=$((SLURM_CPUS_PER_TASK / NUM_GPUS)) \
-         python scripts/01_train_distributed.py \
-         --config-path="$CONFIG_PATH" \
-         --config-name="$CONFIG_NAME" \
-         $EXTRA_ARGS
+         bash -c "source scripts/ensure_env.sh && uv_run python scripts/01_train_distributed.py \
+         --config-path='$CONFIG_PATH' \
+         --config-name='$CONFIG_NAME' \
+         $EXTRA_ARGS"
 else
     echo "Running in standalone mode"
     # Use torchrun for standalone multi-GPU
-    torchrun --nproc_per_node=$NUM_GPUS \
+    uv_run torchrun --nproc_per_node=$NUM_GPUS \
              --master_port=${MASTER_PORT:-29500} \
              scripts/01_train_distributed.py \
              --config-path="$CONFIG_PATH" \

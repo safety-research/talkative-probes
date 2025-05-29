@@ -73,14 +73,14 @@ from lens.evaluation.wandb_logger import verbose_samples_logger
 sys.path.insert(0, str(Path(__file__).parent))
 import importlib
 train_module = importlib.import_module("01_train")
-get_gpu_memory_info = train_module.get_gpu_memory_info
-get_gpu_utilization = train_module.get_gpu_utilization
 extract_dataset_info = train_module.extract_dataset_info
 resolve_path = train_module.resolve_path
 generate_run_name = train_module.generate_run_name  
-count_dataset_samples = train_module.count_dataset_samples
-check_explicit_requirements = train_module.check_explicit_requirements
-prepare_dataset_and_loaders = train_module.prepare_dataset_and_loaders
+prepare_dataset_and_loaders = train_module._prepare_dataloaders
+_resolve_schedule_to_steps = train_module._resolve_schedule_to_steps
+process_and_print_verbose_batch_samples = train_module.process_and_print_verbose_batch_samples
+_get_hydra_config_name = train_module._get_hydra_config_name
+get_system_metrics = train_module.get_system_metrics
 
 
 class Timer:
@@ -115,6 +115,7 @@ def distributed_train_step(
     cached_prefix_ids,
     gradient_accumulation_steps=1,
     is_distributed=False,
+    lr_scheduler=None,
 ):
     """Training step with proper gradient accumulation for distributed training.
     
@@ -127,7 +128,7 @@ def distributed_train_step(
     
     # Get base models if using DDP
     decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
-    encoder_base = encoder.module if hasattr(encoder, 'module') else encoder
+    encoder_base = encoder.module if hasattr(encoder, 'no_sync') else encoder
     
     # Prepare models dict for train_step
     models = {
@@ -139,55 +140,52 @@ def distributed_train_step(
     # Loss function parameters
     loss_fns = {
         "T_text": config.get('t_text', 8),
-        "tau": get_schedule_value(config, 'gumbel_temperature', step),
-        "alpha": get_schedule_value(config, 'lm_weight', step),
+        "tau": get_schedule_value(config['gumbel_tau_schedule'], step, config['max_train_steps'], 
+                                step // gradient_accumulation_steps if gradient_accumulation_steps > 0 else 0, 
+                                gradient_accumulation_steps),
+        "alpha": get_schedule_value(config['alpha_schedule'], step, config['max_train_steps'],
+                                  step // gradient_accumulation_steps if gradient_accumulation_steps > 0 else 0, 
+                                  gradient_accumulation_steps),
         "kl_base_weight": config.get('kl_base_weight', 1.0),
         "entropy_weight": config.get('entropy_weight', 0.0),
         "mse_weight": config.get('mse_weight', 0.0),
-        "lm_weight": get_schedule_value(config, 'lm_weight', step),
+        "lm_weight": get_schedule_value(config['alpha_schedule'], step, config['max_train_steps'],
+                                      step // gradient_accumulation_steps if gradient_accumulation_steps > 0 else 0, 
+                                      gradient_accumulation_steps),
     }
     
-    # Context manager for gradient synchronization
-    # Key optimization: Use no_sync() to skip gradient synchronization except at accumulation boundaries
+    decoder_no_sync_cm = nullcontext()
+    encoder_no_sync_cm = nullcontext()
+
     if is_distributed and not is_accumulation_end:
-        # Don't sync gradients until the last accumulation step
-        sync_context = decoder.no_sync() if hasattr(decoder, 'no_sync') else nullcontext()
-        if hasattr(encoder, 'no_sync'):
-            sync_context = sync_context.__enter__()
-            encoder_sync = encoder.no_sync().__enter__()
-        else:
-            encoder_sync = None
-    else:
-        # Normal gradient sync (single GPU or accumulation boundary)
-        sync_context = nullcontext()
-        encoder_sync = None
+        # If decoder is DDP, decoder.no_sync() is the correct context manager
+        if hasattr(decoder, 'no_sync'):
+            decoder_no_sync_cm = decoder.no_sync()
+        # If encoder is DDP, encoder.no_sync() is the correct context manager
+        if hasattr(encoder, 'no_sync'): 
+            encoder_no_sync_cm = encoder.no_sync()
     
-    try:
-        with sync_context:
-            # Forward pass
-            losses = original_train_step(
-                batch=batch,
-                models=models,
-                _loss_fns=loss_fns,
-                lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'),
-                tokenizer=tokenizer,
-                cached_prefix_ids=cached_prefix_ids
-            )
-            
-            # Scale loss by accumulation steps
-            loss = losses['total'] / gradient_accumulation_steps
-            
-            # Backward pass
-            if device.type == "cuda" and scaler is not None:
-                scaler.scale(loss).backward()
-            else:
-                loss.backward()
-    finally:
-        # Clean up context managers
-        if encoder_sync is not None:
-            encoder_sync.__exit__(None, None, None)
-        if is_distributed and not is_accumulation_end and sync_context != nullcontext():
-            sync_context.__exit__(None, None, None)
+    # The 'with' statement handles __enter__ and __exit__ for both contexts.
+    # The original try...finally for manual exit calls is no longer needed here.
+    with decoder_no_sync_cm, encoder_no_sync_cm:
+        # Forward pass
+        losses = original_train_step(
+            batch=batch,
+            models=models,
+            _loss_fns=loss_fns,
+            lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'),
+            tokenizer=tokenizer,
+            cached_prefix_ids=cached_prefix_ids
+        )
+        
+        # Scale loss by accumulation steps
+        loss = losses['total'] / gradient_accumulation_steps
+        
+        # Backward pass
+        if device.type == "cuda" and scaler is not None:
+            scaler.scale(loss).backward()
+        else:
+            loss.backward()
     
     # Gradient clipping and optimizer step only at accumulation boundaries
     if is_accumulation_end:
@@ -204,6 +202,10 @@ def distributed_train_step(
             scaler.update()
         else:
             optimizer.step()
+
+        # Update learning rate scheduler AFTER optimizer.step()
+        if lr_scheduler is not None:
+            lr_scheduler.step()
         
         # Zero gradients for next iteration
         optimizer.zero_grad(set_to_none=True)
@@ -431,15 +433,7 @@ def main(cfg: DictConfig) -> None:
         
         # Run name generation (only on main process)
         if is_main():
-            config_name = None
-            try:
-                hydra_cfg = HydraConfig.get()
-                if hasattr(hydra_cfg, 'job') and hasattr(hydra_cfg.job, 'config_name'):
-                    config_name = hydra_cfg.job.config_name
-                elif hasattr(hydra_cfg, 'runtime') and hasattr(hydra_cfg.runtime, 'choices'):
-                    config_name = hydra_cfg.runtime.choices.get('config_name', 'config')
-            except:
-                pass
+            config_name = _get_hydra_config_name()
             
             run_name_override = config.get('run_name')
             if run_name_override:
@@ -473,9 +467,25 @@ def main(cfg: DictConfig) -> None:
 
     # --- Timer for Model Setup ---
     with Timer("Model Setup (Init, DDP)", log, main_process=is_main()):
-        decoder = Decoder(DecoderConfig(**config["decoder"]))
-        encoder = Encoder(EncoderConfig(**config["encoder"]))
-        orig_model = OrigWrapper(config) # OrigWrapper uses config dict
+        # Extract trainable components configuration
+        trainable_components_config = config.get('trainable_components', {})
+        decoder_train_cfg = trainable_components_config.get('decoder', {})
+        encoder_train_cfg = trainable_components_config.get('encoder', {})
+        
+        # Initialize models using the same pattern as the regular training script
+        decoder_config = DecoderConfig(
+            model_name=model_name,
+            **decoder_train_cfg
+        )
+        decoder = Decoder(decoder_config)
+        
+        encoder_config = EncoderConfig(
+            model_name=model_name,
+            **encoder_train_cfg
+        )
+        encoder = Encoder(encoder_config)
+        
+        orig_model = OrigWrapper(model_name, load_in_8bit=False)
         
         decoder, encoder, orig_model = setup_distributed_models(
             decoder, encoder, orig_model, device, rank, world_size
@@ -491,24 +501,82 @@ def main(cfg: DictConfig) -> None:
 
     # --- Timer for Dataset and DataLoader Setup ---
     with Timer("Dataset and DataLoader Setup", log, main_process=is_main()):
-        train_dataset, train_loader, val_dataset, val_loader = prepare_dataset_and_loaders(
-            config, activation_dir, effective_val_activation_dir, device, log # log is passed to prepare_dataset_and_loaders
+        train_loader, val_loader, train_ds, val_ds = prepare_dataset_and_loaders(
+            config=config,
+            activation_dir=activation_dir,
+            effective_val_activation_dir=effective_val_activation_dir,
+            max_train_samples_req=config.get('max_train_samples'),
+            max_val_samples_req=config.get('max_val_samples'),
+            log=log
         )
         
         train_loader = get_dataloader_for_distributed(
-            train_dataset, batch_size=batch_size, world_size=world_size, rank=rank, shuffle=True,
+            train_ds, batch_size=batch_size, world_size=world_size, rank=rank, shuffle=True,
             collate_fn=collate, num_workers=0, pin_memory=False,
         )
         
-        if val_dataset is not None:
+        if val_ds is not None:
             val_loader = get_dataloader_for_distributed(
-                val_dataset, batch_size=batch_size, world_size=world_size, rank=rank, shuffle=False,
+                val_ds, batch_size=batch_size, world_size=world_size, rank=rank, shuffle=False,
                 collate_fn=collate, num_workers=0, pin_memory=False,
             )
         
-        steps_per_epoch = len(train_loader) if train_loader and len(train_loader) > 0 else 1
-        if is_main() and len(train_loader) == 0 and config.get('max_train_steps', 0) > 0:
-            log.warning("Train loader is empty, steps_per_epoch is effectively 0.")
+        steps_per_epoch = len(train_loader) if train_loader else 0
+        
+        # Determine max_steps, similar to 01_train.py
+        max_steps = config['max_train_steps']  # Read from config first
+        num_train_epochs = config.get('num_train_epochs', 0)
+        num_epochs_total_approx = 0 # For logging
+
+        if steps_per_epoch == 0:
+            if is_main():
+                log.warning("Train loader is empty or batch_size is too large for dataset; steps_per_epoch is 0.")
+            # If loader is empty, max_steps from config (or 0 if not set for epoch training) will be used.
+            # If max_steps is 0, training loop won't run.
+            num_epochs_total_approx = 0 if max_steps == 0 else 1 # Basic approximation for logging
+            if num_train_epochs > 0 and max_steps == 0: # Epoch training specified but loader empty
+                 if is_main():
+                    log.warning(f"Epoch-based training ({num_train_epochs} epochs) requested, but train loader is empty. Effective max_steps will be 0.")
+                 max_steps = 0 # Ensure no training
+        else: # steps_per_epoch > 0
+            if num_train_epochs > 0 and max_steps == 0:
+                # Epoch-based training: calculate max_steps from num_train_epochs
+                max_steps = steps_per_epoch * num_train_epochs
+                num_epochs_total_approx = num_train_epochs
+                if is_main():
+                    log.info(f"Epoch-based training: {num_train_epochs} epochs × {steps_per_epoch} steps/epoch = {max_steps} total steps")
+            elif max_steps > 0:
+                # Step-based training: calculate approximate epochs from max_steps
+                num_epochs_total_approx = (max_steps - 1) // steps_per_epoch + 1
+            else:
+                # Neither epochs nor steps specified, and loader is not empty. This is an error.
+                if is_main():
+                    # This error should ideally stop all ranks.
+                    # For now, log error and set max_steps to 0 to prevent training.
+                    log.error("Config Error: If train_loader is not empty, either 'num_train_epochs' or 'max_train_steps' must be > 0.")
+                max_steps = 0 # Prevent training loop
+
+        config['max_train_steps'] = max_steps # Update config dict with calculated max_steps for consistency if other parts rely on it
+
+        # Calculate the number of optimizer steps
+        max_optimizer_steps = max_steps // gradient_accumulation_steps
+        if max_steps % gradient_accumulation_steps != 0: # Account for any remaining steps
+            max_optimizer_steps +=1
+        if is_main():
+            log.info(f"Total micro-steps (fwd/bwd passes): {max_steps}")
+            log.info(f"Total optimizer steps (scheduler steps): {max_optimizer_steps}")
+
+        # Parse flexible interval settings (log / wandb / val) now that steps_per_epoch is known
+        # These intervals are based on micro-steps (main loop steps)
+        log_interval = _resolve_schedule_to_steps(config['log_interval'], steps_per_epoch, log, "log_interval")
+        wandb_log_interval = _resolve_schedule_to_steps(config['wandb_log_interval'], steps_per_epoch, log, "wandb_log_interval")
+        val_interval_str = config.get('val_interval', "500s")
+        val_interval = _resolve_schedule_to_steps(val_interval_str, steps_per_epoch, log, "val_interval")
+
+        if log_interval <= 0:
+            raise ValueError(f"log_interval must be positive, got {config['log_interval']}")
+        if wandb_log_interval <= 0:
+            raise ValueError(f"wandb_log_interval must be positive, got {config['wandb_log_interval']}")
 
     # --- Timer for Optimizer and Scheduler Setup ---
     with Timer("Optimizer and Scheduler Setup", log, main_process=is_main()):
@@ -521,32 +589,58 @@ def main(cfg: DictConfig) -> None:
         decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
         encoder_base = encoder.module if hasattr(encoder, 'module') else encoder
         
+        # Extract learning rate multipliers from config
+        projection_lr_multiplier = custom_lr_multipliers.get('projection_layers', 1.0)
+        embedding_lr_multiplier = custom_lr_multipliers.get('embedding_layers', 1.0)
+        prompt_lr_multiplier = custom_lr_multipliers.get('prompt_layers', 1.0)
+        
         params = param_groups(
-            decoder_base, 
-            encoder_base, 
+            [decoder_base, encoder_base], 
             learning_rate, 
-            config, 
-            decoder_train_cfg, 
-            encoder_train_cfg,
-            custom_lr_multipliers
+            projection_lr_multiplier, 
+            embedding_lr_multiplier, 
+            prompt_lr_multiplier
         )
-        optimizer = torch.optim.AdamW(params, weight_decay=config["weight_decay"])
+        optimizer = torch.optim.AdamW(params)
         
         # Learning rate scheduler
         lr_scheduler_cfg = config.get('lr_scheduler', {})
-        lr_scheduler = get_lr_scheduler(optimizer, lr_scheduler_cfg, max_steps)
+        # Initialize scheduler with max_optimizer_steps
+        lr_scheduler = get_lr_scheduler(optimizer, lr_scheduler_cfg, max_optimizer_steps) 
         
         # Initialize gradient scaler for mixed precision
-        scaler = torch.cuda.amp.GradScaler() if device.type == "cuda" else None
+        scaler = torch.amp.GradScaler('cuda') if device.type == "cuda" else None
 
     # Initialize CheckpointManager (after steps_per_epoch is known)
     # It uses the original Hydra 'cfg' to correctly parse schedule strings for save intervals.
-    checkpoint_manager = CheckpointManager(cfg, log, steps_per_epoch)
+    checkpoint_manager = CheckpointManager(config, log, steps_per_epoch)
     
     # Initialize W&B (only on main process)
     if is_main():
         wandb_config = config.get('wandb', {})
-        run_info = log_init(config, run_name=run_name)
+        
+        # Build wandb_init_kwargs like in the regular training script
+        wandb_init_kwargs = {
+            'project': wandb_config.get('project', 'consistency-lens'),
+            'name': run_name,  # Use our generated run name
+            'config': config,
+            'mode': wandb_config.get('mode', 'online'),
+            'tags': []  # Initialize tags list
+        }
+        
+        # Add dataset and model tags
+        if dataset_info.get('dataset'):
+            wandb_init_kwargs['tags'].append(f"dataset-{dataset_info['dataset']}")
+        if dataset_info.get('model_name'):
+            model_tag = dataset_info['model_name'].replace('/', '-')
+            wandb_init_kwargs['tags'].append(f"model-{model_tag}")
+        if dataset_info.get('layer') is not None:
+            wandb_init_kwargs['tags'].append(f"layer-{dataset_info['layer']}")
+        
+        # Add distributed training tag
+        wandb_init_kwargs['tags'].append(f"distributed-{world_size}gpu")
+        
+        current_wandb_run_id = log_init(**wandb_init_kwargs)
         
         # Save config
         config_save_path = run_checkpoint_dir / "config.yaml"
@@ -554,7 +648,7 @@ def main(cfg: DictConfig) -> None:
             OmegaConf.save(cfg, f)
         log.info(f"Config saved to: {config_save_path}")
     else:
-        run_info = None
+        current_wandb_run_id = None
     
     # Resume from checkpoint if specified
     start_step = 0
@@ -576,8 +670,8 @@ def main(cfg: DictConfig) -> None:
             start_step = int(rec.get("step", -1)) + 1
             
             if is_main():
-                log.info(f"Resumed from step {start_step}")
-                if lr_scheduler and 'scheduler_state_dict' not in rec and 'scheduler' not in rec : # Check both common keys
+                log.info(f"Resumed from micro-step {start_step}")
+                if lr_scheduler and ('scheduler_state_dict' not in rec or 'scheduler' not in rec):
                     log.warning("Scheduler state not found in checkpoint, or not loaded by CheckpointManager.")
                 elif lr_scheduler and ('scheduler_state_dict' in rec or 'scheduler' in rec):
                     log.info("Scheduler state successfully loaded via CheckpointManager.")
@@ -610,6 +704,8 @@ def main(cfg: DictConfig) -> None:
         
         # Training step with optimized gradient accumulation
         batch = next(iter(train_loader))
+        batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)} # Move batch to device
+
         metrics = distributed_train_step(
             decoder,
             encoder,
@@ -624,11 +720,8 @@ def main(cfg: DictConfig) -> None:
             cached_prefix_ids,
             gradient_accumulation_steps=gradient_accumulation_steps,
             is_distributed=(world_size > 1),
+            lr_scheduler=lr_scheduler
         )
-        
-        # Update learning rate scheduler
-        if lr_scheduler is not None:
-            lr_scheduler.step()
         
         # Synchronize metrics across processes
         metrics = sync_metrics(metrics, world_size)
@@ -637,15 +730,20 @@ def main(cfg: DictConfig) -> None:
         running_losses.append(metrics['loss'])
         step_times.append(time.time() - step_start_time)
         
-        # Logging (only on main process)
-        if is_main() and step % config.get('log_interval', 10) == 0:
-            avg_loss = sum(running_losses) / len(running_losses)
-            avg_step_time = sum(step_times) / len(step_times)
-            samples_per_sec = effective_batch_size / avg_step_time
-            
-            current_lr = optimizer.param_groups[0]['lr']
-            accumulation_step = (step % gradient_accumulation_steps) + 1
-            
+        # Average metrics for logging
+        avg_loss = sum(running_losses) / len(running_losses)
+        avg_step_time = sum(step_times) / len(step_times)
+        samples_per_sec = effective_batch_size / avg_step_time
+
+        current_lr = optimizer.param_groups[0]['lr']
+        accumulation_step = (step % gradient_accumulation_steps) + 1
+        
+        # Performance metrics (calculated similarly to 01_train.py)
+        steps_per_second = 1.0 / avg_step_time if avg_step_time > 0 else 0
+        tokens_per_second = samples_per_sec * config.get('t_text', 10)
+
+        # Console logging (only on main process)
+        if is_main() and (step % log_interval == 0 or step == max_steps - 1):
             log.info(
                 f"Step {step}/{max_steps} | "
                 f"Loss: {avg_loss:.4f} | "
@@ -653,36 +751,95 @@ def main(cfg: DictConfig) -> None:
                 f"Samples/sec: {samples_per_sec:.1f} | "
                 f"Acc: {accumulation_step}/{gradient_accumulation_steps}"
             )
+
+        # W&B logging (only on main process)
+        if is_main() and (step % wandb_log_interval == 0 or step == max_steps - 1):
+            # Get schedule values for logging (consistent with 01_train.py)
+            # Current optimizer step for schedule value calculation
+            current_optimizer_step_for_sched = step // gradient_accumulation_steps
             
-            # Log to W&B
+            current_tau_log = get_schedule_value(config['gumbel_tau_schedule'], step, max_steps,
+                                                         current_optimizer_step_for_sched, gradient_accumulation_steps) # pass micro_step, total_micro_steps, optimizer_step, grad_accum
+            current_alpha_log = get_schedule_value(config['alpha_schedule'], step, max_steps,
+                                                           current_optimizer_step_for_sched, gradient_accumulation_steps)
+            
             wandb_metrics = {
-                'train/loss': avg_loss,
-                'train/learning_rate': current_lr,
-                'train/samples_per_second': samples_per_sec,
+                'train/loss': avg_loss, # This is the running average loss
+                'loss/total': metrics['loss'], # This is the current step's synced loss
+                'loss/mse': metrics['loss_mse'],
+                'loss/lm': metrics['loss_lm'],
+                'loss/kl': metrics['loss_kl'],
+                'loss/entropy': metrics['loss_entropy'],
+                'params/tau': current_tau_log,
+                'params/alpha': current_alpha_log,
+                'params/lm_w': get_schedule_value(config['alpha_schedule'], step, max_steps, current_optimizer_step_for_sched, gradient_accumulation_steps), # lm_weight is alpha
+                'params/kl_w': config.get('kl_base_weight', 1.0),
+                'params/entropy_w': config.get('entropy_weight', 0.0),
+                'optim/lr': current_lr,
+                'grads/norm': metrics.get('grad_norm', 0.0), # grad_norm is from the accumulation end step
+                # 'updates/norm' and 'updates/ratio' are harder to get accurately here without DDP sync after optimizer step
+                # and before next backward pass if not an accumulation_end step.
+                # For simplicity, we'll omit them or log them as 0 if not an accumulation_end step.
+                # 'update_norm' and 'param_norm' would require synchronizing model parameters or their checksums,
+                # which is complex and potentially slow.
+                # We can log grad_norm as it's available after clipping on accumulation_end.
+                'gradient_accumulation/is_update_step': 1 if ((step + 1) % gradient_accumulation_steps == 0) or (step == max_steps - 1) else 0,
+                'gradient_accumulation/accumulation_step': accumulation_step,
+                'performance/steps_per_second': steps_per_second,
+                'performance/samples_per_second': samples_per_sec, # effective_batch_size / avg_step_time
+                'performance/tokens_per_second': tokens_per_second,
+                'performance/avg_step_time': avg_step_time,
                 'train/gpu_memory_allocated': torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0,
                 'train/gradient_accumulation_step': accumulation_step,
-                **metrics # Add detailed losses like loss_mse, loss_lm etc.
             }
-            if run_info:
+            
+            # Add epoch if applicable
+            # Epoch calculation should be based on optimizer steps or effective data passes
+            effective_steps_per_epoch = steps_per_epoch // gradient_accumulation_steps if steps_per_epoch > 0 and gradient_accumulation_steps > 0 else 0
+            if effective_steps_per_epoch > 0:
+                current_effective_epoch = current_optimizer_step_for_sched // effective_steps_per_epoch
+                wandb_metrics["epoch"] = current_effective_epoch + 1 # 1-based epoch for logging
+            elif steps_per_epoch > 0 : # Fallback if effective_steps_per_epoch is 0 but steps_per_epoch > 0 (e.g. GAS=1)
+                 wandb_metrics["epoch"] = (step // steps_per_epoch) + 1
+
+            # System metrics (less frequently, similar to 01_train.py)
+            if step % (wandb_log_interval * 10) == 0: # Log every 10 wandb log intervals
+                sys_metrics_dict = get_system_metrics(device) # Assuming get_system_metrics is available
+                
+                # Ensure sys_metrics are prefixed correctly for wandb
+                wandb_sys_metrics = {f"system/{k.replace('_', '_')}": v for k,v in sys_metrics_dict.items()}
+                wandb_metrics.update(wandb_sys_metrics)
+
+            if current_wandb_run_id:
                 log_metrics(wandb_metrics, step)
         
         # Checkpointing (only on main process)
         if is_main() and checkpoint_manager.should_save_step(step):
             # Get current tau and alpha for checkpointing, similar to 01_train.py
-            current_tau = get_schedule_value(config, 'gumbel_temperature', step)
-            current_alpha = get_schedule_value(config, 'lm_weight', step) # Assuming lm_weight schedule is alpha
-            current_wandb_run_id = run_info.get('id') if run_info else None
+            # Checkpointing metadata should reflect the state at the current *micro-step*
+            # but schedules are evaluated based on optimizer steps.
+            current_optimizer_step_for_ckpt = step // gradient_accumulation_steps
+            current_tau_ckpt = get_schedule_value(config['gumbel_tau_schedule'], step, max_steps, 
+                                           current_optimizer_step_for_ckpt, 
+                                           gradient_accumulation_steps)
+            current_alpha_ckpt = get_schedule_value(config['alpha_schedule'], step, max_steps,
+                                             current_optimizer_step_for_ckpt, 
+                                             gradient_accumulation_steps)
+            # current_wandb_run_id is already defined
+            # Epoch for checkpoint filename/metadata: based on micro-steps or optimizer steps?
+            # 01_train.py uses current_epoch_num = (micro_step // steps_per_epoch) + 1. Let's stick to that for filename.
+            current_epoch_num_for_ckpt_filename = (step // steps_per_epoch) + 1 if steps_per_epoch > 0 else 1
 
             saved_path = checkpoint_manager.save_checkpoint(
-                step=step,
-                epoch=current_epoch,
+                step=step, # Save with micro-step
+                epoch=current_epoch_num_for_ckpt_filename, # Use 1-based epoch based on micro-steps
                 models={'decoder': decoder_base, 'encoder': encoder_base},
                 optimizer=optimizer,
-                scheduler=lr_scheduler,
-                metrics=metrics, # This 'metrics' is from distributed_train_step, contains loss, loss_mse etc.
-                config=cfg, # Pass the original Hydra cfg object
-                tau=current_tau,
-                alpha=current_alpha,
+                scheduler=lr_scheduler, # Scheduler state is based on optimizer steps
+                metrics=metrics, 
+                config=config, 
+                tau=current_tau_ckpt,
+                alpha=current_alpha_ckpt,
                 wandb_run_id=current_wandb_run_id
             )
             if saved_path:
@@ -691,7 +848,7 @@ def main(cfg: DictConfig) -> None:
                 log.info(f"Checkpoint not saved at step {step} (e.g., max_checkpoints reached or interval not met).")
         
         # Validation (only on main process for now)
-        if is_main() and val_loader and step % config.get('val_interval', 500) == 0:
+        if is_main() and val_loader and val_interval > 0 and (step % val_interval == 0):
             # TODO: Implement distributed validation
             log.info(f"Skipping validation at step {step} (TODO: Implement)")
             pass # Placeholder for validation logic
@@ -708,7 +865,7 @@ def main(cfg: DictConfig) -> None:
                 verbose_interval_str = verbose_config.get('interval', "1000s") # Default from 01_train.py
                 try:
                     # Assuming train_module contains _resolve_schedule_to_steps
-                    verbose_interval = train_module._resolve_schedule_to_steps(
+                    verbose_interval = _resolve_schedule_to_steps(
                         verbose_interval_str, steps_per_epoch, log, "verbose_interval"
                     )
                     if step % verbose_interval == 0:
@@ -730,12 +887,19 @@ def main(cfg: DictConfig) -> None:
                     encoder.eval()
                     orig_model.model.eval() # Ensure orig model is also in eval
 
-                    # Get schedule arguments for verbose samples
+                    # Get schedule arguments for verbose samples - these use optimizer steps
+                    current_optimizer_step_for_verbose = step // gradient_accumulation_steps
                     sch_args_verbose = {
-                        "tau": get_schedule_value(config, 'gumbel_temperature', step),
+                        "tau": get_schedule_value(config['gumbel_tau_schedule'], step, max_steps,
+                                                 current_optimizer_step_for_verbose, 
+                                                 gradient_accumulation_steps),
                         "T_text": config.get('t_text', 8),
-                        "alpha": get_schedule_value(config, 'lm_weight', step), # Assuming lm_weight is alpha here
-                        "lm_weight": get_schedule_value(config, 'lm_weight', step),
+                        "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps,
+                                                   current_optimizer_step_for_verbose, 
+                                                   gradient_accumulation_steps),
+                        "lm_weight": get_schedule_value(config['alpha_schedule'], step, max_steps, # This is alpha
+                                                       current_optimizer_step_for_verbose, 
+                                                       gradient_accumulation_steps),
                         "kl_base_weight": config.get('kl_base_weight', 1.0),
                         "entropy_weight": config.get('entropy_weight', 0.0),
                         "mse_weight": config.get('mse_weight', 0.0), # Added for completeness
@@ -745,9 +909,9 @@ def main(cfg: DictConfig) -> None:
                     verbose_batch = {k: v.to(device) for k, v in batch.items()}
 
                     # Assuming train_module contains process_and_print_verbose_batch_samples
-                    num_printed, captured_text = train_module.process_and_print_verbose_batch_samples(
+                    num_printed, captured_text = process_and_print_verbose_batch_samples(
                         batch=verbose_batch,
-                        cfg=OmegaConf.create(config), # process_and_print_verbose_batch_samples might expect OmegaConf
+                        cfg=config, # Pass the resolved dictionary config directly
                         models={"dec": decoder_base, "enc": encoder_base}, # Pass base models
                         orig=orig_model,
                         tok=tokenizer,
@@ -762,7 +926,7 @@ def main(cfg: DictConfig) -> None:
                         capture_output=True
                     )
                     
-                    current_wandb_run_id = run_info.get('id') if run_info else None
+                    # current_wandb_run_id is already defined
                     if captured_text and current_wandb_run_id:
                         verbose_samples_logger.log_verbose_samples(
                             captured_text,
@@ -777,24 +941,53 @@ def main(cfg: DictConfig) -> None:
     
     # Final checkpoint
     if is_main() and checkpoint_manager.save_at_end:
-        current_epoch = max_steps // steps_per_epoch if steps_per_epoch > 0 else 0
-        current_wandb_run_id = run_info.get('id') if run_info else None
-        # Get final tau and alpha
-        final_tau = get_schedule_value(config, 'gumbel_temperature', max_steps -1)
-        final_alpha = get_schedule_value(config, 'lm_weight', max_steps -1)
+        current_epoch_for_ckpt = max_steps // steps_per_epoch if steps_per_epoch > 0 else 0
+        current_epoch_num_for_ckpt = current_epoch_for_ckpt + 1 if max_steps > 0 else 1 # Ensure 1-based epoch, or 1 if no steps
+        step_for_ckpt = max_steps - 1 if max_steps > 0 else -1 # Consistent with saving at step -1 if max_steps is 0
 
-        # 'metrics' here would be from the last training step
+        # current_wandb_run_id is already defined
+        
+        # Determine parameters for final schedule value calculation
+        if max_steps == 0:
+            # If no training steps, get initial value of schedules (optimizer_step 0 of a hypothetical 1-optimizer_step schedule)
+            calc_optimizer_step_for_final_sched = 0
+            # calc_total_optimizer_steps_for_final_sched = 1 
+        else:
+            # Get schedule value at the last completed micro_step, translating to optimizer_step
+            calc_optimizer_step_for_final_sched = (max_steps - 1) // gradient_accumulation_steps
+            # calc_total_optimizer_steps_for_final_sched = max_optimizer_steps
+
+        # Get final tau and alpha using calculated optimizer step parameters
+        # Note: get_schedule_value expects micro_step, total_micro_steps, optimizer_step, grad_accum_steps
+        final_micro_step_for_sched = max_steps -1 if max_steps > 0 else 0
+
+        final_tau = get_schedule_value(
+            config['gumbel_tau_schedule'], 
+            final_micro_step_for_sched, # current micro_step
+            max_steps,                   # total micro_steps
+            calc_optimizer_step_for_final_sched, # current optimizer_step
+            gradient_accumulation_steps
+        )
+        final_alpha = get_schedule_value(
+            config['alpha_schedule'], 
+            final_micro_step_for_sched,
+            max_steps,
+            calc_optimizer_step_for_final_sched,
+            gradient_accumulation_steps
+        )
+
+        # 'metrics' here would be from the last training step, or undefined if loop didn't run
         final_metrics_to_save = metrics if 'metrics' in locals() else {}
 
 
         final_checkpoint_path = checkpoint_manager.save_checkpoint(
-            step=max_steps -1, # Save at the last completed step
-            epoch=current_epoch,
+            step=step_for_ckpt, 
+            epoch=current_epoch_num_for_ckpt, # Use 1-based epoch
             models={'decoder': decoder_base, 'encoder': encoder_base},
             optimizer=optimizer,
             scheduler=lr_scheduler,
             metrics=final_metrics_to_save,
-            config=cfg, # Pass the original Hydra cfg object
+            config=config, # Pass the resolved dictionary config
             tau=final_tau,
             alpha=final_alpha,
             wandb_run_id=current_wandb_run_id

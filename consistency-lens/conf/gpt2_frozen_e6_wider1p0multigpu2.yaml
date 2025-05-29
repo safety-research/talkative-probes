@@ -6,7 +6,7 @@ defaults:
   - _self_
 
 # Training hyperparameters
-t_text: 16                        # Number of tokens to generate with the Decoder
+t_text: 8                        # Number of tokens to generate with the Decoder
 
 # Trainable components - FROZEN base model
 trainable_components:
@@ -36,7 +36,7 @@ lr_scheduler:
   warmup_start_factor: 0.1            # Start at 10% of target LR
   eta_min: 1.0e-5   
 
-batch_size: 128
+batch_size: 256
 gradient_accumulation_steps: 32
 gumbel_tau_schedule:
   constant_steps_before_linear_decay: 1000

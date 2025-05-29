@@ -417,7 +417,7 @@ def process_and_print_verbose_batch_samples(
         # ------------------------------------------------------------------
         # (2) Base model generation with identical (learned) context + incl linear map                
         # ------------------------------------------------------------------
-        base_gen_single = dec.generate_soft(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, use_proj_map=True)
+        base_gen_single = dec.generate_soft(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, use_projection=True)
         # base_gen_single = generate_soft_with_base(
         #     orig,
         #     A_i,
@@ -447,7 +447,7 @@ def process_and_print_verbose_batch_samples(
                                                  override_model_base_and_out=orig, 
                                                  hard_left_emb=left_ids, 
                                                  hard_right_emb=right_ids,
-                                                 use_proj_map=True)
+                                                 use_projection=True)
 
         base_token_ids_full_hard = base_gen_single_hard.hard_token_ids[0].tolist()
         base_gen_tokens_hard = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full_hard]
@@ -464,7 +464,7 @@ def process_and_print_verbose_batch_samples(
                                                         override_model_base_and_out=orig, 
                                                         hard_left_emb=left_ids, 
                                                         hard_right_emb=right_ids, 
-                                                        use_proj_map=False)
+                                                        use_projection=False)
 
         base_token_ids_full_hard_no_map = base_gen_single_hard_no_map.hard_token_ids[0].tolist()
         base_gen_tokens_hard_no_map = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full_hard_no_map]
@@ -627,6 +627,17 @@ def process_and_print_verbose_batch_samples(
         if (printed_count_so_far + num_printed_this_batch) >= num_samples:
             break
     
+    # After all samples, print soft prompt projections (only once per batch)
+    if num_printed_this_batch > 0:
+        soft_prompt_projections = get_soft_prompt_projections(dec, enc, orig, tok)
+        soft_prompt_text = format_soft_prompt_projections(soft_prompt_projections)
+        
+        if capture_output:
+            captured_output.append(soft_prompt_text)
+            print(soft_prompt_text)
+        else:
+            print(soft_prompt_text)
+    
     if return_structured_data:
         return num_printed_this_batch, structured_samples
     elif capture_output:
@@ -715,3 +726,183 @@ def process_and_print_verbose_batch_samples(
 #     hard_ids = torch.stack(hard_ids_list, dim=1)
 
 #     return BaseGenerated(hard_token_ids=hard_ids, raw_lm_logits=logits_seq)
+
+
+def project_embeddings_to_text(
+    embeddings: torch.Tensor,
+    embedding_table: torch.Tensor,
+    tok: PreTrainedTokenizerBase,
+    top_k: int = 3
+) -> List[Tuple[str, List[Tuple[str, float]]]]:
+    """Project embedding vectors back to text by finding nearest neighbors in embedding space.
+    
+    Args:
+        embeddings: Embedding vectors to project [num_embeddings, d_model]
+        embedding_table: Vocabulary embedding table [vocab_size, d_model]
+        tok: Tokenizer
+        top_k: Number of nearest neighbors to return
+        
+    Returns:
+        List of (top1_token, [(token, distance), ...]) for each embedding
+    """
+    results = []
+    
+    # Normalize embeddings for cosine similarity
+    embeddings_norm = torch.nn.functional.normalize(embeddings, p=2, dim=-1)
+    embedding_table_norm = torch.nn.functional.normalize(embedding_table, p=2, dim=-1)
+    
+    # Compute similarities
+    similarities = torch.matmul(embeddings_norm, embedding_table_norm.T)  # [num_embeddings, vocab_size]
+    
+    # Get top-k for each embedding
+    for i in range(embeddings.shape[0]):
+        top_values, top_indices = torch.topk(similarities[i], k=min(top_k, similarities.shape[1]))
+        
+        top_tokens = []
+        for j in range(len(top_indices)):
+            token_id = top_indices[j].item()
+            similarity = top_values[j].item()
+            token_str = escape_newlines(tok.decode([token_id]))
+            top_tokens.append((token_str, similarity))
+        
+        # The top-1 token is the primary result
+        top1_token = top_tokens[0][0] if top_tokens else ""
+        results.append((top1_token, top_tokens))
+    
+    return results
+
+
+def get_soft_prompt_projections(
+    dec: Decoder,
+    enc: Encoder,
+    orig: OrigWrapper,
+    tok: PreTrainedTokenizerBase,
+) -> Dict[str, Any]:
+    """Get text projections of learned soft prompts from decoder and encoder.
+    
+    Returns:
+        Dictionary with projection results for display
+    """
+    projections = {}
+    
+    # Decoder projections
+    if dec.prompt_left_emb is not None or dec.prompt_right_emb is not None:
+        # Get embedding tables
+        input_emb_table = dec.base.get_input_embeddings().weight
+        output_emb_table = dec.base.get_output_embeddings().weight
+        
+        decoder_projections = {}
+        
+        # Project left prompt
+        if dec.prompt_left_emb is not None:
+            # Using input embeddings
+            left_input_proj = project_embeddings_to_text(
+                dec.prompt_left_emb, input_emb_table, tok, top_k=3
+            )
+            decoder_projections['left_input'] = left_input_proj
+            
+            # Using output embeddings
+            left_output_proj = project_embeddings_to_text(
+                dec.prompt_left_emb, output_emb_table, tok, top_k=3
+            )
+            decoder_projections['left_output'] = left_output_proj
+        
+        # Project right prompt
+        if dec.prompt_right_emb is not None:
+            # Using input embeddings
+            right_input_proj = project_embeddings_to_text(
+                dec.prompt_right_emb, input_emb_table, tok, top_k=3
+            )
+            decoder_projections['right_input'] = right_input_proj
+            
+            # Using output embeddings
+            right_output_proj = project_embeddings_to_text(
+                dec.prompt_right_emb, output_emb_table, tok, top_k=3
+            )
+            decoder_projections['right_output'] = right_output_proj
+        
+        projections['decoder'] = decoder_projections
+    
+    # Encoder projections (only input embeddings needed)
+    if enc.soft_prompt_embeddings is not None:
+        # Get input embedding table from encoder's base model
+        if enc._use_base:
+            input_emb_table = enc.base.get_input_embeddings().weight
+        else:
+            # Fallback to original model if encoder base not used
+            input_emb_table = orig.model.get_input_embeddings().weight
+        
+        encoder_proj = project_embeddings_to_text(
+            enc.soft_prompt_embeddings, input_emb_table, tok, top_k=3
+        )
+        projections['encoder'] = encoder_proj
+    
+    return projections
+
+
+def format_soft_prompt_projections(projections: Dict[str, Any]) -> str:
+    """Format soft prompt projections for display."""
+    lines = []
+    lines.append("\n--- Learned Soft Prompt Projections ---")
+    
+    # Decoder projections
+    if 'decoder' in projections:
+        lines.append("\nDecoder Soft Prompts:")
+        dec_proj = projections['decoder']
+        
+        # Format left prompt
+        if 'left_input' in dec_proj:
+            left_input = dec_proj['left_input']
+            left_output = dec_proj.get('left_output', [])
+            
+            lines.append("  Left prompt:")
+            # Show as a single line with <embed> marker
+            input_text = ''.join([t[0] for t, _ in left_input])
+            output_text = ''.join([t[0] for t, _ in left_output]) if left_output else ""
+            
+            lines.append(f"    Input emb:  \"{input_text}<embed>\"")
+            lines.append(f"    Output emb: \"{output_text}<embed>\"")
+            
+            # Show top-3 for each token
+            lines.append("    Per-token top-3 (input emb):")
+            for i, (_, top_tokens) in enumerate(left_input):
+                token_strs = [f"'{t}'({s:.3f})" for t, s in top_tokens[:3]]
+                lines.append(f"      Token {i}: {', '.join(token_strs)}")
+        
+        # Format right prompt
+        if 'right_input' in dec_proj:
+            right_input = dec_proj['right_input']
+            right_output = dec_proj.get('right_output', [])
+            
+            lines.append("  Right prompt:")
+            input_text = ''.join([t[0] for t, _ in right_input])
+            output_text = ''.join([t[0] for t, _ in right_output]) if right_output else ""
+            
+            lines.append(f"    Input emb:  \"<embed>{input_text}\"")
+            lines.append(f"    Output emb: \"<embed>{output_text}\"")
+            
+            lines.append("    Per-token top-3 (input emb):")
+            for i, (_, top_tokens) in enumerate(right_input):
+                token_strs = [f"'{t}'({s:.3f})" for t, s in top_tokens[:3]]
+                lines.append(f"      Token {i}: {', '.join(token_strs)}")
+    
+    # Encoder projections
+    if 'encoder' in projections:
+        lines.append("\nEncoder Soft Prompt:")
+        enc_proj = projections['encoder']
+        
+        # Show as a single line
+        prompt_text = ''.join([t[0] for t, _ in enc_proj])
+        lines.append(f"  Text: \"{prompt_text}\"")
+        
+        # Show top-3 for each token
+        lines.append("  Per-token top-3:")
+        for i, (_, top_tokens) in enumerate(enc_proj):
+            token_strs = [f"'{t}'({s:.3f})" for t, s in top_tokens[:3]]
+            lines.append(f"    Token {i}: {', '.join(token_strs)}")
+    
+    if not projections:
+        lines.append("  (No soft prompts configured)")
+    
+    lines.append("-" * 60)
+    return '\n'.join(lines)

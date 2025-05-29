@@ -20,8 +20,11 @@ fi
 # module load cuda/12.4 || true
 # module load python/3.11 || true
 
-# Activate virtual environment if needed
-source .venv/bin/activate || true
+# Navigate to project root
+cd /workspace/kitf/talkative-probes/consistency-lens
+
+# Ensure environment is set up on this node
+source scripts/ensure_env.sh
 
 # Set environment variables
 export OMP_NUM_THREADS=8
@@ -31,9 +34,6 @@ export TOKENIZERS_PARALLELISM=true
 
 # Create log directory
 mkdir -p logs
-
-# Navigate to project root
-cd /home/kitf/talkative-probes/consistency-lens
 
 # Parse arguments
 CONFIG_FILE="${1:-conf/config.yaml}"
@@ -63,8 +63,8 @@ else
     HYDRA_CONFIG_PATH="../$CONFIG_DIR"
 fi
 
-# Use detected number of GPUs
-CMD="torchrun --nproc_per_node=$NUM_GPUS scripts/00_dump_activations_multigpu.py --config-path $HYDRA_CONFIG_PATH --config-name $CONFIG_NAME"
+# Use detected number of GPUs with uv_run
+CMD="uv_run torchrun --nproc_per_node=$NUM_GPUS scripts/00_dump_activations_multigpu.py --config-path $HYDRA_CONFIG_PATH --config-name $CONFIG_NAME"
 
 if [ -n "$LAYER_IDX" ]; then
     CMD="$CMD layer_l=$LAYER_IDX"
