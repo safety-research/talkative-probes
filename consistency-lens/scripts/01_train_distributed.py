@@ -25,6 +25,7 @@ import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
+from transformers import AutoTokenizer
 
 # Enable TF32 for better performance on Ampere GPUs (A100, H100)
 torch.set_float32_matmul_precision('high')
@@ -64,13 +65,7 @@ from lens.training.distributed import (
     get_local_rank,
     reduce_dict,
 )
-from lens.utils.checkpoint import (
-    save_checkpoint, 
-    load_checkpoint, 
-    CheckpointManager,
-    save_training_checkpoint,
-    save_legacy_checkpoint,
-)
+from lens.utils.checkpoint_manager import CheckpointManager
 from lens.evaluation.metrics import build_metrics
 from lens.evaluation.verbose_samples import maybe_print_verbose_samples
 from lens.models.utils import prepare_inputs
@@ -101,6 +96,8 @@ def distributed_train_step(
     config,
     step,
     device,
+    tokenizer,
+    cached_prefix_ids,
     gradient_accumulation_steps=1,
     is_distributed=False,
 ):
@@ -158,8 +155,8 @@ def distributed_train_step(
                 models=models,
                 _loss_fns=loss_fns,
                 lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'),
-                tokenizer=None,  # TODO: Add tokenizer if needed
-                cached_prefix_ids=None  # TODO: Add cached prefix if needed
+                tokenizer=tokenizer,
+                cached_prefix_ids=cached_prefix_ids
             )
             
             # Scale loss by accumulation steps
@@ -336,7 +333,8 @@ def main(cfg: DictConfig) -> None:
     else:
         device = torch.device('cpu')
     
-    # Convert Hydra config to a plain Python dict
+    # Convert Hydra config to a plain Python dict for most operations,
+    # but CheckpointManager will use the original cfg.
     config = OmegaConf.to_container(cfg, resolve=True)
     
     # Parse flexible schedule notations
@@ -354,9 +352,27 @@ def main(cfg: DictConfig) -> None:
     
     log = logging.getLogger(__name__)
     
+    # Load tokenizer (all processes will have it, but primarily used by main for logging unless train_step needs it)
+    tokenizer_name = config.get("tokenizer_name", config['model_name'])
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    if is_main():
+        log.info(f"Tokenizer loaded: {tokenizer_name}")
+    
+    # Cache tokenized natural language prefix if specified (all processes do this, small overhead)
+    cached_prefix_ids = None
+    lm_loss_natural_prefix_text = config.get('lm_loss_natural_prefix') # Assuming this key holds the text
+    if lm_loss_natural_prefix_text and isinstance(lm_loss_natural_prefix_text, str) : # Check if it's a string
+        cached_prefix_ids = tokenizer(lm_loss_natural_prefix_text, add_special_tokens=False, return_tensors="pt").input_ids.to(device)
+        if is_main():
+            log.info(f"Cached natural language prefix: '{lm_loss_natural_prefix_text}' ({cached_prefix_ids.shape[1]} tokens)")
+    elif config.get('lm_loss_natural_prefix') is True: # Handle boolean true case if it implies a default prefix or other logic
+        # This case might need clarification if 'True' implies a specific default prefix text
+        # For now, we assume if it's not a string, no prefix is cached.
+        if is_main():
+            log.warning("lm_loss_natural_prefix is True but not a string. Cannot cache prefix IDs without prefix text.")
+    
     # Extract configuration values
     model_name = config['model_name']
-    tokenizer_name = config.get("tokenizer_name", model_name)
     layer_l = config.get('layer_l', 5)
     
     # Setup paths (same as original)
@@ -436,13 +452,17 @@ def main(cfg: DictConfig) -> None:
     checkpoint_config = config.get('checkpoint', {})
     base_checkpoint_dir = resolve_path(checkpoint_config.get('output_dir', 'outputs'))
     run_checkpoint_dir = base_checkpoint_dir / run_name
-    checkpoint_config['output_dir'] = str(run_checkpoint_dir)
     
     # Create checkpoint directory (only on main process)
     if is_main():
         run_checkpoint_dir.mkdir(parents=True, exist_ok=True)
         log.info(f"Checkpoints will be saved to: {run_checkpoint_dir}")
     
+    # Update the original cfg with the resolved checkpoint output_dir for CheckpointManager
+    if 'checkpoint' not in cfg:
+        cfg.checkpoint = OmegaConf.create()
+    cfg.checkpoint.output_dir = str(run_checkpoint_dir)
+
     # Initialize models
     decoder = Decoder(DecoderConfig(**config["decoder"]))
     encoder = Encoder(EncoderConfig(**config["encoder"]))
@@ -492,6 +512,11 @@ def main(cfg: DictConfig) -> None:
             pin_memory=False,
         )
     
+    # Calculate steps_per_epoch for CheckpointManager and LR scheduler
+    steps_per_epoch = len(train_loader) if train_loader and len(train_loader) > 0 else 1 # Avoid 0 for division
+    if is_main() and len(train_loader) == 0 and config.get('max_train_steps', 0) > 0:
+        log.warning("Train loader is empty, steps_per_epoch is effectively 0. Checkpoint save-by-epoch and some LR schedulers might not work correctly.")
+    
     # Setup optimizer (same as original)
     trainable_components_config = config.get('trainable_components', {})
     decoder_train_cfg = trainable_components_config.get('decoder', {})
@@ -519,6 +544,10 @@ def main(cfg: DictConfig) -> None:
     
     # Initialize gradient scaler for mixed precision
     scaler = torch.cuda.amp.GradScaler() if device.type == "cuda" else None
+
+    # Initialize CheckpointManager (after steps_per_epoch is known)
+    # It uses the original Hydra 'cfg' to correctly parse schedule strings for save intervals.
+    checkpoint_manager = CheckpointManager(cfg, log, steps_per_epoch)
     
     # Initialize W&B (only on main process)
     if is_main():
@@ -536,32 +565,36 @@ def main(cfg: DictConfig) -> None:
     # Resume from checkpoint if specified
     start_step = 0
     if config.get('resume'):
-        checkpoint_path = Path(config['resume'])
-        if checkpoint_path.exists():
+        checkpoint_path_str = config['resume']
+        if Path(checkpoint_path_str).exists():
             if is_main():
-                log.info(f"Resuming from checkpoint: {checkpoint_path}")
+                log.info(f"Resuming from checkpoint: {checkpoint_path_str}")
             
-            checkpoint_data = load_checkpoint(
-                checkpoint_path,
-                decoder_base,
-                encoder_base,
-                optimizer,
-                lr_scheduler,
-                device,
-                log
+            models_to_load = {"decoder": decoder_base, "encoder": encoder_base}
+            
+            rec = checkpoint_manager.load_checkpoint(
+                checkpoint_path_str,
+                models=models_to_load,
+                optimizer=optimizer,
+                scheduler=lr_scheduler,
+                map_location=device
             )
-            start_step = checkpoint_data.get('step', 0) + 1
+            start_step = int(rec.get("step", -1)) + 1
             
             if is_main():
                 log.info(f"Resumed from step {start_step}")
+                if lr_scheduler and 'scheduler_state_dict' not in rec and 'scheduler' not in rec : # Check both common keys
+                    log.warning("Scheduler state not found in checkpoint, or not loaded by CheckpointManager.")
+                elif lr_scheduler and ('scheduler_state_dict' in rec or 'scheduler' in rec):
+                    log.info("Scheduler state successfully loaded via CheckpointManager.")
+        else:
+            if is_main():
+                log.warning(f"Resume checkpoint path not found: {checkpoint_path_str}. Starting from scratch.")
     
     # Training loop
     if is_main():
         log.info("Starting training...")
-        checkpoint_manager = CheckpointManager(
-            output_dir=run_checkpoint_dir,
-            max_checkpoints=checkpoint_config.get('max_checkpoints', 5)
-        )
+        # CheckpointManager is already initialized
     
     # Initialize metrics
     running_losses = deque(maxlen=100)
@@ -573,6 +606,8 @@ def main(cfg: DictConfig) -> None:
     # Main training loop
     for step in range(start_step, max_steps):
         step_start_time = time.time()
+        
+        current_epoch = step // steps_per_epoch if steps_per_epoch > 0 else 0
         
         # Set epoch for DistributedSampler
         if world_size > 1 and hasattr(train_loader.sampler, 'set_epoch'):
@@ -591,6 +626,8 @@ def main(cfg: DictConfig) -> None:
             config,
             step,
             device,
+            tokenizer,
+            cached_prefix_ids,
             gradient_accumulation_steps=gradient_accumulation_steps,
             is_distributed=(world_size > 1),
         )
@@ -624,30 +661,40 @@ def main(cfg: DictConfig) -> None:
             )
             
             # Log to W&B
+            wandb_metrics = {
+                'train/loss': avg_loss,
+                'train/learning_rate': current_lr,
+                'train/samples_per_second': samples_per_sec,
+                'train/gpu_memory_allocated': torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0,
+                'train/gradient_accumulation_step': accumulation_step,
+                **metrics # Add detailed losses like loss_mse, loss_lm etc.
+            }
             if run_info:
-                log_metrics({
-                    'train/loss': avg_loss,
-                    'train/learning_rate': current_lr,
-                    'train/samples_per_second': samples_per_sec,
-                    'train/gpu_memory_allocated': torch.cuda.memory_allocated() / 1e9,
-                    'train/gradient_accumulation_step': accumulation_step,
-                    **metrics
-                }, step)
+                log_metrics(wandb_metrics, step)
         
         # Checkpointing (only on main process)
-        if is_main() and step > 0 and step % checkpoint_config.get('save_interval', 100) == 0:
-            checkpoint_path = checkpoint_manager.save(
+        if is_main() and checkpoint_manager.should_save_step(step):
+            # Get current tau and alpha for checkpointing, similar to 01_train.py
+            current_tau = get_schedule_value(config, 'gumbel_temperature', step)
+            current_alpha = get_schedule_value(config, 'lm_weight', step) # Assuming lm_weight schedule is alpha
+            current_wandb_run_id = run_info.get('id') if run_info else None
+
+            saved_path = checkpoint_manager.save_checkpoint(
                 step=step,
-                model_state_dict={
-                    'decoder': decoder_base.state_dict(),
-                    'encoder': encoder_base.state_dict(),
-                },
-                optimizer_state_dict=optimizer.state_dict(),
-                scheduler_state_dict=lr_scheduler.state_dict() if lr_scheduler else None,
-                metrics=metrics,
-                config=config,
+                epoch=current_epoch,
+                models={'decoder': decoder_base, 'encoder': encoder_base},
+                optimizer=optimizer,
+                scheduler=lr_scheduler,
+                metrics=metrics, # This 'metrics' is from distributed_train_step, contains loss, loss_mse etc.
+                config=cfg, # Pass the original Hydra cfg object
+                tau=current_tau,
+                alpha=current_alpha,
+                wandb_run_id=current_wandb_run_id
             )
-            log.info(f"Checkpoint saved: {checkpoint_path}")
+            if saved_path:
+                log.info(f"Checkpoint saved: {saved_path}")
+            else:
+                log.info(f"Checkpoint not saved at step {step} (e.g., max_checkpoints reached or interval not met).")
         
         # Validation (only on main process for now)
         if is_main() and val_loader and step % config.get('val_interval', 500) == 0:
@@ -655,20 +702,35 @@ def main(cfg: DictConfig) -> None:
             pass
     
     # Final checkpoint
-    if is_main():
-        final_checkpoint_path = checkpoint_manager.save(
-            step=max_steps,
-            model_state_dict={
-                'decoder': decoder_base.state_dict(),
-                'encoder': encoder_base.state_dict(),
-            },
-            optimizer_state_dict=optimizer.state_dict(),
-            scheduler_state_dict=lr_scheduler.state_dict() if lr_scheduler else None,
-            metrics=metrics,
-            config=config,
-            is_final=True,
+    if is_main() and checkpoint_manager.save_at_end:
+        current_epoch = max_steps // steps_per_epoch if steps_per_epoch > 0 else 0
+        current_wandb_run_id = run_info.get('id') if run_info else None
+        # Get final tau and alpha
+        final_tau = get_schedule_value(config, 'gumbel_temperature', max_steps -1)
+        final_alpha = get_schedule_value(config, 'lm_weight', max_steps -1)
+
+        # 'metrics' here would be from the last training step
+        final_metrics_to_save = metrics if 'metrics' in locals() else {}
+
+
+        final_checkpoint_path = checkpoint_manager.save_checkpoint(
+            step=max_steps -1, # Save at the last completed step
+            epoch=current_epoch,
+            models={'decoder': decoder_base, 'encoder': encoder_base},
+            optimizer=optimizer,
+            scheduler=lr_scheduler,
+            metrics=final_metrics_to_save,
+            config=cfg, # Pass the original Hydra cfg object
+            tau=final_tau,
+            alpha=final_alpha,
+            wandb_run_id=current_wandb_run_id
         )
-        log.info(f"Final checkpoint saved: {final_checkpoint_path}")
+        if final_checkpoint_path:
+            log.info(f"Final checkpoint saved: {final_checkpoint_path}")
+        else:
+            log.info(f"Final checkpoint not saved (e.g. disabled).")
+    
+    if is_main():
         log.info("Training completed!")
     
     # Cleanup distributed training
