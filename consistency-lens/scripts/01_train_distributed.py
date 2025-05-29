@@ -66,7 +66,6 @@ from lens.training.distributed import (
     reduce_dict,
 )
 from lens.utils.checkpoint_manager import CheckpointManager
-from lens.evaluation.metrics import build_metrics
 from lens.evaluation.verbose_samples import maybe_print_verbose_samples
 from lens.models.utils import prepare_inputs
 from lens.utils.schedule_parser import parse_schedule
@@ -84,6 +83,24 @@ generate_run_name = train_module.generate_run_name
 count_dataset_samples = train_module.count_dataset_samples
 check_explicit_requirements = train_module.check_explicit_requirements
 prepare_dataset_and_loaders = train_module.prepare_dataset_and_loaders
+
+
+class Timer:
+    def __init__(self, name: str, logger: logging.Logger, main_process: bool = True):
+        self.name = name
+        self.logger = logger
+        self.main_process = main_process
+        self.start_time = None
+
+    def __enter__(self):
+        if self.main_process:
+            self.start_time = time.time()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.main_process and self.start_time is not None:
+            elapsed_time = time.time() - self.start_time
+            self.logger.info(f"Phase '{self.name}' took {elapsed_time:.2f}s")
 
 
 def distributed_train_step(
@@ -320,6 +337,8 @@ def sync_metrics(metrics_dict, world_size):
 def main(cfg: DictConfig) -> None:
     """Distributed training entry point with optimized gradient accumulation."""
     
+    overall_start_time = time.time() # For overall script timing
+
     # Initialize distributed training
     rank, world_size, local_rank = init_distributed()
     
@@ -352,198 +371,175 @@ def main(cfg: DictConfig) -> None:
     
     log = logging.getLogger(__name__)
     
-    # Load tokenizer (all processes will have it, but primarily used by main for logging unless train_step needs it)
-    tokenizer_name = config.get("tokenizer_name", config['model_name'])
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-    if is_main():
-        log.info(f"Tokenizer loaded: {tokenizer_name}")
-    
-    # Cache tokenized natural language prefix if specified (all processes do this, small overhead)
-    cached_prefix_ids = None
-    lm_loss_natural_prefix_text = config.get('lm_loss_natural_prefix') # Assuming this key holds the text
-    if lm_loss_natural_prefix_text and isinstance(lm_loss_natural_prefix_text, str) : # Check if it's a string
-        cached_prefix_ids = tokenizer(lm_loss_natural_prefix_text, add_special_tokens=False, return_tensors="pt").input_ids.to(device)
+    # --- Timer for Initial Setup ---
+    with Timer("Initial Setup (Paths, Tokenizer, Run Name)", log, main_process=is_main()):
+        # Load tokenizer (all processes will have it, but primarily used by main for logging unless train_step needs it)
+        tokenizer_name = config.get("tokenizer_name", config['model_name'])
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
         if is_main():
-            log.info(f"Cached natural language prefix: '{lm_loss_natural_prefix_text}' ({cached_prefix_ids.shape[1]} tokens)")
-    elif config.get('lm_loss_natural_prefix') is True: # Handle boolean true case if it implies a default prefix or other logic
-        # This case might need clarification if 'True' implies a specific default prefix text
-        # For now, we assume if it's not a string, no prefix is cached.
-        if is_main():
-            log.warning("lm_loss_natural_prefix is True but not a string. Cannot cache prefix IDs without prefix text.")
-    
-    # Extract configuration values
-    model_name = config['model_name']
-    layer_l = config.get('layer_l', 5)
-    
-    # Setup paths (same as original)
-    cli_activation_dir = config.get('activation_dir')
-    base_activation_dir_str = cli_activation_dir if cli_activation_dir is not None else config['activation_dumper']['output_dir']
-    base_activation_path = resolve_path(base_activation_dir_str)
-    model_name_clean = config['model_name'].replace("/", "_")
-    activation_dir = str(base_activation_path.parent / model_name_clean / f"layer_{layer_l}" / base_activation_path.name)
-    
-    # Validation activation directory
-    base_val_activation_dir_str = config.get('val_activation_dir')
-    effective_val_activation_dir = None
-    if base_val_activation_dir_str:
-        base_val_path = resolve_path(base_val_activation_dir_str)
-        effective_val_activation_dir = str(base_val_path.parent / model_name_clean / f"layer_{layer_l}" / base_val_path.name)
-    
-    # Training parameters
-    max_steps = config['max_train_steps']
-    learning_rate = config['learning_rate']
-    batch_size = config['batch_size']
-    gradient_accumulation_steps = config['gradient_accumulation_steps']
-    
-    # Adjust batch size for distributed training
-    # Each GPU will process batch_size samples
-    effective_batch_size = batch_size * gradient_accumulation_steps * world_size
-    
-    if is_main():
-        log.info(f"Distributed training with {world_size} GPUs")
-        log.info(f"Per-GPU batch size: {batch_size}")
-        log.info(f"Gradient accumulation steps: {gradient_accumulation_steps}")
-        log.info(f"Effective batch size: {effective_batch_size}")
-        log.info(f"Gradient sync: Every {gradient_accumulation_steps} steps")
-    
-    # Set random seed for reproducibility
-    seed = config.get('seed', 42)
-    set_seed(seed + rank)  # Different seed per rank
-    
-    # Dataset info
-    dataset_info = extract_dataset_info(activation_dir)
-    
-    # Run name generation (only on main process)
-    if is_main():
-        config_name = None
-        try:
-            hydra_cfg = HydraConfig.get()
-            if hasattr(hydra_cfg, 'job') and hasattr(hydra_cfg.job, 'config_name'):
-                config_name = hydra_cfg.job.config_name
-            elif hasattr(hydra_cfg, 'runtime') and hasattr(hydra_cfg.runtime, 'choices'):
-                config_name = hydra_cfg.runtime.choices.get('config_name', 'config')
-        except:
-            pass
+            log.info(f"Tokenizer loaded: {tokenizer_name}")
         
-        run_name_override = config.get('run_name')
-        if run_name_override:
-            run_name = run_name_override
+        # Cache tokenized natural language prefix if specified (all processes do this, small overhead)
+        cached_prefix_ids = None
+        lm_loss_natural_prefix_text = config.get('lm_loss_natural_prefix') # Assuming this key holds the text
+        if lm_loss_natural_prefix_text and isinstance(lm_loss_natural_prefix_text, str) : # Check if it's a string
+            cached_prefix_ids = tokenizer(lm_loss_natural_prefix_text, add_special_tokens=False, return_tensors="pt").input_ids.to(device)
+            if is_main():
+                log.info(f"Cached natural language prefix: '{lm_loss_natural_prefix_text}' ({cached_prefix_ids.shape[1]} tokens)")
+        elif config.get('lm_loss_natural_prefix') is True: # Handle boolean true case if it implies a default prefix or other logic
+            if is_main():
+                log.warning("lm_loss_natural_prefix is True but not a string. Cannot cache prefix IDs without prefix text.")
+        
+        # Extract configuration values
+        model_name = config['model_name']
+        layer_l = config.get('layer_l', 5)
+        
+        # Setup paths (same as original)
+        cli_activation_dir = config.get('activation_dir')
+        base_activation_dir_str = cli_activation_dir if cli_activation_dir is not None else config['activation_dumper']['output_dir']
+        base_activation_path = resolve_path(base_activation_dir_str)
+        model_name_clean = config['model_name'].replace("/", "_")
+        activation_dir = str(base_activation_path.parent / model_name_clean / f"layer_{layer_l}" / base_activation_path.name)
+        
+        # Validation activation directory
+        base_val_activation_dir_str = config.get('val_activation_dir')
+        effective_val_activation_dir = None
+        if base_val_activation_dir_str:
+            base_val_path = resolve_path(base_val_activation_dir_str)
+            effective_val_activation_dir = str(base_val_path.parent / model_name_clean / f"layer_{layer_l}" / base_val_path.name)
+        
+        # Training parameters
+        max_steps = config['max_train_steps']
+        learning_rate = config['learning_rate']
+        batch_size = config['batch_size']
+        gradient_accumulation_steps = config['gradient_accumulation_steps']
+        
+        # Adjust batch size for distributed training
+        effective_batch_size = batch_size * gradient_accumulation_steps * world_size
+        
+        if is_main():
+            log.info(f"Distributed training with {world_size} GPUs")
+            log.info(f"Per-GPU batch size: {batch_size}")
+            log.info(f"Gradient accumulation steps: {gradient_accumulation_steps}")
+            log.info(f"Effective batch size: {effective_batch_size}")
+            log.info(f"Gradient sync: Every {gradient_accumulation_steps} steps")
+        
+        # Set random seed for reproducibility
+        seed = config.get('seed', 42)
+        set_seed(seed + rank)  # Different seed per rank
+        
+        # Dataset info
+        dataset_info = extract_dataset_info(activation_dir)
+        
+        # Run name generation (only on main process)
+        if is_main():
+            config_name = None
+            try:
+                hydra_cfg = HydraConfig.get()
+                if hasattr(hydra_cfg, 'job') and hasattr(hydra_cfg.job, 'config_name'):
+                    config_name = hydra_cfg.job.config_name
+                elif hasattr(hydra_cfg, 'runtime') and hasattr(hydra_cfg.runtime, 'choices'):
+                    config_name = hydra_cfg.runtime.choices.get('config_name', 'config')
+            except:
+                pass
+            
+            run_name_override = config.get('run_name')
+            if run_name_override:
+                run_name = run_name_override
+            else:
+                run_name = generate_run_name(config, dataset_info, config.get('resume'), config_name, config.get('run_suffix'))
+                run_name = f"{run_name}_dist{world_size}"
+            log.info(f"Run name: {run_name}")
         else:
-            run_name = generate_run_name(config, dataset_info, config.get('resume'), config_name, config.get('run_suffix'))
-            # Add distributed suffix
-            run_name = f"{run_name}_dist{world_size}"
+            run_name = None # Will be broadcasted
         
-        log.info(f"Run name: {run_name}")
-    else:
-        run_name = None
-    
-    # Synchronize run name across processes
-    if world_size > 1:
-        run_name_tensor = torch.zeros(256, dtype=torch.uint8, device=device)
+        # Synchronize run name across processes
+        if world_size > 1:
+            run_name_list = [run_name] if is_main() else [None]
+            dist.broadcast_object_list(run_name_list, src=0)
+            if not is_main():
+                run_name = run_name_list[0]
+        
+        # Setup checkpoint directory
+        checkpoint_config = config.get('checkpoint', {})
+        base_checkpoint_dir = resolve_path(checkpoint_config.get('output_dir', 'outputs'))
+        run_checkpoint_dir = base_checkpoint_dir / run_name
+        
         if is_main():
-            run_name_bytes = run_name.encode('utf-8')[:256]
-            run_name_tensor[:len(run_name_bytes)] = torch.tensor(list(run_name_bytes), dtype=torch.uint8)
-        dist.broadcast(run_name_tensor, src=0)
-        if not is_main():
-            run_name_bytes = bytes(run_name_tensor.cpu().numpy())
-            run_name = run_name_bytes.decode('utf-8').rstrip('\x00')
-    
-    # Setup checkpoint directory
-    checkpoint_config = config.get('checkpoint', {})
-    base_checkpoint_dir = resolve_path(checkpoint_config.get('output_dir', 'outputs'))
-    run_checkpoint_dir = base_checkpoint_dir / run_name
-    
-    # Create checkpoint directory (only on main process)
-    if is_main():
-        run_checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        log.info(f"Checkpoints will be saved to: {run_checkpoint_dir}")
-    
-    # Update the original cfg with the resolved checkpoint output_dir for CheckpointManager
-    if 'checkpoint' not in cfg:
-        cfg.checkpoint = OmegaConf.create()
-    cfg.checkpoint.output_dir = str(run_checkpoint_dir)
+            run_checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            log.info(f"Checkpoints will be saved to: {run_checkpoint_dir}")
+        
+        if 'checkpoint' not in cfg: # For original DictConfig
+            cfg.checkpoint = OmegaConf.create()
+        cfg.checkpoint.output_dir = str(run_checkpoint_dir)
 
-    # Initialize models
-    decoder = Decoder(DecoderConfig(**config["decoder"]))
-    encoder = Encoder(EncoderConfig(**config["encoder"]))
-    orig_model = OrigWrapper(config)
-    
-    # Wrap models with DDP if needed
-    decoder, encoder, orig_model = setup_distributed_models(
-        decoder, encoder, orig_model, device, rank, world_size
-    )
-    
-    # Count parameters (only on main process)
-    if is_main():
+    # --- Timer for Model Setup ---
+    with Timer("Model Setup (Init, DDP)", log, main_process=is_main()):
+        decoder = Decoder(DecoderConfig(**config["decoder"]))
+        encoder = Encoder(EncoderConfig(**config["encoder"]))
+        orig_model = OrigWrapper(config) # OrigWrapper uses config dict
+        
+        decoder, encoder, orig_model = setup_distributed_models(
+            decoder, encoder, orig_model, device, rank, world_size
+        )
+        
+        if is_main():
+            decoder_base_timer = decoder.module if hasattr(decoder, 'module') else decoder
+            encoder_base_timer = encoder.module if hasattr(encoder, 'module') else encoder
+            num_params_decoder = sum(p.numel() for p in decoder_base_timer.parameters())
+            num_params_encoder = sum(p.numel() for p in encoder_base_timer.parameters())
+            log.info(f"Decoder parameters: {num_params_decoder:,}")
+            log.info(f"Encoder parameters: {num_params_encoder:,}")
+
+    # --- Timer for Dataset and DataLoader Setup ---
+    with Timer("Dataset and DataLoader Setup", log, main_process=is_main()):
+        train_dataset, train_loader, val_dataset, val_loader = prepare_dataset_and_loaders(
+            config, activation_dir, effective_val_activation_dir, device, log # log is passed to prepare_dataset_and_loaders
+        )
+        
+        train_loader = get_dataloader_for_distributed(
+            train_dataset, batch_size=batch_size, world_size=world_size, rank=rank, shuffle=True,
+            collate_fn=collate, num_workers=0, pin_memory=False,
+        )
+        
+        if val_dataset is not None:
+            val_loader = get_dataloader_for_distributed(
+                val_dataset, batch_size=batch_size, world_size=world_size, rank=rank, shuffle=False,
+                collate_fn=collate, num_workers=0, pin_memory=False,
+            )
+        
+        steps_per_epoch = len(train_loader) if train_loader and len(train_loader) > 0 else 1
+        if is_main() and len(train_loader) == 0 and config.get('max_train_steps', 0) > 0:
+            log.warning("Train loader is empty, steps_per_epoch is effectively 0.")
+
+    # --- Timer for Optimizer and Scheduler Setup ---
+    with Timer("Optimizer and Scheduler Setup", log, main_process=is_main()):
+        trainable_components_config = config.get('trainable_components', {})
+        decoder_train_cfg = trainable_components_config.get('decoder', {})
+        encoder_train_cfg = trainable_components_config.get('encoder', {})
+        custom_lr_multipliers = config.get('custom_lr_multipliers', {})
+        
+        # Get base models for parameter groups
         decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
         encoder_base = encoder.module if hasattr(encoder, 'module') else encoder
         
-        num_params_decoder = sum(p.numel() for p in decoder_base.parameters())
-        num_params_encoder = sum(p.numel() for p in encoder_base.parameters())
-        log.info(f"Decoder parameters: {num_params_decoder:,}")
-        log.info(f"Encoder parameters: {num_params_encoder:,}")
-    
-    # Prepare datasets and dataloaders
-    train_dataset, train_loader, val_dataset, val_loader = prepare_dataset_and_loaders(
-        config, activation_dir, effective_val_activation_dir, device, log
-    )
-    
-    # Replace dataloaders with distributed versions
-    train_loader = get_dataloader_for_distributed(
-        train_dataset,
-        batch_size=batch_size,
-        world_size=world_size,
-        rank=rank,
-        shuffle=True,
-        collate_fn=collate,
-        num_workers=0,
-        pin_memory=False,
-    )
-    
-    if val_dataset is not None:
-        val_loader = get_dataloader_for_distributed(
-            val_dataset,
-            batch_size=batch_size,
-            world_size=world_size,
-            rank=rank,
-            shuffle=False,
-            collate_fn=collate,
-            num_workers=0,
-            pin_memory=False,
+        params = param_groups(
+            decoder_base, 
+            encoder_base, 
+            learning_rate, 
+            config, 
+            decoder_train_cfg, 
+            encoder_train_cfg,
+            custom_lr_multipliers
         )
-    
-    # Calculate steps_per_epoch for CheckpointManager and LR scheduler
-    steps_per_epoch = len(train_loader) if train_loader and len(train_loader) > 0 else 1 # Avoid 0 for division
-    if is_main() and len(train_loader) == 0 and config.get('max_train_steps', 0) > 0:
-        log.warning("Train loader is empty, steps_per_epoch is effectively 0. Checkpoint save-by-epoch and some LR schedulers might not work correctly.")
-    
-    # Setup optimizer (same as original)
-    trainable_components_config = config.get('trainable_components', {})
-    decoder_train_cfg = trainable_components_config.get('decoder', {})
-    encoder_train_cfg = trainable_components_config.get('encoder', {})
-    custom_lr_multipliers = config.get('custom_lr_multipliers', {})
-    
-    # Get base models for parameter groups
-    decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
-    encoder_base = encoder.module if hasattr(encoder, 'module') else encoder
-    
-    params = param_groups(
-        decoder_base, 
-        encoder_base, 
-        learning_rate, 
-        config, 
-        decoder_train_cfg, 
-        encoder_train_cfg,
-        custom_lr_multipliers
-    )
-    optimizer = torch.optim.AdamW(params, weight_decay=config["weight_decay"])
-    
-    # Learning rate scheduler
-    lr_scheduler_cfg = config.get('lr_scheduler', {})
-    lr_scheduler = get_lr_scheduler(optimizer, lr_scheduler_cfg, max_steps)
-    
-    # Initialize gradient scaler for mixed precision
-    scaler = torch.cuda.amp.GradScaler() if device.type == "cuda" else None
+        optimizer = torch.optim.AdamW(params, weight_decay=config["weight_decay"])
+        
+        # Learning rate scheduler
+        lr_scheduler_cfg = config.get('lr_scheduler', {})
+        lr_scheduler = get_lr_scheduler(optimizer, lr_scheduler_cfg, max_steps)
+        
+        # Initialize gradient scaler for mixed precision
+        scaler = torch.cuda.amp.GradScaler() if device.type == "cuda" else None
 
     # Initialize CheckpointManager (after steps_per_epoch is known)
     # It uses the original Hydra 'cfg' to correctly parse schedule strings for save intervals.
