@@ -68,7 +68,6 @@ from lens.training.distributed import (
 from lens.utils.checkpoint_manager import CheckpointManager
 from lens.evaluation.verbose_samples import maybe_print_verbose_samples
 from lens.models.utils import prepare_inputs
-from lens.utils.schedule_parser import parse_schedule
 from lens.training.distributed import set_seed
 
 # Import all the utility functions from the original training script
