@@ -87,14 +87,37 @@ distributed:
 3. **Network**: Fast interconnect (NVLink) improves scaling
 4. **GPUs**: Best results with homogeneous GPU types
 
+## SLURM Allocation
+
+When using SLURM, the submit script now intelligently handles GPU allocation:
+
+### Single Node Optimization (Recommended)
+For best performance, all GPUs should be on the same node:
+- **Automatic**: Script requests `--nodes=1` for multi-GPU training
+- **8 GPUs**: Automatically requests `--exclusive` for full node access
+- **NVLink**: Ensures high-bandwidth GPU communication
+
+### Examples
+```bash
+# Let SLURM find the best node with 8 GPUs
+./scripts/submit_with_config.sh config=conf/gpt2_frozen.yaml num_gpus_train=8
+
+# Request specific node (only if you know it has enough GPUs)
+./scripts/submit_with_config.sh config=conf/gpt2_frozen.yaml num_gpus_train=4 nodelist=node001
+
+# Warning shown if multi-node list provided for distributed training
+./scripts/submit_with_config.sh config=conf/gpt2_frozen.yaml num_gpus_train=8 nodelist=node001,node002
+# ^ This will show a warning and ignore the nodelist for optimal single-node allocation
+```
+
 ## Troubleshooting
 
 ### Common Issues
 
-1. **NCCL Errors**: Ensure all GPUs are visible and NCCL is installed
+1. **NCCL Errors**: Ensure all GPUs are visible and on same node
 2. **Memory**: Each GPU needs full model copy - reduce batch size if OOM
-3. **Hanging**: Check firewall settings for distributed communication
-4. **Uneven Performance**: Ensure balanced data distribution
+3. **Hanging**: Check if GPUs are split across nodes (use `nvidia-smi`)
+4. **Uneven Performance**: Verify all GPUs have same specs (no mixing GPU types)
 
 ### Debug Commands
 

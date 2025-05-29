@@ -418,12 +418,42 @@ submit_train_job() {
         local sbatch_args=(
             --parsable
             --job-name="${job_name}-train"
-            --gres=gpu:$NUM_GPUS_TRAIN
-            --nodelist="$NODELIST"
             --time=24:00:00
             --output="logs/${job_name}_train_%j.out"
             --error="logs/${job_name}_train_%j.err"
         )
+        
+        # Configure GPU allocation based on number requested
+        if [ "$NUM_GPUS_TRAIN" -gt 1 ]; then
+            # Multi-GPU: ensure all GPUs are on the same node
+            sbatch_args+=(--gres=gpu:$NUM_GPUS_TRAIN)
+            sbatch_args+=(--nodes=1)  # Force single node
+            sbatch_args+=(--ntasks-per-node=$NUM_GPUS_TRAIN)  # One task per GPU
+            
+            # Request exclusive node for 8 GPUs (full node)
+            if [ "$NUM_GPUS_TRAIN" -eq 8 ]; then
+                sbatch_args+=(--exclusive)
+                echo -e "${YELLOW}Requesting exclusive node access for 8 GPU training${NC}" >&2
+            else
+                echo -e "${GREEN}Requesting $NUM_GPUS_TRAIN GPUs on a single node${NC}" >&2
+            fi
+            
+            # Only use nodelist if specified and it's a single node
+            if [ -n "$NODELIST" ] && [ "$NODELIST" != "$(hostname)" ]; then
+                if [[ "$NODELIST" == *","* ]]; then
+                    echo -e "${RED}WARNING: Multi-node nodelist specified but distributed training requires single node${NC}" >&2
+                    echo -e "${RED}Ignoring nodelist for optimal performance. Use SLURM scheduler to find suitable node.${NC}" >&2
+                else
+                    sbatch_args+=(--nodelist="$NODELIST")
+                fi
+            fi
+        else
+            # Single GPU: simpler allocation
+            sbatch_args+=(--gres=gpu:1)
+            if [ -n "$NODELIST" ] && [ "$NODELIST" != "$(hostname)" ]; then
+                sbatch_args+=(--nodelist="$NODELIST")
+            fi
+        fi
         
         # Add environment variables
         local export_vars="ALL,TORCHINDUCTOR_CACHE_DIR=${HOME}/.cache/torchinductor"
