@@ -194,6 +194,75 @@ tail -f logs/simplestories_frozen_*.out
 grep -i error logs/*.err
 ```
 
+### Multi-GPU Training
+
+The project now supports distributed data-parallel training across multiple GPUs for faster training:
+
+#### Quick Start with Multi-GPU
+```bash
+# Train with 8 GPUs (auto-enables distributed mode)
+./scripts/submit_with_config.sh config=conf/gpt2_frozen.yaml num_gpus_train=8
+
+# Train with 4 GPUs for training, 8 for dumping
+./scripts/submit_with_config.sh config=conf/gpt2_frozen.yaml num_gpus=8 num_gpus_train=4
+
+# Force distributed mode even with 1 GPU (for testing)
+./scripts/submit_with_config.sh config=conf/simplestories_frozen.yaml use_distributed=true
+
+# Multi-GPU with other options
+./scripts/submit_with_config.sh config=conf/gpt2_frozen.yaml \
+    num_gpus_train=8 \
+    learning_rate=5e-4 \
+    batch_size=4  # Per-GPU batch size
+```
+
+#### Distributed Training Details
+- **Data Parallelism**: Each GPU processes different data batches
+- **Automatic Scaling**: Effective batch size = `batch_size * num_gpus * gradient_accumulation_steps`
+- **Efficient Communication**: Uses NCCL backend for GPU-to-GPU communication
+- **Rank-Aware**: Only rank 0 saves checkpoints and logs to WandB
+- **DistributedSampler**: Ensures each GPU sees different data
+
+#### Launching Distributed Training Manually
+```bash
+# Using torchrun (PyTorch's distributed launcher)
+torchrun --nproc_per_node=8 scripts/01_train_distributed.py \
+    --config-path=../conf --config-name=gpt2_frozen
+
+# Using the provided launcher script
+./scripts/launch_distributed_train.sh \
+    --config-path=../conf \
+    --config-name=gpt2_frozen \
+    --num-gpus=8
+
+# In SLURM environment (auto-detected)
+sbatch --gres=gpu:8 scripts/launch_distributed_train.sh \
+    --config-path=../conf --config-name=gpt2_frozen
+```
+
+#### Configuration for Distributed Training
+Add to your config YAML to customize distributed behavior:
+```yaml
+# Include distributed defaults
+defaults:
+  - distributed
+
+# Override specific settings
+distributed:
+  backend: nccl  # or gloo for CPU
+  find_unused_parameters: false
+  gradient_sync_interval: ${gradient_accumulation_steps}
+  mixed_precision:
+    enabled: true
+    dtype: bfloat16  # Better for A100/H100
+```
+
+#### Performance Considerations
+- **Linear Scaling**: With proper batch sizes, expect near-linear speedup
+- **Batch Size**: Keep per-GPU batch size reasonable (4-8 for large models)
+- **Memory**: Each GPU needs full model copy (no model parallelism yet)
+- **Network**: Fast interconnect (NVLink/InfiniBand) improves scaling
+
 ### Performance Configuration
 
 #### torch.compile Setup

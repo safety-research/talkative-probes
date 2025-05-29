@@ -1,0 +1,32 @@
+# Distributed training configuration
+# Can be included in other configs with:
+# defaults:
+#   - distributed
+
+distributed:
+  # Backend for distributed training (nccl, gloo)
+  backend: nccl
+  
+  # Whether to find unused parameters in DDP
+  find_unused_parameters: false
+  
+  # Gradient synchronization interval (for gradient accumulation)
+  # Set to gradient_accumulation_steps for standard behavior
+  gradient_sync_interval: ${gradient_accumulation_steps}
+  
+  # Whether to use gradient bucketing in DDP
+  bucket_cap_mb: 25
+  
+  # DDP options
+  broadcast_buffers: true
+  static_graph: false
+  
+  # Mixed precision settings for distributed
+  # These override the main mixed_precision settings in distributed mode
+  mixed_precision:
+    enabled: true
+    dtype: bfloat16  # or float16
+    
+  # Logging frequency adjustment for distributed
+  # Only rank 0 logs, but we may want to reduce frequency
+  log_interval_multiplier: 1  # Multiply base log_interval by this

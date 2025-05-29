@@ -1,0 +1,35 @@
+# Minimal test configuration for distributed training
+defaults:
+  - config
+  - distributed
+
+# Override for quick testing
+max_train_steps: 10
+batch_size: 2
+gradient_accumulation_steps: 1
+log_interval: 1
+checkpoint:
+  save_interval: 5
+
+# Small model for testing
+model_name: "openai-community/gpt2"
+layer_l: 1
+
+# Test dataset
+activation_dumper:
+  output_dir: "./data/test_activations"
+  num_sequences: 100
+  max_length: 128
+
+# Disable wandb for testing
+wandb:
+  mode: "disabled"
+
+# Quick schedules for testing  
+gumbel_temperature:
+  schedule:
+    type: "constant"
+    value: 1.0
+
+freeze_schedule:
+  components: []  # Nothing frozen for simple test
