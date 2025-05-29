@@ -447,110 +447,142 @@ def log_parameter_counts(dec_raw, enc_raw, orig, decoder_config, encoder_config,
     Returns:
         dict: Summary statistics including total trainable parameters
     """
-    # Get trainable params list from raw models
-    trainable_params = [p for p in dec_raw.parameters() if p.requires_grad] + \
-                       [p for p in enc_raw.parameters() if p.requires_grad]
-    
-    total_trainable_params_val = sum(p.numel() for p in trainable_params)
+    trainable_params_list = [p for p in dec_raw.parameters() if p.requires_grad] + \
+                            [p for p in enc_raw.parameters() if p.requires_grad]
+    total_trainable_params_val = sum(p.numel() for p in trainable_params_list)
     num_params_orig_total = sum(p.numel() for p in orig.model.parameters())
 
-    log.info(f"Total trainable parameters (Decoder + Encoder combined): {total_trainable_params_val:,}")
+    log.info(f"Total trainable parameters (Decoder + Encoder combined, based on current requires_grad): {total_trainable_params_val:,}")
 
-    # Decoder parameter counts - use dec_raw for accurate names
+    # Initialize counts for decoder
     num_params_dec_total = sum(p.numel() for p in dec_raw.parameters())
+    num_params_dec_base_trainable, num_params_dec_proj_trainable, num_params_dec_out_trainable, \
+    num_params_dec_prompts_trainable, num_params_dec_embeddings_trainable, num_params_dec_other_trainable = 0, 0, 0, 0, 0, 0
     
-    # Use mutually exclusive filters to avoid double counting
-    # Priority order: prompts > proj (top-level) > out (top-level) > base
-    num_params_dec_base_trainable = sum(p.numel() for n, p in dec_raw.named_parameters() 
-        if p.requires_grad and 'base.' in n and not ('proj' in n or 'out' in n))
-    num_params_dec_proj_trainable = sum(p.numel() for n, p in dec_raw.named_parameters() 
-        if p.requires_grad and n.startswith('proj.'))
-    num_params_dec_out_trainable = sum(p.numel() for n, p in dec_raw.named_parameters() 
-        if p.requires_grad and n.startswith('out.'))
-    num_params_dec_prompts_trainable = sum(p.numel() for n, p in dec_raw.named_parameters() 
-        if p.requires_grad and ('prompt_left_emb' in n or 'prompt_right_emb' in n))
-    
-    # Count frozen parameters for decoder with same exclusive logic
-    num_params_dec_base_frozen = sum(p.numel() for n, p in dec_raw.named_parameters() 
-        if not p.requires_grad and 'base.' in n and not ('proj' in n or 'out' in n))
-    num_params_dec_proj_frozen = sum(p.numel() for n, p in dec_raw.named_parameters() 
-        if not p.requires_grad and n.startswith('proj.'))
-    num_params_dec_out_frozen = sum(p.numel() for n, p in dec_raw.named_parameters() 
-        if not p.requires_grad and n.startswith('out.'))
-    num_params_dec_prompts_frozen = sum(p.numel() for n, p in dec_raw.named_parameters() 
-        if not p.requires_grad and ('prompt_left_emb' in n or 'prompt_right_emb' in n))
-    
-    current_dec_trainable_total = num_params_dec_base_trainable + num_params_dec_proj_trainable + num_params_dec_out_trainable + num_params_dec_prompts_trainable
-    current_dec_frozen_total = num_params_dec_base_frozen + num_params_dec_proj_frozen + num_params_dec_out_frozen + num_params_dec_prompts_frozen
+    num_params_dec_base_frozen, num_params_dec_proj_frozen, num_params_dec_out_frozen, \
+    num_params_dec_prompts_frozen, num_params_dec_embeddings_frozen, num_params_dec_other_frozen = 0, 0, 0, 0, 0, 0
+
+    for n, p in dec_raw.named_parameters():
+        numel = p.numel()
+        is_trainable = p.requires_grad
+
+        if 'prompt_left_emb' in n or 'prompt_right_emb' in n:
+            if is_trainable: num_params_dec_prompts_trainable += numel
+            else: num_params_dec_prompts_frozen += numel
+        elif n.startswith('proj.'):
+            if is_trainable: num_params_dec_proj_trainable += numel
+            else: num_params_dec_proj_frozen += numel
+        elif n.startswith('out.'):
+            if is_trainable: num_params_dec_out_trainable += numel
+            else: num_params_dec_out_frozen += numel
+        elif 'embed' in n or 'wte' in n or 'wpe' in n or 'lm_head.weight' in n or (hasattr(dec_raw, 'base') and hasattr(dec_raw.base, 'shared') and 'shared.weight' in n): # common embedding names
+            if is_trainable: num_params_dec_embeddings_trainable += numel
+            else: num_params_dec_embeddings_frozen += numel
+        elif 'base.' in n: # Should be after more specific checks like embeddings if they are part of 'base'
+            if is_trainable: num_params_dec_base_trainable += numel
+            else: num_params_dec_base_frozen += numel
+        else:
+            if is_trainable: num_params_dec_other_trainable += numel
+            else: num_params_dec_other_frozen += numel
+            
+    current_dec_trainable_total = (num_params_dec_base_trainable + num_params_dec_proj_trainable + 
+                                   num_params_dec_out_trainable + num_params_dec_prompts_trainable +
+                                   num_params_dec_embeddings_trainable + num_params_dec_other_trainable)
+    current_dec_frozen_total = (num_params_dec_base_frozen + num_params_dec_proj_frozen +
+                                num_params_dec_out_frozen + num_params_dec_prompts_frozen +
+                                num_params_dec_embeddings_frozen + num_params_dec_other_frozen)
     
     log.info(f"Decoder - Total parameters: {num_params_dec_total:,}")
-    log.info(f"  Decoder - Trainable parameters: {current_dec_trainable_total:,}")
+    log.info(f"  Decoder - Categorized Trainable parameters: {current_dec_trainable_total:,}")
     log.info(f"    Decoder base trainable: {num_params_dec_base_trainable:,} (Config: {decoder_config.base_model})")
     log.info(f"    Decoder proj trainable: {num_params_dec_proj_trainable:,} (Config: {decoder_config.projection_layer})")
     log.info(f"    Decoder out trainable: {num_params_dec_out_trainable:,} (Config: {decoder_config.output_head})")
     log.info(f"    Decoder prompts trainable: {num_params_dec_prompts_trainable:,} (Config: {decoder_config.trainable_prompts})")
-    log.info(f"  Decoder - Frozen parameters: {current_dec_frozen_total:,}")
+    log.info(f"    Decoder embeddings trainable: {num_params_dec_embeddings_trainable:,}")
+    log.info(f"    Decoder other trainable: {num_params_dec_other_trainable:,}")
+    log.info(f"  Decoder - Categorized Frozen parameters: {current_dec_frozen_total:,}")
     log.info(f"    Decoder base frozen: {num_params_dec_base_frozen:,}")
     log.info(f"    Decoder proj frozen: {num_params_dec_proj_frozen:,}")
     log.info(f"    Decoder out frozen: {num_params_dec_out_frozen:,}")
     log.info(f"    Decoder prompts frozen: {num_params_dec_prompts_frozen:,}")
+    log.info(f"    Decoder embeddings frozen: {num_params_dec_embeddings_frozen:,}")
+    log.info(f"    Decoder other frozen: {num_params_dec_other_frozen:,}")
 
-    # Encoder parameter counts with exclusive filters - use enc_raw
+    # Initialize counts for encoder
     num_params_enc_total = sum(p.numel() for p in enc_raw.parameters())
-    
-    # Priority: soft_prompt_embeddings > proj (top-level) > base
-    num_params_enc_base_trainable = sum(p.numel() for n, p in enc_raw.named_parameters() 
-        if p.requires_grad and 'base.' in n and 'proj' not in n)
-    num_params_enc_proj_trainable = sum(p.numel() for n, p in enc_raw.named_parameters() 
-        if p.requires_grad and n.startswith('proj.'))
-    num_params_enc_prompts_trainable = sum(p.numel() for n, p in enc_raw.named_parameters() 
-        if p.requires_grad and 'soft_prompt_embeddings' in n)
-    
-    # Count frozen parameters for encoder with same exclusive logic
-    num_params_enc_base_frozen = sum(p.numel() for n, p in enc_raw.named_parameters() 
-        if not p.requires_grad and 'base.' in n and 'proj' not in n)
-    num_params_enc_proj_frozen = sum(p.numel() for n, p in enc_raw.named_parameters() 
-        if not p.requires_grad and n.startswith('proj.'))
-    num_params_enc_prompts_frozen = sum(p.numel() for n, p in enc_raw.named_parameters() 
-        if not p.requires_grad and 'soft_prompt_embeddings' in n)
-    
-    current_enc_trainable_total = num_params_enc_base_trainable + num_params_enc_proj_trainable + num_params_enc_prompts_trainable
-    current_enc_frozen_total = num_params_enc_base_frozen + num_params_enc_proj_frozen + num_params_enc_prompts_frozen
+    num_params_enc_base_trainable, num_params_enc_proj_trainable, \
+    num_params_enc_prompts_trainable, num_params_enc_embeddings_trainable, num_params_enc_other_trainable = 0, 0, 0, 0, 0
+
+    num_params_enc_base_frozen, num_params_enc_proj_frozen, \
+    num_params_enc_prompts_frozen, num_params_enc_embeddings_frozen, num_params_enc_other_frozen = 0, 0, 0, 0, 0
+
+    for n, p in enc_raw.named_parameters():
+        numel = p.numel()
+        is_trainable = p.requires_grad
+
+        if 'soft_prompt_embeddings' in n:
+            if is_trainable: num_params_enc_prompts_trainable += numel
+            else: num_params_enc_prompts_frozen += numel
+        elif n.startswith('proj.'):
+            if is_trainable: num_params_enc_proj_trainable += numel
+            else: num_params_enc_proj_frozen += numel
+        elif 'embed' in n or 'wte' in n or 'wpe' in n: # Common embedding names
+            if is_trainable: num_params_enc_embeddings_trainable += numel
+            else: num_params_enc_embeddings_frozen += numel
+        elif 'base.' in n:
+            if is_trainable: num_params_enc_base_trainable += numel
+            else: num_params_enc_base_frozen += numel
+        else:
+            if is_trainable: num_params_enc_other_trainable += numel
+            else: num_params_enc_other_frozen += numel
+
+    current_enc_trainable_total = (num_params_enc_base_trainable + num_params_enc_proj_trainable +
+                                   num_params_enc_prompts_trainable + num_params_enc_embeddings_trainable + 
+                                   num_params_enc_other_trainable)
+    current_enc_frozen_total = (num_params_enc_base_frozen + num_params_enc_proj_frozen +
+                                num_params_enc_prompts_frozen + num_params_enc_embeddings_frozen +
+                                num_params_enc_other_frozen)
 
     log.info(f"Encoder - Total parameters: {num_params_enc_total:,}")
-    log.info(f"  Encoder - Trainable parameters: {current_enc_trainable_total:,}")
+    log.info(f"  Encoder - Categorized Trainable parameters: {current_enc_trainable_total:,}")
     log.info(f"    Encoder base trainable: {num_params_enc_base_trainable:,} (Config: {encoder_config.base_model}, present: {encoder_config.use_base_model})")
     log.info(f"    Encoder proj trainable: {num_params_enc_proj_trainable:,} (Config: {encoder_config.projection_layer})")
     log.info(f"    Encoder prompts trainable: {num_params_enc_prompts_trainable:,} (Config: {encoder_config.trainable_soft_prompt})")
-    log.info(f"  Encoder - Frozen parameters: {current_enc_frozen_total:,}")
+    log.info(f"    Encoder embeddings trainable: {num_params_enc_embeddings_trainable:,}")
+    log.info(f"    Encoder other trainable: {num_params_enc_other_trainable:,}")
+    log.info(f"  Encoder - Categorized Frozen parameters: {current_enc_frozen_total:,}")
     log.info(f"    Encoder base frozen: {num_params_enc_base_frozen:,}")
     log.info(f"    Encoder proj frozen: {num_params_enc_proj_frozen:,}")
     log.info(f"    Encoder prompts frozen: {num_params_enc_prompts_frozen:,}")
-
-    # Sanity check: sum of categorized trainable parameters should match total_trainable_params_val
+    log.info(f"    Encoder embeddings frozen: {num_params_enc_embeddings_frozen:,}")
+    log.info(f"    Encoder other frozen: {num_params_enc_other_frozen:,}")
+    
     sum_of_categorized_trainable = current_dec_trainable_total + current_enc_trainable_total
     sum_of_categorized_frozen = current_dec_frozen_total + current_enc_frozen_total
     sum_of_categorized_total = sum_of_categorized_trainable + sum_of_categorized_frozen
     
     if total_trainable_params_val != sum_of_categorized_trainable:
         log.warning(
-            f"Parameter count mismatch: total_trainable_params_val is {total_trainable_params_val:,}, "
+            f"Parameter count mismatch (trainable): total_trainable_params_val (sum of all requires_grad=True) is {total_trainable_params_val:,}, "
             f"but sum of categorized trainable parameters (Decoder + Encoder) is {sum_of_categorized_trainable:,}. "
-            "This might indicate that some trainable parameters are not covered by the 'base', 'proj', 'out', 'prompts' categorization."
+            "This should ideally match. If 'other_trainable' is non-zero, it indicates parameters not fitting standard categories. "
+            "If 'other_trainable' is zero and there's still a mismatch, the categorization logic needs review."
         )
     
     total_model_params = num_params_dec_total + num_params_enc_total
+    # Check if the sum of all categorized parameters matches the actual total model parameters
     if total_model_params != sum_of_categorized_total:
         log.warning(
-            f"Total parameter count mismatch: actual total is {total_model_params:,}, "
-            f"but sum of categorized parameters is {sum_of_categorized_total:,}."
+            f"Total parameter count mismatch: actual total (Decoder + Encoder) is {total_model_params:,}, "
+            f"but sum of all categorized parameters (trainable + frozen) is {sum_of_categorized_total:,}. "
+            "This indicates an issue in the categorization logic failing to cover all parameters."
         )
 
     log.info(f"Original LLM (frozen) parameters: {num_params_orig_total:,}")
     
     return {
-        'total_trainable': total_trainable_params_val,
-        'trainable_params': trainable_params,
+        'total_trainable': total_trainable_params_val, # This is based on current requires_grad status
+        'trainable_params_list': trainable_params_list, # The actual list of params
         'decoder_total': num_params_dec_total,
         'encoder_total': num_params_enc_total,
         'orig_total': num_params_orig_total
@@ -1139,7 +1171,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     
     # Get trainable params and log parameter counts (do this BEFORE compilation)
     param_stats = log_parameter_counts(dec_raw, enc_raw, orig, decoder_config, encoder_config, log)
-    trainable_params = param_stats['trainable_params']
+    trainable_params = param_stats['trainable_params_list']
     total_trainable_params_val = param_stats['total_trainable']
     
 
@@ -1237,7 +1269,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         log.info("Freeze schedule disabled - using standard trainable component settings")
 
     # Get trainable params and log parameter counts
-    trainable_params = param_stats['trainable_params']
+    trainable_params = param_stats['trainable_params_list']
     total_trainable_params_val = param_stats['total_trainable']
     
     log.info(f"Hyperparameters: lm_weight={lm_weight}, kl_base_weight={kl_base_weight}, entropy_weight={entropy_weight}")
@@ -1252,11 +1284,19 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     # Verify that the number of parameters in optimizer groups matches the count from trainable_params list.
     num_params_in_optimizer_groups = sum(p.numel() for group in optimizer_groups for p in group['params'])
     if total_trainable_params_val != num_params_in_optimizer_groups:
-        log.warning(
-            f"Parameter count mismatch: sum of p.numel() for trainable_params is {total_trainable_params_val:,}, "
-            f"but optimizer groups sum to {num_params_in_optimizer_groups:,}. "
-            "Check requires_grad flags and param grouping logic."
+        log_message = (
+            f"Parameter count difference: initial total_trainable_params_val (before freeze schedule modifications) is {total_trainable_params_val:,}, "
+            f"but optimizer groups (reflecting current requires_grad) sum to {num_params_in_optimizer_groups:,}."
         )
+        if freeze_schedule_enabled:
+            log.info(
+                f"{log_message} This difference is expected when a freeze schedule is active, "
+                "as some parameters are initially frozen and excluded from the optimizer."
+            )
+        else:
+            log.warning(
+                f"{log_message} Check requires_grad flags and param grouping logic, especially if no freeze schedule is active."
+            )
 
     opt = torch.optim.AdamW(optimizer_groups)
     # GradScaler enabled only when using CUDA
@@ -1879,17 +1919,13 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                 )
                 
                 # Handle return value based on whether we got captured output
-                if isinstance(result, tuple):
-                    num_printed, captured_text = result
-                    # Log to wandb if available
-                    if captured_text and current_wandb_run_id:
-                        verbose_samples_logger.log_verbose_samples(
-                            captured_text, 
-                            step=step,
-                            table_name="training_verbose_samples"
-                        )
-                else:
-                    num_printed = result
+                num_printed, captured_text = result
+                # Log to wandb if available
+                if captured_text and current_wandb_run_id:
+                    verbose_samples_logger.log_verbose_samples(captured_text, 
+                        step=step,
+                        table_name="training_verbose_samples"
+                    )
                 
                 dec.train()
                 enc.train()

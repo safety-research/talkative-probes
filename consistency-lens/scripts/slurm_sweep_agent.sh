@@ -80,6 +80,7 @@ SCRIPT_PATH="$(readlink -f "$0")"
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
+cd ~/talkative-probes/consistency-lens
 echo "Current directory: $(pwd)"
 
 # Set up environment
@@ -87,6 +88,7 @@ export OMP_NUM_THREADS=16
 export TORCHINDUCTOR_CACHE_DIR="${HOME}/.cache/torchinductor"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TOKENIZERS_PARALLELISM=true
+export WANDB__SERVICE_WAIT=300
 
 # Activate virtual environment
 echo "Activating"

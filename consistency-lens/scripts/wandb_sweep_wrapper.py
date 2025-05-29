@@ -22,7 +22,8 @@ def main():
         "scripts/submit_with_config.sh",
         f"config={config.config}",
         f"learning_rate={config.learning_rate}",
-        f"num_train_epochs={config.num_train_epochs}"
+        f"num_train_epochs={config.num_train_epochs}",
+        f"run_suffix={os.environ['SLURM_JOB_ID']}"
     ]
     
     print(f"Executing: {' '.join(cmd)}")

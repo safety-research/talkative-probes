@@ -13,7 +13,7 @@ parameters:
   num_train_epochs:
     value: 10
   gumbel_tau_schedule.constant_steps_before_linear_decay:
-      values: ["1000s", "4000s"]
+      values: ["1000s", "2000s", "4000s", "8000s"]
       
 
 command:

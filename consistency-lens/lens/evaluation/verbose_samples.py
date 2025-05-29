@@ -162,11 +162,16 @@ def print_verbose_sample_details(
     decoder_tokens: List[str],
     decoder_preds_by_rank: List[List[str]],
     base_tokens: List[str],
+    base_tokens_hard: List[str],
+    base_tokens_hard_no_map: List[str],
     base_preds_by_rank: List[List[str]],
+    base_preds_by_rank_hard: List[List[str]],
+    base_preds_by_rank_hard_no_map: List[List[str]],
     top_n_analysis_val: int,
     original_string_cropped: str,
     autoregressive_continuation: Optional[str] = None,
     a_prime_string_cropped: Optional[str] = None,
+    cfg: Dict[str, Any] = None,
 ) -> None:
     """Prints detailed information for a single verbose sample."""
     print("--- Verbose sample ---")
@@ -211,6 +216,21 @@ def print_verbose_sample_details(
     else:
         print("  (No explanation generated or empty)")
 
+    print(f"\nGenerated Explanation (from BASE model using hard context = tuned talkative probe): {cfg['decoder_prompt']}")
+    if base_tokens_hard:
+        base_labels = ["Token:"] + [f"Base Top {i+1}:" for i in range(len(base_preds_by_rank_hard))]
+        base_data_rows = [base_tokens_hard] + base_preds_by_rank_hard
+        print_formatted_table(base_labels, base_data_rows)
+    else:
+        print("  (No explanation generated or empty)")
+
+    print(f"\nGenerated Explanation (from BASE model using hard context = bare talkative probe): {cfg['decoder_prompt']}")
+    if base_tokens_hard_no_map:
+        base_labels = ["Token:"] + [f"Base Top {i+1}:" for i in range(len(base_preds_by_rank_hard_no_map))]
+        base_data_rows = [base_tokens_hard_no_map] + base_preds_by_rank_hard_no_map
+        print_formatted_table(base_labels, base_data_rows)
+    else:
+        print("  (No explanation generated or empty)")
     print("-" * 60)
 
 
@@ -368,6 +388,19 @@ def process_and_print_verbose_batch_samples(
         
         original_token_at_p_str = escape_newlines(tok.decode([raw_prefix_ids[p]])) if p < len(raw_prefix_ids) else "N/A"
 
+        def build_topk_preds_by_rank(raw_lm_logits, num_tokens, k, tok):
+            """Builds a list of rows: one row per rank (top-1, top-2, ...)."""
+            if k <= 0:
+                return []
+            preds_by_rank = [[] for _ in range(k)]
+            for logit_slice in raw_lm_logits[0][:num_tokens]:
+                topk_ids = torch.topk(logit_slice, k=k).indices.tolist()
+                for rank_idx, tok_id in enumerate(topk_ids):
+                    preds_by_rank[rank_idx].append(
+                        escape_newlines(tok.decode([tok_id]).strip())
+                    )
+            return preds_by_rank
+
         # ------------------------------------------------------------------
         # (1) Decoder explanation & stacked top-k predictions (per-rank rows)
         # ------------------------------------------------------------------
@@ -377,49 +410,68 @@ def process_and_print_verbose_batch_samples(
 
         k_for_decoder_preds = min(top_n_analysis, gen_single.raw_lm_logits.size(-1))
 
-        # Build list of rows: one row per rank (top-1, top-2, ...)
-        decoder_preds_by_rank: List[List[str]] = [[] for _ in range(k_for_decoder_preds)]
-
-        if k_for_decoder_preds > 0:
-            for logit_slice in gen_single.raw_lm_logits[0][: len(gen_tokens)]:
-                topk_ids = torch.topk(logit_slice, k=k_for_decoder_preds).indices.tolist()
-                for rank_idx, tok_id in enumerate(topk_ids):
-                    decoder_preds_by_rank[rank_idx].append(
-                        escape_newlines(tok.decode([tok_id]).strip())
-                    )
-        else:
-            decoder_preds_by_rank = []
-
-        # ------------------------------------------------------------------
-        # (2) Base model generation with identical context                
-        # ------------------------------------------------------------------
-
-        base_gen_single = generate_soft_with_base(
-            orig,
-            A_i,
-            proj_layer=dec.proj,
-            prompt_left_emb=dec.prompt_left_emb,
-            prompt_right_emb=dec.prompt_right_emb,
-            prompt_len=dec.prompt_len,
-            max_length=cfg["t_text"],
-            gumbel_tau=sch_args["tau"],
-            device=device,
+        decoder_preds_by_rank = build_topk_preds_by_rank(
+            gen_single.raw_lm_logits, len(gen_tokens), k_for_decoder_preds, tok
         )
+
+        # ------------------------------------------------------------------
+        # (2) Base model generation with identical (learned) context + incl linear map                
+        # ------------------------------------------------------------------
+        base_gen_single = dec.generate_soft(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, use_proj_map=True)
+        # base_gen_single = generate_soft_with_base(
+        #     orig,
+        #     A_i,
+        #     proj_layer=dec.proj,
+        #     prompt_left_emb=dec.prompt_left_emb,
+        #     prompt_right_emb=dec.prompt_right_emb,
+        #     prompt_len=dec.prompt_len,
+        #     max_length=cfg["t_text"],
+        #     gumbel_tau=sch_args["tau"],
+        #     device=device,
+        # )
 
         base_token_ids_full = base_gen_single.hard_token_ids[0].tolist()
         base_gen_tokens = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full]
 
-        # For base model, build top-k predictions in same stacked format for readability (optional)
-        base_preds_by_rank: List[List[str]] = []
-        if k_for_decoder_preds > 0:
-            base_preds_by_rank = [[] for _ in range(k_for_decoder_preds)]
-            for logit_slice in base_gen_single.raw_lm_logits[0][: len(base_gen_tokens)]:
-                topk_ids = torch.topk(logit_slice, k=k_for_decoder_preds).indices.tolist()
-                for rank_idx, tok_id in enumerate(topk_ids):
-                    base_preds_by_rank[rank_idx].append(
-                        escape_newlines(tok.decode([tok_id]).strip())
-                    )
+        base_preds_by_rank = build_topk_preds_by_rank(
+            base_gen_single.raw_lm_logits, len(base_gen_tokens), k_for_decoder_preds, tok
+        )
 
+        # ------------------------------------------------------------------
+        # (3 ) Base model generation with hard context but using linear map 
+        # ------------------------------------------------------------------
+        left_ids, right_ids, left_emb, right_emb = dec.tokenize_and_embed_prompt(cfg["decoder_prompt"], tok)
+        base_gen_single_hard = dec.generate_soft(A_i, 
+                                                 max_length=cfg["t_text"], 
+                                                 gumbel_tau=sch_args["tau"], 
+                                                 override_model_base_and_out=orig, 
+                                                 hard_left_emb=left_ids, 
+                                                 hard_right_emb=right_ids,
+                                                 use_proj_map=True)
+
+        base_token_ids_full_hard = base_gen_single_hard.hard_token_ids[0].tolist()
+        base_gen_tokens_hard = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full_hard]
+
+        base_preds_by_rank_hard = build_topk_preds_by_rank(
+            base_gen_single_hard.raw_lm_logits, len(base_gen_tokens_hard), k_for_decoder_preds, tok
+        )
+
+        # (4) Base model generation with hard context but without linear map
+        left_ids, right_ids, left_emb, right_emb = dec.tokenize_and_embed_prompt(cfg["decoder_prompt"], tok)
+        base_gen_single_hard_no_map = dec.generate_soft(A_i, 
+                                                        max_length=cfg["t_text"], 
+                                                        gumbel_tau=sch_args["tau"], 
+                                                        override_model_base_and_out=orig, 
+                                                        hard_left_emb=left_ids, 
+                                                        hard_right_emb=right_ids, 
+                                                        use_proj_map=False)
+
+        base_token_ids_full_hard_no_map = base_gen_single_hard_no_map.hard_token_ids[0].tolist()
+        base_gen_tokens_hard_no_map = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full_hard_no_map]
+
+        base_preds_by_rank_hard_no_map = build_topk_preds_by_rank(
+            base_gen_single_hard_no_map.raw_lm_logits, len(base_gen_tokens_hard_no_map), k_for_decoder_preds, tok
+        )
         # ------------------------------------------------------------------
         # END generation blocks
         # ------------------------------------------------------------------
@@ -534,11 +586,16 @@ def process_and_print_verbose_batch_samples(
                     decoder_tokens=gen_tokens,
                     decoder_preds_by_rank=decoder_preds_by_rank,
                     base_tokens=base_gen_tokens,
+                    base_tokens_hard=base_gen_tokens_hard,
+                    base_tokens_hard_no_map=base_gen_tokens_hard_no_map,
                     base_preds_by_rank=base_preds_by_rank,
+                    base_preds_by_rank_hard=base_preds_by_rank_hard,
+                    base_preds_by_rank_hard_no_map=base_preds_by_rank_hard_no_map,
                     top_n_analysis_val=top_n_analysis,
                     original_string_cropped=original_string_cropped,
                     autoregressive_continuation=autoregressive_continuation,
                     a_prime_string_cropped=a_prime_string_cropped,
+                    cfg=cfg,
                 )
             captured_output.append(output_buffer.getvalue())
             # Also print to console
@@ -555,11 +612,16 @@ def process_and_print_verbose_batch_samples(
                 decoder_tokens=gen_tokens,
                 decoder_preds_by_rank=decoder_preds_by_rank,
                 base_tokens=base_gen_tokens,
+                base_tokens_hard=base_gen_tokens_hard,
+                base_tokens_hard_no_map=base_gen_tokens_hard_no_map,
                 base_preds_by_rank=base_preds_by_rank,
+                base_preds_by_rank_hard=base_preds_by_rank_hard,
+                base_preds_by_rank_hard_no_map=base_preds_by_rank_hard_no_map,
                 top_n_analysis_val=top_n_analysis,
                 original_string_cropped=original_string_cropped,
                 autoregressive_continuation=autoregressive_continuation,
                 a_prime_string_cropped=a_prime_string_cropped,
+                cfg=cfg,
             )
         num_printed_this_batch += 1
         if (printed_count_so_far + num_printed_this_batch) >= num_samples:
@@ -580,76 +642,76 @@ def process_and_print_verbose_batch_samples(
 #       activation.
 # -----------------------------------------------------------------------------
 
-class BaseGenerated(NamedTuple):
-    """Lightweight container mirroring `Decoder.Generated` for the base model."""
+# class BaseGenerated(NamedTuple):
+#     """Lightweight container mirroring `Decoder.Generated` for the base model."""
 
-    hard_token_ids: torch.Tensor
-    raw_lm_logits: torch.Tensor
+#     hard_token_ids: torch.Tensor
+#     raw_lm_logits: torch.Tensor
 
 
-def generate_soft_with_base(
-    orig_model: OrigWrapper,
-    activation_input: torch.Tensor,
-    *,
-    proj_layer: torch.nn.Linear,
-    prompt_left_emb: torch.Tensor | None,
-    prompt_right_emb: torch.Tensor | None,
-    prompt_len: int,
-    max_length: int,
-    gumbel_tau: float,
-    device: torch.device,
-) -> BaseGenerated:
-    """Autoregressively sample *soft* tokens from the *frozen* base model.
+# def generate_soft_with_base(
+#     orig_model: OrigWrapper,
+#     activation_input: torch.Tensor,
+#     *,
+#     proj_layer: torch.nn.Linear,
+#     prompt_left_emb: torch.Tensor | None,
+#     prompt_right_emb: torch.Tensor | None,
+#     prompt_len: int,
+#     max_length: int,
+#     gumbel_tau: float,
+#     device: torch.device,
+# ) -> BaseGenerated:
+#     """Autoregressively sample *soft* tokens from the *frozen* base model.
 
-    This closely follows `Decoder.generate_soft`, but relies solely on the
-    base model's LM head (tied embeddings) instead of a separate `out` layer.
-    """
+#     This closely follows `Decoder.generate_soft`, but relies solely on the
+#     base model's LM head (tied embeddings) instead of a separate `out` layer.
+#     """
 
-    # Ensure dtype/device consistency
-    activation_input = activation_input.to(proj_layer.weight.dtype).to(device)
-    if prompt_left_emb is not None:
-        prompt_left_emb = prompt_left_emb.to(device)
-    if prompt_right_emb is not None:
-        prompt_right_emb = prompt_right_emb.to(device)
+#     # Ensure dtype/device consistency
+#     activation_input = activation_input.to(proj_layer.weight.dtype).to(device)
+#     if prompt_left_emb is not None:
+#         prompt_left_emb = prompt_left_emb.to(device)
+#     if prompt_right_emb is not None:
+#         prompt_right_emb = prompt_right_emb.to(device)
 
-    # Build initial sequence of embeddings: <prompt_left> + proj(A) + <prompt_right>
-    parts: list[torch.Tensor] = []
-    if prompt_left_emb is not None:
-        parts.append(prompt_left_emb.expand(activation_input.size(0), -1, -1))
+#     # Build initial sequence of embeddings: <prompt_left> + proj(A) + <prompt_right>
+#     parts: list[torch.Tensor] = []
+#     if prompt_left_emb is not None:
+#         parts.append(prompt_left_emb.expand(activation_input.size(0), -1, -1))
 
-    a_proj = proj_layer(activation_input).unsqueeze(1)
-    parts.append(a_proj)
+#     a_proj = proj_layer(activation_input).unsqueeze(1)
+#     parts.append(a_proj)
 
-    if prompt_right_emb is not None:
-        parts.append(prompt_right_emb.expand(activation_input.size(0), -1, -1))
+#     if prompt_right_emb is not None:
+#         parts.append(prompt_right_emb.expand(activation_input.size(0), -1, -1))
 
-    seq_embs = torch.cat(parts, dim=1)  # (B, prompt_len+1, d_model)
+#     seq_embs = torch.cat(parts, dim=1)  # (B, prompt_len+1, d_model)
 
-    emb_table = orig_model.model.get_output_embeddings().weight  # (V, d_model)
+#     emb_table = orig_model.model.get_output_embeddings().weight  # (V, d_model)
 
-    logits_list: list[torch.Tensor] = []
-    hard_ids_list: list[torch.Tensor] = []
+#     logits_list: list[torch.Tensor] = []
+#     hard_ids_list: list[torch.Tensor] = []
 
-    for _ in range(max_length):
-        outputs = orig_model.model(inputs_embeds=seq_embs, output_hidden_states=True)
-        h_last = (
-            outputs.last_hidden_state
-            if hasattr(outputs, "last_hidden_state")
-            else outputs.hidden_states[-1]
-        )
+#     for _ in range(max_length):
+#         outputs = orig_model.model(inputs_embeds=seq_embs, output_hidden_states=True)
+#         h_last = (
+#             outputs.last_hidden_state
+#             if hasattr(outputs, "last_hidden_state")
+#             else outputs.hidden_states[-1]
+#         )
 
-        logits_t = orig_model.model.lm_head(h_last[:, -1])  # (B, V)
+#         logits_t = orig_model.model.lm_head(h_last[:, -1])  # (B, V)
 
-        # Straight-Through Gumbel-Softmax sampling
-        ste_token_dist = F.gumbel_softmax(logits_t, tau=gumbel_tau, hard=True)
-        emb_t = ste_token_dist @ emb_table  # (B, d_model)
+#         # Straight-Through Gumbel-Softmax sampling
+#         ste_token_dist = F.gumbel_softmax(logits_t, tau=gumbel_tau, hard=True)
+#         emb_t = ste_token_dist @ emb_table  # (B, d_model)
 
-        seq_embs = torch.cat([seq_embs, emb_t.unsqueeze(1)], dim=1)
+#         seq_embs = torch.cat([seq_embs, emb_t.unsqueeze(1)], dim=1)
 
-        logits_list.append(logits_t)
-        hard_ids_list.append(ste_token_dist.argmax(dim=-1))
+#         logits_list.append(logits_t)
+#         hard_ids_list.append(ste_token_dist.argmax(dim=-1))
 
-    logits_seq = torch.stack(logits_list, dim=1)
-    hard_ids = torch.stack(hard_ids_list, dim=1)
+#     logits_seq = torch.stack(logits_list, dim=1)
+#     hard_ids = torch.stack(hard_ids_list, dim=1)
 
-    return BaseGenerated(hard_token_ids=hard_ids, raw_lm_logits=logits_seq)
+#     return BaseGenerated(hard_token_ids=hard_ids, raw_lm_logits=logits_seq)

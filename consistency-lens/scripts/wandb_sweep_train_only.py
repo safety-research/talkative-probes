@@ -34,7 +34,8 @@ def main():
         f"--config-path={config_dir}",
         f"--config-name={config_name}",
         f"learning_rate={config.learning_rate}",
-        f"num_train_epochs={config.num_train_epochs}"
+        f"num_train_epochs={config.num_train_epochs}",
+        f"run_suffix={os.environ['SLURM_JOB_ID']}"
     ]
     for key, value in config.items():
         if key not in ["config", "learning_rate", "num_train_epochs"]:
