@@ -28,3 +28,5 @@ alpha_schedule:
 
 batch_size: 128
 gradient_accumulation_steps: 32
+gumbel_tau_schedule:
+  constant_steps_before_linear_decay: 1000
