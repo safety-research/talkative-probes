@@ -43,7 +43,11 @@ from lens.training.schedules import (
     get_autocast_context,
     optimizer_step,
     parse_schedule_to_steps,
-    spec_to_steps
+    spec_to_steps,
+    should_unfreeze_any_component,
+    apply_unfreeze_warmup,
+    unfreeze_non_adapters,
+    apply_gradient_scaling,
 )
 from lens.utils.checkpoint_manager import CheckpointManager
 import yaml
@@ -433,6 +437,97 @@ def _prepare_dataloaders(
 
 # ... existing imports and helper functions ...
 
+def run_validation_step(
+    dec: nn.Module,
+    enc: nn.Module,
+    orig: OrigWrapper,
+    val_loader: DataLoader,
+    config: dict,
+    tokenizer: AutoTokenizer, # Not used in this selection
+    cached_prefix_ids: torch.Tensor | None,
+    device: torch.device,
+    current_step: int,
+    current_epoch: int, # 0-based epoch
+    max_steps: int,
+    steps_per_epoch: int,
+    log: logging.Logger
+) -> dict:
+    """Runs a validation step and returns a dictionary of metrics."""
+    dec.eval()
+    enc.eval()
+    val_loss = val_mse = val_lm = val_kl = 0.0
+    val_seen = 0
+    
+    t_text = config['t_text']
+    lm_weight = config['lm_weight']
+    kl_base_weight = config['kl_base_weight']
+    entropy_weight = config['entropy_weight']
+
+    with torch.no_grad():
+        for vbatch in val_loader:
+            vbatch = {k: v.to(device) for k, v in vbatch.items()}
+            sch_args = {
+                "tau": get_schedule_value(config['gumbel_tau_schedule'], current_step, max_steps,
+                                         current_epoch, steps_per_epoch),
+                "T_text": t_text,
+                "alpha": get_schedule_value(config['alpha_schedule'], current_step, max_steps,
+                                           current_epoch, steps_per_epoch),
+                "lm_weight": lm_weight,
+                "kl_base_weight": kl_base_weight,
+                "entropy_weight": entropy_weight,
+                "mse_weight": config.get('mse_weight', 0.0),
+            }
+            v_losses = train_step(vbatch, {"dec": dec, "enc": enc, "orig": orig}, sch_args,
+                                 lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'),
+                                 tokenizer=tokenizer,
+                                 cached_prefix_ids=cached_prefix_ids)
+            bsz = vbatch["A"].size(0)
+            val_loss += v_losses["total"].item() * bsz
+            val_mse  += v_losses["mse"].item()   * bsz
+            val_lm   += v_losses["lm"].item()    * bsz
+            val_kl   += v_losses["kl"].item()    * bsz
+            val_seen += bsz
+            
+    avg_val_loss = val_loss / val_seen if val_seen else float("nan")
+    avg_val_mse  = val_mse  / val_seen if val_seen else float("nan")
+    avg_val_lm   = val_lm   / val_seen if val_seen else float("nan")
+    avg_val_kl   = val_kl   / val_seen if val_seen else float("nan")
+
+    # Calculate normalized validation loss for checkpointing
+    alpha_config = config.get('alpha_schedule', {})
+    if alpha_config.get('type') == 'linear_warmup':
+        final_alpha = alpha_config.get('end_value', 0.1)
+    else:
+        final_alpha = alpha_config.get('value', 0.1)
+    
+    normalized_val_loss = (lm_weight * final_alpha) * avg_val_lm + kl_base_weight * avg_val_kl
+    
+    log.info(
+        f"Validation – loss {avg_val_loss:.4f}, mse {avg_val_mse:.4f}, lm {avg_val_lm:.4f}, kl {avg_val_kl:.4f}"
+    )
+    log.info(f"Normalized validation loss (for checkpointing): {normalized_val_loss:.4f}")
+    
+    metrics_to_log = {
+        "eval/loss/total": avg_val_loss,
+        "eval/loss/normalized": normalized_val_loss,
+        "eval/loss/mse":    avg_val_mse,
+        "eval/loss/lm":     avg_val_lm,
+        "eval/loss/kl":     avg_val_kl,
+    }
+    log_metrics(metrics_to_log, step=current_step)
+
+    dec.train()
+    enc.train()
+    
+    return {
+        "avg_val_loss": avg_val_loss,
+        "normalized_val_loss": normalized_val_loss,
+        "avg_val_mse": avg_val_mse,
+        "avg_val_lm": avg_val_lm,
+        "avg_val_kl": avg_val_kl,
+    }
+
+
 def log_parameter_counts(dec_raw, enc_raw, orig, decoder_config, encoder_config, log):
     """Log detailed parameter counts for all models.
     
@@ -589,293 +684,16 @@ def log_parameter_counts(dec_raw, enc_raw, orig, decoder_config, encoder_config,
     }
 
 
-def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr_multiplier, embedding_lr_multiplier, prompt_lr_multiplier, opt_state_dict=None, current_step=None, current_epoch=None):
-    """Unfreeze non-adapter parameters and create new optimizer with all parameters."""
-    log = logging.getLogger(__name__)
-    
-    # Get original trainable settings from config
-    decoder_train_cfg = config.get('trainable_components', {}).get('decoder', {})
-    encoder_train_cfg = config.get('trainable_components', {}).get('encoder', {})
-    
-    # Check for freeze schedule overrides
-    freeze_schedule = config.get('freeze_schedule', {})
-    components_config = freeze_schedule.get('components', {})
-    
-    # Helper function to get effective config (freeze schedule override or original config)
-    def get_effective_config(component, param_name, original_config):
-        component_cfg = components_config.get(component, {}).get(param_name, {})
-        
-        # Check if this component has custom enabled setting
-        enabled_override = component_cfg.get('enabled') if isinstance(component_cfg, dict) else None
-        if enabled_override is not None:
-            return enabled_override
-            
-        # Use original config setting
-        return original_config.get(param_name, False)
-    
-    # Helper function to check if a component should be unfrozen based on timing
-    def should_unfreeze_component(component, param_name):
-        component_cfg = components_config.get(component, {}).get(param_name, {})
-        
-        # Check for component-specific timing
-        if isinstance(component_cfg, dict) and 'unfreeze_at' in component_cfg:
-            unfreeze_spec_str = component_cfg['unfreeze_at']
-            if unfreeze_spec_str is not None:
-                try:
-                    unfreeze_spec = parse_schedule_value(unfreeze_spec_str)
-                    return resolve_schedule_at_step(unfreeze_spec, current_step or 0, current_epoch or 0)
-                except Exception as e:
-                    print(f"Warning: Failed to parse unfreeze_at for {component}.{param_name}: {e}")
-        
-        # Fall back to global unfreeze timing
-        global_unfreeze_at = freeze_schedule.get('unfreeze_at')
-        if global_unfreeze_at is not None:
-            try:
-                unfreeze_spec = parse_schedule_value(global_unfreeze_at)
-                return resolve_schedule_at_step(unfreeze_spec, current_step or 0, current_epoch or 0)
-            except Exception as e:
-                print(f"Warning: Failed to parse global unfreeze_at: {e}")
-        
-        # Legacy compatibility
-        if current_step is not None:
-            legacy_step = freeze_schedule.get('unfreeze_at_step')
-            if legacy_step is not None:
-                return current_step >= legacy_step
-        
-        if current_epoch is not None:
-            legacy_epoch = freeze_schedule.get('unfreeze_at_epoch')
-            if legacy_epoch is not None:
-                return current_epoch >= legacy_epoch
-                
-        return False
-    
-    # Track which parameters are newly unfrozen
-    newly_unfrozen_params = set()
-    
-    # Helper function to unfreeze embedding heads
-    def unfreeze_embedding_heads(model, should_unfreeze):
-        if not should_unfreeze:
-            return
-        
-        # Unfreeze input embeddings
-        try:
-            input_embeddings = model.get_input_embeddings()
-            if input_embeddings is not None:
-                for param in input_embeddings.parameters():
-                    was_frozen = not param.requires_grad
-                    param.requires_grad = True
-                    if was_frozen:
-                        newly_unfrozen_params.add(param)
-        except AttributeError:
-            pass
-        
-        # Unfreeze output embeddings
-        try:
-            output_embeddings = model.get_output_embeddings()
-            if output_embeddings is not None:
-                for param in output_embeddings.parameters():
-                    was_frozen = not param.requires_grad
-                    param.requires_grad = True
-                    if was_frozen:
-                        newly_unfrozen_params.add(param)
-        except AttributeError:
-            # Fallback for models that expose `lm_head`
-            if hasattr(model, 'lm_head'):
-                for param in model.lm_head.parameters():
-                    was_frozen = not param.requires_grad
-                    param.requires_grad = True
-                    if was_frozen:
-                        newly_unfrozen_params.add(param)
-    
-    # Unfreeze based on effective config and timing
-    for name, param in dec_raw.named_parameters():
-        if 'base' in name and 'embed' not in name:  # Base model params (excluding embeddings)
-            was_frozen = not param.requires_grad
-            should_enable = get_effective_config('decoder', 'base_model', decoder_train_cfg)
-            should_unfreeze_now = should_unfreeze_component('decoder', 'base_model')
-            param.requires_grad = should_enable and should_unfreeze_now
-            if was_frozen and param.requires_grad:
-                newly_unfrozen_params.add(param)
-        elif 'out' in name:  # Output head (self.out layer)
-            was_frozen = not param.requires_grad
-            should_enable = get_effective_config('decoder', 'output_head', decoder_train_cfg)
-            should_unfreeze_now = should_unfreeze_component('decoder', 'output_head')
-            param.requires_grad = should_enable and should_unfreeze_now
-            if was_frozen and param.requires_grad:
-                newly_unfrozen_params.add(param)
-        elif 'prompt_left_emb' in name or 'prompt_right_emb' in name:  # Trainable prompts
-            was_frozen = not param.requires_grad
-            should_enable = get_effective_config('decoder', 'trainable_prompts', decoder_train_cfg)
-            should_unfreeze_now = should_unfreeze_component('decoder', 'trainable_prompts')
-            param.requires_grad = should_enable and should_unfreeze_now
-            if was_frozen and param.requires_grad:
-                newly_unfrozen_params.add(param)
-        # proj layers remain as they were
-    
-    # Handle decoder embedding heads separately
-    should_enable_dec_embeddings = get_effective_config('decoder', 'embedding_head', decoder_train_cfg)
-    should_unfreeze_now_dec_embeddings = should_unfreeze_component('decoder', 'embedding_head')
-    if should_enable_dec_embeddings and should_unfreeze_now_dec_embeddings:
-        unfreeze_embedding_heads(dec_raw.base, True)
-    
-    for name, param in enc_raw.named_parameters():
-        if 'base' in name and 'embed' not in name:  # Base model params (excluding embeddings)
-            was_frozen = not param.requires_grad
-            should_enable = get_effective_config('encoder', 'base_model', encoder_train_cfg)
-            should_unfreeze_now = should_unfreeze_component('encoder', 'base_model')
-            param.requires_grad = should_enable and should_unfreeze_now
-            if was_frozen and param.requires_grad:
-                newly_unfrozen_params.add(param)
-        elif 'soft_prompt_embeddings' in name:  # Soft prompt embeddings
-            was_frozen = not param.requires_grad
-            should_enable = get_effective_config('encoder', 'trainable_soft_prompt', encoder_train_cfg)
-            should_unfreeze_now = should_unfreeze_component('encoder', 'trainable_soft_prompt')
-            param.requires_grad = should_enable and should_unfreeze_now
-            if was_frozen and param.requires_grad:
-                newly_unfrozen_params.add(param)
-        # proj layers remain as they were
-    
-    # Handle encoder embedding heads separately (only if using base model)
-    if enc_raw.config.use_base_model:
-        should_enable_enc_embeddings = get_effective_config('encoder', 'embedding_head', encoder_train_cfg)
-        should_unfreeze_now_enc_embeddings = should_unfreeze_component('encoder', 'embedding_head')
-        if should_enable_enc_embeddings and should_unfreeze_now_enc_embeddings:
-            unfreeze_embedding_heads(enc_raw.base, True)
-    
-    # Update trainable params list
-    dec = dec_raw if not isinstance(dec_raw, torch._dynamo.eval_frame.OptimizedModule) else dec_raw
-    enc = enc_raw if not isinstance(enc_raw, torch._dynamo.eval_frame.OptimizedModule) else enc_raw
-    
-    trainable_params = [p for p in dec.parameters() if p.requires_grad] + \
-                       [p for p in enc.parameters() if p.requires_grad]
-    
-    # Create new optimizer with updated parameters
-    optimizer_groups = param_groups([dec, enc], learning_rate, projection_lr_multiplier, embedding_lr_multiplier, prompt_lr_multiplier)
-    new_opt = torch.optim.AdamW(optimizer_groups)
-    
-    # Set initial_lr for each parameter group (required for LR scheduler)
-    for group in new_opt.param_groups:
-        if 'initial_lr' not in group:
-            group['initial_lr'] = group['lr']
-    
-    # Restore optimizer state if provided
-    if opt_state_dict is not None:
-        try:
-            new_opt.load_state_dict(opt_state_dict)
-            log.info("Restored optimizer state after unfreezing")
-        except Exception as e:
-            log.warning(f"Failed to restore optimizer state: {e}. Using fresh optimizer.")
-    
-    # Log parameter counts after unfreezing
-    total_trainable = sum(p.numel() for p in trainable_params)
-    newly_unfrozen_count = sum(p.numel() for p in newly_unfrozen_params)
-    log.info(f"After unfreezing: {total_trainable:,} trainable parameters")
-    log.info(f"Newly unfrozen: {newly_unfrozen_count:,} parameters")
-    
-    return new_opt, trainable_params, newly_unfrozen_params
-
-
-def apply_unfreeze_warmup(opt, newly_unfrozen_params, unfreeze_transition_step, 
-                         unfreeze_warmup_steps, step, freeze_schedule_config, 
-                         log_interval, log):
-    """Apply learning rate warmup for newly unfrozen parameters.
-    
-    Returns:
-        tuple: (unfreeze_transition_step, should_clear_params) where should_clear_params
-               indicates if newly_unfrozen_params should be cleared
-    """
-    if unfreeze_transition_step is None or not newly_unfrozen_params:
-        return unfreeze_transition_step, False
-        
-    steps_since_unfreeze = step - unfreeze_transition_step
-    
-    if steps_since_unfreeze < unfreeze_warmup_steps:
-        # Calculate warmup factor (linear warmup from start_factor to 1.0)
-        warmup_start_factor = freeze_schedule_config.get('unfreeze_warmup_start_factor', 0.01)
-        warmup_factor = warmup_start_factor + (1.0 - warmup_start_factor) * (steps_since_unfreeze / unfreeze_warmup_steps)
-        
-        # Apply warmup factor to newly unfrozen parameters
-        for group_idx, group in enumerate(opt.param_groups):
-            # Store the current LR as the base for warmup if not already stored
-            if not hasattr(opt, '_warmup_base_lrs'):
-                opt._warmup_base_lrs = {}
-            if group_idx not in opt._warmup_base_lrs:
-                opt._warmup_base_lrs[group_idx] = group['lr']
-            
-            # Apply warmup only to newly unfrozen params in this group
-            group_has_unfrozen = False
-            for param in group['params']:
-                if param in newly_unfrozen_params:
-                    group_has_unfrozen = True
-                    break
-            
-            if group_has_unfrozen:
-                # Apply warmup factor to entire group if it contains any newly unfrozen params
-                group['lr'] = opt._warmup_base_lrs[group_idx] * warmup_factor
-        
-        # Log warmup progress
-        if step % log_interval == 0:
-            log.info(f"Unfreeze warmup: step {steps_since_unfreeze}/{unfreeze_warmup_steps}, factor {warmup_factor:.3f}")
-        
-        # Log metrics
-        log_metrics({
-            "freeze_schedule/warmup_factor": warmup_factor,
-            "freeze_schedule/warmup_steps_remaining": unfreeze_warmup_steps - steps_since_unfreeze,
-        }, step=step)
-        
-        return unfreeze_transition_step, False
-        
-    elif steps_since_unfreeze == unfreeze_warmup_steps:
-        # Warmup complete, restore base learning rates
-        if hasattr(opt, '_warmup_base_lrs'):
-            for group_idx, group in enumerate(opt.param_groups):
-                if group_idx in opt._warmup_base_lrs:
-                    group['lr'] = opt._warmup_base_lrs[group_idx]
-            delattr(opt, '_warmup_base_lrs')
-        
-        log.info("Unfreeze warmup complete - all parameters now at full learning rate")
-        # Clear the newly unfrozen params set as warmup is done
-        return None, True  # Clear unfreeze_transition_step and signal to clear params
-    
-    return unfreeze_transition_step, False
-
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
 def main(cfg: DictConfig) -> None:  # noqa: D401
-    """Hydra-powered entry point replacing the legacy argparse-based CLI.
+    """Hydra-powered entry point.
 
-    The body below relies on two legacy variables: `config` (dict) and `args`
-    (namespace with optional attributes).  We derive them from the Hydra
-    configuration so that the bulk of the original training logic remains
-    unchanged.
+    The body below relies on the `config` dict, derived from the Hydra
+    configuration.
     """
 
-    # ------------------------------------------------------------------
-    # Build the legacy `args` namespace from Hydra config values
-    # ------------------------------------------------------------------
-    args = SimpleNamespace()
-    for _k in [
-        "activation_dir",
-        "val_activation_dir",
-        "max_train_steps",
-        "learning_rate",
-        "t_text",
-        "log_interval",
-        "wandb_log_interval",
-        "resume",
-        "val_fraction",
-        "split_seed",
-        "val_interval",
-        "max_train_samples",
-        "max_val_samples",
-        "wandb_resume_id",
-        "run_name",
-        "model_name",
-        "run_suffix",
-    ]:
-        setattr(args, _k, cfg.get(_k, None))
-
-    # Convert Hydra config to a plain Python dict for the legacy code.
+    # Convert Hydra config to a plain Python dict.
     config = OmegaConf.to_container(cfg, resolve=True)
     
     # Parse flexible schedule notations (e.g., "1000s", "5e") into detailed format
@@ -893,7 +711,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
 
     # ------------------------------------------------------------------
     # From this point onward the original training logic remains intact
-    # and can keep using `config` and `args`.
+    # and can keep using `config`.
     # ------------------------------------------------------------------
 
     # Use overridden values or defaults from config
@@ -902,7 +720,8 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     layer_l = config.get('layer_l', 5)  # Get layer number from config
     
     # Handle activation_dir override carefully: CLI takes precedence over config.
-    base_activation_dir_str = args.activation_dir if args.activation_dir is not None else config['activation_dumper']['output_dir']
+    cli_activation_dir = config.get('activation_dir')
+    base_activation_dir_str = cli_activation_dir if cli_activation_dir is not None else config['activation_dumper']['output_dir']
     # Resolve path relative to project root
     base_activation_path = resolve_path(base_activation_dir_str)
     # Include layer in the path: parent / model_name / layer_X / name
@@ -910,7 +729,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     activation_dir = str(base_activation_path.parent / model_name_clean / f"layer_{layer_l}" / base_activation_path.name)
     
     # Handle val_activation_dir: CLI takes precedence over config.
-    base_val_activation_dir_str = args.val_activation_dir if args.val_activation_dir is not None else config.get('val_activation_dir')
+    base_val_activation_dir_str = config.get('val_activation_dir')
     effective_val_activation_dir: str | None = None
     if base_val_activation_dir_str:
         # Resolve path relative to project root
@@ -956,11 +775,12 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         pass
     
     # Generate run name (or use override)
-    if args.run_name:
-        run_name = args.run_name
+    run_name_override = config.get('run_name')
+    if run_name_override:
+        run_name = run_name_override
         log.info(f"Using user-specified run name: {run_name}")
     else:
-        run_name = generate_run_name(config, dataset_info, args.resume, config_name, args.run_suffix)
+        run_name = generate_run_name(config, dataset_info, config.get('resume'), config_name, config.get('run_suffix'))
     
     # Update checkpoint output directory to include run name
     checkpoint_config = config.get('checkpoint', {})
@@ -979,16 +799,17 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     log.info("=" * 60)
     
     # Handle wandb resume
-    wandb_run_id = args.wandb_resume_id
+    wandb_run_id = config.get('wandb_resume_id')
     wandb_resume_mode = None
     
+    resume_checkpoint_path = config.get('resume')
     # If resuming from checkpoint and no explicit wandb ID provided, try to load from checkpoint
-    if args.resume and not wandb_run_id:
+    if resume_checkpoint_path and not wandb_run_id:
         # Check if checkpoint file exists
-        if not os.path.exists(args.resume):
-            raise FileNotFoundError(f"Checkpoint file not found: {args.resume}")
+        if not os.path.exists(resume_checkpoint_path):
+            raise FileNotFoundError(f"Checkpoint file not found: {resume_checkpoint_path}")
         # Peek into checkpoint to get wandb run ID if available
-        checkpoint_data = torch.load(args.resume, map_location='cpu')
+        checkpoint_data = torch.load(resume_checkpoint_path, map_location='cpu')
         wandb_run_id = checkpoint_data.get('wandb_run_id')
         if wandb_run_id:
             log.info(f"Found wandb run ID in checkpoint: {wandb_run_id}")
@@ -1046,8 +867,8 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         config=config,
         activation_dir=activation_dir,
         effective_val_activation_dir=effective_val_activation_dir,
-        max_train_samples_req=args.max_train_samples,
-        max_val_samples_req=args.max_val_samples,
+        max_train_samples_req=config.get('max_train_samples'),
+        max_val_samples_req=config.get('max_val_samples'),
         log=log
     )
 
@@ -1190,46 +1011,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     freeze_schedule_config = config.get('freeze_schedule', {})
     freeze_schedule_enabled = freeze_schedule_config.get('enabled', False)
     
-    def should_unfreeze_any_component(current_step, current_epoch):
-        """Check if any component should be unfrozen at current step/epoch."""
-        if not freeze_schedule_enabled:
-            return False
-        
-        components_config = freeze_schedule_config.get('components', {})
-        
-        # Check each component individually
-        for component_name, component_cfg in components_config.items():
-            for param_name, param_cfg in component_cfg.items():
-                if isinstance(param_cfg, dict) and 'unfreeze_at' in param_cfg:
-                    unfreeze_spec_str = param_cfg['unfreeze_at']
-                    if unfreeze_spec_str is not None:
-                        try:
-                            unfreeze_spec = parse_schedule_value(unfreeze_spec_str)
-                            if resolve_schedule_at_step(unfreeze_spec, current_step, current_epoch):
-                                return True
-                        except Exception:
-                            pass
-        
-        # Check global unfreeze timing
-        global_unfreeze_at = freeze_schedule_config.get('unfreeze_at')
-        if global_unfreeze_at is not None:
-            try:
-                unfreeze_spec = parse_schedule_value(global_unfreeze_at)
-                return resolve_schedule_at_step(unfreeze_spec, current_step, current_epoch)
-            except Exception:
-                pass
-        
-        # Legacy compatibility
-        legacy_step = freeze_schedule_config.get('unfreeze_at_step')
-        if legacy_step is not None and current_step >= legacy_step:
-            return True
-            
-        legacy_epoch = freeze_schedule_config.get('unfreeze_at_epoch')
-        if legacy_epoch is not None and current_epoch >= legacy_epoch:
-            return True
-            
-        return False
-    
+
     if freeze_schedule_enabled:
         # Log initial freeze schedule configuration
         global_unfreeze_at = freeze_schedule_config.get('unfreeze_at')
@@ -1315,9 +1097,10 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
             log.info(f"  with {lr_scheduler_config['warmup_steps']} warmup steps")
 
     start_step = 0
-    if args.resume:
+    # resume_checkpoint_path was defined earlier from config.get('resume')
+    if resume_checkpoint_path:
         # Checkpoint stores the last completed step
-        rec = checkpoint_manager.load_checkpoint(args.resume, models={"dec": dec, "enc": enc}, optimizer=opt, map_location=device)
+        rec = checkpoint_manager.load_checkpoint(resume_checkpoint_path, models={"dec": dec, "enc": enc}, optimizer=opt, map_location=device)
         start_step = int(rec.get("step", -1)) + 1 # Resume from the next step
         resume_epoch = start_step // steps_per_epoch if steps_per_epoch > 0 else 0
         # For LR scheduler, last_epoch should be the step count (it's misnamed in PyTorch)
@@ -1361,16 +1144,13 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     
     # Track freeze schedule state
     start_epoch = start_step // steps_per_epoch if steps_per_epoch > 0 else 0
-    non_adapters_frozen = freeze_schedule_enabled and not should_unfreeze_any_component(start_step, start_epoch)
+    non_adapters_frozen = freeze_schedule_enabled and not should_unfreeze_any_component(start_step, start_epoch, freeze_schedule_config, freeze_schedule_enabled)
     
     # Track warmup for newly unfrozen parameters
     unfreeze_warmup_duration = freeze_schedule_config.get('warmup_duration', "100s")
-    try:
-        warmup_spec = parse_schedule_value(unfreeze_warmup_duration)
-        unfreeze_warmup_steps = warmup_spec.value if warmup_spec.unit == "steps" else warmup_spec.value * steps_per_epoch
-    except Exception:
-        # Fallback to legacy config
-        unfreeze_warmup_steps = freeze_schedule_config.get('unfreeze_warmup_steps', 100)
+    warmup_spec = parse_schedule_value(unfreeze_warmup_duration)
+    unfreeze_warmup_steps = warmup_spec.value if warmup_spec.unit == "steps" else warmup_spec.value * steps_per_epoch
+
     newly_unfrozen_params = set()
     unfreeze_transition_step = None
     
@@ -1394,7 +1174,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         is_accumulation_end = ((step + 1) % gradient_accumulation_steps == 0) or (step == max_steps - 1)
         
         # Check if we should unfreeze non-adapter parameters
-        if freeze_schedule_enabled and non_adapters_frozen and should_unfreeze_any_component(step, epoch):
+        if freeze_schedule_enabled and non_adapters_frozen and should_unfreeze_any_component(step, epoch, freeze_schedule_config, freeze_schedule_enabled):
             log.info(f"Unfreezing non-adapter parameters at step {step}")
             
             # Save current optimizer state
@@ -1715,77 +1495,36 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
 
         # run validation at interval
         if val_loader and val_interval > 0 and step % val_interval == 0:
-            dec.eval()
-            enc.eval()
-            val_loss = val_mse = val_lm = val_kl = 0.0
-            val_seen = 0
-            with torch.no_grad():
-                for vbatch in val_loader:
-                    vbatch = {k: v.to(device) for k, v in vbatch.items()}
-                    sch_args = {
-                        "tau": get_schedule_value(config['gumbel_tau_schedule'], step, max_steps,
-                                                 current_epoch, steps_per_epoch),
-                        "T_text": t_text,
-                        "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps,
-                                                   current_epoch, steps_per_epoch),
-                        "lm_weight": lm_weight,
-                        "kl_base_weight": kl_base_weight,
-                        "entropy_weight": entropy_weight,
-                    }
-                    v_losses = train_step(vbatch, {"dec": dec, "enc": enc, "orig": orig}, sch_args, 
-                                         lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'),
-                                         tokenizer=tokenizer,
-                                         cached_prefix_ids=cached_prefix_ids)
-                    bsz = vbatch["A"].size(0)
-                    val_loss += v_losses["total"].item() * bsz
-                    val_mse  += v_losses["mse"].item()   * bsz
-                    val_lm   += v_losses["lm"].item()    * bsz
-                    val_kl   += v_losses["kl"].item()    * bsz
-                    val_seen += bsz
-            avg_val_loss = val_loss / val_seen if val_seen else float("nan")
-            avg_val_mse  = val_mse  / val_seen if val_seen else float("nan")
-            avg_val_lm   = val_lm   / val_seen if val_seen else float("nan")
-            avg_val_kl   = val_kl   / val_seen if val_seen else float("nan")
-            
-            # Calculate normalized validation loss for checkpointing
-            # This represents what the loss would be with the final alpha value
-            # to avoid alpha warmup affecting checkpoint selection
-            alpha_config = config.get('alpha_schedule', {})
-            if alpha_config.get('type') == 'linear_warmup':
-                final_alpha = alpha_config.get('end_value', 0.1)
-            else:
-                final_alpha = alpha_config.get('value', 0.1)
-            
-            # Normalized loss using the correct formula from loop.py:
-            # total_loss = (lm_w * alpha) * loss_lm + kl_base * loss_kl - ent_w * entropy
-            lm_w = config.get('lm_weight', 1.0)
-            kl_base = config.get('kl_base_weight', 1.0)
-            normalized_val_loss = (lm_w * final_alpha) * avg_val_lm + kl_base * avg_val_kl
-            
-            log.info(
-                f"Validation – loss {avg_val_loss:.4f}, mse {avg_val_mse:.4f}, lm {avg_val_lm:.4f}, kl {avg_val_kl:.4f}"
+            validation_metrics = run_validation_step(
+                dec=dec,
+                enc=enc,
+                orig=orig,
+                val_loader=val_loader,
+                config=config,
+                tokenizer=tokenizer,
+                cached_prefix_ids=cached_prefix_ids,
+                device=device,
+                current_step=step,
+                current_epoch=current_epoch, # current_epoch is 0-based
+                max_steps=max_steps,
+                steps_per_epoch=steps_per_epoch,
+                log=log
             )
-            log.info(f"Normalized validation loss (for checkpointing): {normalized_val_loss:.4f}")
-            log_metrics({
-                "eval/loss/total": avg_val_loss,
-                "eval/loss/normalized": normalized_val_loss,  # For checkpointing
-                "eval/loss/mse":    avg_val_mse,
-                "eval/loss/lm":     avg_val_lm,
-                "eval/loss/kl":     avg_val_kl,
-            }, step=step)
+            avg_val_loss = validation_metrics["avg_val_loss"]
+            normalized_val_loss = validation_metrics["normalized_val_loss"]
             
             # Save checkpoint if validation loss tracking is enabled
             if checkpoint_manager.track_best_n > 0 and not math.isnan(avg_val_loss):
-                val_metrics = {
-                    "loss/total": loss.item(),
-                    "loss/mse": losses["mse"].item(),
-                    "loss/lm": losses["lm"].item(),
-                    "loss/kl": losses["kl"].item(),
-                    "loss/entropy": losses["entropy"].item(),
+                val_metrics_for_ckpt = {
+                    "loss/total": losses["total"].item(), # from training step
+                    "loss/mse": losses["mse"].item(),     # from training step
+                    "loss/lm": losses["lm"].item(),       # from training step
+                    "loss/kl": losses["kl"].item(),       # from training step
+                    "loss/entropy": losses["entropy"].item(), # from training step
                     "eval/loss/total": avg_val_loss,
-                    "eval/loss/mse": avg_val_mse,
-                    "eval/loss/lm": avg_val_lm,
-                    "eval/loss/kl": avg_val_kl,
+                    "eval/loss/mse": validation_metrics["avg_val_mse"],
+                    "eval/loss/lm": validation_metrics["avg_val_lm"],
+                    "eval/loss/kl": validation_metrics["avg_val_kl"],
                     "params/tau": current_tau,
                     "params/alpha": current_alpha,
                     "optim/lr": lr_current,
@@ -1799,7 +1538,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                             "enc": enc_raw if config.get('compile_models', True) else enc},
                     optimizer=opt,
                     scheduler=lr_scheduler,
-                    metrics=val_metrics,
+                    metrics=val_metrics_for_ckpt,
                     config=config,
                     val_loss=normalized_val_loss,  # Use normalized loss for best checkpoint tracking
                     raw_val_loss=avg_val_loss,     # Keep raw loss for logging
@@ -1808,45 +1547,14 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                     wandb_run_id=current_wandb_run_id,
                 )
                 
-            dec.train()
-            enc.train()
+            # dec.train() and enc.train() are called at the end of run_validation_step
 
         # Verbose sample printing
         verbose_config = config.get('verbose_samples', {})
         if verbose_config.get('enabled', False):
             # In your evaluation loop, after getting a batch:
-            if verbose_config.get('enabled', False) and step == 0:  # Test on first batch
-                from lens.training.test import diagnose_activation_mismatch
-                diagnosis = diagnose_activation_mismatch(
-                    batch, orig, tokenizer, device, sample_idx=0, verbose=True
-                )
-                log.warning(diagnosis)
-                # In your training script, after loading a batch:
-                from lens.training.test import diagnose_activation_save_load
-                from lens.training.test import check_dataset_activation_format
-                print("\n=== Save/Load Cycle Diagnosis ===")
-                i = 0  # First sample
-                l = int(batch["layer_idx"][i].item())
-                p = int(batch["token_pos_A"][i].item())
-                input_ids = batch["input_ids_A"][i].unsqueeze(0).to(device)
-
-                save_load_results, fresh_act = diagnose_activation_save_load(orig, input_ids, l, p, device)
-                for k, v in save_load_results.items():
-                    print(f"{k}: {v}")
-
-                print("\n=== Dataset Format Check ===")
-                # Replace with your dataset path
-                check_dataset_activation_format("path/to/your/activation/dataset")
-
-                print("\n=== Batch Activation Info ===")
-                print(f"Batch A shape: {batch['A'].shape}")
-                print(f"Batch A dtype: {batch['A'].dtype}")
-                print(f"Batch A[0] norm: {batch['A'][0].norm().item():.4f}")
-                from lens.training.test import test_autocast_difference
-                test_autocast_difference(orig, input_ids, l, p, device)
-
-                from lens.training.test import check_layer_indexing
-                check_layer_indexing(orig, input_ids, device)
+            if  step == 0:  # Test on first batch
+                do_all_initial_validation(batch, orig, tokenizer, device)
 
             should_print = False
             
@@ -1981,6 +1689,38 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     
     log.info("=" * 60)
 
+def do_all_initial_validation(batch, orig, tokenizer, device, log):
+    from lens.training.test import diagnose_activation_mismatch
+    diagnosis = diagnose_activation_mismatch(
+        batch, orig, tokenizer, device, sample_idx=0, verbose=True
+    )
+    log.warning(diagnosis)
+    # In your training script, after loading a batch:
+    from lens.training.test import diagnose_activation_save_load
+    from lens.training.test import check_dataset_activation_format
+    print("\n=== Save/Load Cycle Diagnosis ===")
+    i = 0  # First sample
+    l = int(batch["layer_idx"][i].item())
+    p = int(batch["token_pos_A"][i].item())
+    input_ids = batch["input_ids_A"][i].unsqueeze(0).to(device)
+
+    save_load_results, fresh_act = diagnose_activation_save_load(orig, input_ids, l, p, device)
+    for k, v in save_load_results.items():
+        print(f"{k}: {v}")
+
+    print("\n=== Dataset Format Check ===")
+    # Replace with your dataset path
+    check_dataset_activation_format("path/to/your/activation/dataset")
+
+    print("\n=== Batch Activation Info ===")
+    print(f"Batch A shape: {batch['A'].shape}")
+    print(f"Batch A dtype: {batch['A'].dtype}")
+    print(f"Batch A[0] norm: {batch['A'][0].norm().item():.4f}")
+    from lens.training.test import test_autocast_difference
+    test_autocast_difference(orig, input_ids, l, p, device)
+
+    from lens.training.test import check_layer_indexing
+    check_layer_indexing(orig, input_ids, device)
 
 if __name__ == "__main__":
     main()

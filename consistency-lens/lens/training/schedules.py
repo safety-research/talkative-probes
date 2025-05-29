@@ -10,6 +10,9 @@ import torch
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler, LambdaLR, CosineAnnealingLR, CosineAnnealingWarmRestarts, ExponentialLR, PolynomialLR
 from torch.amp import autocast
+import logging
+from lens.training.optim import param_groups
+from lens.utils.logging import init as log_init, log as log_metrics
 
 ScheduleType = Literal["constant", "linear_decay", "linear_warmup", "cosine_anneal", "exponential_decay"]
 LRSchedulerType = Literal["constant", "linear", "cosine", "cosine_with_restarts", "polynomial", "exponential"]
@@ -504,3 +507,296 @@ def optimizer_step(optimizer, scaler, device):
         scaler.update()
     else:
         optimizer.step() 
+
+def should_unfreeze_any_component(current_step, current_epoch, freeze_schedule_config, freeze_schedule_enabled):
+    """Check if any component should be unfrozen at current step/epoch."""
+    if not freeze_schedule_enabled:
+        return False
+    
+    components_config = freeze_schedule_config.get('components', {})
+    
+    # Check each component individually
+    for component_name, component_cfg in components_config.items():
+        for param_name, param_cfg in component_cfg.items():
+            if isinstance(param_cfg, dict) and 'unfreeze_at' in param_cfg:
+                unfreeze_spec_str = param_cfg['unfreeze_at']
+                if unfreeze_spec_str is not None:
+                    try:
+                        unfreeze_spec = parse_schedule_value(unfreeze_spec_str)
+                        if resolve_schedule_at_step(unfreeze_spec, current_step, current_epoch):
+                            return True
+                    except Exception:
+                        pass
+    
+    # Check global unfreeze timing
+    global_unfreeze_at = freeze_schedule_config.get('unfreeze_at')
+    if global_unfreeze_at is not None:
+        try:
+            unfreeze_spec = parse_schedule_value(global_unfreeze_at)
+            return resolve_schedule_at_step(unfreeze_spec, current_step, current_epoch)
+        except Exception:
+            pass
+    
+    # Legacy compatibility
+    legacy_step = freeze_schedule_config.get('unfreeze_at_step')
+    if legacy_step is not None and current_step >= legacy_step:
+        return True
+        
+    legacy_epoch = freeze_schedule_config.get('unfreeze_at_epoch')
+    if legacy_epoch is not None and current_epoch >= legacy_epoch:
+        return True
+        
+    return False
+
+
+def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr_multiplier, embedding_lr_multiplier, prompt_lr_multiplier, opt_state_dict=None, current_step=None, current_epoch=None):
+    """Unfreeze non-adapter parameters and create new optimizer with all parameters."""
+    log = logging.getLogger(__name__)
+    
+    # Get original trainable settings from config
+    decoder_train_cfg = config.get('trainable_components', {}).get('decoder', {})
+    encoder_train_cfg = config.get('trainable_components', {}).get('encoder', {})
+    
+    # Check for freeze schedule overrides
+    freeze_schedule = config.get('freeze_schedule', {})
+    components_config = freeze_schedule.get('components', {})
+    
+    # Helper function to get effective config (freeze schedule override or original config)
+    def get_effective_config(component, param_name, original_config):
+        component_cfg = components_config.get(component, {}).get(param_name, {})
+        
+        # Check if this component has custom enabled setting
+        enabled_override = component_cfg.get('enabled') if isinstance(component_cfg, dict) else None
+        if enabled_override is not None:
+            return enabled_override
+            
+        # Use original config setting
+        return original_config.get(param_name, False)
+    
+    # Helper function to check if a component should be unfrozen based on timing
+    def should_unfreeze_component(component, param_name):
+        component_cfg = components_config.get(component, {}).get(param_name, {})
+        
+        # Check for component-specific timing
+        if isinstance(component_cfg, dict) and 'unfreeze_at' in component_cfg:
+            unfreeze_spec_str = component_cfg['unfreeze_at']
+            if unfreeze_spec_str is not None:
+                try:
+                    unfreeze_spec = parse_schedule_value(unfreeze_spec_str)
+                    return resolve_schedule_at_step(unfreeze_spec, current_step or 0, current_epoch or 0)
+                except Exception as e:
+                    print(f"Warning: Failed to parse unfreeze_at for {component}.{param_name}: {e}")
+        
+        # Fall back to global unfreeze timing
+        global_unfreeze_at = freeze_schedule.get('unfreeze_at')
+        if global_unfreeze_at is not None:
+            try:
+                unfreeze_spec = parse_schedule_value(global_unfreeze_at)
+                return resolve_schedule_at_step(unfreeze_spec, current_step or 0, current_epoch or 0)
+            except Exception as e:
+                print(f"Warning: Failed to parse global unfreeze_at: {e}")
+        
+        # Legacy compatibility
+        if current_step is not None:
+            legacy_step = freeze_schedule.get('unfreeze_at_step')
+            if legacy_step is not None:
+                return current_step >= legacy_step
+        
+        if current_epoch is not None:
+            legacy_epoch = freeze_schedule.get('unfreeze_at_epoch')
+            if legacy_epoch is not None:
+                return current_epoch >= legacy_epoch
+                
+        return False
+    
+    # Track which parameters are newly unfrozen
+    newly_unfrozen_params = set()
+    
+    # Helper function to unfreeze embedding heads
+    def unfreeze_embedding_heads(model, should_unfreeze):
+        if not should_unfreeze:
+            return
+        
+        # Unfreeze input embeddings
+        try:
+            input_embeddings = model.get_input_embeddings()
+            if input_embeddings is not None:
+                for param in input_embeddings.parameters():
+                    was_frozen = not param.requires_grad
+                    param.requires_grad = True
+                    if was_frozen:
+                        newly_unfrozen_params.add(param)
+        except AttributeError:
+            pass
+        
+        # Unfreeze output embeddings
+        try:
+            output_embeddings = model.get_output_embeddings()
+            if output_embeddings is not None:
+                for param in output_embeddings.parameters():
+                    was_frozen = not param.requires_grad
+                    param.requires_grad = True
+                    if was_frozen:
+                        newly_unfrozen_params.add(param)
+        except AttributeError:
+            # Fallback for models that expose `lm_head`
+            if hasattr(model, 'lm_head'):
+                for param in model.lm_head.parameters():
+                    was_frozen = not param.requires_grad
+                    param.requires_grad = True
+                    if was_frozen:
+                        newly_unfrozen_params.add(param)
+    
+    # Unfreeze based on effective config and timing
+    for name, param in dec_raw.named_parameters():
+        if 'base' in name and 'embed' not in name:  # Base model params (excluding embeddings)
+            was_frozen = not param.requires_grad
+            should_enable = get_effective_config('decoder', 'base_model', decoder_train_cfg)
+            should_unfreeze_now = should_unfreeze_component('decoder', 'base_model')
+            param.requires_grad = should_enable and should_unfreeze_now
+            if was_frozen and param.requires_grad:
+                newly_unfrozen_params.add(param)
+        elif 'out' in name:  # Output head (self.out layer)
+            was_frozen = not param.requires_grad
+            should_enable = get_effective_config('decoder', 'output_head', decoder_train_cfg)
+            should_unfreeze_now = should_unfreeze_component('decoder', 'output_head')
+            param.requires_grad = should_enable and should_unfreeze_now
+            if was_frozen and param.requires_grad:
+                newly_unfrozen_params.add(param)
+        elif 'prompt_left_emb' in name or 'prompt_right_emb' in name:  # Trainable prompts
+            was_frozen = not param.requires_grad
+            should_enable = get_effective_config('decoder', 'trainable_prompts', decoder_train_cfg)
+            should_unfreeze_now = should_unfreeze_component('decoder', 'trainable_prompts')
+            param.requires_grad = should_enable and should_unfreeze_now
+            if was_frozen and param.requires_grad:
+                newly_unfrozen_params.add(param)
+        # proj layers remain as they were
+    
+    # Handle decoder embedding heads separately
+    should_enable_dec_embeddings = get_effective_config('decoder', 'embedding_head', decoder_train_cfg)
+    should_unfreeze_now_dec_embeddings = should_unfreeze_component('decoder', 'embedding_head')
+    if should_enable_dec_embeddings and should_unfreeze_now_dec_embeddings:
+        unfreeze_embedding_heads(dec_raw.base, True)
+    
+    for name, param in enc_raw.named_parameters():
+        if 'base' in name and 'embed' not in name:  # Base model params (excluding embeddings)
+            was_frozen = not param.requires_grad
+            should_enable = get_effective_config('encoder', 'base_model', encoder_train_cfg)
+            should_unfreeze_now = should_unfreeze_component('encoder', 'base_model')
+            param.requires_grad = should_enable and should_unfreeze_now
+            if was_frozen and param.requires_grad:
+                newly_unfrozen_params.add(param)
+        elif 'soft_prompt_embeddings' in name:  # Soft prompt embeddings
+            was_frozen = not param.requires_grad
+            should_enable = get_effective_config('encoder', 'trainable_soft_prompt', encoder_train_cfg)
+            should_unfreeze_now = should_unfreeze_component('encoder', 'trainable_soft_prompt')
+            param.requires_grad = should_enable and should_unfreeze_now
+            if was_frozen and param.requires_grad:
+                newly_unfrozen_params.add(param)
+        # proj layers remain as they were
+    
+    # Handle encoder embedding heads separately (only if using base model)
+    if enc_raw.config.use_base_model:
+        should_enable_enc_embeddings = get_effective_config('encoder', 'embedding_head', encoder_train_cfg)
+        should_unfreeze_now_enc_embeddings = should_unfreeze_component('encoder', 'embedding_head')
+        if should_enable_enc_embeddings and should_unfreeze_now_enc_embeddings:
+            unfreeze_embedding_heads(enc_raw.base, True)
+    
+    # Update trainable params list
+    dec = dec_raw if not isinstance(dec_raw, torch._dynamo.eval_frame.OptimizedModule) else dec_raw
+    enc = enc_raw if not isinstance(enc_raw, torch._dynamo.eval_frame.OptimizedModule) else enc_raw
+    
+    trainable_params = [p for p in dec.parameters() if p.requires_grad] + \
+                       [p for p in enc.parameters() if p.requires_grad]
+    
+    # Create new optimizer with updated parameters
+    optimizer_groups = param_groups([dec, enc], learning_rate, projection_lr_multiplier, embedding_lr_multiplier, prompt_lr_multiplier)
+    new_opt = torch.optim.AdamW(optimizer_groups)
+    
+    # Set initial_lr for each parameter group (required for LR scheduler)
+    for group in new_opt.param_groups:
+        if 'initial_lr' not in group:
+            group['initial_lr'] = group['lr']
+    
+    # Restore optimizer state if provided
+    if opt_state_dict is not None:
+        try:
+            new_opt.load_state_dict(opt_state_dict)
+            log.info("Restored optimizer state after unfreezing")
+        except Exception as e:
+            log.warning(f"Failed to restore optimizer state: {e}. Using fresh optimizer.")
+    
+    # Log parameter counts after unfreezing
+    total_trainable = sum(p.numel() for p in trainable_params)
+    newly_unfrozen_count = sum(p.numel() for p in newly_unfrozen_params)
+    log.info(f"After unfreezing: {total_trainable:,} trainable parameters")
+    log.info(f"Newly unfrozen: {newly_unfrozen_count:,} parameters")
+    
+    return new_opt, trainable_params, newly_unfrozen_params
+
+
+def apply_unfreeze_warmup(opt, newly_unfrozen_params, unfreeze_transition_step, 
+                         unfreeze_warmup_steps, step, freeze_schedule_config, 
+                         log_interval, log):
+    """Apply learning rate warmup for newly unfrozen parameters.
+    
+    Returns:
+        tuple: (unfreeze_transition_step, should_clear_params) where should_clear_params
+               indicates if newly_unfrozen_params should be cleared
+    """
+    if unfreeze_transition_step is None or not newly_unfrozen_params:
+        return unfreeze_transition_step, False
+        
+    steps_since_unfreeze = step - unfreeze_transition_step
+    
+    if steps_since_unfreeze < unfreeze_warmup_steps:
+        # Calculate warmup factor (linear warmup from start_factor to 1.0)
+        warmup_start_factor = freeze_schedule_config.get('unfreeze_warmup_start_factor', 0.01)
+        warmup_factor = warmup_start_factor + (1.0 - warmup_start_factor) * (steps_since_unfreeze / unfreeze_warmup_steps)
+        
+        # Apply warmup factor to newly unfrozen parameters
+        for group_idx, group in enumerate(opt.param_groups):
+            # Store the current LR as the base for warmup if not already stored
+            if not hasattr(opt, '_warmup_base_lrs'):
+                opt._warmup_base_lrs = {}
+            if group_idx not in opt._warmup_base_lrs:
+                opt._warmup_base_lrs[group_idx] = group['lr']
+            
+            # Apply warmup only to newly unfrozen params in this group
+            group_has_unfrozen = False
+            for param in group['params']:
+                if param in newly_unfrozen_params:
+                    group_has_unfrozen = True
+                    break
+            
+            if group_has_unfrozen:
+                # Apply warmup factor to entire group if it contains any newly unfrozen params
+                group['lr'] = opt._warmup_base_lrs[group_idx] * warmup_factor
+        
+        # Log warmup progress
+        if step % log_interval == 0:
+            log.info(f"Unfreeze warmup: step {steps_since_unfreeze}/{unfreeze_warmup_steps}, factor {warmup_factor:.3f}")
+        
+        # Log metrics
+        log_metrics({
+            "freeze_schedule/warmup_factor": warmup_factor,
+            "freeze_schedule/warmup_steps_remaining": unfreeze_warmup_steps - steps_since_unfreeze,
+        }, step=step)
+        
+        return unfreeze_transition_step, False
+        
+    elif steps_since_unfreeze == unfreeze_warmup_steps:
+        # Warmup complete, restore base learning rates
+        if hasattr(opt, '_warmup_base_lrs'):
+            for group_idx, group in enumerate(opt.param_groups):
+                if group_idx in opt._warmup_base_lrs:
+                    group['lr'] = opt._warmup_base_lrs[group_idx]
+            delattr(opt, '_warmup_base_lrs')
+        
+        log.info("Unfreeze warmup complete - all parameters now at full learning rate")
+        # Clear the newly unfrozen params set as warmup is done
+        return None, True  # Clear unfreeze_transition_step and signal to clear params
+    
+    return unfreeze_transition_step, False
+
+    
