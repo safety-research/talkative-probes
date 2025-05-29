@@ -26,8 +26,6 @@ RESUME_CHECKPOINT=""
 WANDB_RESUME_ID=""
 NODELIST="$(hostname)"  # Default to current cluster node (only used for SLURM)
 NUM_GPUS=""  # Number of GPUs to use (auto-detect if not specified)
-NUM_GPUS_TRAIN="1"  # Number of GPUs for training (defaults to 1)
-USE_DISTRIBUTED="false"  # Whether to use distributed training
 RUN_SUFFIX=""  # Optional suffix to add to run name
 HYDRA_OVERRIDES=""
 
@@ -54,16 +52,6 @@ for arg in "$@"; do
             ;;
         num_gpus=*)
             NUM_GPUS="${arg#*=}"
-            ;;
-        num_gpus_train=*)
-            NUM_GPUS_TRAIN="${arg#*=}"
-            # Auto-enable distributed if more than 1 GPU requested
-            if [ "${arg#*=}" -gt 1 ]; then
-                USE_DISTRIBUTED="true"
-            fi
-            ;;
-        use_distributed=*)
-            USE_DISTRIBUTED="${arg#*=}"
             ;;
         run_suffix=*)
             RUN_SUFFIX="${arg#*=}"
@@ -99,9 +87,7 @@ if [ -z "$CONFIG_FILE" ]; then
     echo "  resume_checkpoint=<path>  Resume from checkpoint"
     echo "  wandb_resume_id=<id>      Resume specific WandB run"
     echo "  nodelist=<nodes>          SLURM nodes to use (comma-separated)"
-    echo "  num_gpus=<n>              Number of GPUs for dumping (auto-detected if not set)"
-    echo "  num_gpus_train=<n>        Number of GPUs for training (default: 1)"
-    echo "  use_distributed=true      Force distributed training (auto-enabled if num_gpus_train>1)"
+    echo "  num_gpus=<n>              Number of GPUs (auto-detected if not set)"
     echo "  run_suffix=<suffix>       Suffix to add to run name"
     echo ""
     echo "Examples:"
@@ -110,7 +96,6 @@ if [ -z "$CONFIG_FILE" ]; then
     echo "  $0 config=conf/gpt2_frozen.yaml force_redump=true    # Force re-dump activations"
     echo "  $0 config=conf/simplestories_frozen.yaml resume_checkpoint=outputs/ckpt_step_1000.pt"
     echo "  $0 config=conf/gpt2_frozen.yaml learning_rate=1e-3 batch_size=16  # With Hydra overrides"
-    echo "  $0 config=conf/gpt2_frozen.yaml num_gpus_train=8                  # Multi-GPU training"
     echo ""
     echo "Available configs:"
     ls -1 conf/*.yaml | grep -E "(simplestories|gpt2)" | sed 's/^/  /'
@@ -386,20 +371,7 @@ submit_train_job() {
             config_dir="$(pwd)/$config_dir"
         fi
         
-        # Choose training script based on distributed mode
-        local train_script="01_train.py"
-        if [ "$USE_DISTRIBUTED" = "true" ] || [ "$NUM_GPUS_TRAIN" -gt 1 ]; then
-            train_script="01_train_distributed.py"
-        fi
-        
-        # Build command based on distributed mode
-        if [ "$USE_DISTRIBUTED" = "true" ] || [ "$NUM_GPUS_TRAIN" -gt 1 ]; then
-            # Use torchrun for distributed training
-            local train_cmd="cd $CONSISTENCY_LENS_DIR && . .venv/bin/activate && torchrun --nproc_per_node=$NUM_GPUS_TRAIN scripts/$train_script --config-path=$config_dir --config-name=$config_name"
-        else
-            # Regular single-GPU training
-            local train_cmd="cd $CONSISTENCY_LENS_DIR && . .venv/bin/activate && python scripts/$train_script --config-path=$config_dir --config-name=$config_name"
-        fi
+        local train_cmd="cd $CONSISTENCY_LENS_DIR && . .venv/bin/activate && python scripts/01_train.py --config-path=$config_dir --config-name=$config_name"
         if [ -n "$resume_checkpoint" ]; then
             train_cmd="$train_cmd resume=\"$resume_checkpoint\""
         fi
@@ -418,7 +390,7 @@ submit_train_job() {
         local sbatch_args=(
             --parsable
             --job-name="${job_name}-train"
-            --gres=gpu:$NUM_GPUS_TRAIN
+            --gres=gpu:1
             --nodelist="$NODELIST"
             --time=24:00:00
             --output="logs/${job_name}_train_%j.out"
@@ -491,21 +463,7 @@ submit_train_job() {
             config_dir="$(pwd)/$config_dir"
         fi
         
-        # Choose training script and command based on distributed mode
-        local train_script="01_train.py"
-        if [ "$USE_DISTRIBUTED" = "true" ] || [ "$NUM_GPUS_TRAIN" -gt 1 ]; then
-            train_script="01_train_distributed.py"
-        fi
-        
-        # Build command based on distributed mode
-        if [ "$USE_DISTRIBUTED" = "true" ] || [ "$NUM_GPUS_TRAIN" -gt 1 ]; then
-            # Use torchrun for distributed training
-            local train_cmd="torchrun --nproc_per_node=$NUM_GPUS_TRAIN scripts/$train_script --config-path=$config_dir --config-name=$config_name"
-            echo -e "${GREEN}Running distributed training with $NUM_GPUS_TRAIN GPUs${NC}" >&2
-        else
-            # Regular single-GPU training
-            local train_cmd="python scripts/$train_script --config-path=$config_dir --config-name=$config_name"
-        fi
+        local train_cmd="python scripts/01_train.py --config-path=$config_dir --config-name=$config_name"
         if [ -n "$resume_checkpoint" ]; then
             train_cmd="$train_cmd resume=\"$resume_checkpoint\""
         fi
@@ -591,13 +549,7 @@ echo "Model: $MODEL_NAME (${MODEL_SHORT})"
 echo "Layer: $LAYER"
 echo "Freeze: $FREEZE_TYPE"
 echo "Environment: $([ "$USE_SLURM" = true ] && echo "SLURM" || echo "Direct execution")"
-echo "GPUs (dumping): $NUM_GPUS"
-echo "GPUs (training): $NUM_GPUS_TRAIN"
-if [ "$USE_DISTRIBUTED" = "true" ] || [ "$NUM_GPUS_TRAIN" -gt 1 ]; then
-    echo "Training mode: Distributed (DDP)"
-else  
-    echo "Training mode: Single GPU"
-fi
+echo "GPUs: $NUM_GPUS"
 if [ "$USE_SLURM" = true ]; then
     echo "Nodelist: $NODELIST"
 fi
