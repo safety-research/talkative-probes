@@ -66,7 +66,6 @@ from lens.training.distributed import (
     reduce_dict,
 )
 from lens.utils.checkpoint_manager import CheckpointManager
-from lens.models.utils import prepare_inputs
 from lens.training.distributed import set_seed
 from lens.evaluation.wandb_logger import verbose_samples_logger
 
