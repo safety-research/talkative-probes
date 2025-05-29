@@ -190,6 +190,9 @@ class Decoder(nn.Module):
         gumbel_tau: float,
         use_projection: bool = True,
         print_prompt: bool = False,
+        hard_left_emb: list[int] = None,
+        hard_right_emb: list[int] = None,
+        override_model_base_and_out  = None,
     ) -> Generated:
         """Differentiable autoregressive sampling with Gumbel-Softmax.
 
@@ -214,14 +217,34 @@ class Decoder(nn.Module):
             self.prompt_left_emb = self.prompt_left_emb.to(activation_input.device)
         if self.prompt_right_emb is not None and self.prompt_right_emb.device != activation_input.device:
             self.prompt_right_emb = self.prompt_right_emb.to(activation_input.device)
+
+
+        if override_model_base_and_out is not None:
+            main_model = override_model_base_and_out
+            main_base = main_model.model
+            main_out = main_model.model.lm_head
+        else:   
+            main_model = self
+            main_base = self.base
+            main_out = self.out
+
+        if hard_left_emb is not None:
+            prompt_left_emb = main_base.get_input_embeddings().weight[hard_left_emb].clone()
+        else:
+            prompt_left_emb = self.prompt_left_emb
+        if hard_right_emb is not None:
+            prompt_right_emb = main_base.get_input_embeddings().weight[hard_right_emb].clone()
+        else:
+            prompt_right_emb = self.prompt_right_emb
+
         activation_input = activation_input.to(self.proj.weight.dtype)
 
         B, d_model = activation_input.shape
         device = activation_input.device
         
         # Get both input and output embedding tables
-        input_emb_table = self.base.get_input_embeddings().weight  # (V, d_model)
-        output_emb_table = self.base.get_output_embeddings().weight  # (V, d_model)
+        input_emb_table = main_base.get_input_embeddings().weight  # (V, d_model)
+        output_emb_table = main_base.get_output_embeddings().weight  # (V, d_model)
         
         # Check if embeddings are tied (same memory location)
         embeddings_tied = (input_emb_table.data_ptr() == output_emb_table.data_ptr()) # TODO - better check?
@@ -229,16 +252,15 @@ class Decoder(nn.Module):
 
         # 0) prepend textual prompt (pre-computed at set_prompt)
         parts = []
-        if self.prompt_left_emb is not None:
-            parts.append(self.prompt_left_emb.expand(B, -1, -1))
-        # 1) activation slot - optionally apply projection
+        if prompt_left_emb is not None:
+            parts.append(prompt_left_emb.expand(B, -1, -1))
+        if prompt_right_emb is not None:
+            parts.append(prompt_right_emb.expand(B, -1, -1))
         if use_projection:
             a_proj = self.proj(activation_input).unsqueeze(1)
         else:
             a_proj = activation_input.unsqueeze(1)
         parts.append(a_proj)
-        if self.prompt_right_emb is not None:
-            parts.append(self.prompt_right_emb.expand(B, -1, -1))
         seq_embs = torch.cat(parts, dim=1)
 
         logits_list = []
@@ -246,9 +268,9 @@ class Decoder(nn.Module):
         output_embs_list = []  # Store embeddings for encoder
 
         for _ in range(max_length):
-            out = self.base(inputs_embeds=seq_embs, output_hidden_states=True)
+            out = main_base(inputs_embeds=seq_embs, output_hidden_states=True)
             h_last = out.last_hidden_state if hasattr(out, "last_hidden_state") else out.hidden_states[-1]
-            logits_t = self.out(h_last[:, -1])  # (B, V)
+            logits_t = main_out(h_last[:, -1])  # (B, V)
 
             # 1. Apply forward sampling temperature
             current_T_sampling = 1.0 # T_sampling_schedule(current_step_or_epoch) # Get from your schedule - TODO may want to add a schedule/config for this.
@@ -293,15 +315,22 @@ class Decoder(nn.Module):
     # Prompt helpers
     # ------------------------------------------------------------------
 
+    def tokenize_and_embed_prompt(self, prompt: str, tokenizer) -> tuple[list[int], list[int], torch.Tensor, torch.Tensor]:
+        """Tokenise *prompt*, split on '<embed>', cache embeddings."""
+        left_str, *right = prompt.split("<embed>")
+        right_str = right[0] if right else ""
+        left_ids  = tokenizer(left_str,  add_special_tokens=False).input_ids if left_str else []
+        right_ids = tokenizer(right_str, add_special_tokens=False).input_ids if right_str else []
+        embed_table = self.base.get_input_embeddings().weight
+        left_emb = embed_table[torch.tensor(left_ids, device=embed_table.device)].clone() if left_ids else None
+        right_emb = embed_table[torch.tensor(right_ids, device=embed_table.device)].clone() if right_ids else None
+        return left_ids, right_ids, left_emb, right_emb
+
     def set_prompt(self, prompt: str, tokenizer) -> None:
         """Tokenise *prompt*, split on '<embed>', cache embeddings.
 
         '<embed>' marks where the activation embedding is inserted."""
-        left_str, *right = prompt.split("<embed>")
-        right_str = right[0] if right else ""
-
-        left_ids  = tokenizer(left_str,  add_special_tokens=False).input_ids
-        right_ids = tokenizer(right_str, add_special_tokens=False).input_ids
+        left_ids, right_ids, left_emb, right_emb = self.tokenize_and_embed_prompt(prompt, tokenizer)
 
         # store ids for logging
         ids = left_ids + [tokenizer.eos_token_id] + right_ids
@@ -311,8 +340,6 @@ class Decoder(nn.Module):
         self.prompt_ids.copy_(ids_tensor)
         self.prompt_text = tokenizer.decode(left_ids) + '<embed>' + tokenizer.decode(right_ids)
 
-        emb_table = self.base.get_input_embeddings().weight
-        
         # Delete old parameters if they exist to avoid memory leaks
         if hasattr(self, 'prompt_left_emb') and self.prompt_left_emb is not None:
             delattr(self, 'prompt_left_emb')
@@ -320,18 +347,12 @@ class Decoder(nn.Module):
             delattr(self, 'prompt_right_emb')
             
         # Create trainable parameters initialized from the embedding table
-        if left_ids:
-            left_emb_init = emb_table[torch.tensor(left_ids, device=emb_table.device)].clone()
-            self.prompt_left_emb = nn.Parameter(left_emb_init)
+        if left_emb is not None:
+            self.prompt_left_emb = nn.Parameter(left_emb)
             self.prompt_left_emb.requires_grad_(self.config.trainable_prompts)
-        else:
-            self.prompt_left_emb = None
-            
-        if right_ids:
-            right_emb_init = emb_table[torch.tensor(right_ids, device=emb_table.device)].clone()
-            self.prompt_right_emb = nn.Parameter(right_emb_init)
+        if right_emb is not None:
+            self.prompt_right_emb = nn.Parameter(right_emb)
             self.prompt_right_emb.requires_grad_(self.config.trainable_prompts)
-        else:
-            self.prompt_right_emb = None
             
+
         self.prompt_len = len(left_ids) + len(right_ids)
