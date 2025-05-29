@@ -67,6 +67,47 @@ from lens.utils.embedding_remap import remap_embeddings
 from types import SimpleNamespace
 
 
+def _resolve_schedule_to_steps(schedule_str: str | int, steps_per_epoch: int, log: logging.Logger, setting_name: str) -> int:
+    """Helper to parse schedule strings (e.g., "100s", "2e") into steps."""
+    if isinstance(schedule_str, int):
+        return schedule_str
+    try:
+        spec = parse_schedule_value(schedule_str)
+        return spec_to_steps(spec, steps_per_epoch)
+    except Exception as e:
+        log.warning(f"Failed to parse {setting_name} '{schedule_str}': {e}. Using raw value if integer, else raising error.")
+        if isinstance(schedule_str, str) and schedule_str.isdigit():
+            return int(schedule_str)
+        raise ValueError(f"Invalid format for {setting_name}: '{schedule_str}'") from e
+
+
+def _log_epoch_token_statistics(epoch_decoded_tokens: list[int], tokenizer: AutoTokenizer, current_epoch_num: int, step: int, log_interval: int, log: logging.Logger):
+    """Logs statistics about token occurrences at the end of an epoch."""
+    if not epoch_decoded_tokens:
+        return
+
+    token_counts = Counter(epoch_decoded_tokens)
+    if not token_counts:
+        return
+
+    most_common_token_id, most_common_count = token_counts.most_common(1)[0]
+    total_tokens_in_epoch = len(epoch_decoded_tokens)
+    frequency = most_common_count / total_tokens_in_epoch
+
+    if step % log_interval == 0:  # Check if current step aligns with log_interval for console logging
+        log.info(
+            f"Epoch {current_epoch_num} most common token: ID {most_common_token_id} = `{tokenizer.decode([most_common_token_id])}` "
+            f"(Count: {most_common_count}/{total_tokens_in_epoch}, Freq: {frequency:.4f})"
+        )
+    
+    log_metrics({
+        "epoch_stats/most_common_token_id": most_common_token_id,
+        "epoch_stats/most_common_token_count": most_common_count,
+        "epoch_stats/most_common_token_freq": frequency,
+        "epoch_stats/total_tokens_in_epoch": total_tokens_in_epoch,
+    }, step=step) # Log with the current step, which marks the end of the epoch
+
+
 def get_project_root() -> Path:
     """Get the project root directory (consistency-lens folder)."""
     # This script is in consistency-lens/scripts/, so go up one level
@@ -894,8 +935,8 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
             raise ValueError("Either 'num_train_epochs' or 'max_train_steps' must be > 0 in config")
     
     # Parse intervals with flexible notation (now that we have steps_per_epoch)
-    wandb_log_interval = parse_schedule_to_steps(config['wandb_log_interval'], steps_per_epoch)
-    log_interval = parse_schedule_to_steps(config['log_interval'], steps_per_epoch)
+    wandb_log_interval = _resolve_schedule_to_steps(config['wandb_log_interval'], steps_per_epoch, log, "wandb_log_interval")
+    log_interval = _resolve_schedule_to_steps(config['log_interval'], steps_per_epoch, log, "log_interval")
     
     if log_interval <= 0:
         raise ValueError(f"log_interval must be positive, got {config['log_interval']}")
@@ -904,12 +945,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     
     # val_interval is used by the training loop
     val_interval_str = config['val_interval']
-    try:
-        val_interval_spec = parse_schedule_value(val_interval_str)
-        val_interval = spec_to_steps(val_interval_spec, steps_per_epoch)
-    except Exception as e:
-        print(f"Warning: Failed to parse val_interval '{val_interval_str}': {e}")
-        val_interval = int(val_interval_str) if isinstance(val_interval_str, str) else val_interval_str
+    val_interval = _resolve_schedule_to_steps(val_interval_str, steps_per_epoch, log, "val_interval")
     
     # Initialize checkpoint manager with updated config (now that we have steps_per_epoch)
     checkpoint_manager = CheckpointManager(config, log, steps_per_epoch)
@@ -1148,8 +1184,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     
     # Track warmup for newly unfrozen parameters
     unfreeze_warmup_duration = freeze_schedule_config.get('warmup_duration', "100s")
-    warmup_spec = parse_schedule_value(unfreeze_warmup_duration)
-    unfreeze_warmup_steps = warmup_spec.value if warmup_spec.unit == "steps" else warmup_spec.value * steps_per_epoch
+    unfreeze_warmup_steps = _resolve_schedule_to_steps(unfreeze_warmup_duration, steps_per_epoch, log, "warmup_duration")
 
     newly_unfrozen_params = set()
     unfreeze_transition_step = None
@@ -1217,23 +1252,8 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
             
             # Log token stats
             if epoch_decoded_tokens:
-                token_counts = Counter(epoch_decoded_tokens)
-                if token_counts:
-                    most_common_token_id, most_common_count = token_counts.most_common(1)[0]
-                    total_tokens_in_epoch = len(epoch_decoded_tokens)
-                    frequency = most_common_count / total_tokens_in_epoch
-                    if step % log_interval == 0:
-                        log.info(
-                            f"Epoch {current_epoch_num} most common token: ID {most_common_token_id} = `{tokenizer.decode([most_common_token_id])}` "
-                            f"(Count: {most_common_count}/{total_tokens_in_epoch}, Freq: {frequency:.4f})"
-                        )
-                    log_metrics({
-                        "epoch_stats/most_common_token_id": most_common_token_id,
-                        "epoch_stats/most_common_token_count": most_common_count,
-                        "epoch_stats/most_common_token_freq": frequency,
-                        "epoch_stats/total_tokens_in_epoch": total_tokens_in_epoch,
-                    }, step=step) # Log with the current step, which marks the end of the epoch
-            
+                _log_epoch_token_statistics(epoch_decoded_tokens, tokenizer, current_epoch_num, step, log_interval, log)
+
             epoch_decoded_tokens = [] # Reset for the next epoch
             step_iter = iter(train_loader)
             batch = next(step_iter)
@@ -1561,28 +1581,12 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
             # Check if we should print based on flexible interval notation
             verbose_interval_str = verbose_config.get('interval', "1000s")
             try:
-                verbose_spec = parse_schedule_value(verbose_interval_str)
-                if verbose_spec.unit == "steps":
-                    # Print every N steps
-                    if step % verbose_spec.value == 0:
-                        should_print = True
-                elif verbose_spec.unit == "epochs":
-                    # Print at epoch boundaries
-                    if epoch_just_finished:
-                        if current_epoch_num % verbose_spec.value == 0:
-                            should_print = True
+                verbose_interval = _resolve_schedule_to_steps(verbose_interval_str, steps_per_epoch, log, "verbose_interval")
+                if step % verbose_interval == 0:
+                    should_print = True
             except Exception as e:
-                # Fallback to legacy logic
-                print(f"Warning: Failed to parse verbose_samples interval '{verbose_interval_str}': {e}")
-                if verbose_config.get('interval_type', 'steps') == 'steps':
-                    verbose_interval = verbose_config.get('interval', 1000)
-                    if step > 0 and step % verbose_interval == 0:
-                        should_print = True
-                else:
-                    if epoch_just_finished:
-                        verbose_interval = verbose_config.get('interval', 1)
-                        if current_epoch_num % verbose_interval == 0:
-                            should_print = True
+                log.warning(f"Failed to parse verbose_samples interval '{verbose_interval_str}': {e}")
+                should_print = False
             
             # Also check for combined epoch+steps printing
             if verbose_config.get('print_every_epoch', False) and epoch_just_finished:
