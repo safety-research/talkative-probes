@@ -980,6 +980,11 @@ def main(cfg: DictConfig) -> None:
         if 'checkpoint' not in cfg: # For original DictConfig
             cfg.checkpoint = OmegaConf.create()
         cfg.checkpoint.output_dir = str(run_checkpoint_dir)
+        
+        # Update the config dict to include the run-specific checkpoint directory
+        if 'checkpoint' not in config:
+            config['checkpoint'] = {}
+        config['checkpoint']['output_dir'] = str(run_checkpoint_dir)
 
     # --- Timer for Model Setup ---
     with Timer("Model Setup (Init, DDP)", log, main_process=is_main()):
@@ -1214,7 +1219,7 @@ def main(cfg: DictConfig) -> None:
         scaler = torch.amp.GradScaler('cuda') if scaler_enabled else None
 
     # Initialize CheckpointManager (after steps_per_epoch is known)
-    # It uses the original Hydra 'cfg' to correctly parse schedule strings for save intervals.
+    # It uses the updated config dict with the run-specific checkpoint directory.
     checkpoint_manager = CheckpointManager(config, log, steps_per_epoch)
     
     # Initialize W&B (only on main process)

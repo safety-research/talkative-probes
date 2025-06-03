@@ -259,8 +259,7 @@ def get_lr_scheduler_with_warmup(
             return gamma ** steps_after_warmup
 
         else:
-            return 1.0
-            #return get_schedule_value(scheduler_config, current_step, num_training_steps, current_epoch, steps_per_epoch)
+            return get_schedule_value(scheduler_config, current_step, num_training_steps, current_epoch, steps_per_epoch)
     
     return LambdaLR(optimizer, lr_lambda, last_epoch=last_epoch)
 

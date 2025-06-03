@@ -184,7 +184,7 @@ else
         fi
     fi
 fi
-echo "Using $NUM_GPUS GPUs"
+echo "Using $NUM_GPUS GPUs for dumping and $NUM_GPUS_TRAIN GPUs for training"
 
 # Display extracted settings
 echo ""
@@ -400,6 +400,8 @@ submit_train_job() {
             # Use torchrun for distributed training with random port to avoid conflicts
             # Generate random port between 29500-29999
             local random_port=$((29500 + RANDOM % 500))
+            echo "Using random port: $random_port"
+            
             base_cmd="${base_cmd}uv_run torchrun --nproc_per_node=$NUM_GPUS_TRAIN --master_port=$random_port scripts/$train_script --config-path=$config_dir --config-name=$config_name"
         else
             # Regular single-GPU training
@@ -538,7 +540,9 @@ submit_train_job() {
         # Build command based on distributed mode
         if [ "$USE_DISTRIBUTED" = "true" ] || [ "$NUM_GPUS_TRAIN" -gt 1 ]; then
             # Use torchrun for distributed training
-            local train_cmd="uv_run torchrun --nproc_per_node=$NUM_GPUS_TRAIN scripts/$train_script --config-path=$config_dir --config-name=$config_name"
+            random_port=$((29500 + RANDOM % 500))
+            echo "Using random port: $random_port"
+            local train_cmd="uv_run torchrun --nproc_per_node=$NUM_GPUS_TRAIN --master_port=$random_port scripts/$train_script --config-path=$config_dir --config-name=$config_name"
             echo -e "${GREEN}Running distributed training with $NUM_GPUS_TRAIN GPUs${NC}" >&2
         else
             # Regular single-GPU training

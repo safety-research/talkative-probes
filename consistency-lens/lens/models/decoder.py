@@ -6,6 +6,7 @@ from typing import Any, NamedTuple
 import torch
 from torch import nn
 from transformers import AutoModelForCausalLM, PreTrainedModel
+from transformers.cache_utils import DynamicCache 
 import logging
 __all__ = ["Decoder", "Generated"]
 
@@ -416,14 +417,13 @@ class Decoder(nn.Module):
                     position_embeds = transformer.wpe(position_ids)
                     hidden_states = transformer.drop(hidden_states + position_embeds)
 
-                
-                # # Compute rotary embeddings for LLaMA if needed
-                # if hasattr(main_base, 'model') and hasattr(transformer, 'rotary_emb'): #this is true for transformers > 4.36
-                #     # LLaMA uses rotary embeddings
-                #     cos, sin = transformer.rotary_emb(hidden_states, position_ids)
-                #     position_embeddings = (cos, sin)
-                # else:
-                #     position_embeddings = None
+                # Compute rotary embeddings for LLaMA if needed
+                if hasattr(main_base, 'model') and hasattr(transformer, 'rotary_emb'):
+                    # LLaMA uses rotary embeddings
+                    cos, sin = transformer.rotary_emb(hidden_states, position_ids)
+                    position_embeddings = (cos, sin)
+                else:
+                    position_embeddings = None
                 
                 # Run through transformer layers with activation patching
                 for layer_idx, layer_module in enumerate(layers):
@@ -445,10 +445,11 @@ class Decoder(nn.Module):
                             input_to_this_layer[:, embed_pos] = single_proj
                             
                     if hasattr(main_base, 'model'):
-                        # LLaMA style - pass position embeddings
+                        # LLaMA style - pass position_ids and position_embeddings
                         layer_outputs = layer_module(
                             input_to_this_layer,
                             position_ids=position_ids,
+                            position_embeddings=position_embeddings,
                         )
                     else:
                         # GPT-2 style
@@ -966,8 +967,15 @@ class Decoder(nn.Module):
                 position_embeds = transformer.wpe(position_ids)
                 hidden_states = transformer.drop(hidden_states + position_embeds)
             
+            # Compute rotary embeddings for LLaMA if needed
+            if hasattr(main_base, 'model') and hasattr(transformer, 'rotary_emb'):
+                # LLaMA uses rotary embeddings
+                cos, sin = transformer.rotary_emb(hidden_states, position_ids)
+                position_embeddings = (cos, sin)
+            else:
+                position_embeddings = None
+            
             # Process each layer with activation patching
-            from transformers.cache_utils import DynamicCache 
             past_key_values = DynamicCache()
             for layer_idx, layer_module in enumerate(layers):
                 # FIRST: Apply patching to the input of this layer
@@ -997,11 +1005,13 @@ class Decoder(nn.Module):
                         past_key_value=past_key_values
                     )
                 else:
-                    # LLaMA style - pass position_ids for RoPE
+                    # LLaMA style - pass position_ids and position_embeddings
                     layer_outputs = layer_module(
                         input_to_this_layer,
                         position_ids=position_ids,
-                        use_cache=True
+                        position_embeddings=position_embeddings,
+                        use_cache=True,
+                        past_key_value=past_key_values
                     )
                     
                 hidden_states = layer_outputs[0]
