@@ -75,7 +75,7 @@ class CheckpointManager:
                 epoch_just_finished and 
                 epoch % self.save_every_n_epochs == 0)
 
-    def format_checkpoint_name(self, step: int, epoch: int = 0, val_loss: Optional[float] = None) -> str:
+    def format_checkpoint_name(self, step: int, epoch: int = 0, val_loss: Optional[float] = None, additional_name: str = "") -> str:
         """Format checkpoint filename based on pattern."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         name = self.name_pattern.format(
@@ -84,7 +84,8 @@ class CheckpointManager:
             val_loss=f"{val_loss:.4f}" if val_loss is not None else "none",
             timestamp=timestamp
         )
-        return f"{name}.pt"
+        
+        return f"{name}_{additional_name}.pt"
 
     def save_checkpoint(
         self,
@@ -96,13 +97,14 @@ class CheckpointManager:
         metrics: Optional[Dict[str, float]] = None,
         config: Optional[dict] = None,
         val_loss: Optional[float] = None,
+        additional_name: str = "",
         **kwargs
     ) -> Optional[Path]:
         """Save a checkpoint with the specified components."""
         if not self.enabled:
             return None
             
-        filename = self.format_checkpoint_name(step, epoch, val_loss)
+        filename = self.format_checkpoint_name(step, epoch, val_loss, additional_name)
         filepath = self.output_dir / filename
         
         # Prepare checkpoint data

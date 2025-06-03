@@ -266,7 +266,8 @@ def _process_and_print_verbose_batch_samples(
     tok: PreTrainedTokenizerBase,
     sch_args: Dict[str, Any],
     device: torch.device,
-    printed_count_so_far: int
+    printed_count_so_far: int,
+    cached_prefix_ids: torch.Tensor | None = None
 ) -> int:
     """Wrapper for the shared verbose sample processing function."""
     eval_cfg = cfg.get('evaluation', {})
@@ -282,7 +283,8 @@ def _process_and_print_verbose_batch_samples(
         top_n_analysis=eval_cfg.get('top_n_analysis', 3),
         printed_count_so_far=printed_count_so_far,
         generate_continuation=True,
-        continuation_tokens=30
+        continuation_tokens=30,
+        cached_prefix_ids=cached_prefix_ids
     )
 
 def _evaluate_model(
@@ -305,6 +307,13 @@ def _evaluate_model(
 
     models["dec"].eval()
     models["enc"].eval()
+    
+    # Cache tokenized natural language prefix if specified
+    cached_prefix_ids = None
+    lm_loss_natural_prefix_text = cfg.get('lm_loss_natural_prefix')
+    if lm_loss_natural_prefix_text and isinstance(lm_loss_natural_prefix_text, str):
+        cached_prefix_ids = tok(lm_loss_natural_prefix_text, add_special_tokens=False, return_tensors="pt").input_ids.to(device)
+        log.info(f"Cached natural language prefix: '{lm_loss_natural_prefix_text}' ({cached_prefix_ids.shape[1]} tokens)")
 
     with torch.no_grad():
         for b_idx, batch in tqdm(enumerate(loader), total=num_batches, desc="Evaluating"):
@@ -320,6 +329,9 @@ def _evaluate_model(
                 "alpha": cfg["alpha_schedule"].get("value", 0.1),
                 "ce_weight": cfg.get("ce_weight", 0.01),
                 "kl_base_weight": cfg.get("kl_base_weight", 1.0),
+                "lm_base_weight": cfg.get("lm_base_weight", 0.0),
+                "entropy_weight": cfg.get("entropy_weight", 0.0),
+                "mse_weight": cfg.get("mse_weight", 0.0),
             }
             
             current_models_for_step = {"dec": models["dec"], "enc": models["enc"], "orig": orig}
@@ -329,7 +341,7 @@ def _evaluate_model(
             
             if printed_verbose_total < verbose_samples:
                 num_printed_this_batch = _process_and_print_verbose_batch_samples(
-                    batch, cfg, models, orig, tok, sch_args, device, printed_verbose_total
+                    batch, cfg, models, orig, tok, sch_args, device, printed_verbose_total, cached_prefix_ids
                 )
                 printed_verbose_total += num_printed_this_batch
 

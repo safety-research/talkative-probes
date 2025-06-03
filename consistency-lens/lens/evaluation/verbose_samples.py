@@ -10,6 +10,7 @@ from torch.nn import functional as F  # Added for gumbel_softmax
 from lens.models.decoder import Decoder
 from lens.models.encoder import Encoder
 from lens.models.orig import OrigWrapper
+from lens.training.loop import compute_kl_divergence_robust
 
 
 def escape_newlines(text: str) -> str:
@@ -159,6 +160,7 @@ def print_verbose_sample_details(
     context_labels: List[str],
     context_data_rows: List[List[str]],
     analysis_predictions: Dict[str, List[str]],
+    analysis_metrics: Dict[str, Dict[str, Optional[float]]],
     decoder_tokens: List[str],
     decoder_preds_by_rank: List[List[str]],
     base_tokens: List[str],
@@ -172,6 +174,9 @@ def print_verbose_sample_details(
     autoregressive_continuation: Optional[str] = None,
     a_prime_string_cropped: Optional[str] = None,
     cfg: Dict[str, Any] = None,
+    sample_losses: Optional[Dict[str, float]] = None,
+    kl_divergences: Optional[Dict[str, float]] = None,
+    resample_ablation: bool = True, 
 ) -> None:
     """Prints detailed information for a single verbose sample."""
     print("--- Verbose sample ---")
@@ -187,6 +192,16 @@ def print_verbose_sample_details(
         print(f"\nModel's continuation from position {p}: \"{escape_newlines(autoregressive_continuation)}\"")
     
     print(f"\nLayer {l}, Position {p} (0-indexed for activation A_i from original token '{original_token_at_p_str}')\n")
+    
+    # Print loss information if available
+    if sample_losses is not None:
+        print("Loss Components for this sample:")
+        print(f"  Total Loss: {sample_losses['total']:.4f}")
+        print(f"  - MSE Loss (A_i vs A_hat): {sample_losses['mse']:.4f} (weighted: {sample_losses['mse_weighted']:.4f})")
+        print(f"  - LM Loss (KL[P_Orig||P_Dec]): {sample_losses['lm']:.4f} (weighted: {sample_losses['lm_weighted']:.4f})")
+        print(f"  - KL Loss" + (" (A_hat+Δ)" if resample_ablation else "(A_hat)") + f": {sample_losses['kl']:.4f} (weighted: {sample_losses['kl_weighted']:.4f})")
+        print(f"  - Entropy: {sample_losses['entropy']:.4f} (weighted: {sample_losses['entropy_weighted']:.4f})")
+        print()
 
     print(f"Original Input Context (window around P={p}, showing positions {context_display_range}):")
     print_formatted_table(context_labels, context_data_rows)
@@ -194,7 +209,55 @@ def print_verbose_sample_details(
     print(f"\nAnalysis for token following Position P={p} (i.e., predicting for seq position {p+1}):")
     for pred_type, top_n_tokens_list in analysis_predictions.items():
         tokens_str = ", ".join([f"'{t}'" for t in top_n_tokens_list])
-        print(f"  - {pred_type} (Top {top_n_analysis_val}): {tokens_str}")
+        metrics_str_parts = []
+        if pred_type in analysis_metrics:
+            metrics = analysis_metrics[pred_type]
+            mse_val = metrics.get("mse_vs_A")
+            kl_A_val = metrics.get("kl_vs_A")
+            kl_nat_val = metrics.get("kl_vs_natural")
+
+            if mse_val is not None:
+                metrics_str_parts.append(f"MSE(A_i,X): {mse_val:.4f}")
+            if kl_A_val is not None:
+                # Format with more precision for small KL values
+                kl_A_fmt = f"{kl_A_val:.6f}" if abs(kl_A_val) < 0.001 and kl_A_val != 0 else f"{kl_A_val:.4f}"
+                metrics_str_parts.append(f"KL(A||X): {kl_A_fmt}")
+            if kl_nat_val is not None:
+                kl_nat_fmt = f"{kl_nat_val:.6f}" if abs(kl_nat_val) < 0.001 and kl_nat_val != 0 else f"{kl_nat_val:.4f}"
+                metrics_str_parts.append(f"KL(Nat||X): {kl_nat_fmt}")
+        
+        full_metrics_str = ""
+        if metrics_str_parts:
+            full_metrics_str = f" ({', '.join(metrics_str_parts)})"
+            
+        print(f"  - {pred_type} (Top {top_n_analysis_val}): {tokens_str}{full_metrics_str}")
+
+    # Print KL divergences if available (original separate section)
+    if kl_divergences is not None:
+        print(f"\nKL Divergences (Grouped):")
+        for group_name, group_values in kl_divergences.items():
+            print(f"  {group_name}:")
+            for kl_label, kl_value in group_values.items():
+                if kl_value is None: # Handle cases where KL couldn't be computed
+                    print(f"    - {kl_label}: N/A")
+                    continue
+                # Format with more precision to see small values
+                if abs(kl_value) < 0.001 and kl_value != 0:
+                    print(f"    - {kl_label}: {kl_value:.6f}")
+                else:
+                    print(f"    - {kl_label}: {kl_value:.4f}")
+        
+        if "From Natural Prediction (no intervention)" in kl_divergences:
+            kl_a_natural_val = kl_divergences["From Natural Prediction (no intervention)"].get("KL(Natural || Natural)")
+            if kl_a_natural_val is not None and kl_a_natural_val < 0.001: # Check if it's a small float
+                 print("  Note: KL(Natural || Natural) ≈ 0 as expected (Natural is the original activation)")
+        
+        if sample_losses and "kl" in sample_losses:
+            print(f"\n  ⚠️  Training KL loss for this sample" + (" (A_hat+Δ)" if resample_ablation else "(A_hat)") + f": {sample_losses['kl']:.4f}")
+            if "From Original Activation A (training objective)" in kl_divergences:
+                computed_kl_train = kl_divergences["From Original Activation A (training objective)"].get("KL(A || A_train) [TRAINING LOSS]")
+                if computed_kl_train is not None and abs(computed_kl_train - sample_losses['kl']) > 0.01:
+                    print(f"  ⚠️  WARNING: Computed training KL ({computed_kl_train:.4f}) doesn't match sample_losses KL ({sample_losses['kl']:.4f})!")
 
     print("\nGenerated Explanation (from Decoder using A_i):")
     if decoder_tokens:
@@ -234,6 +297,194 @@ def print_verbose_sample_details(
     print("-" * 60)
 
 
+def compute_single_sample_losses(
+    A_single: torch.Tensor,
+    A_prime_single: Optional[torch.Tensor],
+    input_ids_single: torch.Tensor,
+    layer_idx: int,
+    token_pos: int,
+    models: Dict[str, torch.nn.Module],
+    orig: OrigWrapper,
+    sch_args: Dict[str, Any],
+    device: torch.device,
+    cached_prefix_ids: torch.Tensor | None = None,
+    config: Dict[str, Any] = None,
+    resample_ablation: bool = True,
+) -> Dict[str, Any]:
+    """Compute all loss components and relevant tensors for a single sample.
+    
+    Args:
+        A_single: Single activation [1, hidden_size]
+        A_prime_single: Alternative activation [1, hidden_size], or None.
+        input_ids_single: Input IDs [seq_len]
+        layer_idx: Layer index
+        token_pos: Token position
+        models: Dictionary with 'dec' and 'enc' models
+        orig: Original model wrapper
+        sch_args: Schedule arguments including 'tau', 'alpha', etc.
+        device: Device to run on
+        cached_prefix_ids: Pre-tokenized prefix for LM loss
+        config: Configuration dictionary
+        
+    Returns:
+        Dictionary with "losses" and "computed_values".
+        "losses" contains various loss components including MSEs.
+        "computed_values" contains tensors like generated text, A_hat, A_train, and logits.
+    """
+    dec = models["dec"]
+    enc = models["enc"]
+    
+    # Get parameters from schedule args
+    tau = sch_args.get("tau", 1.0)
+    T_text = sch_args.get("T_text", 8)
+    if config and "t_text" in config and T_text == 8:
+        T_text = config["t_text"]
+
+    alpha = sch_args.get("alpha", 0.1)
+    kl_base = sch_args.get("kl_base_weight", 1.0)
+    lm_w = sch_args.get("lm_base_weight", 0.0)
+    ent_w = sch_args.get("entropy_weight", 0.0)
+    mse_w = sch_args.get("mse_weight", 0.0)
+    
+    # Ensure input_ids is 2D [1, seq_len]
+    if input_ids_single.dim() == 1:
+        input_ids_single = input_ids_single.unsqueeze(0)
+    
+    # Generate from A_single
+    gen_A_single = dec.generate_soft(A_single, max_length=T_text, gumbel_tau=tau)
+    A_hat_A_single = enc(gen_A_single.generated_text_embeddings)
+    
+    # Other MSEs involving A_single
+    mse_A_vs_zero = torch.nn.functional.mse_loss(A_single, torch.zeros_like(A_single)).item()
+    mse_A_vs_aprime = None
+    if A_prime_single is not None:
+        mse_A_vs_aprime = torch.nn.functional.mse_loss(A_single, A_prime_single).item()
+
+    # Language Model Loss - Always compute for monitoring, even when weight is 0
+    loss_lm = 0.0
+    if orig is not None and cached_prefix_ids is not None:
+        d_model_pred_logits = gen_A_single.raw_lm_logits  # [1, T_text, V]
+        
+        # Expand prefix for batch size 1
+        natural_prefix_expanded = cached_prefix_ids.expand(1, -1).to(device)
+        
+        # Use hard tokens with original model
+        base_model_input_ids = torch.cat([natural_prefix_expanded, gen_A_single.hard_token_ids], dim=1)
+        
+        with torch.no_grad():
+            orig_model_pred_logits_all_pos = orig.model(
+                input_ids=base_model_input_ids
+            ).logits
+            
+        prefix_len = natural_prefix_expanded.shape[1]
+        start_idx = prefix_len - 1
+        num_generated_tokens = d_model_pred_logits.shape[1]
+        end_idx = prefix_len + num_generated_tokens - 1
+        
+        orig_model_pred_logits = orig_model_pred_logits_all_pos[:, start_idx:end_idx, :]
+        
+        # Compute KL divergence - always compute for monitoring
+        with torch.no_grad():
+            with torch.amp.autocast('cuda', enabled=False):
+                d_logits_f32 = d_model_pred_logits.float()
+                d_logits_f32 = d_logits_f32 - d_logits_f32.max(dim=-1, keepdim=True)[0]
+                log_P_D = torch.nn.functional.log_softmax(d_logits_f32, dim=-1)
+            
+                orig_logits_f32 = orig_model_pred_logits.float()
+                orig_logits_f32 = orig_logits_f32 - orig_logits_f32.max(dim=-1, keepdim=True)[0]
+                P_Orig = torch.nn.functional.softmax(orig_logits_f32, dim=-1)
+            
+                V_lm = d_model_pred_logits.size(-1)
+                log_P_D_flat = log_P_D.reshape(-1, V_lm)
+                P_Orig_flat = P_Orig.reshape(-1, V_lm)
+            
+                loss_lm = torch.nn.functional.kl_div(
+                    input=log_P_D_flat,
+                    target=P_Orig_flat,
+                    reduction='batchmean',
+                    log_target=False
+                ).item()
+    
+    # Entropy
+    logits_entropy = gen_A_single.raw_lm_logits
+    with torch.no_grad():
+        logits_f32_ent = logits_entropy.float()
+        logits_f32_ent = logits_f32_ent - logits_f32_ent.max(dim=-1, keepdim=True)[0]
+        probs_ent = torch.softmax(logits_f32_ent, dim=-1)
+        probs_ent = probs_ent.clamp(min=1e-10)
+        entropy = (-probs_ent * torch.log(probs_ent)).sum(-1).mean().item()
+    
+    # KL divergence for training loss & related tensors
+    A_train = None
+    logits_A_single_pos = None
+    logits_A_train_kl_pos = None
+    loss_kl = 0.0
+    mse_A_vs_A_train = None
+
+    if orig is not None and A_prime_single is not None:
+        with torch.no_grad():
+            gen_ap = dec.generate_soft(A_prime_single, max_length=T_text, gumbel_tau=tau)
+            Ap_hat = enc(gen_ap.generated_text_embeddings)
+            
+            delta = (A_prime_single - Ap_hat).detach()
+            if resample_ablation:
+                A_train = A_hat_A_single + delta
+            else:
+                A_train = A_hat_A_single
+            mse_A_vs_A_train = torch.nn.functional.mse_loss(A_single, A_train).item()
+            mse_A_vs_Ahat = torch.nn.functional.mse_loss(A_single, A_hat_A_single).item()
+            
+            logits_A_single_pos = orig.forward_with_replacement(
+                input_ids=input_ids_single,
+                new_activation=A_single,
+                layer_idx=layer_idx,
+                token_pos=token_pos,
+                no_grad=True,
+            ).logits[:, token_pos]
+            
+            logits_A_train_kl_pos = orig.forward_with_replacement(
+                input_ids=input_ids_single,
+                new_activation=A_train,
+                layer_idx=layer_idx,
+                token_pos=token_pos,
+                no_grad=True,
+            ).logits[:, token_pos]
+            
+            from lens.evaluation.metrics import kl as kl_fn
+            loss_kl = kl_fn(
+                torch.log_softmax(logits_A_train_kl_pos.float(), dim=-1),
+                torch.softmax(logits_A_single_pos.float(), dim=-1)
+            ).item()
+            
+    total_loss = (lm_w * alpha) * loss_lm + kl_base * loss_kl - ent_w * entropy + mse_w * mse_A_vs_A_train
+    
+    loss_dict = {
+        "total": total_loss,
+        "mse": mse_A_vs_A_train,
+        "lm": loss_lm,
+        "kl": loss_kl,
+        "entropy": entropy,
+        "mse_weighted": mse_w * mse_A_vs_A_train,
+        "lm_weighted": (lm_w * alpha) * loss_lm,
+        "kl_weighted": kl_base * loss_kl,
+        "entropy_weighted": -ent_w * entropy,
+        "mse_A_vs_zero": mse_A_vs_zero,
+        "mse_A_vs_aprime": mse_A_vs_aprime,
+        "mse_A_vs_Ahat": mse_A_vs_Ahat,
+        "mse_A_vs_A_train": mse_A_vs_A_train,
+    }
+    
+    computed_values_dict = {
+        "gen_A_single": gen_A_single,
+        "A_hat_A_single": A_hat_A_single,
+        "A_train_kl": A_train, 
+        "logits_A_single_pos": logits_A_single_pos, 
+        "logits_A_train_kl_pos": logits_A_train_kl_pos,
+    }
+    
+    return {"losses": loss_dict, "computed_values": computed_values_dict}
+
+
 def process_and_print_verbose_batch_samples(
     batch: Dict[str, Any],
     cfg: Dict[str, Any],
@@ -249,6 +500,8 @@ def process_and_print_verbose_batch_samples(
     continuation_tokens: int = 30,
     return_structured_data: bool = False,
     capture_output: bool = False,
+    cached_prefix_ids: torch.Tensor | None = None,
+    resample_ablation: bool = True,
 ) -> Union[int, Tuple[int, List[Dict[str, Any]]], Tuple[int, str]]:
     """Processes and prints verbose samples from a batch.
     
@@ -284,203 +537,188 @@ def process_and_print_verbose_batch_samples(
         p = int(batch["token_pos_A"][i].item())
 
         input_ids_seq = batch["input_ids_A"][i].unsqueeze(0).to(device)
-        A_i = batch["A"][i : i + 1].to(device) # Shape: [1, hidden_size]
+        A_i = batch["A"][i : i + 1].to(device) 
+        
+        A_prime_i = None
+        idx_for_aprime = -1
+        if batch["A_prime"].size(0) > 0:
+            idx_for_aprime = i % batch["A_prime"].size(0)
+            A_prime_i = batch["A_prime"][idx_for_aprime : idx_for_aprime + 1].to(device)
+        
+        results_from_compute = compute_single_sample_losses(
+            A_single=A_i,
+            A_prime_single=A_prime_i,
+            input_ids_single=batch["input_ids_A"][i].to(device),
+            layer_idx=l,
+            token_pos=p,
+            models=models,
+            orig=orig,
+            sch_args=sch_args,
+            device=device,
+            cached_prefix_ids=cached_prefix_ids,
+            config=cfg,
+            resample_ablation=resample_ablation,
+        )
+        sample_losses = results_from_compute["losses"] 
+        computed_tensors = results_from_compute["computed_values"]
 
-        # Logit Lens prediction from A_i
+        gen_single = computed_tensors["gen_A_single"]
+        A_hat_single = computed_tensors["A_hat_A_single"]
+        logits_orig_at_p_batched = computed_tensors["logits_A_single_pos"] 
+        A_train_i_for_kl = computed_tensors["A_train_kl"]
+        logits_train_at_p_batched = computed_tensors["logits_A_train_kl_pos"]
+
         A_i_cast = A_i.to(orig.model.lm_head.weight.dtype)
-        logit_lens_logits_from_A_i = orig.model.lm_head(A_i_cast) # Shape [1, vocab_size]
+        logit_lens_logits_from_A_i = orig.model.lm_head(A_i_cast)
         top_n_logit_lens_tokens = get_top_n_tokens(logit_lens_logits_from_A_i.squeeze(0), tok, top_n_analysis)
+        
+        with torch.no_grad():
+            logits_natural_all_pos = orig.model(input_ids=input_ids_seq).logits
+            logits_natural_at_p_batched = logits_natural_all_pos[:, p]
+        
+        zero_activation = torch.zeros_like(A_i)
+        logits_zero_all_pos = orig.forward_with_replacement(input_ids_seq, zero_activation, l, p).logits
+        logits_zero_at_p_batched = logits_zero_all_pos[:, p]
+        top_n_zero_tokens = get_top_n_tokens(logits_zero_at_p_batched.squeeze(0), tok, top_n_analysis)
+        
+        top_n_orig_A_tokens = get_top_n_tokens(logits_orig_at_p_batched.squeeze(0), tok, top_n_analysis)
+        
+        top_n_aprime_tokens = ["N/A (A_prime not avail)"] * top_n_analysis
+        logits_aprime_at_p_batched = None
+        if A_prime_i is not None:
+            logits_aprime_all_pos = orig.forward_with_replacement(input_ids_seq, A_prime_i, l, p).logits
+            logits_aprime_at_p_batched = logits_aprime_all_pos[:, p]
+            top_n_aprime_tokens = get_top_n_tokens(logits_aprime_at_p_batched.squeeze(0), tok, top_n_analysis)
+        
+        logits_approx_all_pos = orig.forward_with_replacement(input_ids_seq, A_hat_single, l, p).logits
+        logits_approx_at_p_batched = logits_approx_all_pos[:, p]
+        top_n_lens_recon_tokens = get_top_n_tokens(logits_approx_at_p_batched.squeeze(0), tok, top_n_analysis)
 
-        # Forward passes for other logits (interventions)
-        # Base Model (orig A) - prediction using A_i at (l,p)
-        logits_orig_all_pos = orig.forward_with_replacement(input_ids_seq, A_i, l, p).logits # Shape [1, seq_len, vocab_size]
-        logits_orig_at_p = logits_orig_all_pos[:, p].squeeze(0) # Shape [vocab_size]
-        top_n_orig_A_tokens = get_top_n_tokens(logits_orig_at_p, tok, top_n_analysis)
+        top_n_train_ablation_tokens = ["N/A (A_train_kl not avail)"] * top_n_analysis
+        if A_train_i_for_kl is not None and logits_train_at_p_batched is not None:
+            top_n_train_ablation_tokens = get_top_n_tokens(logits_train_at_p_batched.squeeze(0), tok, top_n_analysis)
         
-        # Get A_prime_i early for the intervention test
-        alt_idx = (i + 1) % batch["A_prime"].size(0)
-        A_prime_i = batch["A_prime"][alt_idx : alt_idx + 1].to(device)
+        raw_prefix_ids = input_ids_seq[0].tolist()
+        base_model_full_logits = logits_natural_all_pos
         
-        # Base Model (A') - prediction using A_prime_i at (l,p)
-        logits_aprime_all_pos = orig.forward_with_replacement(input_ids_seq, A_prime_i, l, p).logits # Shape [1, seq_len, vocab_size]
-        logits_aprime_at_p = logits_aprime_all_pos[:, p].squeeze(0) # Shape [vocab_size]
-        top_n_aprime_tokens = get_top_n_tokens(logits_aprime_at_p, tok, top_n_analysis)
-        
-        # Lens Recon (A_hat) - prediction using A_hat_single at (l,p)
-        gen_single = dec.generate_soft(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"])
-        A_hat_single = enc(gen_single.generated_text_embeddings)
-        logits_target_all_pos = orig.forward_with_replacement(input_ids_seq, A_hat_single, l, p).logits
-        logits_target_at_p = logits_target_all_pos[:, p].squeeze(0)
-        top_n_lens_recon_tokens = get_top_n_tokens(logits_target_at_p, tok, top_n_analysis)
+        top_n_natural_base_preds_for_p_plus_1: List[str]
+        if p < base_model_full_logits.size(1): 
+            natural_base_logits_at_p = base_model_full_logits[0, p]
+            top_n_natural_base_preds_for_p_plus_1 = get_top_n_tokens(natural_base_logits_at_p, tok, top_n_analysis)
+        else:
+            top_n_natural_base_preds_for_p_plus_1 = ["N/A"] * top_n_analysis
 
-        # Resample Ablation (A_hat+Δ) - prediction using A_target_i at (l,p)
-        # Note: A_prime_i already defined above
+        # Compute baseline using previous t_text tokens as encoder input
+        T_text = cfg.get("t_text", 8)
+        # Get the previous T_text tokens from position p
+        start_token_idx = max(0, p - T_text + 1)  # Include token at position p
+        end_token_idx = p + 1
         
-        # Get A_prime input sequence and position if available
+        # Extract previous tokens (may be less than T_text if near beginning)
+        prev_token_ids = raw_prefix_ids[start_token_idx:end_token_idx]
+        
+        # Pad with BOS token if needed
+        if len(prev_token_ids) < T_text:
+            bos_id = tok.bos_token_id if tok.bos_token_id is not None else tok.eos_token_id
+            padding_needed = T_text - len(prev_token_ids)
+            prev_token_ids = [bos_id] * padding_needed + prev_token_ids
+        
+        # Convert token IDs to embeddings
+        prev_token_ids_tensor = torch.tensor(prev_token_ids, device=device).unsqueeze(0)  # [1, T_text]
+        
+        # Get embeddings from the base model
+        if hasattr(enc, 'base') and enc._use_base:
+            emb_table = enc.base.get_input_embeddings().weight
+        else:
+            # Use original model's embeddings
+            emb_table = orig.model.get_input_embeddings().weight
+        
+        prev_token_embeddings = emb_table[prev_token_ids_tensor]  # [1, T_text, d_model]
+        
+        # Pass through encoder to get A_hat_baseline
+        A_hat_baseline = enc(prev_token_embeddings)
+        
+        # Compute predictions and metrics for baseline
+        logits_baseline_all_pos = orig.forward_with_replacement(input_ids_seq, A_hat_baseline, l, p).logits
+        logits_baseline_at_p_batched = logits_baseline_all_pos[:, p]
+        top_n_baseline_tokens = get_top_n_tokens(logits_baseline_at_p_batched.squeeze(0), tok, top_n_analysis)
+        
+        # Compute MSE for baseline
+        mse_baseline_vs_A = torch.nn.functional.mse_loss(A_i, A_hat_baseline).item()
+
+        analysis_preds_dict = {
+            "Base Model's natural prediction": top_n_natural_base_preds_for_p_plus_1,
+            "Zero Vector Baseline": top_n_zero_tokens,
+            "Prev Tokens Baseline (Enc[prev t tokens])": top_n_baseline_tokens,
+            "Logit Lens (from A_i)": top_n_logit_lens_tokens,
+            "Base Model (orig A)": top_n_orig_A_tokens,
+            "Base Model (A')": top_n_aprime_tokens,
+            "Log w/o Ablation (A_hat)" + ("train" if resample_ablation else ""): top_n_lens_recon_tokens,
+            "Log training " + ("(A_hat+Δ)" if resample_ablation else "(A_hat)"): top_n_train_ablation_tokens,
+        }
+
         a_prime_string_cropped = None
-        if "input_ids_A_prime" in batch and "token_pos_A_prime" in batch:
-            input_ids_A_prime_seq = batch["input_ids_A_prime"][alt_idx].to(device)
-            p_prime = int(batch["token_pos_A_prime"][alt_idx].item())
-            
-            # Create cropped string for A_prime
+        if A_prime_i is not None and "input_ids_A_prime" in batch and "token_pos_A_prime" in batch and \
+           idx_for_aprime < batch["input_ids_A_prime"].size(0) and idx_for_aprime < batch["token_pos_A_prime"].size(0) :
+            input_ids_A_prime_seq = batch["input_ids_A_prime"][idx_for_aprime].to(device)
+            p_prime = int(batch["token_pos_A_prime"][idx_for_aprime].item())
             raw_prime_ids = input_ids_A_prime_seq.tolist()
             crop_start_idx_prime = max(0, p_prime - 100)
             crop_end_idx_prime = min(len(raw_prime_ids), p_prime + 30 + 1)
-            
-            # Decode the parts separately to insert stars around the analyzed token
             before_p_prime = tok.decode(raw_prime_ids[crop_start_idx_prime:p_prime]) if p_prime > crop_start_idx_prime else ""
             token_at_p_prime = tok.decode([raw_prime_ids[p_prime]]) if p_prime < len(raw_prime_ids) else ""
             after_p_prime = tok.decode(raw_prime_ids[p_prime+1:crop_end_idx_prime]) if p_prime+1 < crop_end_idx_prime else ""
-            
-            # Build the cropped string with the analyzed token highlighted
             a_prime_string_cropped = escape_newlines(before_p_prime + "*" + token_at_p_prime + "*" + after_p_prime)
-            
-            # Add ellipsis if cropped
-            if crop_start_idx_prime > 0:
-                a_prime_string_cropped = "..." + a_prime_string_cropped
-            if crop_end_idx_prime < len(raw_prime_ids):
-                a_prime_string_cropped = a_prime_string_cropped + "..."
+            if crop_start_idx_prime > 0: a_prime_string_cropped = "..." + a_prime_string_cropped
+            if crop_end_idx_prime < len(raw_prime_ids): a_prime_string_cropped = a_prime_string_cropped + "..."
         
-        gen_ap = dec.generate_soft(A_prime_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"])
-        A_prime_hat = enc(gen_ap.generated_text_embeddings)
-        delta_res = (A_prime_i - A_prime_hat).detach()
-        A_target_i = A_hat_single + delta_res
-        logits_resample_all_pos = orig.forward_with_replacement(input_ids_seq, A_target_i, l, p).logits
-        logits_resample_at_p = logits_resample_all_pos[:, p].squeeze(0)
-        top_n_resample_ablation_tokens = get_top_n_tokens(logits_resample_at_p, tok, top_n_analysis)
-        
-        # Original input sequence processing & Base Model's natural prediction
-        raw_prefix_ids = input_ids_seq[0].tolist()
-        base_model_full_logits = orig.model(input_ids=input_ids_seq).logits # Shape [1, seq_len, vocab_size]
-        
-        top_n_natural_base_preds_for_p_plus_1: List[str]
-        if p < base_model_full_logits.size(1): # Ensure p is a valid index for logits
-            natural_base_logits_at_p = base_model_full_logits[0, p] # Logits for predicting token at p+1
-            top_n_natural_base_preds_for_p_plus_1 = get_top_n_tokens(natural_base_logits_at_p, tok, top_n_analysis)
-        else:
-            # This case means p is at or beyond the last token, so no "next token" prediction from base model.
-            top_n_natural_base_preds_for_p_plus_1 = ["N/A"] * top_n_analysis
-
-
         display_start_idx = max(0, p - 10)
         display_end_idx = min(len(raw_prefix_ids), p + 3 + 1)
         displayed_raw_ids = raw_prefix_ids[display_start_idx:display_end_idx]
         displayed_prefix_tokens = [escape_newlines(tok.decode([tid])) for tid in displayed_raw_ids]
         displayed_positions = [str(k) for k in range(display_start_idx, display_end_idx)]
 
-        #for printing the original string cropped
         crop_start_idx = max(0, p - 100)
         crop_end_idx = min(len(raw_prefix_ids), p + 30 + 1)
-        
-        # Decode the parts separately to insert stars around the analyzed token
         before_p = tok.decode(raw_prefix_ids[crop_start_idx:p]) if p > crop_start_idx else ""
-        token_at_p = tok.decode([raw_prefix_ids[p]]) if p < len(raw_prefix_ids) else ""
+        token_at_p_val = tok.decode([raw_prefix_ids[p]]) if p < len(raw_prefix_ids) else ""
         after_p = tok.decode(raw_prefix_ids[p+1:crop_end_idx]) if p+1 < crop_end_idx else ""
-        
-        # Build the cropped string with the analyzed token highlighted
-        original_string_cropped = escape_newlines(before_p + "*" + token_at_p + "*" + after_p)
-        
-        # Add ellipsis if cropped
-        if crop_start_idx > 0:
-            original_string_cropped = "..." + original_string_cropped
-        if crop_end_idx < len(raw_prefix_ids):
-            original_string_cropped = original_string_cropped + "..."
-        
+        original_string_cropped = escape_newlines(before_p + "*" + token_at_p_val + "*" + after_p)
+        if crop_start_idx > 0: original_string_cropped = "..." + original_string_cropped
+        if crop_end_idx < len(raw_prefix_ids): original_string_cropped = original_string_cropped + "..."
         original_token_at_p_str = escape_newlines(tok.decode([raw_prefix_ids[p]])) if p < len(raw_prefix_ids) else "N/A"
-
-        def build_topk_preds_by_rank(raw_lm_logits, num_tokens, k, tok):
-            """Builds a list of rows: one row per rank (top-1, top-2, ...)."""
-            if k <= 0:
-                return []
-            preds_by_rank = [[] for _ in range(k)]
-            for logit_slice in raw_lm_logits[0][:num_tokens]:
-                topk_ids = torch.topk(logit_slice, k=k).indices.tolist()
-                for rank_idx, tok_id in enumerate(topk_ids):
-                    preds_by_rank[rank_idx].append(
-                        escape_newlines(tok.decode([tok_id]).strip())
-                    )
-            return preds_by_rank
-
-        # ------------------------------------------------------------------
-        # (1) Decoder explanation & stacked top-k predictions (per-rank rows)
-        # ------------------------------------------------------------------
 
         gen_token_ids_full = gen_single.hard_token_ids[0].tolist()
         gen_tokens = [escape_newlines(tok.decode([tid])) for tid in gen_token_ids_full]
-
         k_for_decoder_preds = min(top_n_analysis, gen_single.raw_lm_logits.size(-1))
-
         decoder_preds_by_rank = build_topk_preds_by_rank(
             gen_single.raw_lm_logits, len(gen_tokens), k_for_decoder_preds, tok
         )
 
-        # ------------------------------------------------------------------
-        # (2) Base model generation with identical (learned) context + incl linear map                
-        # ------------------------------------------------------------------
         base_gen_single = dec.generate_soft(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, use_projection=True)
-        # base_gen_single = generate_soft_with_base(
-        #     orig,
-        #     A_i,
-        #     proj_layer=dec.proj,
-        #     prompt_left_emb=dec.prompt_left_emb,
-        #     prompt_right_emb=dec.prompt_right_emb,
-        #     prompt_len=dec.prompt_len,
-        #     max_length=cfg["t_text"],
-        #     gumbel_tau=sch_args["tau"],
-        #     device=device,
-        # )
-
         base_token_ids_full = base_gen_single.hard_token_ids[0].tolist()
         base_gen_tokens = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full]
-
         base_preds_by_rank = build_topk_preds_by_rank(
             base_gen_single.raw_lm_logits, len(base_gen_tokens), k_for_decoder_preds, tok
         )
 
-        # ------------------------------------------------------------------
-        # (3 ) Base model generation with hard context but using linear map 
-        # ------------------------------------------------------------------
-        left_ids, right_ids, left_emb, right_emb = dec.tokenize_and_embed_prompt(cfg["decoder_prompt"], tok)
-        base_gen_single_hard = dec.generate_soft(A_i, 
-                                                 max_length=cfg["t_text"], 
-                                                 gumbel_tau=sch_args["tau"], 
-                                                 override_model_base_and_out=orig, 
-                                                 hard_left_emb=left_ids, 
-                                                 hard_right_emb=right_ids,
-                                                 use_projection=True)
-
+        left_ids, right_ids, _, _ = dec.tokenize_and_embed_prompt(cfg["decoder_prompt"], tok)
+        base_gen_single_hard = dec.generate_soft(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, hard_left_emb=left_ids, hard_right_emb=right_ids, use_projection=True)
         base_token_ids_full_hard = base_gen_single_hard.hard_token_ids[0].tolist()
         base_gen_tokens_hard = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full_hard]
-
         base_preds_by_rank_hard = build_topk_preds_by_rank(
             base_gen_single_hard.raw_lm_logits, len(base_gen_tokens_hard), k_for_decoder_preds, tok
         )
 
-        # (4) Base model generation with hard context but without linear map
-        left_ids, right_ids, left_emb, right_emb = dec.tokenize_and_embed_prompt(cfg["decoder_prompt"], tok)
-        base_gen_single_hard_no_map = dec.generate_soft(A_i, 
-                                                        max_length=cfg["t_text"], 
-                                                        gumbel_tau=sch_args["tau"], 
-                                                        override_model_base_and_out=orig, 
-                                                        hard_left_emb=left_ids, 
-                                                        hard_right_emb=right_ids, 
-                                                        use_projection=False)
-
+        base_gen_single_hard_no_map = dec.generate_soft(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, hard_left_emb=left_ids, hard_right_emb=right_ids, use_projection=False)
         base_token_ids_full_hard_no_map = base_gen_single_hard_no_map.hard_token_ids[0].tolist()
         base_gen_tokens_hard_no_map = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full_hard_no_map]
-
         base_preds_by_rank_hard_no_map = build_topk_preds_by_rank(
             base_gen_single_hard_no_map.raw_lm_logits, len(base_gen_tokens_hard_no_map), k_for_decoder_preds, tok
         )
-        # ------------------------------------------------------------------
-        # END generation blocks
-        # ------------------------------------------------------------------
-
-        # Prepare context table data
+        
         context_display_range = f"{display_start_idx}-{display_end_idx-1}" if displayed_positions else "empty"
         context_labels = ["Position:", "Token:", "BaseLM (shift):"]
-        
-        # For context table, we show single top predictions from base model
         preds_prefix_full_single_top = [
             escape_newlines(tok.decode([base_model_full_logits[0, t_idx].argmax().item()]))
             if t_idx < base_model_full_logits.size(1) else "N/A"
@@ -492,142 +730,182 @@ def process_and_print_verbose_batch_samples(
             else ("" if display_start_idx + k_rel == 0 else "ERR_IDX")
             for k_rel in range(len(displayed_prefix_tokens))
         ]
-        
         context_data_rows = [list(displayed_positions), list(displayed_prefix_tokens), list(shifted_preds_for_display)]
         relative_p = p - display_start_idx
         if 0 <= relative_p < len(displayed_prefix_tokens):
             context_data_rows[0][relative_p] = f"[{context_data_rows[0][relative_p]}]P"
             context_data_rows[1][relative_p] = f"*{context_data_rows[1][relative_p]}*"
 
-        # Prepare analysis predictions dictionary
-        analysis_preds_dict = {
-            "Base Model's natural prediction": top_n_natural_base_preds_for_p_plus_1,
-            "Logit Lens (from A_i)": top_n_logit_lens_tokens,
-            "Base Model (orig A)": top_n_orig_A_tokens,
-            "Base Model (A')": top_n_aprime_tokens,
-            "Log w/o Ablation (A_hat)": top_n_lens_recon_tokens,
-            "Log w/Resample Ablation (A_hat+Δ)": top_n_resample_ablation_tokens,
-        }
+        def safe_kl(l1, l2):
+            if l1 is None or l2 is None: return None
+            return compute_kl_divergence_robust(l1, l2).item()
 
-        # Generate autoregressive continuation from position p
+        kl_zero_from_natural = safe_kl(logits_zero_at_p_batched, logits_natural_at_p_batched)
+        kl_orig_from_natural = safe_kl(logits_orig_at_p_batched, logits_natural_at_p_batched)
+        kl_aprime_from_natural = safe_kl(logits_aprime_at_p_batched, logits_natural_at_p_batched)
+        kl_ahat_from_natural = safe_kl(logits_approx_at_p_batched, logits_natural_at_p_batched)
+        kl_ahat_delta_from_natural = safe_kl(logits_train_at_p_batched, logits_natural_at_p_batched)
+        kl_baseline_from_natural = safe_kl(logits_baseline_at_p_batched, logits_natural_at_p_batched)
+
+        kl_zero_from_orig = safe_kl(logits_zero_at_p_batched, logits_orig_at_p_batched)
+        kl_aprime_from_orig = safe_kl(logits_aprime_at_p_batched, logits_orig_at_p_batched)
+        kl_ahat_from_orig = safe_kl(logits_approx_at_p_batched, logits_orig_at_p_batched)
+        kl_baseline_from_orig = safe_kl(logits_baseline_at_p_batched, logits_orig_at_p_batched)
+        training_kl_loss_value = sample_losses['kl'] 
+
+        kl_divergences_for_print_section = {
+            "From Natural Prediction (no intervention)": {
+                "KL(Natural || Zero)": kl_zero_from_natural,
+                "KL(Natural || Prev Tokens Baseline)": kl_baseline_from_natural,
+                "KL(Natural || A)": kl_orig_from_natural, 
+                "KL(Natural || A')": kl_aprime_from_natural,
+                "KL(Natural || A_hat)": kl_ahat_from_natural,
+                "KL(Natural || A_hat+Δ)": kl_ahat_delta_from_natural,
+            },
+            "From Original Activation A (training objective)": {
+                "KL(A || Zero)": kl_zero_from_orig,
+                "KL(A || Prev Tokens Baseline)": kl_baseline_from_orig,
+                "KL(A || A')": kl_aprime_from_orig,
+                "KL(A || A_hat)": kl_ahat_from_orig,
+                ("KL(A || A_hat+Δ) [TRAINING LOSS]" if resample_ablation else "KL(A || A_hat) [TRAINING LOSS]"): training_kl_loss_value,
+            }
+        }
+        
+        analysis_metrics_for_print = {
+            "Base Model's natural prediction": { 
+                "mse_vs_A": 0.0, 
+                "kl_vs_A": safe_kl(logits_natural_at_p_batched, logits_orig_at_p_batched), 
+                "kl_vs_natural": 0.0,
+            },
+            "Zero Vector Baseline": {
+                "mse_vs_A": sample_losses["mse_A_vs_zero"],
+                "kl_vs_A": kl_zero_from_orig,
+                "kl_vs_natural": kl_zero_from_natural,
+            },
+            "Prev Tokens Baseline (Enc[prev t tokens])": {
+                "mse_vs_A": mse_baseline_vs_A,
+                "kl_vs_A": kl_baseline_from_orig,
+                "kl_vs_natural": kl_baseline_from_natural,
+            },
+            "Base Model (orig A)": { 
+                "mse_vs_A": 0.0, 
+                "kl_vs_A": 0.0, 
+                "kl_vs_natural": kl_orig_from_natural,
+            },
+            "Base Model (A')": { 
+                "mse_vs_A": sample_losses["mse_A_vs_aprime"], 
+                "kl_vs_A": kl_aprime_from_orig, 
+                "kl_vs_natural": kl_aprime_from_natural, 
+            },
+            "Log w/o Ablation (A_hat)": { 
+                "mse_vs_A": sample_losses["mse_A_vs_Ahat"], 
+                "kl_vs_A": kl_ahat_from_orig,
+                "kl_vs_natural": kl_ahat_from_natural,
+            },
+            "Log w/Resample Ablation (A_hat+Δ)": { 
+                "mse_vs_A": sample_losses["mse_A_vs_A_train"], 
+                "kl_vs_A": training_kl_loss_value, 
+                "kl_vs_natural": kl_ahat_delta_from_natural, 
+            },
+        }
+        
         autoregressive_continuation = None
         if generate_continuation:
             autoregressive_continuation = generate_autoregressive_continuation(
                 orig, input_ids_seq, p, num_tokens=continuation_tokens, tok=tok, device=device
             )
-
-        # Collect structured data if requested
+        
         if return_structured_data:
-            # Get decoder predictions for position p - topk_per_pos contains strings, not tuples
-            decoder_preds = []
-            if p < gen_single.raw_lm_logits.size(1):
-                # Get actual token IDs and probabilities from the raw logits
-                logits_at_p = gen_single.raw_lm_logits[0, p]
-                probs = torch.softmax(logits_at_p, dim=-1)
-                top_values, top_indices = torch.topk(probs, k=min(top_n_analysis, probs.size(-1)))
-                for i in range(len(top_indices)):
-                    token_id = top_indices[i].item()
-                    prob = top_values[i].item()
-                    token_str = escape_newlines(tok.decode([token_id]))
-                    decoder_preds.append((token_str, prob))
-            
-            # For original and reconstructed logits, we need to get probabilities too
-            # Since get_top_n_tokens only returns strings, we need to get the probabilities from the original logits
-            
-            # Original logits with probabilities
-            original_logits_with_probs = []
-            if logits_orig_at_p.numel() > 0:
-                orig_probs = torch.softmax(logits_orig_at_p, dim=-1)
+            # Simplified structured data based on available variables for print
+            # If original (token, prob) pairs are needed, logic from earlier versions needs to be re-added
+            original_logits_topk_for_structured = []
+            if logits_orig_at_p_batched is not None:
+                orig_probs = torch.softmax(logits_orig_at_p_batched.squeeze(0), dim=-1)
                 orig_top_values, orig_top_indices = torch.topk(orig_probs, k=min(top_n_analysis, orig_probs.size(-1)))
-                for i in range(len(orig_top_indices)):
-                    token_id = orig_top_indices[i].item()
-                    prob = orig_top_values[i].item()
+                for val_idx in range(len(orig_top_indices)):
+                    token_id = orig_top_indices[val_idx].item()
+                    prob = orig_top_values[val_idx].item()
                     token_str = escape_newlines(tok.decode([token_id]))
-                    original_logits_with_probs.append((token_str, prob))
-            
-            # Reconstructed logits with probabilities
-            reconstructed_logits_with_probs = []
-            if logits_target_at_p.numel() > 0:
-                recon_probs = torch.softmax(logits_target_at_p, dim=-1)
+                    original_logits_topk_for_structured.append((token_str, prob))
+
+            reconstructed_logits_topk_for_structured = [] # For A_hat
+            if logits_approx_at_p_batched is not None: # Logits from A_hat intervention
+                recon_probs = torch.softmax(logits_approx_at_p_batched.squeeze(0), dim=-1)
                 recon_top_values, recon_top_indices = torch.topk(recon_probs, k=min(top_n_analysis, recon_probs.size(-1)))
-                for i in range(len(recon_top_indices)):
-                    token_id = recon_top_indices[i].item()
-                    prob = recon_top_values[i].item()
+                for val_idx in range(len(recon_top_indices)):
+                    token_id = recon_top_indices[val_idx].item()
+                    prob = recon_top_values[val_idx].item()
                     token_str = escape_newlines(tok.decode([token_id]))
-                    reconstructed_logits_with_probs.append((token_str, prob))
+                    reconstructed_logits_topk_for_structured.append((token_str, prob))
             
+            # Decoder predictions (top-k for each generated token position)
+            # For structured output, let's take the top-1 prediction for each token from the decoder
+            # and its associated top-k probabilities for the first position if needed.
+            # For simplicity, using the already built decoder_preds_by_rank (list of lists of top tokens)
+            # and gen_tokens (list of generated tokens)
+            
+            decoder_top_preds_structured = [] # List of (token_str, prob) for the *first* generated position by decoder
+            if gen_single.raw_lm_logits.numel() > 0 and gen_single.raw_lm_logits.size(1) > 0 : # Check if any logits generated
+                first_pos_logits = gen_single.raw_lm_logits[0, 0]
+                first_pos_probs = torch.softmax(first_pos_logits, dim=-1)
+                top_vals, top_ids = torch.topk(first_pos_probs, k=min(top_n_analysis, first_pos_probs.size(-1)))
+                for k_idx in range(len(top_ids)):
+                    decoder_top_preds_structured.append(
+                        (escape_newlines(tok.decode([top_ids[k_idx].item()])), top_vals[k_idx].item())
+                    )
+
             sample_data = {
                 "input_text": escape_newlines(original_string_cropped),
                 "chosen_token": escape_newlines(original_token_at_p_str),
                 "position": p,
-                "decoded_text": escape_newlines(" ".join(gen_tokens)),
-                "top_predictions": decoder_preds,
+                "decoded_text": escape_newlines(" ".join(gen_tokens)), # Decoder generated text
+                "decoder_top_predictions_first_pos": decoder_top_preds_structured, # Top-k for first token by decoder
                 "continuation": escape_newlines(autoregressive_continuation) if autoregressive_continuation else None,
-                "original_logits": original_logits_with_probs,
-                "reconstructed_logits": reconstructed_logits_with_probs,
+                "original_model_top_predictions_at_p": original_logits_topk_for_structured, # Top-k from A_i intervention
+                "reconstructed_A_hat_top_predictions_at_p": reconstructed_logits_topk_for_structured, # Top-k from A_hat intervention
+                "metrics_at_p": analysis_metrics_for_print, # Contains MSEs and KLs for various conditions
+                "all_losses": sample_losses, # Full loss dictionary
             }
             structured_samples.append(sample_data)
         
         if capture_output:
-            # Capture the output instead of printing directly
             import io
             from contextlib import redirect_stdout
-            
             output_buffer = io.StringIO()
             with redirect_stdout(output_buffer):
                 print_verbose_sample_details(
-                    l=l,
-                    p=p,
-                    original_token_at_p_str=original_token_at_p_str,
-                    context_display_range=context_display_range,
-                    context_labels=context_labels,
-                    context_data_rows=context_data_rows,
+                    l=l, p=p, original_token_at_p_str=original_token_at_p_str,
+                    context_display_range=context_display_range, context_labels=context_labels, context_data_rows=context_data_rows,
                     analysis_predictions=analysis_preds_dict,
-                    decoder_tokens=gen_tokens,
-                    decoder_preds_by_rank=decoder_preds_by_rank,
-                    base_tokens=base_gen_tokens,
-                    base_tokens_hard=base_gen_tokens_hard,
-                    base_tokens_hard_no_map=base_gen_tokens_hard_no_map,
-                    base_preds_by_rank=base_preds_by_rank,
-                    base_preds_by_rank_hard=base_preds_by_rank_hard,
-                    base_preds_by_rank_hard_no_map=base_preds_by_rank_hard_no_map,
-                    top_n_analysis_val=top_n_analysis,
-                    original_string_cropped=original_string_cropped,
-                    autoregressive_continuation=autoregressive_continuation,
-                    a_prime_string_cropped=a_prime_string_cropped,
-                    cfg=cfg,
+                    analysis_metrics=analysis_metrics_for_print, 
+                    decoder_tokens=gen_tokens, decoder_preds_by_rank=decoder_preds_by_rank,
+                    base_tokens=base_gen_tokens, base_tokens_hard=base_gen_tokens_hard, base_tokens_hard_no_map=base_gen_tokens_hard_no_map,
+                    base_preds_by_rank=base_preds_by_rank, base_preds_by_rank_hard=base_preds_by_rank_hard, base_preds_by_rank_hard_no_map=base_preds_by_rank_hard_no_map,
+                    top_n_analysis_val=top_n_analysis, original_string_cropped=original_string_cropped,
+                    autoregressive_continuation=autoregressive_continuation, a_prime_string_cropped=a_prime_string_cropped,
+                    cfg=cfg, sample_losses=sample_losses, kl_divergences=kl_divergences_for_print_section, 
+                    resample_ablation=resample_ablation
                 )
             captured_output.append(output_buffer.getvalue())
-            # Also print to console
             print(captured_output[-1], end='')
         else:
             print_verbose_sample_details(
-                l=l,
-                p=p,
-                original_token_at_p_str=original_token_at_p_str,
-                context_display_range=context_display_range,
-                context_labels=context_labels,
-                context_data_rows=context_data_rows,
+                l=l, p=p, original_token_at_p_str=original_token_at_p_str,
+                context_display_range=context_display_range, context_labels=context_labels, context_data_rows=context_data_rows,
                 analysis_predictions=analysis_preds_dict,
-                decoder_tokens=gen_tokens,
-                decoder_preds_by_rank=decoder_preds_by_rank,
-                base_tokens=base_gen_tokens,
-                base_tokens_hard=base_gen_tokens_hard,
-                base_tokens_hard_no_map=base_gen_tokens_hard_no_map,
-                base_preds_by_rank=base_preds_by_rank,
-                base_preds_by_rank_hard=base_preds_by_rank_hard,
-                base_preds_by_rank_hard_no_map=base_preds_by_rank_hard_no_map,
-                top_n_analysis_val=top_n_analysis,
-                original_string_cropped=original_string_cropped,
-                autoregressive_continuation=autoregressive_continuation,
-                a_prime_string_cropped=a_prime_string_cropped,
-                cfg=cfg,
+                analysis_metrics=analysis_metrics_for_print, 
+                decoder_tokens=gen_tokens, decoder_preds_by_rank=decoder_preds_by_rank,
+                base_tokens=base_gen_tokens, base_tokens_hard=base_gen_tokens_hard, base_tokens_hard_no_map=base_gen_tokens_hard_no_map,
+                base_preds_by_rank=base_preds_by_rank, base_preds_by_rank_hard=base_preds_by_rank_hard, base_preds_by_rank_hard_no_map=base_preds_by_rank_hard_no_map,
+                top_n_analysis_val=top_n_analysis, original_string_cropped=original_string_cropped,
+                autoregressive_continuation=autoregressive_continuation, a_prime_string_cropped=a_prime_string_cropped,
+                cfg=cfg, sample_losses=sample_losses, kl_divergences=kl_divergences_for_print_section,
+                resample_ablation=resample_ablation
             )
         num_printed_this_batch += 1
         if (printed_count_so_far + num_printed_this_batch) >= num_samples:
             break
     
-    # After all samples, print soft prompt projections (only once per batch)
     if num_printed_this_batch > 0:
         soft_prompt_projections = get_soft_prompt_projections(dec, enc, orig, tok)
         soft_prompt_text = format_soft_prompt_projections(soft_prompt_projections)
@@ -906,3 +1184,17 @@ def format_soft_prompt_projections(projections: Dict[str, Any]) -> str:
     
     lines.append("-" * 60)
     return '\n'.join(lines)
+
+
+def build_topk_preds_by_rank(raw_lm_logits, num_tokens, k, tok):
+    """Builds a list of rows: one row per rank (top-1, top-2, ...)."""
+    if k <= 0:
+        return []
+    preds_by_rank = [[] for _ in range(k)]
+    for logit_slice in raw_lm_logits[0][:num_tokens]:
+        topk_ids = torch.topk(logit_slice, k=k).indices.tolist()
+        for rank_idx, tok_id in enumerate(topk_ids):
+            preds_by_rank[rank_idx].append(
+                escape_newlines(tok.decode([tok_id]).strip())
+            )
+    return preds_by_rank

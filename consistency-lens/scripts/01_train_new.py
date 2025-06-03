@@ -198,6 +198,7 @@ def main(cfg: DictConfig) -> None:
     # Model Initialization (Raw models and Tokenizer)
     # ------------------------------------------------------------------
     dec_raw, enc_raw, orig, tokenizer, _ = initialize_raw_models_and_tokenizer(config, log)
+    raise "error please check that we have tokenized"
     
     # Log parameter counts (BEFORE compilation)
     # Ensure correct model configs are passed if they were part of the initialize_raw_models_and_tokenizer return
@@ -347,7 +348,7 @@ def main(cfg: DictConfig) -> None:
 
 
     # Log hyperparams
-    log.info(f"Hyperparameters: lm_weight={config['lm_weight']}, kl_base_weight={config['kl_base_weight']}, entropy_weight={config['entropy_weight']}")
+    log.info(f"Hyperparameters: lm_base_weight={config['lm_base_weight']}, kl_base_weight={config['kl_base_weight']}, entropy_weight={config['entropy_weight']}")
     log.info(f"Stop-grad on A′: {config['stop_grad_aprime']}") # From original
     log.info(f"Grad clip: {config['grad_clip']}")
 
@@ -485,7 +486,7 @@ def main(cfg: DictConfig) -> None:
                 batch, {"dec": dec, "enc": enc, "orig": orig},
                 {
                     "tau": current_gumbel_tau, "T_text": config['t_text'], "alpha": current_alpha_val,
-                    "lm_weight": config['lm_weight'], "kl_base_weight": config['kl_base_weight'],
+                    "lm_base_weight": config['lm_base_weight'], "kl_base_weight": config['kl_base_weight'],
                     "entropy_weight": config['entropy_weight'], "mse_weight": config.get('mse_weight', 0.0),
                 },
                 lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'), # From config

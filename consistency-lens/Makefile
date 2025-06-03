@@ -12,7 +12,7 @@
 #   make          - Initial setup (install uv, configure cache)
 #   uv run python scripts/01_train.py  - Run any Python command
 
-.PHONY: all setup help
+.PHONY: all setup help flash-attention
 
 # Default target
 all: setup
@@ -20,7 +20,8 @@ all: setup
 # Help target
 help:
 	@echo "Consistency Lens Simplified Setup"
-	@echo "  make       - Initial setup (install uv, configure cache)"
+	@echo "  make              - Initial setup (install uv, configure cache)"
+	@echo "  make flash-attention - Install Flash Attention 2 (optional, for performance)"
 	@echo ""
 	@echo "After setup, use 'uv run' for all Python commands:"
 	@echo "  uv run python scripts/01_train.py"
@@ -35,7 +36,7 @@ setup:
 	@if ! command -v uv >/dev/null 2>&1; then \
 		echo "Installing uv..."; \
 		curl -LsSf https://astral.sh/uv/install.sh | sh; \
-		echo ""; \
+		echo "?"; \
 		echo "=== IMPORTANT ==="; \
 		echo "Add uv to your PATH by running:"; \
 		echo "  source $$HOME/.cargo/env"; \
@@ -59,3 +60,8 @@ setup:
 	@echo "  uv run pytest tests/"
 	@echo ""
 	@echo "Note: First 'uv run' on each node will be slower (~1-2 min) as packages install."
+
+
+# Install Flash Attention 2 (optional)
+flash-attention:
+	@./scripts/install_flash_attention.sh

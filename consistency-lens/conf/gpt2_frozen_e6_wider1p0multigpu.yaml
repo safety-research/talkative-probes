@@ -6,8 +6,10 @@ defaults:
   - _self_
 
 # Training hyperparameters
-t_text: 16                        # Number of tokens to generate with the Decoder
-
+t_text: 16                       # Number of tokens to generate with the Decoder
+decoder_prompt: "<|endoftext|>Short explanation of <embed>. Language, topic, sentiment, claims, speaker, style, etc:"
+encoder_prompt: "<|endoftext|>Summary of the above text, encapsulating the main points and message, style and details:"
+lm_loss_natural_prefix: "<|endoftext|>Short explanation of something. Language, topic, sentiment, claims, speaker, style, etc:"  # Natural language prefix for base model in LM lo
 # Trainable components - FROZEN base model
 trainable_components:
   decoder:
@@ -21,6 +23,7 @@ trainable_components:
     projection_layer: true            # Train projection
     eye_init: true
     output_layer: 6
+    soft_prompt_init_text: ${encoder_prompt}
 
 alpha_schedule: 
   type: "constant"
@@ -38,7 +41,7 @@ lr_scheduler:
   warmup_start_factor: 0.1            # Start at 10% of target LR
   eta_min: 1.0e-5   
 
-batch_size: 128
+batch_size: 256
 gradient_accumulation_steps: 32
 gumbel_tau_schedule:
   constant_steps_before_linear_decay: 1000

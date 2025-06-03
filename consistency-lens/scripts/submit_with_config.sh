@@ -31,6 +31,9 @@ USE_DISTRIBUTED="false"  # Whether to use distributed training
 RUN_SUFFIX=""  # Optional suffix to add to run name
 HYDRA_OVERRIDES=""
 
+# Store the original command for logging
+export SUBMIT_SCRIPT_COMMAND="$0 $@"
+
 # Parse Hydra-style arguments
 for arg in "$@"; do
     case $arg in
@@ -262,6 +265,7 @@ submit_pretokenize_job() {
             --time=2:00:00 \
             --output=logs/pretokenize_%j.out \
             --error=logs/pretokenize_%j.err \
+            --export="ALL,SUBMIT_SCRIPT_COMMAND=$SUBMIT_SCRIPT_COMMAND" \
             --wrap="bash -c 'cd $CONSISTENCY_LENS_DIR && source scripts/ensure_env.sh && export OMP_NUM_THREADS=1 && export TOKENIZERS_PARALLELISM=false && uv_run python scripts/pretokenize_dataset.py --config-path=$CONSISTENCY_LENS_DIR/$(dirname $config) --config-name=$(basename $config .yaml)'" 2>&1)
         
         if [[ $? -ne 0 ]]; then
@@ -302,7 +306,7 @@ submit_dump_job() {
         echo "Config: $config, Layer: $layer" >&2
         
         # Build sbatch command
-        local sbatch_cmd="sbatch --parsable --job-name=${job_name}-dump --gres=gpu:$NUM_GPUS --nodelist=$NODELIST --export=SLURM_NODELIST='$NODELIST'"
+        local sbatch_cmd="sbatch --parsable --job-name=${job_name}-dump --gres=gpu:$NUM_GPUS --nodelist=$NODELIST --export=SLURM_NODELIST='$NODELIST',SUBMIT_SCRIPT_COMMAND='$SUBMIT_SCRIPT_COMMAND'"
         if [ -n "$dependency" ] && [ "$dependency" != "completed" ]; then
             echo -e "${YELLOW}Adding dependency: <$dependency>${NC}" >&2
             sbatch_cmd="$sbatch_cmd --dependency=afterok:$dependency"
@@ -313,7 +317,7 @@ submit_dump_job() {
         
         # Submit job and capture both stdout and stderr
         echo "Submitting dump job..." >&2
-        local result=$($sbatch_cmd scripts/slurm_dump_activations_flexible.sh "$config" "$layer" "$extra_args" 2>&1)
+        local result=$($sbatch_cmd scripts/slurm_dump_activations_flexible.sh "$config" "$layer" "$extra_args" "$NUM_GPUS" 2>&1)
         
         # Check if submission was successful
         if [[ $? -ne 0 ]]; then
@@ -460,7 +464,7 @@ submit_train_job() {
         fi
         
         # Add environment variables
-        local export_vars="ALL,TORCHINDUCTOR_CACHE_DIR=${HOME}/.cache/torchinductor"
+        local export_vars="ALL,TORCHINDUCTOR_CACHE_DIR=${HOME}/.cache/torchinductor,SUBMIT_SCRIPT_COMMAND=$SUBMIT_SCRIPT_COMMAND"
         if [ -n "$resume_checkpoint" ]; then
             export_vars="$export_vars,RESUME_CHECKPOINT=$resume_checkpoint"
         fi
@@ -617,6 +621,7 @@ fi
 
 # Summary
 echo -e "\n${BLUE}=== Job Summary ===${NC}"
+echo "Command: $0 $@"
 echo "Config: $CONFIG_FILE"
 echo "Config Name: $CONFIG_BASENAME"
 echo "Job Name: $JOB_NAME"
@@ -675,6 +680,7 @@ fi
 # Save job IDs to log with detailed info
 log_entry="$(date '+%Y-%m-%d %H:%M:%S'): $JOB_NAME"
 log_entry="$log_entry [${DATASET_NAME}/${MODEL_SHORT}/L${LAYER}/${FREEZE_TYPE}]"
+log_entry="$log_entry - cmd:[$0 $@]"
 log_entry="$log_entry - config:$CONFIG_FILE"
 if [ -n "${pretok_job:-}" ]; then
     log_entry="$log_entry pretok:$pretok_job"

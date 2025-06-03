@@ -123,7 +123,7 @@ checkpoint:
   delete_old_checkpoints: true
 
 # Loss weights
-lm_weight: 1.0                  # Base LM weight; final LM multiplier = lm_weight * alpha_schedule
+lm_base_weight: 1.0                  # Base LM weight; final LM multiplier = lm_base_weight * alpha_schedule
 kl_base_weight: 1.0
 entropy_weight: 0.000                 # Small entropy bonus
 

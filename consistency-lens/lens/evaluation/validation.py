@@ -30,7 +30,7 @@ def run_validation_step(
     val_seen = 0
     
     t_text = config['t_text']
-    lm_weight = config['lm_weight']
+    lm_base_weight = config['lm_base_weight']
     kl_base_weight = config['kl_base_weight']
     entropy_weight = config['entropy_weight']
 
@@ -43,7 +43,7 @@ def run_validation_step(
                 "T_text": t_text,
                 "alpha": get_schedule_value(config['alpha_schedule'], current_step, max_steps,
                                            current_epoch, steps_per_epoch),
-                "lm_weight": lm_weight,
+                "lm_base_weight": lm_base_weight,
                 "kl_base_weight": kl_base_weight,
                 "entropy_weight": entropy_weight,
                 "mse_weight": config.get('mse_weight', 0.0),
@@ -77,7 +77,7 @@ def run_validation_step(
         final_alpha = get_schedule_value(alpha_config, max_steps, max_steps, current_epoch, steps_per_epoch)
 
 
-    normalized_val_loss = (lm_weight * final_alpha) * avg_val_lm + kl_base_weight * avg_val_kl
+    normalized_val_loss = (lm_base_weight * final_alpha) * avg_val_lm + kl_base_weight * avg_val_kl
     
     log.info(
         f"Validation – loss {avg_val_loss:.4f}, mse {avg_val_mse:.4f}, lm {avg_val_lm:.4f}, kl {avg_val_kl:.4f}"

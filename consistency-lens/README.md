@@ -2,6 +2,108 @@
 
 This document outlines the architectural plan for training Consistency Lenses, a method to interpret the internal states of Large Language Models (LLMs) by forcing them through a textual, human-readable bottleneck. The plan is designed for an 8 x H100 GPU environment, emphasizing scalability and efficiency.
 
+## Performance & Memory Optimization
+
+The Consistency Lens supports three generation methods with different performance characteristics:
+
+### Generation Methods Comparison
+
+| Method | Complexity | Memory Usage | Speed | Best For |
+|--------|------------|--------------|-------|----------|
+| **Naive** | O(n²) | Baseline (100%) | 1.0x | Debugging only |
+| **KV Cache** | O(n) | ~12% of naive | 1.4-4.2x faster | Default choice |
+| **Flash Attention** | O(n) | ~8% of naive | 1.3-4.0x faster* | Memory-constrained training |
+
+*Flash Attention has overhead on very short sequences but matches/exceeds KV cache performance on longer sequences.
+
+### Expected Memory Savings
+
+Based on our benchmarks with GPT-2:
+
+**Memory Usage by Sequence Length:**
+- 16 tokens: KV Cache uses 82% less, Flash uses 86% less than naive
+- 32 tokens: KV Cache uses 84% less, Flash uses 89% less than naive
+- 64 tokens: KV Cache uses 87% less, Flash uses 92% less than naive
+- 128 tokens: KV Cache uses 89% less, Flash uses 94% less than naive
+
+**Real-world example (128 tokens, batch 2):**
+- Naive: 13.6 GB
+- KV Cache: 1.5 GB 
+- Flash Attention: 0.9 GB
+
+**Peak Memory During Training (with gradients):**
+
+| Config | Naive | KV Cache | Flash Attention | Flash Savings |
+|--------|-------|----------|-----------------|---------------|
+| B=2, L=16 | 1.41 GB | 1.19 GB | 1.18 GB | 16% |
+| B=4, L=32 | 3.10 GB | 1.45 GB | 1.36 GB | 56% |
+| B=4, L=64 | 8.29 GB | 2.05 GB | 1.73 GB | 79% |
+| B=2, L=128 | 14.58 GB | 2.61 GB | 2.01 GB | 86% |
+
+**Key Training Benefits:**
+- Flash Attention enables **5-7x larger effective batch sizes** vs naive
+- Peak memory scales ~linearly with sequence length (not quadratically)
+- Example: For 128 tokens, Flash uses 2.0 GB vs naive's 14.6 GB
+
+### When to Use Each Method
+
+1. **Naive Generation** (`use_kv_cache: false, use_flash_attention: false`)
+   - Prototyping and debugging
+   - Very short sequences (<16 tokens)
+   - When memory is not a constraint
+
+2. **KV Cache** (`use_kv_cache: true`)
+   - Default choice for most use cases
+   - Good balance of speed and memory
+   - Works on all hardware
+
+3. **Flash Attention** (`use_flash_attention: true`)
+   - Training with long sequences
+   - Memory-constrained environments
+   - Multi-GPU training
+   - Requires GPU with compute capability ≥ 7.5 and installation via `make flash-attention`
+
+## Flash Attention Implementation
+
+The project includes a custom Flash Attention v2 integration that provides significant memory savings while maintaining functional equivalence with standard attention:
+
+### Key Features
+
+1. **Clean Implementation**: Direct attention computation without layer wrapping (`lens/models/flash_kv_cache_v2.py`)
+2. **Automatic dtype handling**: Converts fp32 to bf16 for Flash Attention compatibility
+3. **Full KV caching support**: Enables efficient autoregressive generation
+4. **Minimal numerical error**: < 0.2 absolute difference, < 0.01% relative error
+
+### Installation
+
+```bash
+make flash-attention
+```
+
+This installs Flash Attention 2 with the correct build flags for your system.
+
+### Usage
+
+Enable Flash Attention in your configuration:
+
+```yaml
+# In your config file
+decoder:
+  use_flash_attention: true
+```
+
+Or via command line:
+
+```bash
+python scripts/01_train.py decoder.use_flash_attention=true
+```
+
+### Important Notes
+
+- **Numerical Precision**: Small numerical differences (< 0.2) may cause different token selection with greedy decoding (tau=0). Use tau > 0 for consistent generation.
+- **GPU Requirements**: Requires NVIDIA GPU with compute capability ≥ 7.5 (Turing or newer)
+- **Memory Savings**: Most significant for long sequences and during backpropagation
+
 ## Training Objective
 
 The **fundamental objective** is the **KL divergence loss**, which measures how well the reconstructed activations preserve functional behavior in the original model. This ensures that explanations capture semantically meaningful information rather than superficial correlations.
@@ -634,7 +736,7 @@ import torch.nn.functional as F
 # LLM_orig_model: lens.models.orig.OriginalModelWrapper
 
 for step, batch in enumerate(loader): # loader uses lens.data.dataset.ActivationDataset
-    with torch.cuda.amp.autocast(dtype=torch.bfloat16):
+    with torch.amp.autocast('cuda',dtype=torch.bfloat16):
         # --- Primary Path ---
         # generate_soft logic within D_model
         # D_model's generate_soft returns an object containing:
@@ -752,7 +854,7 @@ for step, batch in enumerate(loader): # loader uses lens.data.dataset.Activation
         current_alpha = alpha_schedule(step, config.lens_yaml) # from config/lens.yaml
         # Note: KL loss is the fundamental objective with fixed weight
         # LM loss is ramped up via alpha to gradually introduce linguistic constraints
-        loss = (lm_weight * current_alpha) * loss_lm + kl_base_weight * loss_kl
+        loss = (lm_base_weight * current_alpha) * loss_lm + kl_base_weight * loss_kl
 
     # Optimization (DeepSpeed engine handles backward/step)
     # optimizer setup in lens.training.optim (AdamW, param groups)

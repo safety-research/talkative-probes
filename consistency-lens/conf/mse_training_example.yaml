@@ -15,7 +15,7 @@ mse_weight: 1.0        # Enable MSE reconstruction loss
 
 # Example adjustments:
 learning_rate: 1.0e-4  # Might need different LR for MSE
-lm_weight: 0.5         # Maybe reduce LM weight when using MSE
+lm_base_weight: 0.5         # Maybe reduce LM weight when using MSE
 
 # Note: All loss components are always computed for monitoring in wandb/tensorboard,
 # even when their weights are 0. This allows you to track all metrics without
@@ -31,4 +31,4 @@ lm_weight: 0.5         # Maybe reduce LM weight when using MSE
 # 1. Pure MSE: mse_weight=1.0, kl_base_weight=0.0
 # 2. Pure KL: mse_weight=0.0, kl_base_weight=1.0 (default)
 # 3. Combined: mse_weight=0.5, kl_base_weight=0.5
-# 4. MSE + LM: mse_weight=1.0, kl_base_weight=0.0, lm_weight=1.0
+# 4. MSE + LM: mse_weight=1.0, kl_base_weight=0.0, lm_base_weight=1.0

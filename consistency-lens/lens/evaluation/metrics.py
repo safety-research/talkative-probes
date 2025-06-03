@@ -10,8 +10,9 @@ kl_loss = nn.KLDivLoss(reduction="batchmean")
 cos = nn.CosineSimilarity(dim=-1)
 
 
-def kl(p_log: torch.Tensor, q: torch.Tensor) -> torch.Tensor:  # noqa: D401
-    return kl_loss(p_log, q)
+def kl(q_log: torch.Tensor, p: torch.Tensor) -> torch.Tensor:  # noqa: D401
+    # this is KL( p || q ), i.e. target = p, input = q
+    return kl_loss(q_log, p)
 
 
 def cosine(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:  # noqa: D401

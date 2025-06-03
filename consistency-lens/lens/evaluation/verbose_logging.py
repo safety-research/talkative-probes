@@ -73,7 +73,7 @@ def log_verbose_samples_if_needed(
             "T_text": config['t_text'],
             "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps,
                                        current_epoch, steps_per_epoch),
-            "lm_weight": config['lm_weight'],
+            "lm_base_weight": config['lm_base_weight'],
             "kl_base_weight": config['kl_base_weight'],
             "entropy_weight": config['entropy_weight'],
             # mse_weight might be missing from original verbose call, adding if needed by process_and_print

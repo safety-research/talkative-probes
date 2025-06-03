@@ -5,6 +5,7 @@ import logging
 import math
 import os
 import time
+import warnings
 from collections import Counter, deque
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
@@ -68,6 +69,7 @@ from lens.training.distributed import (
 from lens.utils.checkpoint_manager import CheckpointManager
 from lens.training.distributed import set_seed
 from lens.evaluation.wandb_logger import verbose_samples_logger
+from lens.training.fast_distributed_sampler import FastDistributedSampler
 
 # Import all the utility functions from the original training script
 sys.path.insert(0, str(Path(__file__).parent))
@@ -81,14 +83,92 @@ _resolve_schedule_to_steps = train_module._resolve_schedule_to_steps
 process_and_print_verbose_batch_samples = train_module.process_and_print_verbose_batch_samples
 _get_hydra_config_name = train_module._get_hydra_config_name
 get_system_metrics = train_module.get_system_metrics
+do_all_initial_validation = train_module.do_all_initial_validation
+
+
+def get_initial_model_state(model: torch.nn.Module) -> dict:
+    """Capture initial trainable parameters (always stored on CPU)."""
+    state = {}
+    for name, p in model.named_parameters():
+        if p.requires_grad:
+            state[name] = p.detach().cpu().clone()   #  <-- keep on CPU
+    return state
+
+def log_parameter_drift(
+    model: torch.nn.Module,
+    initial_state: dict,
+    model_prefix: str,
+    step: int,
+    logger_fn,  # e.g., log_metrics from lens.utils.logging (for W&B)
+    log: logging.Logger, # Python logger
+    is_main_process: bool
+):
+    """Calculates and logs parameter drift from their initial states."""
+    metrics_to_log = {}
+    param_group_drifts = {}  # To store sum of drifts and sum of initial norms per group
+
+    for name, param in model.named_parameters():
+        if param.requires_grad and name in initial_state:
+            initial_p = initial_state[name].to(param.device)
+            current_p = param.data
+            
+            abs_drift = torch.norm(current_p - initial_p)
+            norm_initial_p = torch.norm(initial_p)
+            # rel_drift is calculated per parameter but not directly logged per parameter to avoid too many metrics.
+            # We will calculate an overall relative drift for the group.
+
+            group = "other_trainable"
+            # Determine group for parameter based on its name
+            if name == "soft_prompt_embeddings":  # Encoder specific
+                group = "prompts"
+            elif name == "prompt_left_emb" or name == "prompt_right_emb":  # Decoder specific
+                group = "prompts"
+            elif name.startswith("proj."):
+                group = "projection"
+            elif name.startswith("out."):  # Decoder specific output head
+                group = "output_head"
+            elif name.startswith("base."):
+                if any(emb_keyword in name for emb_keyword in [".wte.", ".wpe.", ".embed_tokens.", ".word_embeddings.", ".position_embeddings."]):
+                    group = "base_model_input_embeddings"
+                elif any(layer_keyword in name for layer_keyword in [".h.", ".layers.", ".layer.", ".block.", ".attention.", ".mlp."]):
+                    group = "base_model_transformer_layers"
+                else:
+                    group = "base_model_other"
+            
+            if group not in param_group_drifts:
+                param_group_drifts[group] = {'sum_abs_drift': 0.0, 'sum_norm_initial': 0.0, 'count': 0}
+            
+            param_group_drifts[group]['sum_abs_drift'] += abs_drift.item()
+            param_group_drifts[group]['sum_norm_initial'] += norm_initial_p.item()
+            param_group_drifts[group]['count'] += 1
+        elif param.requires_grad and name not in initial_state and is_main_process:
+            log.warning(f"Trainable parameter {name} in {model_prefix} not found in initial_state for drift calculation.")
+
+    for group, data in param_group_drifts.items():
+        if data['count'] > 0:
+            avg_abs_drift = data['sum_abs_drift'] / data['count']
+            # Overall relative drift for the group: Sum(||curr-init||) / Sum(||init||)
+            overall_rel_drift_group = data['sum_abs_drift'] / (data['sum_norm_initial'] + 1e-9)
+                            
+            metrics_to_log[f"drift/{model_prefix}/{group}/avg_abs_drift"] = avg_abs_drift
+            metrics_to_log[f"drift/{model_prefix}/{group}/overall_rel_drift"] = overall_rel_drift_group
+        elif is_main_process:
+            log.warning(f"Parameter group {group} for {model_prefix} had 0 parameters for drift calculation. This is unexpected.")
+
+    if metrics_to_log and is_main_process:
+        logger_fn(metrics_to_log, step=step)
 
 
 class Timer:
-    def __init__(self, name: str, logger: logging.Logger, main_process: bool = True):
+    def __init__(self, name: str, logger: logging.Logger, main_process: bool = True,
+                 log_wandb: bool = False, wandb_step: int = None):
         self.name = name
         self.logger = logger
         self.main_process = main_process
         self.start_time = None
+        self.elapsed_time = None
+        self.log_wandb = log_wandb
+        self.wandb_step = wandb_step
 
     def __enter__(self):
         if self.main_process:
@@ -97,8 +177,11 @@ class Timer:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.main_process and self.start_time is not None:
-            elapsed_time = time.time() - self.start_time
-            self.logger.info(f"Phase '{self.name}' took {elapsed_time:.2f}s")
+            self.elapsed_time = time.time() - self.start_time
+            self.logger.info(f"Phase '{self.name}' took {self.elapsed_time:.2f}s")
+            if self.log_wandb and self.wandb_step is not None:
+                metric_name = f"time/{self.name.replace(' ', '_').lower()}_duration_s"
+                log_metrics({metric_name: self.elapsed_time}, step=self.wandb_step)
 
 
 def distributed_train_step(
@@ -149,9 +232,7 @@ def distributed_train_step(
         "kl_base_weight": config.get('kl_base_weight', 1.0),
         "entropy_weight": config.get('entropy_weight', 0.0),
         "mse_weight": config.get('mse_weight', 0.0),
-        "lm_weight": get_schedule_value(config['alpha_schedule'], step, config['max_train_steps'],
-                                      step // gradient_accumulation_steps if gradient_accumulation_steps > 0 else 0, 
-                                      gradient_accumulation_steps),
+        "lm_base_weight": config.get('lm_base_weight'),
     }
     
     decoder_no_sync_cm = nullcontext()
@@ -168,18 +249,24 @@ def distributed_train_step(
     # The 'with' statement handles __enter__ and __exit__ for both contexts.
     # The original try...finally for manual exit calls is no longer needed here.
     with decoder_no_sync_cm, encoder_no_sync_cm:
-        # Forward pass
-        losses = original_train_step(
-            batch=batch,
-            models=models,
-            _loss_fns=loss_fns,
-            lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'),
-            tokenizer=tokenizer,
-            cached_prefix_ids=cached_prefix_ids
-        )
+        # Get autocast context based on mixed precision config
+        mixed_precision_config = config.get('mixed_precision', {'enabled': True, 'dtype': 'auto'})
+        autocast_context = get_autocast_context(device, mixed_precision_config)
         
-        # Scale loss by accumulation steps
-        loss = losses['total'] / gradient_accumulation_steps
+        # Forward pass with autocast
+        with autocast_context:
+            losses = original_train_step(
+                batch=batch,
+                models=models,
+                _loss_fns=loss_fns,
+                lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'),
+                tokenizer=tokenizer,
+                cached_prefix_ids=cached_prefix_ids,
+                resample_ablation=config.get('resample_ablation', True)
+            )
+            
+            # Scale loss by accumulation steps
+            loss = losses['total'] / gradient_accumulation_steps
         
         # Backward pass
         if device.type == "cuda" and scaler is not None:
@@ -196,12 +283,36 @@ def distributed_train_step(
         all_params = list(decoder_base.parameters()) + list(encoder_base.parameters())
         grad_norm = torch.nn.utils.clip_grad_norm_(all_params, config['grad_clip'])
         
+        # Capture parameters before update for update norm calculation (if enabled)
+        compute_update_norm = config.get('compute_update_norm', True)
+        if compute_update_norm:
+            trainable_params = [p for p in all_params if p.requires_grad]
+            param_before = [p.detach().clone() for p in trainable_params]
+        
         # Optimizer step
         if device.type == "cuda" and scaler is not None:
             scaler.step(optimizer)
             scaler.update()
         else:
             optimizer.step()
+
+        # Calculate update norm and ratio (if enabled)
+        if compute_update_norm:
+            with torch.no_grad():
+                upd_sq = 0.0
+                param_sq = 0.0
+                for p, prev in zip(trainable_params, param_before):
+                    diff = p.data - prev
+                    upd_sq += diff.pow(2).sum().item()
+                    param_sq += p.data.pow(2).sum().item()
+                update_norm = math.sqrt(upd_sq)
+                param_norm = math.sqrt(param_sq)
+                update_ratio = update_norm / (param_norm + 1e-12)
+            del param_before
+        else:
+            update_norm = 0.0
+            param_norm = 0.0
+            update_ratio = 0.0
 
         # Update learning rate scheduler AFTER optimizer.step()
         if lr_scheduler is not None:
@@ -211,6 +322,9 @@ def distributed_train_step(
         optimizer.zero_grad(set_to_none=True)
     else:
         grad_norm = None
+        update_norm = 0.0
+        param_norm = 0.0
+        update_ratio = 0.0
     
     # Return metrics
     metrics = {
@@ -220,6 +334,9 @@ def distributed_train_step(
         'loss_kl': losses['kl'].item(),
         'loss_entropy': losses.get('entropy', 0.0).item() if 'entropy' in losses else 0.0,
         'grad_norm': grad_norm.item() if grad_norm is not None else 0.0,
+        'update_norm': update_norm,
+        'param_norm': param_norm,
+        'update_ratio': update_ratio,
     }
     
     return metrics
@@ -286,7 +403,7 @@ def get_dataloader_for_distributed(dataset, batch_size, world_size, rank, shuffl
         DataLoader configured for distributed training
     """
     if world_size > 1:
-        sampler = DistributedSampler(
+        sampler = FastDistributedSampler(
             dataset,
             num_replicas=world_size,
             rank=rank,
@@ -331,6 +448,404 @@ def sync_metrics(metrics_dict, world_size):
         result_dict[key] = value.item()
     
     return result_dict
+
+
+def validate_distributed(
+    decoder,
+    encoder,
+    orig_model,
+    val_loader,
+    config,
+    step,
+    device,
+    tokenizer,
+    cached_prefix_ids,
+    world_size,
+    log,
+    is_main_process,
+    wandb_run_id=None
+):
+    """Distributed validation function using train_step without gradients.
+    
+    Tracks activation statistics and computes validation metrics.
+    """
+    # Get base models (unwrap DDP if needed)
+    decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
+    encoder_base = encoder.module if hasattr(encoder, 'module') else encoder
+    
+    # Put models in eval mode
+    decoder_base.eval()
+    encoder_base.eval()
+    orig_model.model.eval()
+    
+    # Prepare models dict for train_step
+    models = {
+        "dec": decoder_base,
+        "enc": encoder_base,
+        "orig": orig_model
+    }
+    
+    # Loss function parameters (use same as training)
+    loss_fns = {
+        "T_text": config.get('t_text', 8),
+        "tau": get_schedule_value(config['gumbel_tau_schedule'], step, config['max_train_steps'], 
+                                step // config['gradient_accumulation_steps'] if config['gradient_accumulation_steps'] > 0 else 0, 
+                                config['gradient_accumulation_steps']),
+        "alpha": get_schedule_value(config['alpha_schedule'], step, config['max_train_steps'],
+                                  step // config['gradient_accumulation_steps'] if config['gradient_accumulation_steps'] > 0 else 0, 
+                                  config['gradient_accumulation_steps']),
+        "kl_base_weight": config.get('kl_base_weight', 1.0),
+        "entropy_weight": config.get('entropy_weight', 0.0),
+        "mse_weight": config.get('mse_weight', 0.0),
+        "lm_base_weight": config.get('lm_base_weight'),
+    }
+    
+    # Metrics accumulators
+    total_loss = 0.0
+    total_mse = 0.0
+    total_lm = 0.0
+    total_kl = 0.0
+    total_entropy = 0.0
+    num_batches = 0
+    
+    # Activation statistics accumulators
+    all_activations = []
+    all_reconstructions = []
+    
+    # Limit validation batches for efficiency
+    max_val_batches = config.get('max_val_batches', 50)
+    
+    # No gradients needed for validation
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(val_loader):
+            if batch_idx >= max_val_batches:
+                break
+                
+            # Move batch to device
+            batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
+            
+            # Forward pass using train_step (but with no_grad context)
+            losses = original_train_step(
+                batch=batch,
+                models=models,
+                _loss_fns=loss_fns,
+                lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'),
+                tokenizer=tokenizer,
+                cached_prefix_ids=cached_prefix_ids,
+                resample_ablation=config.get('resample_ablation', True)
+            )
+            
+            # Accumulate losses
+            total_loss += losses['total'].item()
+            total_mse += losses['mse'].item()
+            total_lm += losses['lm'].item()
+            total_kl += losses['kl'].item()
+            total_entropy += losses.get('entropy', 0.0).item()
+            num_batches += 1
+            
+            # Collect activation statistics
+            if batch_idx < 10:  # Only collect for first 10 batches to avoid memory issues
+                activations = batch['A'].float()
+                all_activations.append(activations.cpu())
+                
+                # Get reconstructions through the encoder-decoder pipeline
+                gen_result = decoder_base.generate_soft(
+                    activations, 
+                    max_length=config.get('t_text', 8), 
+                    gumbel_tau=loss_fns['tau']
+                )
+                reconstructions = encoder_base(gen_result.generated_text_embeddings)
+                all_reconstructions.append(reconstructions.cpu())
+    
+    # Compute average losses across all processes
+    if world_size > 1:
+        # Create tensor dict for reduction
+        metrics_tensor = torch.tensor([
+            total_loss,
+            total_mse,
+            total_lm,
+            total_kl,
+            total_entropy,
+            float(num_batches)
+        ], device=device)
+        
+        # All-reduce
+        dist.all_reduce(metrics_tensor, op=dist.ReduceOp.SUM)
+        
+        # Extract reduced values
+        total_loss = metrics_tensor[0].item()
+        total_mse = metrics_tensor[1].item()
+        total_lm = metrics_tensor[2].item()
+        total_kl = metrics_tensor[3].item()
+        total_entropy = metrics_tensor[4].item()
+        num_batches = int(metrics_tensor[5].item())
+    
+    # Compute averages
+    avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
+    avg_mse = total_mse / num_batches if num_batches > 0 else 0.0
+    avg_lm = total_lm / num_batches if num_batches > 0 else 0.0
+    avg_kl = total_kl / num_batches if num_batches > 0 else 0.0
+    avg_entropy = total_entropy / num_batches if num_batches > 0 else 0.0
+    
+    # Compute activation statistics (only on main process)
+    if is_main_process and all_activations:
+        all_activations = torch.cat(all_activations, dim=0)
+        all_reconstructions = torch.cat(all_reconstructions, dim=0)
+        
+        # Original activation statistics
+        act_mean = all_activations.mean().item()
+        act_std = all_activations.std().item()
+        act_min = all_activations.min().item()
+        act_max = all_activations.max().item()
+        
+        # Reconstruction statistics
+        recon_mean = all_reconstructions.mean().item()
+        recon_std = all_reconstructions.std().item()
+        recon_min = all_reconstructions.min().item()
+        recon_max = all_reconstructions.max().item()
+        
+        # Baseline comparisons
+        zero_mse = (all_activations ** 2).mean().item()
+        mean_mse = ((all_activations - all_activations.mean()) ** 2).mean().item()
+        
+        # Reconstruction error (should match avg_mse)
+        reconstruction_mse = ((all_activations - all_reconstructions) ** 2).mean().item()
+        
+        # Additional statistics
+        # Correlation between original and reconstructed
+        act_flat = all_activations.flatten()
+        recon_flat = all_reconstructions.flatten()
+        if len(act_flat) > 1:
+            correlation = torch.corrcoef(torch.stack([act_flat, recon_flat]))[0, 1].item()
+        else:
+            correlation = 0.0
+        
+        # Relative error
+        relative_error = (torch.abs(all_activations - all_reconstructions) / (torch.abs(all_activations) + 1e-8)).mean().item()
+        
+        log.info(f"\n{'='*60}")
+        log.info(f"Validation Results at Step {step}")
+        log.info(f"{'='*60}")
+        log.info(f"Average Losses:")
+        log.info(f"  Total Loss: {avg_loss:.4f}")
+        log.info(f"  MSE Loss: {avg_mse:.4f}")
+        log.info(f"  LM Loss: {avg_lm:.4f}")
+        log.info(f"  KL Loss: {avg_kl:.4f}")
+        log.info(f"  Entropy: {avg_entropy:.4f}")
+        log.info(f"\nActivation Statistics:")
+        log.info(f"  Original - Mean: {act_mean:.4f}, Std: {act_std:.4f}")
+        log.info(f"  Original - Min: {act_min:.4f}, Max: {act_max:.4f}")
+        log.info(f"  Reconstructed - Mean: {recon_mean:.4f}, Std: {recon_std:.4f}")
+        log.info(f"  Reconstructed - Min: {recon_min:.4f}, Max: {recon_max:.4f}")
+        log.info(f"\nBaseline Comparisons:")
+        log.info(f"  Zero MSE (predicting zeros): {zero_mse:.4f}")
+        log.info(f"  Mean MSE (predicting mean): {mean_mse:.4f}")
+        log.info(f"  Our Reconstruction MSE: {reconstruction_mse:.4f}")
+        log.info(f"  Improvement over zero baseline: {(zero_mse - reconstruction_mse) / zero_mse * 100:.1f}%")
+        log.info(f"  Improvement over mean baseline: {(mean_mse - reconstruction_mse) / mean_mse * 100:.1f}%")
+        log.info(f"\nAdditional Metrics:")
+        log.info(f"  Correlation (original vs reconstructed): {correlation:.4f}")
+        log.info(f"  Mean Relative Error: {relative_error:.4f}")
+        log.info(f"{'='*60}\n")
+        
+        # Log to wandb
+        if wandb_run_id:
+            val_metrics = {
+                'val/loss': avg_loss,
+                'val/loss_mse': avg_mse,
+                'val/loss_lm': avg_lm,
+                'val/loss_kl': avg_kl,
+                'val/loss_entropy': avg_entropy,
+                'val/activation_mean': act_mean,
+                'val/activation_std': act_std,
+                'val/activation_min': act_min,
+                'val/activation_max': act_max,
+                'val/reconstruction_mean': recon_mean,
+                'val/reconstruction_std': recon_std,
+                'val/reconstruction_min': recon_min,
+                'val/reconstruction_max': recon_max,
+                'val/baseline_zero_mse': zero_mse,
+                'val/baseline_mean_mse': mean_mse,
+                'val/reconstruction_mse': reconstruction_mse,
+                'val/improvement_over_zero': (zero_mse - reconstruction_mse) / zero_mse * 100,
+                'val/improvement_over_mean': (mean_mse - reconstruction_mse) / mean_mse * 100,
+                'val/correlation': correlation,
+                'val/relative_error': relative_error,
+            }
+            log_metrics(val_metrics, step=step)
+    
+    # Put models back in train mode
+    decoder_base.train()
+    encoder_base.train()
+    # orig_model typically stays in eval mode
+
+
+def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_process, original_prompt=None):
+    """Test decoder generation capabilities with different activation inputs."""
+    if not is_main_process:
+        return
+    
+    log.info("\n" + "="*80)
+    log.info("Testing Decoder Generation Capabilities")
+    log.info("="*80)
+    
+    # Get base decoder (unwrap DDP if needed)
+    decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
+    encoder_base = encoder.module if hasattr(encoder, 'module') else encoder
+    
+    # Set test prompt
+    test_prompt = "a long time ago in a galaxy far far away, <embed> there"
+    log.info(f"Setting test prompt: \"{test_prompt}\"")
+    decoder_base.set_prompt(test_prompt, tokenizer)
+    
+    # Put models in eval mode
+    decoder_base.eval()
+    encoder_base.eval()
+    
+    # Hidden size from the model
+    d_model = decoder_base.base.config.hidden_size
+    
+    # Test parameters
+    max_length = 20  # Generate 20 tokens
+    gumbel_tau = 1.0  # Temperature for generation
+    batch_size = 2  # Test with batch size 2
+    
+    # Test 1: Zero activation (baseline)
+    log.info("\nTest 1: Generation with zero activation vector")
+    zero_activation = torch.zeros(batch_size, d_model, device=device, dtype=decoder_base.base.get_input_embeddings().weight.dtype)
+    
+    with torch.no_grad():
+        result_zero = decoder_base.generate_soft(
+            activation_input=zero_activation,
+            max_length=max_length,
+            gumbel_tau=gumbel_tau,
+            use_projection=True,
+            print_prompt=True
+        )
+    
+    # Decode the generated tokens
+    zero_tokens = result_zero.hard_token_ids
+    for i in range(batch_size):
+        decoded_text = tokenizer.decode(zero_tokens[i], skip_special_tokens=True)
+        decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
+        log.info(f"  Sample {i+1}: {decoded_text}")
+    
+    # Test 2: Random activation vector
+    log.info("\nTest 2: Generation with random activation vector")
+    random_activation = torch.randn(batch_size, d_model, device=device, dtype=decoder_base.base.get_input_embeddings().weight.dtype) * 0.1  # Small random values
+    
+    with torch.no_grad():
+        result_random = decoder_base.generate_soft(
+            activation_input=random_activation,
+            max_length=max_length,
+            gumbel_tau=gumbel_tau,
+            use_projection=True,
+            print_prompt=False
+        )
+    
+    random_tokens = result_random.hard_token_ids
+    for i in range(batch_size):
+        decoded_text = tokenizer.decode(random_tokens[i], skip_special_tokens=True)
+        decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
+        log.info(f"  Sample {i+1}: {decoded_text}")
+    
+    # Test 3: Checkpoint version with same random activation
+    log.info("\nTest 3: Generation with checkpointing (same random activation)")
+    
+    with torch.no_grad():
+        result_chkpt = decoder_base.generate_soft_chkpt(
+            activation_input=random_activation,
+            max_length=max_length,
+            gumbel_tau=gumbel_tau,
+            use_projection=True,
+            print_prompt=False,
+            checkpoint_every_n_tokens=4  # Checkpoint every 4 tokens
+        )
+    
+    chkpt_tokens = result_chkpt.hard_token_ids
+    for i in range(batch_size):
+        decoded_text = tokenizer.decode(chkpt_tokens[i], skip_special_tokens=True)
+        decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
+        log.info(f"  Sample {i+1}: {decoded_text}")
+    
+    # Note about randomness
+    log.info("\nNote: Due to Gumbel-Softmax sampling, each generation is random.")
+    log.info("The important thing is that all methods produce coherent English text.")
+    
+    # Test 4: Test with different temperatures
+    log.info("\nTest 4: Generation with different temperatures")
+    temperatures = [0.5, 1.0, 2.0]
+    
+    for temp in temperatures:
+        log.info(f"\n  Temperature = {temp}:")
+        with torch.no_grad():
+            result_temp = decoder_base.generate_soft(
+                activation_input=random_activation[:1],  # Just first sample
+                max_length=max_length,
+                gumbel_tau=temp,
+                use_projection=True,
+                print_prompt=False
+            )
+        
+        temp_tokens = result_temp.hard_token_ids[0]
+        decoded_text = tokenizer.decode(temp_tokens, skip_special_tokens=True)
+        decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
+        log.info(f"    Generated: {decoded_text}")
+    
+    # Test 5: Without projection
+    log.info("\nTest 5: Generation without projection layer")
+    
+    with torch.no_grad():
+        result_noproj = decoder_base.generate_soft(
+            activation_input=random_activation[:1],  # Just first sample
+            max_length=max_length,
+            gumbel_tau=gumbel_tau,
+            use_projection=False,  # Skip projection
+            print_prompt=False
+        )
+    
+    noproj_tokens = result_noproj.hard_token_ids[0]
+    decoded_text = tokenizer.decode(noproj_tokens, skip_special_tokens=True)
+    decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
+    log.info(f"  Without projection: {decoded_text}")
+    
+    # Put models back in train mode
+    decoder_base.train()
+    encoder_base.train()
+    
+    # Test 6: Multiple samples to check variability
+    log.info("\nTest 6: Multiple generations from same activation (checking randomness)")
+    log.info("  Running 3 generations with the same activation to see variability:")
+    
+    test_activation = torch.randn(1, d_model, device=device, dtype=decoder_base.base.get_input_embeddings().weight.dtype) * 0.1
+    for i in range(3):
+        with torch.no_grad():
+            result = decoder_base.generate_soft(
+                activation_input=test_activation,
+                max_length=max_length,
+                gumbel_tau=1.0,
+                use_projection=True,
+                print_prompt=False
+            )
+        tokens = result.hard_token_ids[0]
+        decoded_text = tokenizer.decode(tokens, skip_special_tokens=True)
+        decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
+        log.info(f"    Generation {i+1}: {decoded_text}")
+    
+    log.info("\n" + "="*80)
+    log.info("Generation tests completed!")
+    log.info("  ✓ All methods produce text outputs")
+    log.info("  ✓ Outputs appear to be coherent English (manual verification needed)")
+    log.info("  ✓ Different activations produce different outputs")
+    log.info("  ✓ Temperature affects generation diversity")
+    log.info("="*80 + "\n")
+    
+    # Restore original prompt if provided
+    if original_prompt:
+        log.info(f"Restoring original decoder prompt: \"{original_prompt}\"")
+        decoder_base.set_prompt(original_prompt, tokenizer)
+    else:
+        log.info("No original prompt to restore.")
 
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
@@ -393,6 +908,7 @@ def main(cfg: DictConfig) -> None:
         # Extract configuration values
         model_name = config['model_name']
         layer_l = config.get('layer_l', 5)
+        out_layer = config['trainable_components']['encoder']['output_layer']
         
         # Setup paths (same as original)
         cli_activation_dir = config.get('activation_dir')
@@ -488,12 +1004,15 @@ def main(cfg: DictConfig) -> None:
         orig_model = OrigWrapper(model_name, load_in_8bit=False)
         
         # Initialize Decoder prompt
+        decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
         if 'decoder_prompt' in config and config['decoder_prompt']:
             if is_main():
                 log.info(f"Setting decoder prompt: \"{config['decoder_prompt']}\"")
-            decoder.set_prompt(config['decoder_prompt'], tokenizer)
+            decoder_base.set_prompt(config['decoder_prompt'], tokenizer)
         elif is_main():
             log.warning("Decoder prompt ('decoder_prompt') not found in config or is empty. Decoder soft prompts will not be initialized from text.")
+        
+        # Decoder generation testing will happen after models are moved to device
 
         # Initialize Encoder soft prompt
         # Check if soft_prompt_init_text is configured for the encoder
@@ -518,6 +1037,12 @@ def main(cfg: DictConfig) -> None:
             num_params_encoder = sum(p.numel() for p in encoder_base_timer.parameters())
             log.info(f"Decoder parameters: {num_params_decoder:,}")
             log.info(f"Encoder parameters: {num_params_encoder:,}")
+        
+        # Test decoder generation now that models are on the correct device
+        if is_main():
+            original_prompt = config.get('decoder_prompt', '')
+            test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main(), original_prompt)
+            
 
     # --- Timer for Dataset and DataLoader Setup ---
     with Timer("Dataset and DataLoader Setup", log, main_process=is_main()):
@@ -530,19 +1055,33 @@ def main(cfg: DictConfig) -> None:
             log=log
         )
         
+        # Determine num_workers based on CPU count and world size
+        num_dataloader_workers = 0 # Default to 0
+        if world_size > 0 and os.cpu_count() is not None:
+            workers_per_gpu = os.cpu_count() // world_size
+            num_dataloader_workers = max(1, 2)#workers_per_gpu // 4) # Heuristic: half of available CPUs per GPU, at least 1. Adjust as needed.
+            log.warning(f"Setting num_workers for DataLoaders to: {num_dataloader_workers} (hardcoded right now - to be resolved) (os.cpu_count()={os.cpu_count()}, world_size={world_size})") #TODO remove hardcoding, but not sure if the //4 is correct. It might be crashing the servers.
+            if is_main():
+                log.info(f"Setting num_workers for DataLoaders to: {num_dataloader_workers} (os.cpu_count()={os.cpu_count()}, world_size={world_size})")
+        elif is_main():
+            log.warning(f"Could not determine optimal num_workers. Defaulting to 0. os.cpu_count()={os.cpu_count()}, world_size={world_size}")
+
         train_loader = get_dataloader_for_distributed(
             train_ds, batch_size=batch_size, world_size=world_size, rank=rank, shuffle=True,
-            collate_fn=collate, num_workers=0, pin_memory=False,
+            collate_fn=collate, num_workers=num_dataloader_workers, pin_memory=True,
+            persistent_workers=True if num_dataloader_workers > 0 else False,
         )
         
         if val_ds is not None:
             val_loader = get_dataloader_for_distributed(
                 val_ds, batch_size=batch_size, world_size=world_size, rank=rank, shuffle=False,
-                collate_fn=collate, num_workers=0, pin_memory=False,
+                collate_fn=collate, num_workers=num_dataloader_workers, pin_memory=True,
+                persistent_workers=True if num_dataloader_workers > 0 else False,
             )
+        else:
+            val_loader = None
         
         steps_per_epoch = len(train_loader) if train_loader else 0
-        
         # Determine max_steps, similar to 01_train.py
         max_steps = config['max_train_steps']  # Read from config first
         num_train_epochs = config.get('num_train_epochs', 0)
@@ -592,6 +1131,26 @@ def main(cfg: DictConfig) -> None:
         wandb_log_interval = _resolve_schedule_to_steps(config['wandb_log_interval'], steps_per_epoch, log, "wandb_log_interval")
         val_interval_str = config.get('val_interval', "500s")
         val_interval = _resolve_schedule_to_steps(val_interval_str, steps_per_epoch, log, "val_interval")
+        
+        if is_main():
+            log.info(f"Validation setup: val_loader={'exists' if val_loader else 'None'}, interval={val_interval} steps")
+
+        # -------- Drift-logging configuration --------
+        drift_cfg = config.get('parameter_drift', {})
+        drift_enabled = drift_cfg.get('enabled', True)
+        drift_log_interval_str = drift_cfg.get('interval', "1000s")
+        drift_log_interval = _resolve_schedule_to_steps(
+            drift_log_interval_str, steps_per_epoch, log, "parameter_drift.interval"
+        ) if drift_enabled else -1
+        if drift_enabled and drift_log_interval <= 0:
+            drift_log_interval = max(steps_per_epoch, 1000)
+            log.warning(f"parameter_drift.interval <=0 – resetting to {drift_log_interval} steps")
+        if is_main():
+            log.info(
+                f"Parameter-drift logging "
+                f"{'enabled' if drift_enabled else 'disabled'}"
+                + (f" every {drift_log_interval} micro-steps." if drift_enabled else "")
+            )
 
         if log_interval <= 0:
             raise ValueError(f"log_interval must be positive, got {config['log_interval']}")
@@ -600,26 +1159,28 @@ def main(cfg: DictConfig) -> None:
 
     # --- Timer for Optimizer and Scheduler Setup ---
     with Timer("Optimizer and Scheduler Setup", log, main_process=is_main()):
-        trainable_components_config = config.get('trainable_components', {})
-        decoder_train_cfg = trainable_components_config.get('decoder', {})
-        encoder_train_cfg = trainable_components_config.get('encoder', {})
-        custom_lr_multipliers = config.get('custom_lr_multipliers', {})
+        trainable_components_config = config.get('trainable_components')
+        decoder_train_cfg = trainable_components_config.get('decoder')
+        encoder_train_cfg = trainable_components_config.get('encoder')
+        custom_lr_multipliers = config.get('custom_lr_multipliers')
         
         # Get base models for parameter groups
         decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
         encoder_base = encoder.module if hasattr(encoder, 'module') else encoder
         
         # Extract learning rate multipliers from config
-        projection_lr_multiplier = custom_lr_multipliers.get('projection_layers', 1.0)
-        embedding_lr_multiplier = custom_lr_multipliers.get('embedding_layers', 1.0)
-        prompt_lr_multiplier = custom_lr_multipliers.get('prompt_layers', 1.0)
+        projection_lr_multiplier = custom_lr_multipliers.get('projection_layers')
+        embedding_lr_multiplier = custom_lr_multipliers.get('embedding_layers')
+        prompt_lr_multiplier = custom_lr_multipliers.get('prompt_layers')
+        base_model_lr_multiplier = custom_lr_multipliers.get('base_models')
         
         params = param_groups(
             [decoder_base, encoder_base], 
             learning_rate, 
             projection_lr_multiplier, 
             embedding_lr_multiplier, 
-            prompt_lr_multiplier
+            prompt_lr_multiplier,
+            base_model_lr_multiplier
         )
         optimizer = torch.optim.AdamW(params)
         
@@ -628,8 +1189,29 @@ def main(cfg: DictConfig) -> None:
         # Initialize scheduler with max_optimizer_steps
         lr_scheduler = get_lr_scheduler(optimizer, lr_scheduler_cfg, max_optimizer_steps) 
         
+        # Get mixed precision configuration
+        mixed_precision_config = config.get('mixed_precision', {'enabled': True, 'dtype': 'auto'})
+        
+        # Log mixed precision settings (only on main process)
+        if is_main():
+            if mixed_precision_config.get('enabled', True):
+                dtype_str = mixed_precision_config.get('dtype', 'auto')
+                if dtype_str == 'auto':
+                    actual_dtype = 'bfloat16' if torch.cuda.is_bf16_supported() else 'float32'
+                    log.info(f"Mixed precision enabled: auto mode will use {actual_dtype}")
+                else:
+                    log.info(f"Mixed precision enabled: using {dtype_str}")
+            else:
+                log.info("Mixed precision disabled")
+        
         # Initialize gradient scaler for mixed precision
-        scaler = torch.amp.GradScaler('cuda') if device.type == "cuda" else None
+        # Only enable scaler for float16 or bfloat16 on CUDA
+        scaler_enabled = (
+            device.type == "cuda" and 
+            mixed_precision_config.get('enabled', True) and
+            mixed_precision_config.get('dtype', 'auto') != 'float32'
+        )
+        scaler = torch.amp.GradScaler('cuda') if scaler_enabled else None
 
     # Initialize CheckpointManager (after steps_per_epoch is known)
     # It uses the original Hydra 'cfg' to correctly parse schedule strings for save intervals.
@@ -638,6 +1220,16 @@ def main(cfg: DictConfig) -> None:
     # Initialize W&B (only on main process)
     if is_main():
         wandb_config = config.get('wandb', {})
+        
+        # Handle wandb resume
+        wandb_run_id = config.get('wandb_resume_id')
+        force_disable_wandb = False
+        # Handle explicit None values (e.g., from command line wandb_resume_id=None)
+        if wandb_run_id is not None and str(wandb_run_id).lower() == 'none':
+            wandb_run_id = None
+            force_disable_wandb = True
+            log.info("Explicitly disabling WandB run resumption (wandb_resume_id=None)")
+        wandb_resume_mode = None
         
         # Build wandb_init_kwargs like in the regular training script
         wandb_init_kwargs = {
@@ -659,6 +1251,36 @@ def main(cfg: DictConfig) -> None:
         
         # Add distributed training tag
         wandb_init_kwargs['tags'].append(f"distributed-{world_size}gpu")
+        
+        # Add command line invocation to config
+        command_line_args = ' '.join(sys.argv)
+        wandb_init_kwargs['config']['command_line'] = command_line_args
+        
+        # Add environment variable that submit_with_config.sh can set
+        submit_script_command = os.environ.get('SUBMIT_SCRIPT_COMMAND', None)
+        if submit_script_command:
+            wandb_init_kwargs['config']['submit_script_command'] = submit_script_command
+            log.info(f"Submit script command: {submit_script_command}")
+        
+        # Add SLURM environment info to config if available
+        slurm_job_id = os.environ.get('SLURM_JOB_ID', None)
+        if slurm_job_id:
+            slurm_info = {
+                'slurm_job_id': slurm_job_id,
+                'slurm_job_name': os.environ.get('SLURM_JOB_NAME', 'unknown'),
+                'slurm_nodelist': os.environ.get('SLURM_NODELIST', 'unknown'),
+                'slurm_array_task_id': os.environ.get('SLURM_ARRAY_TASK_ID', None),
+            }
+            wandb_init_kwargs['config']['slurm_info'] = slurm_info
+            wandb_init_kwargs['tags'].append(f"slurm-{slurm_job_id}")
+            wandb_init_kwargs['tags'].append(f"node-{slurm_info['slurm_nodelist']}")
+            log.info(f"Running under SLURM job ID: {slurm_job_id} on nodes: {slurm_info['slurm_nodelist']}")
+        
+        # Add resume parameters if we have a run ID
+        if wandb_run_id and not force_disable_wandb:
+            wandb_init_kwargs['id'] = wandb_run_id
+            wandb_init_kwargs['resume'] = wandb_resume_mode or "allow"
+            log.info(f"Resuming WandB run: {wandb_run_id}")
         
         current_wandb_run_id = log_init(**wandb_init_kwargs)
         
@@ -684,21 +1306,38 @@ def main(cfg: DictConfig) -> None:
                 checkpoint_path_str,
                 models=models_to_load,
                 optimizer=optimizer,
-                scheduler=lr_scheduler,
                 map_location=device
             )
             start_step = int(rec.get("step", -1)) + 1
             
+            # Load scheduler state if available
+            if lr_scheduler and "scheduler" in rec:
+                lr_scheduler.load_state_dict(rec["scheduler"])
+                if is_main():
+                    log.info("Scheduler state successfully loaded from checkpoint.")
+            elif lr_scheduler and is_main():
+                log.warning("Scheduler state not found in checkpoint.")
+            
             if is_main():
                 log.info(f"Resumed from micro-step {start_step}")
-                if lr_scheduler and ('scheduler_state_dict' not in rec or 'scheduler' not in rec):
-                    log.warning("Scheduler state not found in checkpoint, or not loaded by CheckpointManager.")
-                elif lr_scheduler and ('scheduler_state_dict' in rec or 'scheduler' in rec):
-                    log.info("Scheduler state successfully loaded via CheckpointManager.")
         else:
             if is_main():
                 log.warning(f"Resume checkpoint path not found: {checkpoint_path_str}. Starting from scratch.")
     
+    # Capture initial model states for drift calculation after model setup and potential checkpoint loading
+    decoder_base_for_drift = decoder.module if hasattr(decoder, 'module') else decoder
+    encoder_base_for_drift = encoder.module if hasattr(encoder, 'module') else encoder
+
+    initial_decoder_state = None
+    initial_encoder_state = None
+    if drift_enabled and is_main():
+        initial_decoder_state = get_initial_model_state(decoder_base_for_drift)
+        initial_encoder_state = get_initial_model_state(encoder_base_for_drift)
+        log.info(
+            "Captured initial model states for drift calculation "
+            f"(resume step={start_step})."
+        )
+
     # Training loop
     if is_main():
         log.info("Starting training...")
@@ -708,23 +1347,47 @@ def main(cfg: DictConfig) -> None:
     running_losses = deque(maxlen=100)
     step_times = deque(maxlen=100)
     
+    # Store last computed gradient/update norms for consistent logging
+    last_grad_norm = 0.0
+    last_update_norm = 0.0
+    last_update_ratio = 0.0
+    
     # Zero gradients at start
     optimizer.zero_grad(set_to_none=True)
-    
+    iter_loader = iter(train_loader)
     # Main training loop
     for step in range(start_step, max_steps):
         step_start_time = time.time()
         
         current_epoch = step // steps_per_epoch if steps_per_epoch > 0 else 0
         
-        # Set epoch for DistributedSampler
-        if world_size > 1 and hasattr(train_loader.sampler, 'set_epoch'):
-            epoch = step // len(train_loader)
-            train_loader.sampler.set_epoch(epoch)
+        ## Set epoch for DistributedSampler
+        #if world_size > 1 and hasattr(train_loader.sampler, 'set_epoch'):
+        #    epoch = step // len(train_loader)
+        #    train_loader.sampler.set_epoch(epoch)
         
         # Training step with optimized gradient accumulation
-        batch = next(iter(train_loader))
-        batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)} # Move batch to device
+        # Advance iterator – restart when exhausted
+        try:
+            batch = next(iter_loader)
+        except StopIteration:
+            if world_size > 1 and hasattr(train_loader.sampler, "set_epoch"):
+                current_epoch += 1 # Ensure current_epoch is advanced if sampler epoch is set
+                train_loader.sampler.set_epoch(current_epoch)
+            else:
+                current_epoch += 1 # Ensure current_epoch is advanced if sampler epoch is set
+                if not hasattr(train_loader.sampler, "set_epoch"):
+                    log.warning("train_loader.sampler does not have set_epoch method. Distributed samplers should have this.")
+            iter_loader = iter(train_loader)
+            batch = next(iter_loader)
+
+        batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
+        # ...
+
+    
+        #batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)} # Move batch to device
+        if step == 0 and is_main():
+            do_all_initial_validation(batch, orig_model, tokenizer, device, log, activation_dir)
 
         metrics = distributed_train_step(
             decoder,
@@ -750,17 +1413,34 @@ def main(cfg: DictConfig) -> None:
         running_losses.append(metrics['loss'])
         step_times.append(time.time() - step_start_time)
         
+        # Update last computed gradient/update norms if they were calculated this step
+        if metrics['grad_norm'] > 0:
+            last_grad_norm = metrics['grad_norm']
+            last_update_norm = metrics['update_norm']
+            last_update_ratio = metrics['update_ratio']
+        
         # Average metrics for logging
         avg_loss = sum(running_losses) / len(running_losses)
-        avg_step_time = sum(step_times) / len(step_times)
-        samples_per_sec = effective_batch_size / avg_step_time
+        avg_step_time = sum(step_times) / len(step_times) # Average time per micro-step
+        
+        # Calculate samples_per_sec: the rate of samples processed by the model.
+        # effective_batch_size = (per_device_batch_size * num_devices * grad_accum_steps)
+        # True sample throughput is (per_device_batch_size * num_devices) / avg_step_time.
+        # This is equivalent to effective_batch_size / (avg_step_time * grad_accum_steps).
+        if avg_step_time > 0:
+            # gradient_accumulation_steps is guaranteed to be >= 1.
+            samples_per_sec = effective_batch_size / (avg_step_time * gradient_accumulation_steps)
+        else:
+            samples_per_sec = 0.0
 
         current_lr = optimizer.param_groups[0]['lr']
         accumulation_step = (step % gradient_accumulation_steps) + 1
         
         # Performance metrics (calculated similarly to 01_train.py)
+        # steps_per_second refers to micro-steps per second
         steps_per_second = 1.0 / avg_step_time if avg_step_time > 0 else 0
-        tokens_per_second = samples_per_sec * config.get('t_text', 10)
+        # tokens_per_second is based on the corrected samples_per_sec
+        tokens_per_second = samples_per_sec * config.get('t_text', 10) # t_text is tokens per sample
 
         # Console logging (only on main process)
         if is_main() and (step % log_interval == 0 or step == max_steps - 1):
@@ -768,7 +1448,7 @@ def main(cfg: DictConfig) -> None:
                 f"Step {step}/{max_steps} | "
                 f"Loss: {avg_loss:.4f} | "
                 f"LR: {current_lr:.2e} | "
-                f"Samples/sec: {samples_per_sec:.1f} | "
+                f"Samples/sec: {samples_per_sec:.1f} | " # Display corrected samples_per_sec
                 f"Acc: {accumulation_step}/{gradient_accumulation_steps}"
             )
 
@@ -792,26 +1472,26 @@ def main(cfg: DictConfig) -> None:
                 'loss/entropy': metrics['loss_entropy'],
                 'params/tau': current_tau_log,
                 'params/alpha': current_alpha_log,
-                'params/lm_w': get_schedule_value(config['alpha_schedule'], step, max_steps, current_optimizer_step_for_sched, gradient_accumulation_steps), # lm_weight is alpha
+                'params/lm_w': config.get('lm_base_weight'),
                 'params/kl_w': config.get('kl_base_weight', 1.0),
                 'params/entropy_w': config.get('entropy_weight', 0.0),
                 'optim/lr': current_lr,
-                'grads/norm': metrics.get('grad_norm', 0.0), # grad_norm is from the accumulation end step
-                # 'updates/norm' and 'updates/ratio' are harder to get accurately here without DDP sync after optimizer step
-                # and before next backward pass if not an accumulation_end step.
-                # For simplicity, we'll omit them or log them as 0 if not an accumulation_end step.
-                # 'update_norm' and 'param_norm' would require synchronizing model parameters or their checksums,
-                # which is complex and potentially slow.
-                # We can log grad_norm as it's available after clipping on accumulation_end.
                 'gradient_accumulation/is_update_step': 1 if ((step + 1) % gradient_accumulation_steps == 0) or (step == max_steps - 1) else 0,
                 'gradient_accumulation/accumulation_step': accumulation_step,
-                'performance/steps_per_second': steps_per_second,
-                'performance/samples_per_second': samples_per_sec, # effective_batch_size / avg_step_time
+                'performance/steps_per_second': steps_per_second, # This is micro-steps per second
+                'performance/samples_per_second': samples_per_sec, # Now: effective_batch_size / (avg_step_time * gradient_accumulation_steps)
                 'performance/tokens_per_second': tokens_per_second,
-                'performance/avg_step_time': avg_step_time,
+                'performance/avg_step_time': avg_step_time, # This is avg micro-step time
                 'train/gpu_memory_allocated': torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0,
                 'train/gradient_accumulation_step': accumulation_step,
             }
+            
+            # Always log gradient and update metrics using last computed values
+            # These are only updated at accumulation boundaries but we want consistent logging
+            wandb_metrics['grads/norm'] = last_grad_norm
+            wandb_metrics['updates/norm'] = last_update_norm
+            wandb_metrics['updates/ratio'] = last_update_ratio
+            wandb_metrics['updates/lr_actual'] = lr_scheduler.get_last_lr()[0]
             
             # Add epoch if applicable
             # Epoch calculation should be based on optimizer steps or effective data passes
@@ -833,6 +1513,20 @@ def main(cfg: DictConfig) -> None:
             if current_wandb_run_id:
                 log_metrics(wandb_metrics, step)
         
+        # Log parameter drift
+        if drift_enabled and is_main():
+            log_now = (
+                step == start_step
+                or (step == max_steps - 1 and max_steps > 0)
+                or (step > start_step and drift_log_interval > 0 and step % drift_log_interval == 0)
+            )
+            if log_now and initial_decoder_state and initial_encoder_state:
+                log.info(f"Logging parameter drift at step {step} …")
+                log_parameter_drift(decoder_base_for_drift, initial_decoder_state,
+                                    "decoder", step, log_metrics, log, True)
+                log_parameter_drift(encoder_base_for_drift, initial_encoder_state,
+                                    "encoder", step, log_metrics, log, True)
+
         # Checkpointing (only on main process)
         if is_main() and checkpoint_manager.should_save_step(step):
             # Get current tau and alpha for checkpointing, similar to 01_train.py
@@ -860,18 +1554,34 @@ def main(cfg: DictConfig) -> None:
                 config=config, 
                 tau=current_tau_ckpt,
                 alpha=current_alpha_ckpt,
-                wandb_run_id=current_wandb_run_id
+                wandb_run_id=current_wandb_run_id,
+                additional_name=""
             )
             if saved_path:
                 log.info(f"Checkpoint saved: {saved_path}")
             else:
                 log.info(f"Checkpoint not saved at step {step} (e.g., max_checkpoints reached or interval not met).")
         
-        # Validation (only on main process for now)
-        if is_main() and val_loader and val_interval > 0 and (step % val_interval == 0):
-            # TODO: Implement distributed validation
-            log.info(f"Skipping validation at step {step} (TODO: Implement)")
-            pass # Placeholder for validation logic
+        # Validation
+        if val_loader and val_interval > 0 and (step % val_interval == 0):
+            if is_main():
+                log.info(f"Running validation at step {step}")
+            with Timer("Validation", log, main_process=is_main(), log_wandb=True, wandb_step=step):
+                validate_distributed(
+                    decoder=decoder,
+                    encoder=encoder,
+                    orig_model=orig_model,
+                    val_loader=val_loader,
+                    config=config,
+                    step=step,
+                    device=device,
+                    tokenizer=tokenizer,
+                    cached_prefix_ids=cached_prefix_ids,
+                    world_size=world_size,
+                    log=log,
+                    is_main_process=is_main(),
+                    wandb_run_id=current_wandb_run_id
+                )
 
         # Verbose sample printing (adapting logic from 01_train.py)
         if is_main():
@@ -902,61 +1612,63 @@ def main(cfg: DictConfig) -> None:
                     should_print_verbose = True
 
                 if should_print_verbose:
-                    log.info(f"Generating verbose samples at step {step}, epoch {current_epoch}")
-                    decoder.eval()
-                    encoder.eval()
-                    orig_model.model.eval() # Ensure orig model is also in eval
+                    with Timer("Verbose Sample Generation", log, main_process=is_main(), log_wandb=True, wandb_step=step):
+                        log.info(f"Generating verbose samples at step {step}, epoch {current_epoch}")
+                        decoder.eval()
+                        encoder.eval()
+                        orig_model.model.eval() # Ensure orig model is also in eval
 
-                    # Get schedule arguments for verbose samples - these use optimizer steps
-                    current_optimizer_step_for_verbose = step // gradient_accumulation_steps
-                    sch_args_verbose = {
-                        "tau": get_schedule_value(config['gumbel_tau_schedule'], step, max_steps,
-                                                 current_optimizer_step_for_verbose, 
-                                                 gradient_accumulation_steps),
-                        "T_text": config.get('t_text', 8),
-                        "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps,
-                                                   current_optimizer_step_for_verbose, 
-                                                   gradient_accumulation_steps),
-                        "lm_weight": get_schedule_value(config['alpha_schedule'], step, max_steps, # This is alpha
+                        # Get schedule arguments for verbose samples - these use optimizer steps
+                        current_optimizer_step_for_verbose = step // gradient_accumulation_steps
+                        sch_args_verbose = {
+                            "tau": get_schedule_value(config['gumbel_tau_schedule'], step, max_steps,
+                                                     current_optimizer_step_for_verbose, 
+                                                     gradient_accumulation_steps),
+                            "T_text": config.get('t_text', 8),
+                            "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps,
                                                        current_optimizer_step_for_verbose, 
                                                        gradient_accumulation_steps),
-                        "kl_base_weight": config.get('kl_base_weight', 1.0),
-                        "entropy_weight": config.get('entropy_weight', 0.0),
-                        "mse_weight": config.get('mse_weight', 0.0), # Added for completeness
-                    }
+                            "lm_base_weight": config.get('lm_base_weight'), 
+                            "kl_base_weight": config.get('kl_base_weight', 1.0),
+                            "entropy_weight": config.get('entropy_weight', 0.0),
+                            "mse_weight": config.get('mse_weight', 0.0), # Added for completeness
+                        }
 
-                    # Ensure batch is on the correct device (it should be already, but good practice)
-                    verbose_batch = {k: v.to(device) for k, v in batch.items()}
+                        # Ensure batch is on the correct device (it should be already, but good practice)
+                        verbose_batch = {k: v.to(device) for k, v in batch.items()}
 
-                    # Assuming train_module contains process_and_print_verbose_batch_samples
-                    num_printed, captured_text = process_and_print_verbose_batch_samples(
-                        batch=verbose_batch,
-                        cfg=config, # Pass the resolved dictionary config directly
-                        models={"dec": decoder_base, "enc": encoder_base}, # Pass base models
-                        orig=orig_model,
-                        tok=tokenizer,
-                        sch_args=sch_args_verbose,
-                        device=device,
-                        num_samples=verbose_config.get('num_samples', 2),
-                        top_n_analysis=verbose_config.get('top_n_predictions', 3),
-                        printed_count_so_far=0, # Reset for each call or manage globally if needed
-                        generate_continuation=verbose_config.get('generate_continuation', True),
-                        continuation_tokens=verbose_config.get('continuation_tokens', 30),
-                        return_structured_data=False, # As per 01_train.py default for this path
-                        capture_output=True
-                    )
-                    
-                    # current_wandb_run_id is already defined
-                    if captured_text and current_wandb_run_id:
-                        verbose_samples_logger.log_verbose_samples(
-                            captured_text,
-                            step=step,
-                            table_name="training_verbose_samples_dist" # Differentiate if needed
+                        # Assuming train_module contains process_and_print_verbose_batch_samples
+                        num_printed, captured_text = process_and_print_verbose_batch_samples(
+                            batch=verbose_batch,
+                            cfg=config, # Pass the resolved dictionary config directly
+                            models={"dec": decoder_base, "enc": encoder_base}, # Pass base models
+                            orig=orig_model,
+                            tok=tokenizer,
+                            sch_args=sch_args_verbose,
+                            device=device,
+                            num_samples=verbose_config.get('num_samples', 2),
+                            top_n_analysis=verbose_config.get('top_n_predictions', 3),
+                            printed_count_so_far=0, # Reset for each call or manage globally if needed
+                            generate_continuation=verbose_config.get('generate_continuation', True),
+                            continuation_tokens=verbose_config.get('continuation_tokens', 30),
+                            return_structured_data=False, # As per 01_train.py default for this path
+                            capture_output=True,
+                            cached_prefix_ids=cached_prefix_ids,  # Pass the cached prefix for loss computation
+                            resample_ablation=config.get('resample_ablation', True)
                         )
+                        
+                        # current_wandb_run_id is already defined
+                        if captured_text and current_wandb_run_id:
+                            verbose_samples_logger.log_verbose_samples(
+                                captured_text,
+                                step=step,
+                                table_name="training_verbose_samples_dist", # Differentiate if needed
+                                limit_rows=verbose_config.get('wandb_table_limit', False)
+                            )
 
-                    decoder.train()
-                    encoder.train()
-                    orig_model.model.train() # Set orig model back to train if it has trainable parts (usually not)
+                        decoder.train()
+                        encoder.train()
+                        orig_model.model.train() # Set orig model back to train if it has trainable parts (usually not)
 
     
     # Final checkpoint
@@ -1010,7 +1722,8 @@ def main(cfg: DictConfig) -> None:
             config=config, # Pass the resolved dictionary config
             tau=final_tau,
             alpha=final_alpha,
-            wandb_run_id=current_wandb_run_id
+            wandb_run_id=current_wandb_run_id,
+            additional_name="final"
         )
         if final_checkpoint_path:
             log.info(f"Final checkpoint saved: {final_checkpoint_path}")

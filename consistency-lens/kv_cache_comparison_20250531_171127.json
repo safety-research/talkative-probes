@@ -1,0 +1,383 @@
+{
+  "model_name": "gpt2",
+  "device": "cuda",
+  "d_model": 768,
+  "timestamp": "2025-05-31T17:11:10.271394",
+  "comparisons": [
+    {
+      "batch_size": 1,
+      "length": 8,
+      "methods": {
+        "naive": {
+          "peak_memory_gb": 0.6692628860473633,
+          "delta_memory_gb": 0.0464472770690918,
+          "success": true
+        },
+        "checkpoint": {
+          "peak_memory_gb": 0.6656284332275391,
+          "delta_memory_gb": 0.009586334228515625,
+          "success": true
+        },
+        "kv_cache": {
+          "peak_memory_gb": 0.6614069938659668,
+          "delta_memory_gb": 0.005364894866943359,
+          "success": true
+        }
+      },
+      "savings": {
+        "percentage": 1.1738126146203973,
+        "ratio": 1.0118775462827787
+      }
+    },
+    {
+      "batch_size": 1,
+      "length": 16,
+      "methods": {
+        "naive": {
+          "peak_memory_gb": 0.6793889999389648,
+          "delta_memory_gb": 0.023346900939941406,
+          "success": true
+        },
+        "checkpoint": {
+          "peak_memory_gb": 0.6717801094055176,
+          "delta_memory_gb": 0.014672279357910156,
+          "success": true
+        },
+        "kv_cache": {
+          "peak_memory_gb": 0.6659693717956543,
+          "delta_memory_gb": 0.008861541748046875,
+          "success": true
+        }
+      },
+      "savings": {
+        "percentage": 1.9752495469482347,
+        "ratio": 1.0201505184947577
+      }
+    },
+    {
+      "batch_size": 1,
+      "length": 32,
+      "methods": {
+        "naive": {
+          "peak_memory_gb": 0.6930227279663086,
+          "delta_memory_gb": 0.03555917739868164,
+          "success": true
+        },
+        "checkpoint": {
+          "peak_memory_gb": 0.6822395324707031,
+          "delta_memory_gb": 0.022090435028076172,
+          "success": true
+        },
+        "kv_cache": {
+          "peak_memory_gb": 0.6762027740478516,
+          "delta_memory_gb": 0.015697479248046875,
+          "success": true
+        }
+      },
+      "savings": {
+        "percentage": 2.4270421790949888,
+        "ratio": 1.0248741273535011
+      }
+    },
+    {
+      "batch_size": 1,
+      "length": 64,
+      "methods": {
+        "naive": {
+          "peak_memory_gb": 0.7228579521179199,
+          "delta_memory_gb": 0.06270885467529297,
+          "success": true
+        },
+        "checkpoint": {
+          "peak_memory_gb": 0.7049942016601562,
+          "delta_memory_gb": 0.038762569427490234,
+          "success": true
+        },
+        "kv_cache": {
+          "peak_memory_gb": 0.696312427520752,
+          "delta_memory_gb": 0.030080795288085938,
+          "success": true
+        }
+      },
+      "savings": {
+        "percentage": 3.6723016630572523,
+        "ratio": 1.0381230085059439
+      }
+    },
+    {
+      "batch_size": 1,
+      "length": 96,
+      "methods": {
+        "naive": {
+          "peak_memory_gb": 0.7560896873474121,
+          "delta_memory_gb": 0.0898580551147461,
+          "success": true
+        },
+        "checkpoint": {
+          "peak_memory_gb": 0.7277493476867676,
+          "delta_memory_gb": 0.0554347038269043,
+          "success": true
+        },
+        "kv_cache": {
+          "peak_memory_gb": 0.7167792320251465,
+          "delta_memory_gb": 0.0444645881652832,
+          "success": true
+        }
+      },
+      "savings": {
+        "percentage": 5.199178877862812,
+        "ratio": 1.0548431840180417
+      }
+    },
+    {
+      "batch_size": 2,
+      "length": 8,
+      "methods": {
+        "naive": {
+          "peak_memory_gb": 0.7027082443237305,
+          "delta_memory_gb": 0.03039073944091797,
+          "success": true
+        },
+        "checkpoint": {
+          "peak_memory_gb": 0.6762790679931641,
+          "delta_memory_gb": 0.019168376922607422,
+          "success": true
+        },
+        "kv_cache": {
+          "peak_memory_gb": 0.6672816276550293,
+          "delta_memory_gb": 0.009815216064453125,
+          "success": true
+        }
+      },
+      "savings": {
+        "percentage": 5.0414403068224845,
+        "ratio": 1.0530909517068496
+      }
+    },
+    {
+      "batch_size": 2,
+      "length": 16,
+      "methods": {
+        "naive": {
+          "peak_memory_gb": 0.7019319534301758,
+          "delta_memory_gb": 0.04482126235961914,
+          "success": true
+        },
+        "checkpoint": {
+          "peak_memory_gb": 0.687652587890625,
+          "delta_memory_gb": 0.027500629425048828,
+          "success": true
+        },
+        "kv_cache": {
+          "peak_memory_gb": 0.6775112152099609,
+          "delta_memory_gb": 0.01700305938720703,
+          "success": true
+        }
+      },
+      "savings": {
+        "percentage": 3.4790748734085204,
+        "ratio": 1.0360447733882114
+      }
+    },
+    {
+      "batch_size": 2,
+      "length": 32,
+      "methods": {
+        "naive": {
+          "peak_memory_gb": 0.731255054473877,
+          "delta_memory_gb": 0.07110309600830078,
+          "success": true
+        },
+        "checkpoint": {
+          "peak_memory_gb": 0.711127758026123,
+          "delta_memory_gb": 0.04489326477050781,
+          "success": true
+        },
+        "kv_cache": {
+          "peak_memory_gb": 0.6976132392883301,
+          "delta_memory_gb": 0.031378746032714844,
+          "success": true
+        }
+      },
+      "savings": {
+        "percentage": 4.6005583113201824,
+        "ratio": 1.0482241638932577
+      }
+    },
+    {
+      "batch_size": 2,
+      "length": 64,
+      "methods": {
+        "naive": {
+          "peak_memory_gb": 0.8035311698913574,
+          "delta_memory_gb": 0.1372966766357422,
+          "success": true
+        },
+        "checkpoint": {
+          "peak_memory_gb": 0.7634081840515137,
+          "delta_memory_gb": 0.08500814437866211,
+          "success": true
+        },
+        "kv_cache": {
+          "peak_memory_gb": 0.7385306358337402,
+          "delta_memory_gb": 0.06013059616088867,
+          "success": true
+        }
+      },
+      "savings": {
+        "percentage": 8.089360623858024,
+        "ratio": 1.088013321186381
+      }
+    },
+    {
+      "batch_size": 2,
+      "length": 96,
+      "methods": {
+        "naive": {
+          "peak_memory_gb": 0.8610310554504395,
+          "delta_memory_gb": 0.1826310157775879,
+          "success": true
+        },
+        "checkpoint": {
+          "peak_memory_gb": 0.8025751113891602,
+          "delta_memory_gb": 0.11200904846191406,
+          "success": true
+        },
+        "kv_cache": {
+          "peak_memory_gb": 0.7794489860534668,
+          "delta_memory_gb": 0.0888829231262207,
+          "success": true
+        }
+      },
+      "savings": {
+        "percentage": 9.474927632464295,
+        "ratio": 1.1046663359074234
+      }
+    },
+    {
+      "batch_size": 4,
+      "length": 8,
+      "methods": {
+        "naive": {
+          "peak_memory_gb": 0.7519922256469727,
+          "delta_memory_gb": 0.061420440673828125,
+          "success": true
+        },
+        "checkpoint": {
+          "peak_memory_gb": 0.6988401412963867,
+          "delta_memory_gb": 0.038326263427734375,
+          "success": true
+        },
+        "kv_cache": {
+          "peak_memory_gb": 0.6801347732543945,
+          "delta_memory_gb": 0.019977092742919922,
+          "success": true
+        }
+      },
+      "savings": {
+        "percentage": 9.555611074403853,
+        "ratio": 1.1056517843496598
+      }
+    },
+    {
+      "batch_size": 4,
+      "length": 16,
+      "methods": {
+        "naive": {
+          "peak_memory_gb": 0.7596940994262695,
+          "delta_memory_gb": 0.09918022155761719,
+          "success": true
+        },
+        "checkpoint": {
+          "peak_memory_gb": 0.7317171096801758,
+          "delta_memory_gb": 0.06547689437866211,
+          "success": true
+        },
+        "kv_cache": {
+          "peak_memory_gb": 0.7002291679382324,
+          "delta_memory_gb": 0.03398895263671875,
+          "success": true
+        }
+      },
+      "savings": {
+        "percentage": 7.827483658612825,
+        "ratio": 1.0849221000934977
+      }
+    },
+    {
+      "batch_size": 4,
+      "length": 32,
+      "methods": {
+        "naive": {
+          "peak_memory_gb": 0.8160600662231445,
+          "delta_memory_gb": 0.14981985092163086,
+          "success": true
+        },
+        "checkpoint": {
+          "peak_memory_gb": 0.7716007232666016,
+          "delta_memory_gb": 0.09319496154785156,
+          "success": true
+        },
+        "kv_cache": {
+          "peak_memory_gb": 0.7411313056945801,
+          "delta_memory_gb": 0.06272554397583008,
+          "success": true
+        }
+      },
+      "savings": {
+        "percentage": 9.181770267885629,
+        "ratio": 1.101100520181565
+      }
+    },
+    {
+      "batch_size": 4,
+      "length": 64,
+      "methods": {
+        "naive": {
+          "peak_memory_gb": 0.9315695762634277,
+          "delta_memory_gb": 0.25316381454467773,
+          "success": true
+        },
+        "checkpoint": {
+          "peak_memory_gb": 0.8596587181091309,
+          "delta_memory_gb": 0.1560220718383789,
+          "success": true
+        },
+        "kv_cache": {
+          "peak_memory_gb": 0.824735164642334,
+          "delta_memory_gb": 0.12109851837158203,
+          "success": true
+        }
+      },
+      "savings": {
+        "percentage": 11.468216045613246,
+        "ratio": 1.1295378397833018
+      }
+    },
+    {
+      "batch_size": 4,
+      "length": 96,
+      "methods": {
+        "naive": {
+          "peak_memory_gb": 1.0793256759643555,
+          "delta_memory_gb": 0.3756890296936035,
+          "success": true
+        },
+        "checkpoint": {
+          "peak_memory_gb": 0.9591851234436035,
+          "delta_memory_gb": 0.23162174224853516,
+          "success": true
+        },
+        "kv_cache": {
+          "peak_memory_gb": 0.917151927947998,
+          "delta_memory_gb": 0.1888561248779297,
+          "success": true
+        }
+      },
+      "savings": {
+        "percentage": 15.02546929326577,
+        "ratio": 1.1768232100642246
+      }
+    }
+  ]
+}

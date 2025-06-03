@@ -377,7 +377,7 @@ def main() -> None:  # noqa: D401
     t_text = config['t_text']
     wandb_config = config.get('wandb', {}) # Ensure wandb_config is a dict
     wandb_log_interval = config['wandb_log_interval']
-    lm_weight = config['lm_weight']
+    lm_base_weight = config['lm_base_weight']
     kl_base_weight = config['kl_base_weight']
     entropy_weight = config['entropy_weight']
     log_interval = config['log_interval']
@@ -610,7 +610,7 @@ def main() -> None:  # noqa: D401
         )
 
     log.info(f"Original LLM (frozen) parameters: {num_params_orig_total:,}")
-    log.info(f"Hyperparameters: lm_weight={lm_weight}, kl_base_weight={kl_base_weight}, entropy_weight={entropy_weight}")
+    log.info(f"Hyperparameters: lm_base_weight={lm_base_weight}, kl_base_weight={kl_base_weight}, entropy_weight={entropy_weight}")
     log.info(f"Learning rate: {learning_rate}, Projection LR Multiplier: {projection_lr_multiplier}")
     log.info(f"Stop-grad on A′: {config['stop_grad_aprime']}")
     log.info(f"Grad clip: {config['grad_clip']}")
@@ -732,7 +732,7 @@ def main() -> None:  # noqa: D401
                     "tau": current_tau,
                     "T_text": t_text,
                     "alpha": current_alpha,
-                    "lm_weight": lm_weight,
+                    "lm_base_weight": lm_base_weight,
                     "kl_base_weight": kl_base_weight,
                     "entropy_weight": entropy_weight,
                 },
@@ -816,7 +816,7 @@ def main() -> None:  # noqa: D401
                 "loss/entropy": losses["entropy"].item(),
                 "params/tau": current_tau,
                 "params/alpha": current_alpha,
-                "params/lm_w": lm_weight,
+                "params/lm_w": lm_base_weight,
                 "params/kl_w": kl_base_weight,
                 "params/entropy_w": entropy_weight,
                 "optim/lr": lr_current,
@@ -920,7 +920,7 @@ def main() -> None:  # noqa: D401
                         "tau": get_schedule_value(config['gumbel_tau_schedule'], step, max_steps),
                         "T_text": t_text,
                         "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps),
-                        "lm_weight": lm_weight,
+                        "lm_base_weight": lm_base_weight,
                         "kl_base_weight": kl_base_weight,
                         "entropy_weight": entropy_weight,
                     }
@@ -1016,7 +1016,7 @@ def main() -> None:  # noqa: D401
                     "tau": get_schedule_value(config['gumbel_tau_schedule'], step, max_steps),
                     "T_text": t_text,
                     "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps),
-                    "lm_weight": lm_weight,
+                    "lm_base_weight": lm_base_weight,
                     "kl_base_weight": kl_base_weight,
                     "entropy_weight": entropy_weight,
                 }

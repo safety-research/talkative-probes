@@ -1,0 +1,90 @@
+# GPT-2 with Flash Attention and KV caching for optimized performance
+defaults:
+  - _self_
+  - paths: default
+  - hydra: default
+
+# Experiment name - used for logging and checkpointing
+experiment_name: "gpt2_flash_attention"
+
+# Model configuration
+encoder:
+  model_name: "gpt2"
+  projection_layer: true
+  base_model: false
+  eye_init: true
+
+decoder:
+  model_name: "gpt2"
+  projection_layer: true
+  output_head: false
+  base_model: false
+  eye_init: true
+  n_prompt_tokens: 8
+  trainable_prompts: true
+  use_flash_attention: true  # Enable Flash Attention with KV cache
+
+orig_model:
+  model_name: "gpt2"
+  trainable: false  # Freeze original model
+
+# Data configuration  
+data:
+  dataset_name: "openwebtext"
+  layer_idx: 6  # Which layer's activations to use
+  token_limit: null
+  batch_size: 128
+  buffer_size: 10000
+  num_workers: 4
+  train_test_split: 0.95
+  activation_dir: null  # Will be set based on paths config
+  pretokenized: true  # Use pretokenized data if available
+
+# Training configuration
+training:
+  learning_rate: 1e-4
+  weight_decay: 0.0
+  gradient_clip_val: 1.0
+  num_steps: 10000
+  warmup_steps: 1000
+  
+  # Loss weights
+  kl_weight: 1.0
+  lm_weight: 0.0  # Start with 0, ramp up with alpha schedule
+  mse_weight: 0.0
+  entropy_weight: 0.01
+  
+  # Alpha schedule for language modeling loss
+  lm_weight_schedule:
+    type: "linear"
+    start_step: 0
+    end_step: 5000
+    start_value: 0.0
+    end_value: 0.1
+  
+  # Gumbel temperature schedule
+  gumbel_temperature:
+    schedule:
+      type: "exponential"
+      start_value: 1.0
+      end_value: 0.1
+      decay_steps: 5000
+  
+  # Generation length
+  T_text: 32
+
+# Evaluation configuration
+evaluation:
+  eval_every_n_steps: 1000
+  num_eval_batches: 50
+  verbose_samples: 3
+
+# Logging configuration
+logging:
+  use_wandb: true
+  wandb_project: "consistency-lens"
+  log_every_n_steps: 100
+  save_checkpoint_every_n_steps: 1000
+
+# Note: Flash Attention must be installed separately with:
+# make flash-attention

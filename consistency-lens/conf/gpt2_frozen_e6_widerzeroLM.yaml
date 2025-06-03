@@ -28,4 +28,4 @@ alpha_schedule:
 
 
 kl_base_weight: 1.0
-lm_weight: 0.0
+lm_base_weight: 0.0

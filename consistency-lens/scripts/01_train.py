@@ -289,6 +289,9 @@ def generate_run_name(config: dict, dataset_info: dict, resume_from: str = None,
     # Layer
     if dataset_info['layer'] is not None:
         components.append(f"L{dataset_info['layer']}")
+
+    if config['trainable_components']['encoder']['output_layer'] is not None:
+        components.append(f"e{config['trainable_components']['encoder']['output_layer']}")
     
     # Freeze status (important for experiments)
     freeze_schedule = config.get('freeze_schedule', {})
@@ -515,7 +518,7 @@ def run_validation_step(
     val_seen = 0
     
     t_text = config['t_text']
-    lm_weight = config['lm_weight']
+    lm_base_weight = config['lm_base_weight']
     kl_base_weight = config['kl_base_weight']
     entropy_weight = config['entropy_weight']
 
@@ -528,7 +531,7 @@ def run_validation_step(
                 "T_text": t_text,
                 "alpha": get_schedule_value(config['alpha_schedule'], current_step, max_steps,
                                            current_epoch, steps_per_epoch),
-                "lm_weight": lm_weight,
+                "lm_base_weight": lm_base_weight,
                 "kl_base_weight": kl_base_weight,
                 "entropy_weight": entropy_weight,
                 "mse_weight": config.get('mse_weight', 0.0),
@@ -536,7 +539,8 @@ def run_validation_step(
             v_losses = train_step(vbatch, {"dec": dec, "enc": enc, "orig": orig}, sch_args,
                                  lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'),
                                  tokenizer=tokenizer,
-                                 cached_prefix_ids=cached_prefix_ids)
+                                 cached_prefix_ids=cached_prefix_ids,
+                                 resample_ablation=config.get('resample_ablation'))
             bsz = vbatch["A"].size(0)
             val_loss += v_losses["total"].item() * bsz
             val_mse  += v_losses["mse"].item()   * bsz
@@ -556,7 +560,7 @@ def run_validation_step(
     else:
         final_alpha = alpha_config.get('value', 0.1)
     
-    normalized_val_loss = (lm_weight * final_alpha) * avg_val_lm + kl_base_weight * avg_val_kl
+    normalized_val_loss = (lm_base_weight * final_alpha) * avg_val_lm + kl_base_weight * avg_val_kl
     
     log.info(
         f"Validation – loss {avg_val_loss:.4f}, mse {avg_val_mse:.4f}, lm {avg_val_lm:.4f}, kl {avg_val_kl:.4f}"
@@ -797,7 +801,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     learning_rate = config['learning_rate']
     t_text = config['t_text']
     wandb_config = config.get('wandb', {}) # Ensure wandb_config is a dict
-    lm_weight = config['lm_weight']
+    lm_base_weight = config['lm_base_weight']
     kl_base_weight = config['kl_base_weight']
     entropy_weight = config['entropy_weight']
     gradient_accumulation_steps = config['gradient_accumulation_steps']
@@ -845,6 +849,12 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     
     # Handle wandb resume
     wandb_run_id = config.get('wandb_resume_id')
+    force_disable_wandb = False
+    # Handle explicit None values (e.g., from command line wandb_resume_id=None)
+    if wandb_run_id is not None and str(wandb_run_id).lower() == 'none':
+        wandb_run_id = None
+        force_disable_wandb = True
+        log.info("Explicitly disabling WandB run resumption (wandb_resume_id=None)")
     wandb_resume_mode = None
     
     resume_checkpoint_path = config.get('resume')
@@ -856,7 +866,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         # Peek into checkpoint to get wandb run ID if available
         checkpoint_data = torch.load(resume_checkpoint_path, map_location='cpu')
         wandb_run_id = checkpoint_data.get('wandb_run_id')
-        if wandb_run_id:
+        if wandb_run_id and not force_disable_wandb:
             log.info(f"Found wandb run ID in checkpoint: {wandb_run_id}")
             wandb_resume_mode = "must"  # Force resume of the exact run
     
@@ -868,6 +878,16 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         'mode': wandb_config.get('mode', 'online'),
         'tags': []  # Initialize tags list
     }
+    
+    # Add command line invocation to config
+    command_line_args = ' '.join(sys.argv)
+    wandb_init_kwargs['config']['command_line'] = command_line_args
+    
+    # Add environment variable that submit_with_config.sh can set
+    submit_script_command = os.environ.get('SUBMIT_SCRIPT_COMMAND', None)
+    if submit_script_command:
+        wandb_init_kwargs['config']['submit_script_command'] = submit_script_command
+        log.info(f"Submit script command: {submit_script_command}")
     
     # Add SLURM environment info to config if available
     slurm_job_id = os.environ.get('SLURM_JOB_ID', None)
@@ -897,7 +917,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         wandb_init_kwargs['tags'].append(f"config-{config_name}")
     
     # Add resume parameters if we have a run ID
-    if wandb_run_id:
+    if wandb_run_id and not force_disable_wandb:
         wandb_init_kwargs['id'] = wandb_run_id
         wandb_init_kwargs['resume'] = wandb_resume_mode or "allow"
     
@@ -1094,7 +1114,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     trainable_params = param_stats['trainable_params_list']
     total_trainable_params_val = param_stats['total_trainable']
     
-    log.info(f"Hyperparameters: lm_weight={lm_weight}, kl_base_weight={kl_base_weight}, entropy_weight={entropy_weight}")
+    log.info(f"Hyperparameters: lm_base_weight={lm_base_weight}, kl_base_weight={kl_base_weight}, entropy_weight={entropy_weight}")
     log.info(f"Learning rate: {learning_rate}, Projection LR Multiplier: {projection_lr_multiplier}, Embedding LR Multiplier: {embedding_lr_multiplier}, Prompt LR Multiplier: {prompt_lr_multiplier}")
     log.info(f"Prompt LR Multiplier: {prompt_lr_multiplier}")
     log.info(f"Stop-grad on A′: {config['stop_grad_aprime']}")
@@ -1121,8 +1141,29 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
             )
 
     opt = torch.optim.AdamW(optimizer_groups)
-    # GradScaler enabled only when using CUDA
-    scaler = GradScaler(enabled=(device.type == "cuda"))
+    
+    # Get mixed precision configuration
+    mixed_precision_config = config.get('mixed_precision', {'enabled': True, 'dtype': 'auto'})
+    
+    # Log mixed precision settings
+    if mixed_precision_config.get('enabled', True):
+        dtype_str = mixed_precision_config.get('dtype', 'auto')
+        if dtype_str == 'auto':
+            actual_dtype = 'bfloat16' if torch.cuda.is_bf16_supported() else 'float32'
+            log.info(f"Mixed precision enabled: auto mode will use {actual_dtype}")
+        else:
+            log.info(f"Mixed precision enabled: using {dtype_str}")
+    else:
+        log.info("Mixed precision disabled")
+    
+    # GradScaler setup based on mixed precision config
+    # Only enable scaler for float16 or bfloat16 on CUDA
+    scaler_enabled = (
+        device.type == "cuda" and 
+        mixed_precision_config.get('enabled', True) and
+        mixed_precision_config.get('dtype', 'auto') != 'float32'
+    )
+    scaler = GradScaler(enabled=scaler_enabled)
     
     # Create learning rate scheduler  
     lr_scheduler_config = config.get('lr_scheduler', {'type': 'constant'})
@@ -1259,7 +1300,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                 _log_epoch_token_statistics(epoch_decoded_tokens, tokenizer, current_epoch_num, step, log_interval, log)
 
             epoch_decoded_tokens = [] # Reset for the next epoch
-            step_iter = iter(train_loader)
+            step_iter = iter(train_loader)# the sampler should shuffle, so we do not need to "set_epoch" like in distributed training
             batch = next(step_iter)
 
         # Move batch tensors to device
@@ -1282,7 +1323,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         if is_accumulation_start:
             opt.zero_grad(set_to_none=True)
         
-        ctx = get_autocast_context(device)
+        ctx = get_autocast_context(device, mixed_precision_config)
         with ctx:
             current_tau = get_schedule_value(config['gumbel_tau_schedule'], step, max_steps,
                                             current_epoch, steps_per_epoch)
@@ -1296,14 +1337,15 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                     "tau": current_tau,
                     "T_text": t_text,
                     "alpha": current_alpha,
-                    "lm_weight": lm_weight,
+                    "lm_base_weight": lm_base_weight,
                     "kl_base_weight": kl_base_weight,
                     "entropy_weight": entropy_weight,
                     "mse_weight": config.get('mse_weight', 0.0),
                 },
                 lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'),
                 tokenizer=tokenizer,
-                cached_prefix_ids=cached_prefix_ids
+                cached_prefix_ids=cached_prefix_ids,
+                resample_ablation=config.get('resample_ablation')
             )
             loss = losses["total"]
             
@@ -1419,7 +1461,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                 "loss/entropy": losses["entropy"].item(),
                 "params/tau": current_tau,
                 "params/alpha": current_alpha,
-                "params/lm_w": lm_weight,
+                "params/lm_w": lm_base_weight,
                 "params/kl_w": kl_base_weight,
                 "params/entropy_w": entropy_weight,
                 "optim/lr": lr_current,
@@ -1611,7 +1653,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                     "T_text": t_text,
                     "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps,
                                                current_epoch, steps_per_epoch),
-                    "lm_weight": lm_weight,
+                    "lm_base_weight": lm_base_weight,
                     "kl_base_weight": kl_base_weight,
                     "entropy_weight": entropy_weight,
                 }
@@ -1631,7 +1673,10 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                     generate_continuation=verbose_config.get('generate_continuation', True),
                     continuation_tokens=verbose_config.get('continuation_tokens', 30),
                     return_structured_data=False,
-                    capture_output=True
+                    capture_output=True,
+                    cached_prefix_ids=cached_prefix_ids,  # Pass the cached prefix for loss computation
+                    resample_ablation=config.get('resample_ablation')
+
                 )
                 
                 # Handle return value based on whether we got captured output
@@ -1640,7 +1685,8 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                 if captured_text and current_wandb_run_id:
                     verbose_samples_logger.log_verbose_samples(captured_text, 
                         step=step,
-                        table_name="training_verbose_samples"
+                        table_name="training_verbose_samples",
+                        limit_rows=verbose_config.get('wandb_table_limit', False)
                     )
                 
                 dec.train()

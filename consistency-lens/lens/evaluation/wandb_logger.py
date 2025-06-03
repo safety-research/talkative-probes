@@ -14,7 +14,7 @@ class VerboseSamplesLogger:
         self.verbose_samples_table = None
         self.table_initialized = False
     
-    def log_verbose_samples(self, samples_data: Union[str, List[Dict[str, Any]]], step: int, table_name: str = "verbose_samples") -> None:
+    def log_verbose_samples(self, samples_data: Union[str, List[Dict[str, Any]]], step: int, table_name: str = "verbose_samples", limit_rows: bool = False) -> None:
         """Write verbose-sample information to W&B.
 
         The table now has only:
@@ -63,7 +63,17 @@ class VerboseSamplesLogger:
             self.verbose_samples_table = wandb.Table(columns=columns)
             self.table_initialized = True
         else:
-            new_table = wandb.Table(columns=columns, data=self.verbose_samples_table.data)
+            # Create new table with existing data
+            existing_data = self.verbose_samples_table.data
+            
+            # If limit_rows is enabled, keep only first 1 and last 3 rows
+            if limit_rows and len(existing_data) >= 4:
+                # Keep first row and last 3 rows
+                limited_data = [existing_data[0]] + existing_data[-3:]
+                new_table = wandb.Table(columns=columns, data=limited_data)
+            else:
+                new_table = wandb.Table(columns=columns, data=existing_data)
+            
             self.verbose_samples_table = new_table
 
         self.verbose_samples_table.add_data(step, details_blob)

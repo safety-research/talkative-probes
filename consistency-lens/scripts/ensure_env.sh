@@ -2,7 +2,7 @@
 # Simplified environment setup for multi-node environments using uv
 # This script ensures uv is available and sets up the uv_run helper function
 
-set -e
+#set -e
 
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -39,7 +39,10 @@ fi
 uv_run() {
     cd "$UV_PROJECT_ROOT" && PATH="$HOME/.local/bin:$PATH" UV_CACHE_DIR="$UV_CACHE_DIR" UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" uv run "$@"
 }
-export -f uv_run
+# Try to export function if supported, but don't fail if not
+if [ -n "$BASH_VERSION" ]; then
+    export -f uv_run 2>/dev/null || true
+fi
 
 # Let users know the environment is ready
 if [ -n "$SLURM_JOB_ID" ]; then

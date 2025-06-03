@@ -22,7 +22,8 @@ dependencies = [
     "psutil",
     "gputil",
     "hydra-core>=1.3.2",
-    "omegaconf>=2.3.0"
+    "omegaconf>=2.3.0",
+    "matplotlib>=3.10.3",
 ]
 
 [tool.setuptools]

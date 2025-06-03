@@ -39,9 +39,10 @@ mkdir -p logs
 CONFIG_FILE="${1:-conf/config.yaml}"
 LAYER_IDX="${2:-}"
 USE_PRETOKENIZED="${3:-}"
+NUM_GPUS="${4:-8}"
 
 # Detect number of GPUs allocated
-NUM_GPUS=$(nvidia-smi -L | wc -l)
+#NUM_GPUS=$(nvidia-smi -L | wc -l)
 
 echo "Starting activation dumping on $(hostname)"
 echo "Job ID: $SLURM_JOB_ID"

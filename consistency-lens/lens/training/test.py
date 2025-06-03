@@ -284,6 +284,7 @@ def diagnose_activation_save_load(orig, input_ids, layer_idx, token_pos, device)
         fp16_fp32_out = orig.forward_with_replacement(input_ids, loaded_fp16_to_fp32, layer_idx, token_pos)
         fp16_fp32_logits = fp16_fp32_out.logits[0, token_pos]
         results["fp16_fp32_matches"] = torch.allclose(natural_logits, fp16_fp32_logits, atol=1e-3)
+
     
     return results, fresh_activation
 

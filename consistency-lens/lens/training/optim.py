@@ -13,6 +13,7 @@ def param_groups(
     proj_lr_mult: float = 10.0,
     embedding_lr_mult: float = 1.0,
     prompt_lr_mult: float = 10.0,
+    base_model_lr_mult: float = 1.0,
 ) -> List[dict]:  # noqa: D401
     """Create parameter groups for AdamW.
 
@@ -23,6 +24,8 @@ def param_groups(
         • Parameters whose *name* contains ``embed``, ``prompt_left_emb``, 
           ``prompt_right_emb``, or ``soft_prompt_embeddings`` get
           ``lr * embedding_lr_mult`` — these are the embedding layers and soft prompts.
+        • Parameters whose *name* contains ``base`` get
+          ``lr * base_model_lr_mult`` — these are the base model parameters.
         • Weight-decay is 0.01 for matrix weights, 0.0 for biases / LayerNorm.
 
     The function accepts either a single ``nn.Module`` or a sequence. Only
@@ -53,6 +56,7 @@ def param_groups(
                 ("prompt_right_emb" in n) or 
                 ("soft_prompt_embeddings" in n)
             )
+            is_base_model = ("base" in n)
             
             if is_adapter:
                 lr_scale = proj_lr_mult
@@ -60,6 +64,8 @@ def param_groups(
                 lr_scale = embedding_lr_mult
             elif is_prompt:
                 lr_scale = prompt_lr_mult
+            elif is_base_model:
+                lr_scale = base_model_lr_mult
             else:
                 lr_scale = 1.0
 

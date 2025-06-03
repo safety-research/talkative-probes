@@ -50,11 +50,15 @@ log_interval: "10s"           # Log metrics interval - Examples: "10s", "0.1e", 
 wandb_log_interval: "1s"      # WandB log interval - Examples: "1s", "0.01e", "10steps"
 grad_clip: 1.0
 
+# Update norm calculation (for distributed training)
+compute_update_norm: true     # Whether to compute parameter update norms at optimizer steps
+
 stop_grad_aprime: false
 
 # Decoder parameters
-decoder_prompt: "short explanation of <embed>:"       # Prompt for the Decoder
-lm_loss_natural_prefix: "short explanation of something:"  # Natural language prefix for base model in LM loss
+decoder_prompt: "<|endoftext|>short explanation of <embed>:"       # Prompt for the Decoder
+lm_loss_natural_prefix: "<|endoftext|>short explanation of something:"  # Natural language prefix for base model in LM loss
+encoder_prompt: "<|endoftext|>Summary of the text:"
 # Trainable components configuration
 trainable_components:
   decoder:
@@ -64,6 +68,12 @@ trainable_components:
     embedding_head: false      # Train the input/output embeddings of the base model (may be tied)
     eye_init: true
     trainable_prompts: true   # Train the decoder's soft prompt embeddings
+    use_checkpointing: false  # Use generate_soft_chkpt with gradient checkpointing
+    checkpoint_every_n_tokens: 1          # Checkpoint frequency: 1 = every token (max savings), higher = less frequent
+    use_kv_cache: false       # Use generate_soft_kv_cached for O(n) attention computation (GPT-2 only)
+    use_gumbel_for_LMorig: false  # Use Gumbel-Softmax outputs from decoder to feed the original LM for the LM loss
+    patch_all_layers: false
+    per_layer_projections: false
   encoder:
     base_model: false          # Train the underlying LLM weights of the Encoder
     use_base_model: true      # Use the base model to process the embeddings
@@ -73,7 +83,7 @@ trainable_components:
     soft_prompt_length: 0     # Number of trainable soft prompt tokens (0 to disable)
     trainable_soft_prompt: true  # Whether soft prompt tokens are trainable
     soft_prompt_init_std: 0.1  # Standard deviation for random initialization of soft prompt tokens
-    soft_prompt_init_text: "Summary of the text:"  # Text to initialize soft prompt from (overrides random init, e.g. "reconstruct activation:")
+    soft_prompt_init_text: ${encoder_prompt} # Text to initialize soft prompt from (overrides random init, e.g. "reconstruct activation:")
     output_layer: -1          # Which layer to extract encoder activations from (-1 = last layer, 0 = embeddings, 1..n = specific layer)
 
 # Freeze schedule for non-adapter parameters
@@ -129,6 +139,7 @@ custom_lr_multipliers:
   projection_layers: 1.0 # Set > 1.0 to use a higher LR for these layers.
   embedding_layers: 1.0  # Set different LR for embedding heads (input/output embeddings)
   prompt_layers: 1.0     # Set different LR for prompt layers
+  base_models: 1.0        # Set different LR for base model parameters
 
 # Gumbel-Softmax temperature (tau) schedule
 gumbel_tau_schedule:
@@ -225,7 +236,7 @@ checkpoint:
   delete_old_checkpoints: true    # Delete oldest checkpoints when max_checkpoints reached
 
 # Loss weights
-lm_weight: 1.0                  # Base LM weight; final LM multiplier = lm_weight * alpha_schedule  
+lm_base_weight: 1.0                  # Base LM weight; final LM multiplier = lm_base_weight * alpha_schedule  
 kl_base_weight: 1.0             # Fixed weight on KL divergence (fundamental objective)
 mse_weight: 0.0                 # Weight for MSE reconstruction loss (0.0 to disable, use instead of KL for direct reconstruction)
 
@@ -248,6 +259,9 @@ verbose_samples:
   top_n_predictions: 3          # Number of top predictions to show in analysis
   generate_continuation: true   # Generate autoregressive continuation
   continuation_tokens: 30       # Number of tokens to generate for continuation
+  
+  # WandB table management
+  wandb_table_limit: true       # Keep only first 1 and last 3 rows in wandb table to save memory
   
   # Legacy compatibility (deprecated - use interval instead)
   # interval_type: "steps"      # "steps" or "epochs" - when to print samples
@@ -276,3 +290,19 @@ evaluation:
   split_seed: null      # Seed for train/val split (null = use main config)
   output_dir: null      # Directory to save evaluation results (null = auto-generate)
   save_results: false   # Save evaluation results to JSON file
+
+# ------------------------------------------------------------------
+# Parameter-drift logging
+# ------------------------------------------------------------------
+parameter_drift:
+  enabled: true        # Set false to disable all drift logging
+  interval: "1000s"   # Flexible schedule – examples: "10000s", "1e", "500steps"
+
+run_suffix: ""
+resample_ablation: true
+
+# Mixed precision training configuration
+mixed_precision:
+  enabled: true  # Enable automatic mixed precision
+  dtype: "auto"  # Options: "auto", "float16", "bfloat16", "float32"
+               # "auto" will use bfloat16 if available, otherwise float32 (safest option)

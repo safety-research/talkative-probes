@@ -57,9 +57,9 @@ class OrigWrapper:
             def _swap_hook(_, __, output):  # noqa: ANN001
                 hidden = output[0]
                 if new_activation.dim() == 1:
-                    hidden[:, token_pos] = new_activation.unsqueeze(0)
+                    hidden[:, token_pos] = new_activation.unsqueeze(0).to(hidden.dtype)
                 else:
-                    hidden[:, token_pos] = new_activation  # type: ignore[index]
+                    hidden[:, token_pos] = new_activation.to(hidden.dtype)  # type: ignore[index]
                 return (hidden,) + output[1:]
 
             try:
@@ -118,7 +118,8 @@ class OrigWrapper:
                 batch_indices = torch.arange(hidden.shape[0], device=hidden.device)
                 # Ensure token_positions is 1D - squeeze if needed
                 token_pos = token_positions.squeeze() if token_positions.ndim > 1 else token_positions
-                hidden[batch_indices, token_pos] = new_activations
+                # Ensure dtype matches between source and destination
+                hidden[batch_indices, token_pos] = new_activations.to(hidden.dtype)
                 return (hidden,) + output[1:]
 
             try:

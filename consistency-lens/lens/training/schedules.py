@@ -103,6 +103,16 @@ def get_schedule_value(
         # If num_schedule_steps is different from total_steps, cosine anneals over num_schedule_steps
         cosine_progress = min(1.0, current_step / num_schedule_steps) 
         return end_value + 0.5 * (start_value - end_value) * (1 + math.cos(math.pi * cosine_progress))
+
+    elif schedule_type == "cosine_anneal_after_linear_decay":
+        linear_decay_steps_raw = schedule_config.get("linear_decay_steps")
+        initial_high_lr_raw = schedule_config.get("initial_high_lr")
+        linear_decay_steps = parse_schedule_to_steps(linear_decay_steps_raw, steps_per_epoch)
+        initial_high_lr = float(initial_high_lr_raw)
+        if current_step < linear_decay_steps:
+            return initial_high_lr - progress * (initial_high_lr - start_value)
+        else:
+            return end_value + 0.5 * (start_value - end_value) * (1 + math.cos(math.pi * cosine_progress))
     elif schedule_type == "exponential_decay":
         if start_value <= 0 or end_value <= 0: # Avoid log(0) or issues with negative values
             raise ValueError("Exponential decay requires positive start and end values.")
@@ -247,9 +257,10 @@ def get_lr_scheduler_with_warmup(
             gamma = scheduler_config.get('gamma', 0.95)
             steps_after_warmup = current_step - warmup_steps
             return gamma ** steps_after_warmup
-        
+
         else:
             return 1.0
+            #return get_schedule_value(scheduler_config, current_step, num_training_steps, current_epoch, steps_per_epoch)
     
     return LambdaLR(optimizer, lr_lambda, last_epoch=last_epoch)
 
@@ -340,7 +351,8 @@ def convert_schedule_strings_in_config(value: Any, current_epoch: int = 0, steps
     # List of string values that should NOT be parsed as schedule values
     RESERVED_STRINGS = {"-1", "constant", "linear", "cosine", "cosine_with_restarts", 
                         "polynomial", "exponential", "linear_decay", "linear_warmup", 
-                        "cosine_anneal", "exponential_decay", "linear_decay_after_constant"}
+                        "cosine_anneal", "exponential_decay", "linear_decay_after_constant",
+                        "cosine_anneal_after_linear_decay"}
     
     if isinstance(value, str) and value not in RESERVED_STRINGS:
         # Try to parse as schedule value
@@ -435,31 +447,55 @@ def get_schedule_value_for_logging(spec: Optional[ScheduleSpec]) -> str:
     return f"{spec.value} {spec.unit}"
 
 
-def get_autocast_context(device: torch.device):
-    """Get the appropriate autocast context for the given device.
+def get_autocast_context(device: torch.device, mixed_precision_config: Dict[str, Any] = None):
+    """Get the appropriate autocast context for the given device and mixed precision config.
     
     This function returns a context manager that handles automatic mixed precision
-    casting based on the device type. It avoids code duplication by centralizing
+    casting based on the device type and configuration. It avoids code duplication by centralizing
     the logic for determining the appropriate dtype and context.
     
     Args:
         device: The torch device to use for autocast
+        mixed_precision_config: Dictionary with 'enabled' and 'dtype' keys
+            dtype can be: "auto", "float16", "bfloat16", "float32"
         
     Returns:
-        A context manager for autocast (nullcontext if not CUDA)
+        A context manager for autocast (nullcontext if not enabled or not CUDA)
         
     Example:
-        with get_autocast_context(device):
+        with get_autocast_context(device, config.get('mixed_precision')):
             # Your forward pass code here
             output = model(input)
     """
-    if device.type == "cuda":
-        # Use bfloat16 if supported (better for training stability), otherwise float16
-        preferred_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
-        return autocast(device_type="cuda", dtype=preferred_dtype)
-    else:
-        # No autocast for CPU or other devices
+    # Default config if none provided
+    if mixed_precision_config is None:
+        mixed_precision_config = {'enabled': True, 'dtype': 'auto'}
+    
+    # Check if mixed precision is enabled
+    if not mixed_precision_config.get('enabled', True):
         return nullcontext()
+    
+    # Only use autocast on CUDA devices
+    if device.type != "cuda":
+        return nullcontext()
+    
+    # Determine dtype from config
+    dtype_str = mixed_precision_config.get('dtype', 'auto')
+    
+    if dtype_str == 'auto':
+        # Auto mode: use bfloat16 if available, otherwise float32 (safest)
+        preferred_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
+    elif dtype_str == 'float16':
+        preferred_dtype = torch.float16
+    elif dtype_str == 'bfloat16':
+        preferred_dtype = torch.bfloat16
+    elif dtype_str == 'float32':
+        # No autocast for float32 - return nullcontext
+        return nullcontext()
+    else:
+        raise ValueError(f"Unknown mixed precision dtype: {dtype_str}")
+    
+    return autocast(device_type="cuda", dtype=preferred_dtype)
 
 
 def apply_gradient_scaling(loss, optimizer, scaler, trainable_params, grad_clip, device):

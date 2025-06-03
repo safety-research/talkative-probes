@@ -27,6 +27,6 @@ alpha_schedule:
   value: 1.0
 
 
-lm_weight: 1.0                  # Base LM weight; final LM multiplier = lm_weight * alpha_schedule  
+lm_base_weight: 1.0                  # Base LM weight; final LM multiplier = lm_base_weight * alpha_schedule  
 kl_base_weight: 1.0             # Fixed weight on KL divergence (fundamental objective)
 mse_weight: 0.0

@@ -11,7 +11,9 @@ tokenizer_name: "openai-community/gpt2"
 layer_l: 6                            # Middle layer (GPT-2 has 12 layers, 0-indexed)
 
 # Decoder parameters
-decoder_prompt: "Short explanation of <embed>:"       # Prompt for the Decoder
+decoder_prompt: "<|endoftext|>Short explanation of <embed>. Language, topic, sentiment, claims, speaker, style, etc:"
+encoder_prompt: "<|endoftext|>Summary of the above text, encapsulating the main points and message, style and details:"
+lm_loss_natural_prefix: "<|endoftext|>Short explanation of something. Language, topic, sentiment, claims, speaker, style, etc:"  
 
 # Training hyperparameters
 t_text: 10                            # Number of tokens to generate with the Decoder
@@ -20,10 +22,12 @@ batch_size: 128                     # Can go higher with 8xH100
 
 # Learning rate scheduler
 lr_scheduler:
-  type: "cosine"                      # Cosine annealing works well
+  type: "cosine_anneal"                      # Cosine annealing works well
   warmup_steps: 10 # 1k warmup steps - #OPTIMIZER STEPS, COMPARE TO GRAD_ACCUMULATION_STEPS
   warmup_start_factor: 0.1            # Start at 10% of target LR
   eta_min: 1.0e-5                     # Min LR at end of cosine
+  linear_decay_steps: 3000
+  initial_high_lr: 1.0e-2
 
 # Training duration
 num_train_epochs: 2                   # 2 epochs should be plenty for OpenWebText
@@ -69,7 +73,7 @@ gumbel_tau_schedule:
 alpha_schedule:
   type: "linear_warmup"
   start_value: 0.0
-  end_value: 0.1
+  end_value: 1
   num_steps: 5000                     # Warmup LM constraint over 5k steps
 
 # Activation dumper config for OpenWebText
@@ -119,7 +123,7 @@ checkpoint:
   delete_old_checkpoints: true
 
 # Loss weights
-lm_weight: 1.0                  # Base LM weight; final LM multiplier = lm_weight * alpha_schedule
+lm_base_weight: 1                  # Base LM weight; final LM multiplier = lm_base_weight * alpha_schedule
 kl_base_weight: 1.0
 entropy_weight: 0.000                 # Small entropy bonus
 
