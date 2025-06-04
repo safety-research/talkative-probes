@@ -1,0 +1,321 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1400" height="800" xmlns="http://www.w3.org/2000/svg">
+  <!-- Definitions for gradients and filters -->
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#f8fafc;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#f1f5f9;stop-opacity:1" />
+    </linearGradient>
+    
+    <linearGradient id="blueGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#2563eb;stop-opacity:1" />
+    </linearGradient>
+    
+    <linearGradient id="redGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#ef4444;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#dc2626;stop-opacity:1" />
+    </linearGradient>
+    
+    <linearGradient id="purpleGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#a855f7;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#9333ea;stop-opacity:1" />
+    </linearGradient>
+    
+    <linearGradient id="greenGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#10b981;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#059669;stop-opacity:1" />
+    </linearGradient>
+    
+    <linearGradient id="orangeGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#fb923c;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#f97316;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Shadows and effects -->
+    <filter id="softShadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="0" dy="4" stdDeviation="8" flood-opacity="0.15"/>
+    </filter>
+    
+    <filter id="tokenShadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.1"/>
+    </filter>
+    
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <!-- Arrow markers -->
+    <marker id="arrowhead" markerWidth="12" markerHeight="12" refX="11" refY="6" orient="auto">
+      <polygon points="0 0, 12 6, 0 12" fill="#64748b"/>
+    </marker>
+    
+    <marker id="arrowhead-blue" markerWidth="12" markerHeight="12" refX="11" refY="6" orient="auto">
+      <polygon points="0 0, 12 6, 0 12" fill="#3b82f6"/>
+    </marker>
+    
+    <marker id="arrowhead-orange" markerWidth="12" markerHeight="12" refX="11" refY="6" orient="auto">
+      <polygon points="0 0, 12 6, 0 12" fill="#f97316"/>
+    </marker>
+    
+    <marker id="arrowhead-red" markerWidth="12" markerHeight="12" refX="11" refY="6" orient="auto">
+      <polygon points="0 0, 12 6, 0 12" fill="#dc2626"/>
+    </marker>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="1400" height="800" fill="url(#bgGradient)"/>
+  
+  <!-- Title -->
+  <text x="650" y="35" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="30" font-weight="700" fill="#0f172a">
+    Talkative Probes
+  </text>
+  <text x="650" y="58" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="15" fill="#64748b">
+    trained with a 'consistency lens' + optional language modelling term
+  </text>
+  
+  <!-- Legend Box (moved to avoid overlap) -->
+  <g id="legend" transform="translate(1150, 80)">
+    <rect x="0" y="0" width="200" height="150" rx="12" fill="white" stroke="#e2e8f0" stroke-width="1.5" filter="url(#softShadow)"/>
+    <text x="100" y="20" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="600" fill="#1e293b">Legend</text>
+    
+    <!-- Trainable prefix (decoder) -->
+    <g transform="translate(15, 35)">
+      <rect x="0" y="0" width="20" height="20" rx="3" fill="#9333ea" fill-opacity="0.2" stroke="#9333ea" stroke-width="2" stroke-dasharray="3,2"/>
+      <text x="28" y="14" font-family="system-ui, -apple-system, sans-serif" font-size="10" fill="#475569">Decoder prefix (trainable)</text>
+    </g>
+    
+    <!-- Trainable prefix/postfix (encoder) -->
+    <g transform="translate(15, 60)">
+      <rect x="0" y="0" width="20" height="20" rx="3" fill="#059669" fill-opacity="0.2" stroke="#059669" stroke-width="2" stroke-dasharray="3,2"/>
+      <text x="28" y="14" font-family="system-ui, -apple-system, sans-serif" font-size="10" fill="#475569">Encoder pre/postfix (trainable)</text>
+    </g>
+    
+    <!-- Affine Layer -->
+    <rect x="15" y="88" width="30" height="10" rx="2" fill="#6366f1"/>
+    <text x="50" y="96" font-family="system-ui, -apple-system, sans-serif" font-size="10" fill="#475569">Affine layer (trainable)</text>
+    
+    <!-- Frozen -->
+    <rect x="15" y="108" width="20" height="20" rx="4" fill="#e2e8f0" stroke="#94a3b8" stroke-width="1"/>
+    <text x="43" y="120" font-family="system-ui, -apple-system, sans-serif" font-size="10" fill="#475569">Frozen Component</text>
+  </g>
+  
+  <!-- Main content area -->
+  <g transform="translate(0, 120)">
+    <!-- Left: LLM Forward Pass -->
+    <g id="llm-section" transform="translate(50, 180)">
+      <!-- Forward pass container -->
+      <rect x="0" y="0" width="200" height="360" rx="16" fill="white" stroke="#e2e8f0" stroke-width="2" filter="url(#softShadow)"/>
+      <text x="100" y="25" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="15" font-weight="600" fill="#1e293b">LLM Forward Pass</text>
+      
+      <!-- Layer stack -->
+      <g transform="translate(30, 45)">
+        <!-- Bottom layers (frozen) -->
+        <rect x="0" y="265" width="140" height="35" rx="8" fill="#e2e8f0" stroke="#94a3b8" stroke-width="1"/>
+        <text x="70" y="287" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" fill="#475569">Layers 1 to L-2</text>
+        
+        <rect x="0" y="220" width="140" height="35" rx="8" fill="#e2e8f0" stroke="#94a3b8" stroke-width="1"/>
+        <text x="70" y="242" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" fill="#475569">Layer L-1</text>
+        
+        <!-- Target layer -->
+        <g>
+          <rect x="-10" y="155" width="160" height="50" rx="10" fill="url(#redGradient)" stroke="#dc2626" stroke-width="2" filter="url(#softShadow)"/>
+          <text x="70" y="177" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="white">Layer L</text>
+          <text x="70" y="193" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="#fecaca">Extract A here</text>
+        </g>
+        
+        <!-- Top layers (frozen) -->
+        <rect x="0" y="100" width="140" height="35" rx="8" fill="#e2e8f0" stroke="#94a3b8" stroke-width="1"/>
+        <text x="70" y="122" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" fill="#475569">Layers L+1...</text>
+        
+        <rect x="0" y="55" width="140" height="35" rx="8" fill="#e2e8f0" stroke="#94a3b8" stroke-width="1"/>
+        <text x="70" y="77" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" fill="#475569">Layers L+2 to N-1</text>
+        
+        <rect x="0" y="10" width="140" height="35" rx="8" fill="#e2e8f0" stroke="#94a3b8" stroke-width="1"/>
+        <text x="70" y="32" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" fill="#475569">Layer N</text>
+      </g>
+      
+      <!-- Vertical flow arrow (upward through layers) -->
+      <path d="M 100 340 L 100 60" stroke="#64748b" stroke-width="3" fill="none" marker-end="url(#arrowhead)" opacity="0.4"/>
+    </g>
+    
+    <!-- Input tokens below LLM -->
+    <g transform="translate(30, 560)">
+      <g transform="translate(-10, 0)">
+        <rect x="0" y="0" width="36" height="33" rx="8" fill="#94a3b8" filter="url(#tokenShadow)"/>
+        <text x="18" y="22" text-anchor="middle" font-family="monospace" font-size="10" fill="white">My</text>
+        
+        <rect x="44" y="0" width="60" height="33" rx="8" fill="#94a3b8" filter="url(#tokenShadow)"/>
+        <text x="74" y="22" text-anchor="middle" font-family="monospace" font-size="10" fill="white">favorite</text>
+        
+        <rect x="112" y="0" width="50" height="33" rx="8" fill="#94a3b8" filter="url(#tokenShadow)"/>
+        <text x="137" y="22" text-anchor="middle" font-family="monospace" font-size="10" fill="white">animal</text>
+        
+        <rect x="170" y="0" width="24" height="33" rx="8" fill="#94a3b8" filter="url(#tokenShadow)"/>
+        <text x="182" y="22" text-anchor="middle" font-family="monospace" font-size="10" fill="white">is</text>
+        
+        <rect x="202" y="0" width="24" height="33" rx="8" fill="url(#redGradient)" filter="url(#softShadow)"/>
+        <text x="214" y="22" text-anchor="middle" font-family="monospace" font-size="10" font-weight="600" fill="white">a</text>
+        
+        <rect x="234" y="0" width="40" height="33" rx="8" fill="#94a3b8" filter="url(#tokenShadow)"/>
+        <text x="254" y="22" text-anchor="middle" font-family="monospace" font-size="10" fill="white">dog</text>
+      </g>
+    </g>
+    
+    <!-- Activation A -->
+    <g transform="translate(320, 360)">
+      <circle cx="0" cy="0" r="38" fill="url(#redGradient)" filter="url(#glow)"/>
+      <text x="0" y="7" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="22" font-weight="700" fill="white">A</text>
+      <text x="0" y="-52" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#64748b">Activation at position P</text>
+      
+      <!-- Arrow from layer -->
+      <path d="M -70 0 L -38 0" stroke="#dc2626" stroke-width="3" marker-end="url(#arrowhead-red)"/>
+    </g>
+    
+    <!-- Encoder-Decoder Loop (anticlockwise with vertical arrangement) -->
+    <g id="loop" transform="translate(440, 180)">
+      <!-- Loop container -->
+      <rect x="0" y="0" width="400" height="380" rx="20" fill="white" stroke="#e2e8f0" stroke-width="2" stroke-dasharray="8,4" filter="url(#softShadow)"/>
+      <text x="200" y="25" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="15" font-weight="600" fill="#64748b">Encoder-Decoder Loop</text>
+      
+      <!-- Decoder (bottom) -->
+      <g transform="translate(40, 260)">
+        <rect x="0" y="0" width="120" height="70" rx="12" fill="url(#purpleGradient)" filter="url(#softShadow)"/>
+        <text x="60" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="17" font-weight="600" fill="white">Decoder</text>
+        <text x="60" y="50" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" fill="#e9d5ff">D (all layers at P?)</text>
+      </g>
+      
+      <!-- Encoder (top, aligned with decoder) -->
+      <g transform="translate(40, 60)">
+        <rect x="0" y="0" width="120" height="70" rx="12" fill="url(#greenGradient)" filter="url(#softShadow)"/>
+        <text x="60" y="30" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="17" font-weight="600" fill="white">Encoder</text>
+        <text x="60" y="50" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" fill="#d1fae5">E (layer L')</text>
+      </g>
+      
+      <!-- Natural Language tokens (center, adjusted to fit inside box) -->
+      <g transform="translate(160, 160)">
+        <g transform="translate(0, 5)">
+          <!-- Encoder prefixes (half height, top half) -->
+          <rect x="-25" y="0" width="20" height="18" rx="3" fill="#059669" fill-opacity="0.4" stroke="#059669" stroke-width="2" stroke-dasharray="3,2"/>
+          <rect x="0" y="0" width="20" height="18" rx="3" fill="#059669" fill-opacity="0.4" stroke="#059669" stroke-width="2" stroke-dasharray="3,2"/>
+          <rect x="25" y="0" width="20" height="18" rx="3" fill="#059669" fill-opacity="0.4" stroke="#059669" stroke-width="2" stroke-dasharray="3,2"/>
+          
+          <!-- Decoder prefixes (half height, bottom half) -->
+          <rect x="-25" y="18" width="20" height="18" rx="3" fill="#9333ea" fill-opacity="0.2" stroke="#9333ea" stroke-width="2" stroke-dasharray="3,2"/>
+          <rect x="0" y="18" width="20" height="18" rx="3" fill="red" fill-opacity="1" stroke="#9333ea" stroke-width="2" stroke-dasharray="3,2"/>
+          <rect x="25" y="18" width="20" height="18" rx="3" fill="#9333ea" fill-opacity="0.2" stroke="#9333ea" stroke-width="2" stroke-dasharray="3,2"/>
+          
+          <!-- Natural language tokens (different color for intermediate representation) -->
+          <rect x="53" y="0" width="38" height="36" rx="8" fill="#f59e0b" filter="url(#tokenShadow)"/>
+          <text x="72" y="24" text-anchor="middle" font-family="monospace" font-size="10" fill="white">tok₁</text>
+          
+          <rect x="99" y="0" width="38" height="36" rx="8" fill="#f59e0b" filter="url(#tokenShadow)"/>
+          <text x="118" y="24" text-anchor="middle" font-family="monospace" font-size="10" fill="white">tok₂</text>
+          
+          <rect x="145" y="0" width="38" height="36" rx="8" fill="#f59e0b" filter="url(#tokenShadow)"/>
+          <text x="164" y="24" text-anchor="middle" font-family="monospace" font-size="10" fill="white">...</text>
+          
+          <!-- Encoder postfixes (half height, top half) -->
+          <rect x="191" y="0" width="20" height="18" rx="3" fill="#059669" fill-opacity="0.4" stroke="#059669" stroke-width="2" stroke-dasharray="3,2"/>
+        </g>
+      </g>
+      
+      <!-- Anticlockwise flow arrows with linear layers -->
+      <!-- A to Decoder with linear layer (starting from edge of A) -->
+      <g>
+        <path d="M -80 180 L -80 295 L 40 295" stroke="#64748b" stroke-width="2.5" fill="none" marker-end="url(#arrowhead)"/>
+        <!-- Affine layer box -->
+        <rect x="-40" y="290" width="40" height="10" rx="2" fill="#6366f1"/>
+      </g>
+      
+      <!-- Decoder to NL tokens (rightward then up to tok_2) -->
+      <path d="M 160 295 L 270 295 L 270 201" stroke="#64748b" stroke-width="2.5" fill="none" marker-end="url(#arrowhead)"/>
+      
+      <!-- NL tokens to Encoder (up from top of tokens, then left, entering at bottom) -->
+      <path d="M 270 165 L 270 120 L 160 120" stroke="#64748b" stroke-width="2.5" fill="none" marker-end="url(#arrowhead)"/>
+      
+      <!-- Encoder output exits the loop (from top of encoder) -->
+      <path d="M 160 80 L 400 80" stroke="#64748b" stroke-width="2.5" fill="none"/>
+    </g>
+    
+    <!-- Connection from encoder output to Â with affine layer -->
+    <g>
+      <!-- Path from encoder exit point to Â -->
+      <path d="M 840 260 L 920 260" stroke="#64748b" stroke-width="2.5" fill="none"/>
+      
+      <!-- Affine layer on the path -->
+      <rect x="900" y="255" width="40" height="10" rx="2" fill="#6366f1"/>
+      
+      <!-- Continue from affine layer to Â -->
+      <path d="M 940 260 L 982 260" stroke="#64748b" stroke-width="2.5" fill="none" marker-end="url(#arrowhead)"/>
+    </g>
+    
+    <!-- Reconstructed Â (aligned with encoder output) -->
+    <g transform="translate(1020, 260)">
+      <circle cx="0" cy="0" r="38" fill="url(#redGradient)" stroke="#dc2626" stroke-width="3" stroke-dasharray="6,3" filter="url(#glow)"/>
+      <text x="0" y="7" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="22" font-weight="700" fill="white">Â</text>
+      <text x="0" y="50" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="12" font-weight="500" fill="#64748b">Reconstructed</text>
+    </g>
+    
+    <!-- Parallel forward passes going up -->
+    <!-- Forward pass from A -->
+    <g transform="translate(320, 20)">
+      <path d="M 0 302 L 0 90" stroke="#3b82f6" stroke-width="3" fill="none" marker-end="url(#arrowhead-blue)"/>
+      <rect x="-90" y="20" width="180" height="65" rx="12" fill="url(#blueGradient)" filter="url(#softShadow)"/>
+      <text x="0" y="45" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="white">Forward with A</text>
+      <text x="0" y="65" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="#dbeafe">P(tok_{p+1} | context, A)</text>
+      
+      <!-- Token probabilities -->
+      <g transform="translate(-65, -20)">
+        <rect x="0" y="0" width="38" height="30" rx="6" fill="#22c55e" filter="url(#tokenShadow)"/>
+        <text x="19" y="20" text-anchor="middle" font-family="monospace" font-size="10" fill="white">cat</text>
+        
+        <rect x="46" y="0" width="38" height="30" rx="6" fill="#22c55e" opacity="0.7" filter="url(#tokenShadow)"/>
+        <text x="65" y="20" text-anchor="middle" font-family="monospace" font-size="10" fill="white">dog</text>
+        
+        <rect x="92" y="0" width="38" height="30" rx="6" fill="#22c55e" opacity="0.5" filter="url(#tokenShadow)"/>
+        <text x="111" y="20" text-anchor="middle" font-family="monospace" font-size="10" fill="white">bird</text>
+        
+        <text x="142" y="20" font-family="system-ui, -apple-system, sans-serif" font-size="13" fill="#94a3b8">...</text>
+      </g>
+    </g>
+    
+    <!-- Forward pass from Â (parallel) -->
+    <g transform="translate(1020, 20)">
+      <path d="M 0 202 L 0 90" stroke="#f97316" stroke-width="3" fill="none" marker-end="url(#arrowhead-orange)"/>
+      <rect x="-90" y="20" width="180" height="65" rx="12" fill="url(#orangeGradient)" filter="url(#softShadow)"/>
+      <text x="0" y="45" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="600" fill="white">Forward with Â</text>
+      <text x="0" y="65" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="11" fill="#fed7aa">P(tok_{p+1} | context, Â)</text>
+      
+      <!-- Token probabilities -->
+      <g transform="translate(-65, -20)">
+        <rect x="0" y="0" width="38" height="30" rx="6" fill="#f97316" filter="url(#tokenShadow)"/>
+        <text x="19" y="20" text-anchor="middle" font-family="monospace" font-size="10" fill="white">cat</text>
+        
+        <rect x="46" y="0" width="38" height="30" rx="6" fill="#f97316" opacity="0.7" filter="url(#tokenShadow)"/>
+        <text x="65" y="20" text-anchor="middle" font-family="monospace" font-size="10" fill="white">rat</text>
+        
+        <rect x="92" y="0" width="38" height="30" rx="6" fill="#f97316" opacity="0.5" filter="url(#tokenShadow)"/>
+        <text x="111" y="20" text-anchor="middle" font-family="monospace" font-size="10" fill="white">dog</text>
+        
+        <text x="142" y="20" font-family="system-ui, -apple-system, sans-serif" font-size="13" fill="#94a3b8">...</text>
+      </g>
+    </g>
+    
+    <!-- KL Divergence between the two outputs -->
+    <g transform="translate(640, 0)">
+      <circle cx="0" cy="0" r="38" fill="url(#redGradient)" filter="url(#softShadow)"/>
+      <text x="0" y="6" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="24" font-weight="700" fill="white">KL</text>
+      <text x="0" y="50" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="500" fill="#dc2626">Divergence</text>
+      
+      <!-- Horizontal arrows from outputs to KL -->
+      <path d="M -210 55 L -38 38" stroke="#3b82f6" stroke-width="2.5" fill="none" marker-end="url(#arrowhead-blue)"/>
+      <path d="M 380 55 L 38 38" stroke="#f97316" stroke-width="2.5" fill="none" marker-end="url(#arrowhead-orange)"/>
+    </g>
+  </g>
+</svg>

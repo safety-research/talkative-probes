@@ -989,9 +989,9 @@ def main(cfg: DictConfig) -> None:
     # --- Timer for Model Setup ---
     with Timer("Model Setup (Init, DDP)", log, main_process=is_main()):
         # Extract trainable components configuration
-        trainable_components_config = config.get('trainable_components', {})
-        decoder_train_cfg = trainable_components_config.get('decoder', {})
-        encoder_train_cfg = trainable_components_config.get('encoder', {})
+        trainable_components_config = config['trainable_components']
+        decoder_train_cfg = trainable_components_config['decoder']
+        encoder_train_cfg = trainable_components_config['encoder']
         
         # Initialize models using the same pattern as the regular training script
         decoder_config_obj = DecoderConfig(
@@ -1462,6 +1462,11 @@ def main(cfg: DictConfig) -> None:
     # Zero gradients at start
     optimizer.zero_grad(set_to_none=True)
     iter_loader = iter(train_loader)
+
+    decoder.train()
+    encoder.train()
+    orig_model.model.eval() # leave in validation mode?
+
     # Main training loop
     for step in range(start_step, max_steps):
         step_start_time = time.time()

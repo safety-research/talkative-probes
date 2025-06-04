@@ -287,6 +287,141 @@ def _process_and_print_verbose_batch_samples(
         cached_prefix_ids=cached_prefix_ids
     )
 
+def evaluate_custom_strings(
+    strings: List[str],
+    models: Dict[str, torch.nn.Module],
+    orig: OrigWrapper,
+    cfg: Dict[str, Any],
+    device: torch.device,
+    tok: PreTrainedTokenizerBase,
+    log: logging.Logger,
+) -> Dict[str, Any]:
+    """Evaluates the lens on custom input strings.
+    
+    Args:
+        strings: List of strings to analyze
+        models: Dictionary containing 'dec' and 'enc' models
+        orig: Original model wrapper
+        cfg: Configuration dictionary
+        device: Device to run on
+        tok: Tokenizer
+        log: Logger
+        
+    Returns:
+        Dictionary with analysis results for each string
+    """
+    models["dec"].eval()
+    models["enc"].eval()
+    
+    results = []
+    layer_l = cfg.get('layer_l', 5)
+    
+    for idx, text in enumerate(strings):
+        log.info(f"Processing string {idx+1}/{len(strings)}: '{text[:50]}{'...' if len(text) > 50 else ''}'")
+        
+        # Tokenize the input
+        inputs = tok(text, return_tensors="pt", padding=True, truncation=True, max_length=512)
+        input_ids = inputs.input_ids.to(device)
+        
+        # Get activations at layer L
+        with torch.no_grad():
+            # Run through original model to get activations
+            orig_outputs = orig.model(input_ids, output_hidden_states=True)
+            hidden_states = orig_outputs.hidden_states
+            
+            # Extract activation at layer L
+            # Note: hidden_states includes embedding layer, so layer L is at index L+1
+            # Get the last token position by default
+            seq_len = input_ids.shape[1]
+            last_pos = seq_len - 1
+            A = hidden_states[layer_l + 1][:, last_pos, :]  # Shape: (1, hidden_size)
+            
+            # Also get the full sequence for potential position analysis
+            A_full_seq = hidden_states[layer_l + 1]  # Shape: (1, seq_len, hidden_size)
+        
+        # Generate explanation through decoder
+        tau = cfg.get("gumbel_tau_schedule", {}).get("end_value", 1.0)
+        T_text = cfg.get("t_text", 5)
+        
+        # Use the same generation method as in training
+        if models["dec"].config.use_flash_attention:
+            gen = models["dec"].generate_soft_kv_flash(A, max_length=T_text, gumbel_tau=tau)
+        elif models["dec"].config.use_kv_cache:
+            gen = models["dec"].generate_soft_kv_cached(A, max_length=T_text, gumbel_tau=tau)
+        else:
+            gen = models["dec"].generate_soft(A, max_length=T_text, gumbel_tau=tau)
+        
+        # Get reconstruction
+        A_hat = models["enc"](gen.generated_text_embeddings)
+        
+        # Decode the generated tokens
+        generated_tokens = gen.hard_token_ids[0].cpu().tolist()
+        generated_text = tok.decode(generated_tokens, skip_special_tokens=True)
+        
+        # Compute reconstruction error
+        mse = torch.nn.functional.mse_loss(A, A_hat).item()
+        
+        # Get predictions from original vs reconstructed
+        with torch.no_grad():
+            # Original model's next token prediction
+            orig_logits = orig.model(input_ids).logits[0, -1, :]  # Last position
+            orig_probs = torch.softmax(orig_logits, dim=-1)
+            
+            # To get reconstructed predictions, we need to inject A_hat back
+            # This requires using the model's forward with custom hidden states
+            # For now, we'll compute cosine similarity as a proxy
+            cosine_sim = torch.nn.functional.cosine_similarity(A, A_hat, dim=-1).mean().item()
+        
+        # Analyze multiple positions if requested
+        position_results = []
+        num_positions = min(5, A_full_seq.shape[1])  # Analyze up to 5 positions
+        
+        for pos in range(num_positions):
+            A_pos = A_full_seq[:, pos, :].unsqueeze(0)
+            
+            # Generate for this position
+            if models["dec"].config.use_flash_attention:
+                gen_pos = models["dec"].generate_soft_kv_flash(A_pos, max_length=T_text, gumbel_tau=tau)
+            elif models["dec"].config.use_kv_cache:
+                gen_pos = models["dec"].generate_soft_kv_cached(A_pos, max_length=T_text, gumbel_tau=tau)
+            else:
+                gen_pos = models["dec"].generate_soft(A_pos, max_length=T_text, gumbel_tau=tau)
+            
+            pos_tokens = gen_pos.hard_token_ids[0].cpu().tolist()
+            pos_text = tok.decode(pos_tokens, skip_special_tokens=True)
+            
+            position_results.append({
+                'position': pos,
+                'token': tok.decode([input_ids[0, pos].item()]) if pos < len(input_ids[0]) else '<pad>',
+                'explanation': pos_text
+            })
+        
+        # Get the token at the analyzed position
+        analyzed_token = tok.decode([input_ids[0, last_pos].item()])
+        
+        result = {
+            'input_text': text,
+            'input_length': len(input_ids[0]),
+            'layer': layer_l,
+            'analyzed_position': last_pos,
+            'analyzed_token': analyzed_token,
+            'main_explanation': generated_text,
+            'reconstruction_mse': mse,
+            'cosine_similarity': cosine_sim,
+            'position_analyses': position_results,
+            'generated_token_ids': generated_tokens,
+        }
+        
+        results.append(result)
+        
+        # Print summary
+        log.info(f"  Analyzed token: '{analyzed_token}' at position {last_pos}")
+        log.info(f"  Explanation: {generated_text}")
+        log.info(f"  MSE: {mse:.6f}, Cosine Sim: {cosine_sim:.4f}")
+    
+    return {'string_analyses': results}
+
+
 def _evaluate_model(
     loader: DataLoader,
     models: Dict[str, torch.nn.Module],
@@ -444,44 +579,82 @@ def main(hcfg: DictConfig) -> None:
         log.warning("Checkpoint has no config metadata (old format?), using current config values")
         models_dict['dec'].set_prompt(cfg.get('decoder_prompt', 'Explain: '), tok)
 
-    # Determine activation directory
-    base_eval_act_dir_str = eval_cfg.get('activation_dir') or cfg.get("val_activation_dir")
-    layer_l = cfg.get('layer_l')
+    # Check if custom strings are provided
+    custom_strings = eval_cfg.get('custom_strings', [])
+    custom_strings_file = eval_cfg.get('custom_strings_file', None)
     
-    effective_act_dir: str | None = None
-    if base_eval_act_dir_str:
-        base_path = resolve_path(base_eval_act_dir_str)
-        model_name_clean = cfg['model_name'].replace("/", "_")
-        effective_act_dir = str(base_path.parent / model_name_clean / f"layer_{layer_l}" / base_path.name)
-
-    if not effective_act_dir:
-        log.critical("No effective activation directory could be determined for evaluation. Exiting.")
-        return
-
-    # Extract dataset info
-    dataset_info = extract_dataset_info(effective_act_dir)
+    # Load strings from file if provided
+    if custom_strings_file:
+        strings_path = Path(custom_strings_file)
+        if strings_path.exists():
+            with open(strings_path, 'r') as f:
+                file_strings = [line.strip() for line in f if line.strip()]
+                custom_strings.extend(file_strings)
+                log.info(f"Loaded {len(file_strings)} strings from {custom_strings_file}")
+        else:
+            log.warning(f"Custom strings file not found: {custom_strings_file}")
     
-    # Log evaluation info
-    log.info("=" * 60)
-    log.info("EVALUATION INFO")
-    log.info("=" * 60)
-    log.info(f"Checkpoint: {checkpoint_path}")
-    log.info(f"Run Name: {ckpt_info['run_name']}")
-    log.info(f"Step: {ckpt_info.get('step', 'unknown')}")
-    log.info(f"Dataset: {dataset_info.get('dataset', 'unknown')}")
-    log.info(f"Model: {dataset_info.get('model_name', 'unknown')}")
-    log.info(f"Layer: {dataset_info.get('layer', 'unknown')}")
-    log.info(f"Split: {dataset_info.get('split', 'unknown')}")
-    log.info("=" * 60)
-    
-    loader = _prepare_data(cfg, effective_act_dir, log)
+    # If custom strings are provided, evaluate them instead of dataset
+    if custom_strings:
+        layer_l = cfg.get('layer_l')
+        log.info("=" * 60)
+        log.info("CUSTOM STRING EVALUATION")
+        log.info("=" * 60)
+        log.info(f"Checkpoint: {checkpoint_path}")
+        log.info(f"Run Name: {ckpt_info['run_name']}")
+        log.info(f"Step: {ckpt_info.get('step', 'unknown')}")
+        log.info(f"Number of strings: {len(custom_strings)}")
+        log.info(f"Layer: {layer_l}")
+        log.info("=" * 60)
+        
+        results = evaluate_custom_strings(
+            custom_strings, models_dict, orig_model, cfg, device, tok, log
+        )
+        
+        # Add metadata
+        results['mode'] = 'custom_strings'
+        results['num_strings'] = len(custom_strings)
+    else:
+        # Normal dataset evaluation
+        # Determine activation directory
+        base_eval_act_dir_str = eval_cfg.get('activation_dir') or cfg.get("val_activation_dir")
+        layer_l = cfg.get('layer_l')
+        
+        effective_act_dir: str | None = None
+        if base_eval_act_dir_str:
+            base_path = resolve_path(base_eval_act_dir_str)
+            model_name_clean = cfg['model_name'].replace("/", "_")
+            effective_act_dir = str(base_path.parent / model_name_clean / f"layer_{layer_l}" / base_path.name)
 
-    results = _evaluate_model(loader, models_dict, orig_model, cfg, device, tok, log)
+        if not effective_act_dir:
+            log.critical("No effective activation directory could be determined for evaluation. Exiting.")
+            return
+            
+        # Extract dataset info
+        dataset_info = extract_dataset_info(effective_act_dir)
+        
+        # Log evaluation info
+        log.info("=" * 60)
+        log.info("EVALUATION INFO")
+        log.info("=" * 60)
+        log.info(f"Checkpoint: {checkpoint_path}")
+        log.info(f"Run Name: {ckpt_info['run_name']}")
+        log.info(f"Step: {ckpt_info.get('step', 'unknown')}")
+        log.info(f"Dataset: {dataset_info.get('dataset', 'unknown')}")
+        log.info(f"Model: {dataset_info.get('model_name', 'unknown')}")
+        log.info(f"Layer: {dataset_info.get('layer', 'unknown')}")
+        log.info(f"Split: {dataset_info.get('split', 'unknown')}")
+        log.info("=" * 60)
+        
+        loader = _prepare_data(cfg, effective_act_dir, log)
+
+        results = _evaluate_model(loader, models_dict, orig_model, cfg, device, tok, log)
+        results['dataset_info'] = dataset_info
+        results['mode'] = 'dataset'
     
     # Add metadata to results
     results['checkpoint_path'] = str(checkpoint_path)
     results['checkpoint_info'] = ckpt_info
-    results['dataset_info'] = dataset_info
     results['eval_config'] = eval_cfg
     results['timestamp'] = datetime.now().isoformat()
     
@@ -500,13 +673,30 @@ def main(hcfg: DictConfig) -> None:
             f.write(f"Checkpoint: {checkpoint_path}\n")
             f.write(f"Run Name: {ckpt_info['run_name']}\n")
             f.write(f"Step: {ckpt_info.get('step', 'unknown')}\n")
-            f.write(f"Dataset: {dataset_info.get('dataset', 'unknown')}/{dataset_info.get('split', 'unknown')}\n")
-            f.write(f"Model: {dataset_info.get('model_name', 'unknown')} (Layer {dataset_info.get('layer', 'unknown')})\n")
-            f.write(f"\nResults:\n")
-            f.write(f"--------\n")
-            f.write(f"Average Loss: {results['avg_loss']:.6f}\n")
-            f.write(f"Total Samples: {results['total_samples']}\n")
-            f.write(f"Timestamp: {results['timestamp']}\n")
+            
+            if results.get('mode') == 'custom_strings':
+                f.write(f"Mode: Custom String Analysis\n")
+                f.write(f"Number of strings: {results.get('num_strings', 0)}\n")
+                f.write(f"Layer: {cfg.get('layer_l', 'unknown')}\n")
+                f.write(f"\nString Analyses:\n")
+                f.write(f"----------------\n")
+                
+                if 'string_analyses' in results:
+                    for i, analysis in enumerate(results['string_analyses']):
+                        f.write(f"\n{i+1}. Input: {analysis['input_text'][:50]}{'...' if len(analysis['input_text']) > 50 else ''}\n")
+                        f.write(f"   Analyzed token: '{analysis['analyzed_token']}' at position {analysis['analyzed_position']}\n")
+                        f.write(f"   Explanation: {analysis['main_explanation']}\n")
+                        f.write(f"   MSE: {analysis['reconstruction_mse']:.6f}, Cosine Sim: {analysis['cosine_similarity']:.4f}\n")
+            else:
+                dataset_info = results.get('dataset_info', {})
+                f.write(f"Dataset: {dataset_info.get('dataset', 'unknown')}/{dataset_info.get('split', 'unknown')}\n")
+                f.write(f"Model: {dataset_info.get('model_name', 'unknown')} (Layer {dataset_info.get('layer', 'unknown')})\n")
+                f.write(f"\nResults:\n")
+                f.write(f"--------\n")
+                f.write(f"Average Loss: {results.get('avg_loss', 0.0):.6f}\n")
+                f.write(f"Total Samples: {results.get('total_samples', 0)}\n")
+            
+            f.write(f"\nTimestamp: {results['timestamp']}\n")
         
         log.info(f"Saved evaluation summary to: {summary_file}")
 

@@ -74,6 +74,7 @@ trainable_components:
     use_gumbel_for_LMorig: false  # Use Gumbel-Softmax outputs from decoder to feed the original LM for the LM loss
     patch_all_layers: false
     per_layer_projections: false
+    use_dropout: false        # Whether to use dropout during training (False = deterministic, recommended for frozen models)
   encoder:
     base_model: false          # Train the underlying LLM weights of the Encoder
     use_base_model: true      # Use the base model to process the embeddings
@@ -85,6 +86,7 @@ trainable_components:
     soft_prompt_init_std: 0.1  # Standard deviation for random initialization of soft prompt tokens
     soft_prompt_init_text: ${encoder_prompt} # Text to initialize soft prompt from (overrides random init, e.g. "reconstruct activation:")
     output_layer: -1          # Which layer to extract encoder activations from (-1 = last layer, 0 = embeddings, 1..n = specific layer)
+    use_dropout: false        # Whether to use dropout during training (False = deterministic, recommended for frozen models)
 
 # Freeze schedule for non-adapter parameters
 # When enabled, non-adapter parameters (base_model, output_head, embedding_head) will be frozen
@@ -291,6 +293,11 @@ evaluation:
   split_seed: null      # Seed for train/val split (null = use main config)
   output_dir: null      # Directory to save evaluation results (null = auto-generate)
   save_results: false   # Save evaluation results to JSON file
+  
+  # Custom string evaluation options (for analyzing arbitrary text)
+  custom_strings: []       # List of strings to analyze, e.g., ["Hello world", "Test string"]
+  custom_strings_file: null  # Path to file containing strings (one per line)
+  analyze_positions: "last"  # Which positions to analyze: "last", "all", "first", or list of indices
 
 # ------------------------------------------------------------------
 # Parameter-drift logging

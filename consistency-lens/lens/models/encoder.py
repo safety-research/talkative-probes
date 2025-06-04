@@ -5,6 +5,7 @@ from torch import nn
 from transformers import AutoModelForCausalLM, PreTrainedModel
 from dataclasses import dataclass
 import logging
+from contextlib import contextmanager
 __all__ = ["Encoder", "EncoderConfig"]
 
 log = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ class EncoderConfig:
     soft_prompt_init_std: float = 0.1   # YAML `soft_prompt_init_std` - standard deviation for random initialization
     soft_prompt_init_text: str | None = None  # YAML `soft_prompt_init_text` - text to initialize from (overrides random init)
     output_layer: int = -1           # YAML `output_layer` - which layer to extract activations from (-1 = last layer)
+    use_dropout: bool = True         # YAML `use_dropout` - whether to use dropout during training (False = deterministic)
     
     def __post_init__(self):
         """Validate configuration parameters."""
@@ -102,6 +104,7 @@ class Encoder(nn.Module):
 
         # Initialize soft prompt tokens
         self.soft_prompt_embeddings = None
+        self.soft_prompt_embeddings_postfix = None
         self.cfg = cfg  # Store config for later use in set_soft_prompt_from_text
         
         # If text initialization is specified, we'll set the length based on the text
@@ -118,7 +121,7 @@ class Encoder(nn.Module):
             log.info(f"Initialized {cfg.soft_prompt_length} soft prompt tokens for encoder "
                     f"(trainable: {cfg.trainable_soft_prompt}, init_std: {cfg.soft_prompt_init_std})")
 
-    def set_soft_prompt_from_text(self, text: str, tokenizer) -> None:
+    def set_soft_prompt_from_text(self, prefix: str, tokenizer, postfix: str = None) -> None:
         """Initialize soft prompt embeddings from text string using tokenizer.
         When called, this will create or recreate the soft prompt with length matching the tokenized text.
         
@@ -127,7 +130,9 @@ class Encoder(nn.Module):
             tokenizer: Tokenizer to use for text conversion
         """
         # Tokenize the text
-        token_ids = tokenizer(text, add_special_tokens=False, return_tensors="pt").input_ids.squeeze(0)
+        token_ids = tokenizer(prefix, add_special_tokens=False, return_tensors="pt").input_ids.squeeze(0)
+        if postfix is not None:
+            token_ids_postfix = tokenizer(postfix, add_special_tokens=False, return_tensors="pt").input_ids.squeeze(0)
         text_length = len(token_ids)
         
         # Get model dimensions
@@ -144,6 +149,10 @@ class Encoder(nn.Module):
         # Create new soft prompt with the exact length of the text
         self.soft_prompt_embeddings = nn.Parameter(torch.zeros(text_length, d_model, device=device))
         self.soft_prompt_embeddings.requires_grad_(self.cfg.trainable_soft_prompt)
+        self.soft_prompt_embeddings_postfix = None
+        if postfix is not None:
+            self.soft_prompt_embeddings_postfix = nn.Parameter(torch.zeros(len(token_ids_postfix), d_model, device=device))
+            self.soft_prompt_embeddings_postfix.requires_grad_(self.cfg.trainable_soft_prompt)
         
         # Get embeddings from the base model
         if self._use_base:
@@ -156,11 +165,30 @@ class Encoder(nn.Module):
         with torch.no_grad():
             text_embeddings = emb_table[token_ids]  # Shape: (text_length, d_model)
             self.soft_prompt_embeddings.data.copy_(text_embeddings)
+            if postfix is not None:
+                self.soft_prompt_embeddings_postfix.data.copy_(emb_table[token_ids_postfix])
             
-        log.info(f"Initialized encoder soft prompt from text: '{text}' ({text_length} tokens, "
-                f"trainable: {self.cfg.trainable_soft_prompt})")
+        log.info(f"Initialized encoder soft prompt from text: '{prefix}' ({text_length} tokens, " + (f"postfix: '{postfix}' ({len(token_ids_postfix) if postfix is not None else 0} tokens, " if postfix is not None else "")+f"   trainable: {self.cfg.trainable_soft_prompt})")
 
         # Store flag for forward()
+    
+    @contextmanager
+    def _maybe_disable_dropout(self):
+        """Context manager to control dropout behavior based on config."""
+        if not self.config.use_dropout and self._use_base:
+            # Store original training state
+            was_training = self.base.training
+            try:
+                # Set to eval mode to disable dropout
+                self.base.eval()
+                yield
+            finally:
+                # Restore original state
+                if was_training:
+                    self.base.train()
+        else:
+            # No change needed
+            yield
 
     def forward(self, embeddings: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
         """Project final token embedding back to activation space."""
@@ -179,28 +207,29 @@ class Encoder(nn.Module):
         
         # If the Encoder's base model is meant to process the embeddings first:
         if self._use_base:
-            # Pass embeddings through the base model; request hidden_states
-            outputs = self.base(inputs_embeds=embeddings, output_hidden_states=True)
-            if outputs.hidden_states is None:
-                raise RuntimeError("Model did not return hidden_states despite request.")
-            
-            # Select the appropriate layer based on output_layer config
-            if self.config.output_layer == -1:
-                # Last layer (default behavior)
-                processed_embeddings = outputs.hidden_states[-1]
-            elif self.config.output_layer == 0:
-                # Input embeddings (before any transformer layers)
-                processed_embeddings = outputs.hidden_states[0]
-            else:
-                # Specific layer (0-indexed, so we shift by 1)
-                # hidden_states[1] = output of first transformer layer 0
-                # hidden_states[n] = output of nth transformer layer n-1
-                if self.config.output_layer > len(outputs.hidden_states) - 2:
-                    raise ValueError(f"Requested output_layer {self.config.output_layer} but model only has {len(outputs.hidden_states)-1} hidden states (0 to {len(outputs.hidden_states) - 2})")
-                processed_embeddings = outputs.hidden_states[self.config.output_layer+1]
-            
-            # Then take the embedding of the final token for projection
-            last_emb_to_proj = processed_embeddings[:, -1] # (B, d_model)
+            with self._maybe_disable_dropout():
+                # Pass embeddings through the base model; request hidden_states
+                outputs = self.base(inputs_embeds=embeddings, output_hidden_states=True)
+                if outputs.hidden_states is None:
+                    raise RuntimeError("Model did not return hidden_states despite request.")
+                
+                # Select the appropriate layer based on output_layer config
+                if self.config.output_layer == -1:
+                    # Last layer (default behavior)
+                    processed_embeddings = outputs.hidden_states[-1]
+                elif self.config.output_layer == 0:
+                    # Input embeddings (before any transformer layers)
+                    processed_embeddings = outputs.hidden_states[0]
+                else:
+                    # Specific layer (0-indexed, so we shift by 1)
+                    # hidden_states[1] = output of first transformer layer 0
+                    # hidden_states[n] = output of nth transformer layer n-1
+                    if self.config.output_layer > len(outputs.hidden_states) - 2:
+                        raise ValueError(f"Requested output_layer {self.config.output_layer} but model only has {len(outputs.hidden_states)-1} hidden states (0 to {len(outputs.hidden_states) - 2})")
+                    processed_embeddings = outputs.hidden_states[self.config.output_layer+1]
+                
+                # Then take the embedding of the final token for projection
+                last_emb_to_proj = processed_embeddings[:, -1] # (B, d_model)
         else:
             # Project the last token embedding directly if `self.base` is not in use.
             last_emb_to_proj = embeddings[:, -1]  # (B, d_model)

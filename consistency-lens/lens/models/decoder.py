@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from typing import Any, NamedTuple
+from contextlib import contextmanager
 
 import torch
 from torch import nn
@@ -34,6 +35,7 @@ class DecoderConfig:
     use_gumbel_for_LMorig: bool = False # YAML `use_gumbel_for_LMorig`
     patch_all_layers: bool = False   # YAML `patch_all_layers` - patch activation at all layers
     per_layer_projections: bool = False  # YAML `per_layer_projections` - use separate projection for each layer
+    use_dropout: bool = True         # YAML `use_dropout` - whether to use dropout during training (False = deterministic)
     
     def __post_init__(self):
         """Validate configuration parameters."""
@@ -270,6 +272,24 @@ class Decoder(nn.Module):
                     p.requires_grad_(self.config.projection_layer)
         
         log.info(f"Swapped base model to: {model_name_or_path}")
+    
+    @contextmanager
+    def _maybe_disable_dropout(self):
+        """Context manager to control dropout behavior based on config."""
+        if not self.config.use_dropout:
+            # Store original training state
+            was_training = self.base.training
+            try:
+                # Set to eval mode to disable dropout
+                self.base.eval()
+                yield
+            finally:
+                # Restore original state
+                if was_training:
+                    self.base.train()
+        else:
+            # No change needed
+            yield
 
     def generate_soft(
         self,
@@ -444,16 +464,17 @@ class Decoder(nn.Module):
                             # Use pre-computed single projection
                             input_to_this_layer[:, embed_pos] = single_proj
                             
-                    if hasattr(main_base, 'model'):
-                        # LLaMA style - pass position_ids and position_embeddings
-                        layer_outputs = layer_module(
-                            input_to_this_layer,
-                            position_ids=position_ids,
-                            position_embeddings=position_embeddings,
-                        )
-                    else:
-                        # GPT-2 style
-                        layer_outputs = layer_module(input_to_this_layer)
+                    with self._maybe_disable_dropout():
+                        if hasattr(main_base, 'model'):
+                            # LLaMA style - pass position_ids and position_embeddings
+                            layer_outputs = layer_module(
+                                input_to_this_layer,
+                                position_ids=position_ids,
+                                position_embeddings=position_embeddings,
+                            )
+                        else:
+                            # GPT-2 style
+                            layer_outputs = layer_module(input_to_this_layer)
                     hidden_states = layer_outputs[0]
                     
                     
@@ -466,7 +487,8 @@ class Decoder(nn.Module):
                 logits_t = main_out(h_last[:, -1])  # (B, V)
             else:
                 # Original behavior
-                out = main_base(inputs_embeds=seq_embs, output_hidden_states=True)
+                with self._maybe_disable_dropout():
+                    out = main_base(inputs_embeds=seq_embs, output_hidden_states=True)
                 h_last = out.last_hidden_state if hasattr(out, "last_hidden_state") else out.hidden_states[-1]
                 logits_t = main_out(h_last[:, -1])  # (B, V)
 
@@ -997,22 +1019,23 @@ class Decoder(nn.Module):
                     input_to_this_layer[:, embed_pos] = single_proj
 
                 # THEN: Process the patched input through the layer
-                if hasattr(main_base, 'transformer'):
-                    # GPT-2 style - position embeddings already added
-                    layer_outputs = layer_module(
-                        input_to_this_layer,
-                        use_cache=True,
-                        past_key_value=past_key_values
-                    )
-                else:
-                    # LLaMA style - pass position_ids and position_embeddings
-                    layer_outputs = layer_module(
-                        input_to_this_layer,
-                        position_ids=position_ids,
-                        position_embeddings=position_embeddings,
-                        use_cache=True,
-                        past_key_value=past_key_values
-                    )
+                with self._maybe_disable_dropout():
+                    if hasattr(main_base, 'transformer'):
+                        # GPT-2 style - position embeddings already added
+                        layer_outputs = layer_module(
+                            input_to_this_layer,
+                            use_cache=True,
+                            past_key_value=past_key_values
+                        )
+                    else:
+                        # LLaMA style - pass position_ids and position_embeddings
+                        layer_outputs = layer_module(
+                            input_to_this_layer,
+                            position_ids=position_ids,
+                            position_embeddings=position_embeddings,
+                            use_cache=True,
+                            past_key_value=past_key_values
+                        )
                     
                 hidden_states = layer_outputs[0]
                 #print("Layer", layer_idx, "has", len(past_key_values), "past_key_values")
@@ -1033,11 +1056,12 @@ class Decoder(nn.Module):
             #past_key_values = tuple(past_key_values)#torch.cat(past_key_values, dim=-2)
         else:
             # Original behavior - use standard forward pass with caching
-            outputs = main_base(
-                inputs_embeds=seq_embs,
-                use_cache=True,
-                output_hidden_states=True
-            )
+            with self._maybe_disable_dropout():
+                outputs = main_base(
+                    inputs_embeds=seq_embs,
+                    use_cache=True,
+                    output_hidden_states=True
+                )
             hidden_states = outputs.hidden_states[-1]
             past_key_values = outputs.past_key_values
         
@@ -1082,12 +1106,13 @@ class Decoder(nn.Module):
                     # Custom processing with patching at each layer
                     hidden_states = emb_t_input.unsqueeze(1)
                     # Original behavior - use native caching
-                    outputs = main_base(
-                        inputs_embeds=emb_t_input.unsqueeze(1),
-                        past_key_values=past_key_values,
-                        use_cache=True,
-                        output_hidden_states=True
-                    )
+                    with self._maybe_disable_dropout():
+                        outputs = main_base(
+                            inputs_embeds=emb_t_input.unsqueeze(1),
+                            past_key_values=past_key_values,
+                            use_cache=True,
+                            output_hidden_states=True
+                        )
                     hidden_states = outputs.hidden_states[-1]
                     past_key_values = outputs.past_key_values
                     current_position += 1
@@ -1155,12 +1180,13 @@ class Decoder(nn.Module):
                     current_position += 1
                 else:
                     # Original behavior - use native caching
-                    outputs = main_base(
-                        inputs_embeds=emb_t_input.unsqueeze(1),
-                        past_key_values=past_key_values,
-                        use_cache=True,
-                        output_hidden_states=True
-                    )
+                    with self._maybe_disable_dropout():
+                        outputs = main_base(
+                            inputs_embeds=emb_t_input.unsqueeze(1),
+                            past_key_values=past_key_values,
+                            use_cache=True,
+                            output_hidden_states=True
+                        )
                     hidden_states = outputs.hidden_states[-1]
                     past_key_values = outputs.past_key_values
                     current_position += 1

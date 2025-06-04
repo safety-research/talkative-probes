@@ -1326,6 +1326,10 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                 dynamic_ncols=True,  # Adjust to terminal width changes; helps ensure description text fits well, supporting multi-line.
                 mininterval=1.0,  # Update progress bar no more than once per second
                 leave=True)
+
+    enc.train()
+    dec.train()
+    orig.model.eval() # leave in validation mode?
     
     for step in pbar:
         # Calculate current epoch from step
