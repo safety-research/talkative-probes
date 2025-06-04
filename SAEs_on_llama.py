@@ -88,8 +88,8 @@ import goodfire
 # --- Configuration ---
 
 # Base Model Configuration
-#¢MODEL_ID = "meta-llama/Meta-Llama-3.1-8B-Instruct" # Base model ID
-MODEL_ID = "meta-llama/Llama-3.3-70B-Instruct" # Base model ID
+MODEL_ID = "meta-llama/Meta-Llama-3.1-8B-Instruct" # Base model ID
+#MODEL_ID = "meta-llama/Llama-3.3-70B-Instruct" # Base model ID
 
 # SAE Configuration
 if "8B" in MODEL_ID:

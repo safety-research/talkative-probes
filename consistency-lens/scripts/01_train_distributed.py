@@ -1307,27 +1307,129 @@ def main(cfg: DictConfig) -> None:
             
             models_to_load = {"decoder": decoder_base, "encoder": encoder_base}
             
-            rec = checkpoint_manager.load_checkpoint(
-                checkpoint_path_str,
-                models=models_to_load,
-                optimizer=optimizer,
-                map_location=device
-            )
-            start_step = int(rec.get("step", -1)) + 1
+            # Check if we should reset the step counter
+            reset_steps = config.get('resume_reset_steps', False)
             
-            # Load scheduler state if available
-            if lr_scheduler and "scheduler" in rec:
-                lr_scheduler.load_state_dict(rec["scheduler"])
+            try:
+                rec = checkpoint_manager.load_checkpoint(
+                    checkpoint_path_str,
+                    models=models_to_load,
+                    optimizer=optimizer if not reset_steps else None,  # Don't load optimizer state if resetting
+                    map_location=device
+                )
+            except Exception as e:
+                error_msg = f"Failed to load checkpoint from {checkpoint_path_str}: {str(e)}"
                 if is_main():
-                    log.info("Scheduler state successfully loaded from checkpoint.")
-            elif lr_scheduler and is_main():
-                log.warning("Scheduler state not found in checkpoint.")
+                    log.error(error_msg)
+                if world_size > 1:
+                    dist.barrier()  # Ensure all processes reach this point
+                raise RuntimeError(error_msg) from e
+            
+            if reset_steps:
+                start_step = 0
+                if is_main():
+                    log.info("Resetting training steps to 0 (keeping model weights only)")
+            else:
+                start_step = int(rec.get("step", -1)) + 1
+            
+            # Load scheduler state if available (unless we're resetting steps)
+            if not reset_steps:
+                if lr_scheduler and "scheduler" in rec:
+                    lr_scheduler.load_state_dict(rec["scheduler"])
+                    if is_main():
+                        log.info("Scheduler state successfully loaded from checkpoint.")
+                elif lr_scheduler and is_main():
+                    log.warning("Scheduler state not found in checkpoint.")
+            else:
+                if is_main():
+                    log.info("Skipping scheduler state load due to step reset")
             
             if is_main():
                 log.info(f"Resumed from micro-step {start_step}")
+            
+            # Override learning rate if it's different from checkpoint OR if we're resetting steps
+            # This ensures command-line learning rate overrides take effect
+            new_base_lr = learning_rate
+            old_base_lr = optimizer.param_groups[0]['lr'] if optimizer.param_groups else new_base_lr
+            
+            # Force LR reset if we're resetting steps
+            if reset_steps or abs(new_base_lr - old_base_lr) > 1e-9:  # Check if LR changed or steps reset
+                if is_main():
+                    if reset_steps:
+                        log.info(f"Resetting optimizer and scheduler (step reset). New LR: {new_base_lr:.2e}")
+                    else:
+                        log.info(f"Overriding learning rate from checkpoint: {old_base_lr:.2e} -> {new_base_lr:.2e}")
+                
+                # First, we need to recreate the optimizer with new base learning rates
+                # This is necessary because schedulers cache the base_lrs at initialization
+                
+                # Get current optimizer state (momentum buffers, etc.)
+                old_state_dict = optimizer.state_dict()
+                
+                # Recreate optimizer with new learning rate
+                params = param_groups(
+                    [decoder_base, encoder_base], 
+                    new_base_lr,  # Use new base learning rate
+                    projection_lr_multiplier, 
+                    embedding_lr_multiplier, 
+                    prompt_lr_multiplier,
+                    base_model_lr_multiplier
+                )
+                optimizer = torch.optim.AdamW(params)
+                
+                # Restore optimizer state (momentum, etc.) but not the learning rates
+                old_state = old_state_dict['state']
+                if old_state:
+                    optimizer.load_state_dict({'state': old_state, 'param_groups': optimizer.state_dict()['param_groups']})
+                
+                if is_main():
+                    log.info("Recreated optimizer with new base learning rate")
+                    log.info("Optimizer param groups after recreation:")
+                    for i, group in enumerate(optimizer.param_groups[:5]):
+                        log.info(f"  Group {i}: lr={group['lr']:.2e}")
+                
+                # Now recreate the scheduler with the new optimizer
+                if lr_scheduler is not None:
+                    # Calculate the current optimizer step based on micro-steps
+                    current_optimizer_step = start_step // gradient_accumulation_steps
+                    
+                    # For PyTorch schedulers, last_epoch actually means the last step count
+                    # We need to set it to current_optimizer_step - 1 since it will be incremented on first step()
+                    # If we're resetting steps, always start from -1
+                    if reset_steps:
+                        scheduler_last_epoch = -1
+                        current_optimizer_step = 0
+                    else:
+                        scheduler_last_epoch = current_optimizer_step - 1 if current_optimizer_step > 0 else -1
+                    
+                    # Recreate the scheduler with the correct last_epoch
+                    lr_scheduler = get_lr_scheduler(optimizer, lr_scheduler_cfg, max_optimizer_steps, 
+                                                    last_epoch=scheduler_last_epoch)
+                    
+                    if is_main():
+                        current_lr_from_scheduler = lr_scheduler.get_last_lr()[0]
+                        log.info(f"Learning rate scheduler reinitialized at optimizer step {current_optimizer_step}")
+                        log.info(f"Current LR from scheduler.get_last_lr(): {current_lr_from_scheduler:.6f}")
+                        
+                        # Check what the scheduler thinks the base LRs are
+                        if hasattr(lr_scheduler, 'base_lrs'):
+                            log.info(f"Scheduler base_lrs: {[f'{lr:.6f}' for lr in lr_scheduler.base_lrs[:3]]}")
+                        
+                        # Verify it's working correctly
+                        warmup_steps = parse_schedule_to_steps(lr_scheduler_cfg.get('warmup_steps', 0), steps_per_epoch)
+                        if current_optimizer_step >= warmup_steps:
+                            progress = (current_optimizer_step - warmup_steps) / max(1, max_optimizer_steps - warmup_steps)
+                            cosine_factor = 0.5 * (1 + math.cos(math.pi * progress))
+                            expected_lr = new_base_lr * cosine_factor
+                            log.info(f"Expected LR: base={new_base_lr:.6f} * cosine_factor={cosine_factor:.4f} = {expected_lr:.6f}")
+                            log.info(f"Actual LR: {current_lr_from_scheduler:.6f} (should match expected)")
         else:
+            error_msg = f"Resume checkpoint path not found: {checkpoint_path_str}"
             if is_main():
-                log.warning(f"Resume checkpoint path not found: {checkpoint_path_str}. Starting from scratch.")
+                log.error(error_msg)
+            if world_size > 1:
+                dist.barrier()  # Ensure all processes reach this point
+            raise FileNotFoundError(error_msg)
     
     # Capture initial model states for drift calculation after model setup and potential checkpoint loading
     decoder_base_for_drift = decoder.module if hasattr(decoder, 'module') else decoder
@@ -1673,7 +1775,7 @@ def main(cfg: DictConfig) -> None:
 
                         decoder.train()
                         encoder.train()
-                        orig_model.model.train() # Set orig model back to train if it has trainable parts (usually not)
+                        orig_model.model.eval() # Set orig model back to train if it has trainable parts (usually not)
 
     
     # Final checkpoint

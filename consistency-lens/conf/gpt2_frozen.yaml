@@ -78,7 +78,7 @@ alpha_schedule:
 
 # Activation dumper config for OpenWebText
 activation_dumper:
-  num_samples: 5000000                # 5M samples from OpenWebText
+  num_samples: -1               # 5M samples from OpenWebText
   seq_len: 128                        # Longer sequences for GPT-2
   use_hf_dataset: true
   hf_dataset_name: "openwebtext"      # OpenWebText dataset

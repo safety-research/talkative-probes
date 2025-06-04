@@ -168,7 +168,7 @@ pretokenize:
   output_dir: null 
   num_proc: 32
   batch_size: 10000
-  force: False
+  force: true
 
 activation_dumper:
   num_samples: -1  # -1 means process entire dataset
@@ -276,6 +276,7 @@ run_name: null          # Manually set run name (otherwise auto-generated)
 activation_dir: null    # Override activation_dumper.output_dir
 max_train_samples: null  # Cap training dataset size
 max_val_samples: null    # Cap validation dataset size
+resume_reset_steps: false
 
 # ------------------------------------------------------------------------------
 # Evaluation configuration (for 02_eval.py)

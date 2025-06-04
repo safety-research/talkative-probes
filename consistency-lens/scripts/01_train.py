@@ -1180,25 +1180,108 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     start_step = 0
     # resume_checkpoint_path was defined earlier from config.get('resume')
     if resume_checkpoint_path:
-        # Checkpoint stores the last completed step
-        rec = checkpoint_manager.load_checkpoint(resume_checkpoint_path, models={"dec": dec, "enc": enc}, optimizer=opt, map_location=device)
-        start_step = int(rec.get("step", -1)) + 1 # Resume from the next step
-        resume_epoch = start_step // steps_per_epoch if steps_per_epoch > 0 else 0
-        # For LR scheduler, last_epoch should be the step count (it's misnamed in PyTorch)
-        scheduler_last_epoch = int(rec.get("step", -1))
-        log.info(f"Resuming training from step {start_step}")
+        # Check if we should reset the step counter
+        reset_steps = config.get('resume_reset_steps', False)
         
-        # Load scheduler state if available
-        if lr_scheduler and 'scheduler' in rec:
-            try:
-                lr_scheduler.load_state_dict(rec['scheduler'])
-                log.info("Loaded scheduler state from checkpoint")
-            except Exception as e:
-                log.warning(f"Failed to load scheduler state: {e}. Creating new scheduler.")
+        # Checkpoint stores the last completed step
+        try:
+            rec = checkpoint_manager.load_checkpoint(
+                resume_checkpoint_path, 
+                models={"dec": dec, "enc": enc}, 
+                optimizer=opt if not reset_steps else None,  # Don't load optimizer state if resetting
+                map_location=device
+            )
+        except Exception as e:
+            raise RuntimeError(f"Failed to load checkpoint from {resume_checkpoint_path}: {str(e)}") from e
+        
+        if reset_steps:
+            start_step = 0
+            resume_epoch = 0
+            scheduler_last_epoch = -1
+            log.info("Resetting training steps to 0 (keeping model weights only)")
+        else:
+            start_step = int(rec.get("step", -1)) + 1 # Resume from the next step
+            resume_epoch = start_step // steps_per_epoch if steps_per_epoch > 0 else 0
+            # For LR scheduler, last_epoch should be the step count (it's misnamed in PyTorch)
+            scheduler_last_epoch = int(rec.get("step", -1))
+            log.info(f"Resuming training from step {start_step}")
+        
+        # Load scheduler state if available (unless we're resetting steps)
+        if not reset_steps:
+            if lr_scheduler and 'scheduler' in rec:
+                try:
+                    lr_scheduler.load_state_dict(rec['scheduler'])
+                    log.info("Loaded scheduler state from checkpoint")
+                except Exception as e:
+                    log.warning(f"Failed to load scheduler state: {e}. Creating new scheduler.")
+                    lr_scheduler = get_lr_scheduler(opt, lr_scheduler_config, max_steps, 
+                                                    last_epoch=scheduler_last_epoch,
+                                                    current_epoch=resume_epoch, 
+                                                    steps_per_epoch=steps_per_epoch)
+        else:
+            log.info("Skipping scheduler state load due to step reset")
+        
+        # Override learning rate if it's different from checkpoint
+        # This ensures command-line learning rate overrides take effect
+        new_base_lr = config.get('learning_rate')
+        old_base_lr = opt.param_groups[0]['lr'] if opt.param_groups else new_base_lr
+        
+        if abs(new_base_lr - old_base_lr) > 1e-9:  # Check if LR changed
+            log.info(f"Overriding learning rate from checkpoint: {old_base_lr:.2e} -> {new_base_lr:.2e}")
+            
+            # First, we need to recreate the optimizer with new base learning rates
+            # This is necessary because schedulers cache the base_lrs at initialization
+            
+            # Get current optimizer state (momentum buffers, etc.)
+            old_state_dict = opt.state_dict()
+            
+            # Extract learning rate multipliers from config
+            custom_lr_multipliers = config.get('custom_lr_multipliers', {})
+            projection_lr_multiplier = custom_lr_multipliers.get('projection_layers', 1.0)
+            embedding_lr_multiplier = custom_lr_multipliers.get('embedding_layers', 1.0) 
+            prompt_lr_multiplier = custom_lr_multipliers.get('prompt_layers', 1.0)
+            base_model_lr_multiplier = custom_lr_multipliers.get('base_models', 1.0)
+            
+            # Recreate optimizer with new learning rate
+            params = param_groups(
+                [dec, enc], 
+                new_base_lr,  # Use new base learning rate
+                projection_lr_multiplier, 
+                embedding_lr_multiplier, 
+                prompt_lr_multiplier,
+                base_model_lr_multiplier
+            )
+            opt = torch.optim.AdamW(params)
+            
+            # Restore optimizer state (momentum, etc.) but not the learning rates
+            old_state = old_state_dict['state']
+            if old_state:
+                opt.load_state_dict({'state': old_state, 'param_groups': opt.state_dict()['param_groups']})
+            
+            log.info("Recreated optimizer with new base learning rate")
+            log.info("Optimizer param groups after recreation:")
+            for i, group in enumerate(opt.param_groups[:5]):
+                log.info(f"  Group {i}: lr={group['lr']:.2e}")
+            
+            # Now recreate the scheduler with the new optimizer
+            if lr_scheduler is not None:
+                # For PyTorch schedulers, last_epoch actually means the last step count
+                # We need to set it to start_step - 1 since it will be incremented on first step()
+                scheduler_last_epoch = start_step - 1 if start_step > 0 else -1
+                
+                # Recreate the scheduler with the correct last_epoch
                 lr_scheduler = get_lr_scheduler(opt, lr_scheduler_config, max_steps, 
                                                 last_epoch=scheduler_last_epoch,
                                                 current_epoch=resume_epoch, 
                                                 steps_per_epoch=steps_per_epoch)
+                
+                current_lr_from_scheduler = lr_scheduler.get_last_lr()[0]
+                log.info(f"Learning rate scheduler reinitialized at step {start_step}")
+                log.info(f"Current LR from scheduler.get_last_lr(): {current_lr_from_scheduler:.6f}")
+                
+                # Check what the scheduler thinks the base LRs are
+                if hasattr(lr_scheduler, 'base_lrs'):
+                    log.info(f"Scheduler base_lrs: {[f'{lr:.6f}' for lr in lr_scheduler.base_lrs[:3]]}")
 
     epoch_decoded_tokens = []  # Initialize accumulator for decoded tokens per epoch
     step_iter = iter(train_loader)
