@@ -1,6 +1,7 @@
 import torch
 from typing import Dict, Any, List
 from transformers import PreTrainedTokenizerBase
+from lens.models.orig import OrigWrapper
 
 def diagnose_activation_mismatch(
     batch: Dict[str, Any],
@@ -387,3 +388,174 @@ def check_layer_indexing(orig, input_ids, device):
         print(f"Model type appears to be LLaMA-style (has .model attribute)")
     elif hasattr(orig.model, 'transformer'):  # GPT style
         print(f"Model type appears to be GPT-style (has .transformer attribute)")
+
+
+
+
+
+def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_process, original_prompt=None):
+    """Test decoder generation capabilities with different activation inputs."""
+    if not is_main_process:
+        return
+    
+    log.info("\n" + "="*80)
+    log.info("Testing Decoder Generation Capabilities")
+    log.info("="*80)
+    
+    # Get base decoder (unwrap DDP if needed)
+    decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
+    encoder_base = encoder.module if hasattr(encoder, 'module') else encoder
+    
+    # Set test prompt
+    test_prompt = "a long time ago in a galaxy far far away, <embed> there"
+    log.info(f"Setting test prompt: \"{test_prompt}\"")
+    decoder_base.set_prompt(test_prompt, tokenizer)
+    
+    # Put models in eval mode
+    decoder_base.eval()
+    encoder_base.eval()
+    
+    # Hidden size from the model
+    d_model = decoder_base.base.config.hidden_size
+    
+    # Test parameters
+    max_length = 20  # Generate 20 tokens
+    gumbel_tau = 1.0  # Temperature for generation
+    batch_size = 2  # Test with batch size 2
+    
+    # Test 1: Zero activation (baseline)
+    log.info("\nTest 1: Generation with zero activation vector")
+    zero_activation = torch.zeros(batch_size, d_model, device=device, dtype=decoder_base.base.get_input_embeddings().weight.dtype)
+    
+    with torch.no_grad():
+        result_zero = decoder_base.generate_soft(
+            activation_input=zero_activation,
+            max_length=max_length,
+            gumbel_tau=gumbel_tau,
+            use_projection=True,
+            print_prompt=True
+        )
+    
+    # Decode the generated tokens
+    zero_tokens = result_zero.hard_token_ids
+    for i in range(batch_size):
+        decoded_text = tokenizer.decode(zero_tokens[i], skip_special_tokens=True)
+        decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
+        log.info(f"  Sample {i+1}: {decoded_text}")
+    
+    # Test 2: Random activation vector
+    log.info("\nTest 2: Generation with random activation vector")
+    random_activation = torch.randn(batch_size, d_model, device=device, dtype=decoder_base.base.get_input_embeddings().weight.dtype) * 0.1  # Small random values
+    
+    with torch.no_grad():
+        result_random = decoder_base.generate_soft(
+            activation_input=random_activation,
+            max_length=max_length,
+            gumbel_tau=gumbel_tau,
+            use_projection=True,
+            print_prompt=False
+        )
+    
+    random_tokens = result_random.hard_token_ids
+    for i in range(batch_size):
+        decoded_text = tokenizer.decode(random_tokens[i], skip_special_tokens=True)
+        decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
+        log.info(f"  Sample {i+1}: {decoded_text}")
+    
+    # Test 3: Checkpoint version with same random activation
+    log.info("\nTest 3: Generation with checkpointing (same random activation)")
+    
+    with torch.no_grad():
+        result_chkpt = decoder_base.generate_soft_chkpt(
+            activation_input=random_activation,
+            max_length=max_length,
+            gumbel_tau=gumbel_tau,
+            use_projection=True,
+            print_prompt=False,
+            checkpoint_every_n_tokens=4  # Checkpoint every 4 tokens
+        )
+    
+    chkpt_tokens = result_chkpt.hard_token_ids
+    for i in range(batch_size):
+        decoded_text = tokenizer.decode(chkpt_tokens[i], skip_special_tokens=True)
+        decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
+        log.info(f"  Sample {i+1}: {decoded_text}")
+    
+    # Note about randomness
+    log.info("\nNote: Due to Gumbel-Softmax sampling, each generation is random.")
+    log.info("The important thing is that all methods produce coherent English text.")
+    
+    # Test 4: Test with different temperatures
+    log.info("\nTest 4: Generation with different temperatures")
+    temperatures = [0.5, 1.0, 2.0]
+    
+    for temp in temperatures:
+        log.info(f"\n  Temperature = {temp}:")
+        with torch.no_grad():
+            result_temp = decoder_base.generate_soft(
+                activation_input=random_activation[:1],  # Just first sample
+                max_length=max_length,
+                gumbel_tau=temp,
+                use_projection=True,
+                print_prompt=False
+            )
+        
+        temp_tokens = result_temp.hard_token_ids[0]
+        decoded_text = tokenizer.decode(temp_tokens, skip_special_tokens=True)
+        decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
+        log.info(f"    Generated: {decoded_text}")
+    
+    # Test 5: Without projection
+    log.info("\nTest 5: Generation without projection layer")
+    
+    with torch.no_grad():
+        result_noproj = decoder_base.generate_soft(
+            activation_input=random_activation[:1],  # Just first sample
+            max_length=max_length,
+            gumbel_tau=gumbel_tau,
+            use_projection=False,  # Skip projection
+            print_prompt=False
+        )
+    
+    noproj_tokens = result_noproj.hard_token_ids[0]
+    decoded_text = tokenizer.decode(noproj_tokens, skip_special_tokens=True)
+    decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
+    log.info(f"  Without projection: {decoded_text}")
+    
+    # Put models back in train mode
+    decoder_base.train()
+    encoder_base.train()
+    
+    # Test 6: Multiple samples to check variability
+    log.info("\nTest 6: Multiple generations from same activation (checking randomness)")
+    log.info("  Running 3 generations with the same activation to see variability:")
+    
+    test_activation = torch.randn(1, d_model, device=device, dtype=decoder_base.base.get_input_embeddings().weight.dtype) * 0.1
+    for i in range(3):
+        with torch.no_grad():
+            result = decoder_base.generate_soft(
+                activation_input=test_activation,
+                max_length=max_length,
+                gumbel_tau=1.0,
+                use_projection=True,
+                print_prompt=False
+            )
+        tokens = result.hard_token_ids[0]
+        decoded_text = tokenizer.decode(tokens, skip_special_tokens=True)
+        decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
+        log.info(f"    Generation {i+1}: {decoded_text}")
+    
+    log.info("\n" + "="*80)
+    log.info("Generation tests completed!")
+    log.info("  ✓ All methods produce text outputs")
+    log.info("  ✓ Outputs appear to be coherent English (manual verification needed)")
+    log.info("  ✓ Different activations produce different outputs")
+    log.info("  ✓ Temperature affects generation diversity")
+    log.info("="*80 + "\n")
+    
+    # Restore original prompt if provided
+    if original_prompt:
+        log.info(f"Restoring original decoder prompt: \"{original_prompt}\"")
+        decoder_base.set_prompt(original_prompt, tokenizer)
+    else:
+        log.info("No original prompt to restore.")

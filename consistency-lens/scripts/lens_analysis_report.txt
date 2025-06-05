@@ -2,24 +2,40 @@
 Consistency Lens Analysis Report
 ================================
 Text: "India fearing Chinese submarines is not unwarranted. In 2014, the Chinese Navy frequently docked its..."
-Checkpoint: gpt2_frozen_step10000_epoch3_.pt
+Checkpoint: gpt2_frozen_step19564_epoch6_final.pt
 Model: openai-community/gpt2
 Layer: 6
 
 Summary Statistics:
 - Total tokens: 11
-- Average KL divergence: 1.7259
-- Std deviation: 1.3434
-- Min KL: 0.0008
-- Max KL: 4.2648
+- Average KL divergence: 2.2408
+- Std deviation: 1.8148
+- Min KL: 0.0009
+- Max KL: 5.0376
 
 Top 3 most consistent tokens (lowest KL):
   - [3] '
-' → ' define UserUser user characters etc`User MessageUserUserUserUserUserUserUser' (KL: 0.0008)
-  - [10] '')' → 'Script() scriptuments() script (FileLoader()(Image.().()' (KL: 0.2166)
-  - [9] 'Hi' → ' Skyrim Sorry hey hello friendsbye Hello helloHit accomplishmentHiHiWelcomeHiHiHi' (KL: 0.7439)
+' → 'UserUserClickUserActor
+
+UserUserUserUserUserUserUserUser
+' (KL: 0.0009)
+  - [10] '')' → ' script scriptfile ( script(). script() (() script()(). script script' (KL: 0.4439)
+  - [4] ' ' → '
+
+
+             ' (KL: 0.4826)
 
 Top 3 least consistent tokens (highest KL):
-  - [6] ' ' → '  AN Pleaseäੈ !     ing  ' (KL: 4.2648)
-  - [7] ' print' → 'We printprint replywrite download print completion startelligent query print print print add command' (KL: 3.1512)
-  - [5] ' ' → ' TherePlugin # src = One  Sequence:       ' (KL: 2.5156)
+  - [6] ' ' → ' À              ' (KL: 5.0376)
+  - [8] '('' → ' " " { " " " " " " " " " " " " "' (KL: 4.5068)
+  - [0] 'def' → '
+
+
+
+
+
+
+
+ they are the
+
+they are the' (KL: 3.6248)

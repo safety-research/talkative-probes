@@ -70,6 +70,7 @@ from lens.utils.checkpoint_manager import CheckpointManager
 from lens.training.distributed import set_seed
 from lens.evaluation.wandb_logger import verbose_samples_logger
 from lens.training.fast_distributed_sampler import FastDistributedSampler
+from lens.training.test import diagnose_activation_mismatch, diagnose_activation_save_load, check_dataset_activation_format, test_autocast_difference, check_layer_indexing, test_decoder_generation
 
 # Import all the utility functions from the original training script
 sys.path.insert(0, str(Path(__file__).parent))
@@ -199,6 +200,7 @@ def distributed_train_step(
     gradient_accumulation_steps=1,
     is_distributed=False,
     lr_scheduler=None,
+    steps_per_epoch=None,
 ):
     """Training step with proper gradient accumulation for distributed training.
     
@@ -224,11 +226,13 @@ def distributed_train_step(
     loss_fns = {
         "T_text": config.get('t_text', 8),
         "tau": get_schedule_value(config['gumbel_tau_schedule'], step, config['max_train_steps'], 
-                                step // gradient_accumulation_steps if gradient_accumulation_steps > 0 else 0, 
-                                gradient_accumulation_steps),
+                                current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0, 
+                                steps_per_epoch=steps_per_epoch, 
+                                grad_accum_steps=gradient_accumulation_steps),
         "alpha": get_schedule_value(config['alpha_schedule'], step, config['max_train_steps'],
-                                  step // gradient_accumulation_steps if gradient_accumulation_steps > 0 else 0, 
-                                  gradient_accumulation_steps),
+                                  current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0, 
+                                  steps_per_epoch=steps_per_epoch, 
+                                  grad_accum_steps=gradient_accumulation_steps),
         "kl_base_weight": config.get('kl_base_weight', 1.0),
         "entropy_weight": config.get('entropy_weight', 0.0),
         "mse_weight": config.get('mse_weight', 0.0),
@@ -463,7 +467,8 @@ def validate_distributed(
     world_size,
     log,
     is_main_process,
-    wandb_run_id=None
+    wandb_run_id=None,
+    steps_per_epoch=None
 ):
     """Distributed validation function using train_step without gradients.
     
@@ -489,11 +494,13 @@ def validate_distributed(
     loss_fns = {
         "T_text": config.get('t_text', 8),
         "tau": get_schedule_value(config['gumbel_tau_schedule'], step, config['max_train_steps'], 
-                                step // config['gradient_accumulation_steps'] if config['gradient_accumulation_steps'] > 0 else 0, 
-                                config['gradient_accumulation_steps']),
+                                current_epoch=step // steps_per_epoch if steps_per_epoch and steps_per_epoch > 0 else 0, 
+                                steps_per_epoch=steps_per_epoch, 
+                                grad_accum_steps=config['gradient_accumulation_steps']),
         "alpha": get_schedule_value(config['alpha_schedule'], step, config['max_train_steps'],
-                                  step // config['gradient_accumulation_steps'] if config['gradient_accumulation_steps'] > 0 else 0, 
-                                  config['gradient_accumulation_steps']),
+                                  current_epoch=step // steps_per_epoch if steps_per_epoch and steps_per_epoch > 0 else 0, 
+                                  steps_per_epoch=steps_per_epoch, 
+                                  grad_accum_steps=config['gradient_accumulation_steps']),
         "kl_base_weight": config.get('kl_base_weight', 1.0),
         "entropy_weight": config.get('entropy_weight', 0.0),
         "mse_weight": config.get('mse_weight', 0.0),
@@ -679,173 +686,6 @@ def validate_distributed(
     encoder_base.train()
     # orig_model typically stays in eval mode
 
-
-def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_process, original_prompt=None):
-    """Test decoder generation capabilities with different activation inputs."""
-    if not is_main_process:
-        return
-    
-    log.info("\n" + "="*80)
-    log.info("Testing Decoder Generation Capabilities")
-    log.info("="*80)
-    
-    # Get base decoder (unwrap DDP if needed)
-    decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
-    encoder_base = encoder.module if hasattr(encoder, 'module') else encoder
-    
-    # Set test prompt
-    test_prompt = "a long time ago in a galaxy far far away, <embed> there"
-    log.info(f"Setting test prompt: \"{test_prompt}\"")
-    decoder_base.set_prompt(test_prompt, tokenizer)
-    
-    # Put models in eval mode
-    decoder_base.eval()
-    encoder_base.eval()
-    
-    # Hidden size from the model
-    d_model = decoder_base.base.config.hidden_size
-    
-    # Test parameters
-    max_length = 20  # Generate 20 tokens
-    gumbel_tau = 1.0  # Temperature for generation
-    batch_size = 2  # Test with batch size 2
-    
-    # Test 1: Zero activation (baseline)
-    log.info("\nTest 1: Generation with zero activation vector")
-    zero_activation = torch.zeros(batch_size, d_model, device=device, dtype=decoder_base.base.get_input_embeddings().weight.dtype)
-    
-    with torch.no_grad():
-        result_zero = decoder_base.generate_soft(
-            activation_input=zero_activation,
-            max_length=max_length,
-            gumbel_tau=gumbel_tau,
-            use_projection=True,
-            print_prompt=True
-        )
-    
-    # Decode the generated tokens
-    zero_tokens = result_zero.hard_token_ids
-    for i in range(batch_size):
-        decoded_text = tokenizer.decode(zero_tokens[i], skip_special_tokens=True)
-        decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
-        log.info(f"  Sample {i+1}: {decoded_text}")
-    
-    # Test 2: Random activation vector
-    log.info("\nTest 2: Generation with random activation vector")
-    random_activation = torch.randn(batch_size, d_model, device=device, dtype=decoder_base.base.get_input_embeddings().weight.dtype) * 0.1  # Small random values
-    
-    with torch.no_grad():
-        result_random = decoder_base.generate_soft(
-            activation_input=random_activation,
-            max_length=max_length,
-            gumbel_tau=gumbel_tau,
-            use_projection=True,
-            print_prompt=False
-        )
-    
-    random_tokens = result_random.hard_token_ids
-    for i in range(batch_size):
-        decoded_text = tokenizer.decode(random_tokens[i], skip_special_tokens=True)
-        decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
-        log.info(f"  Sample {i+1}: {decoded_text}")
-    
-    # Test 3: Checkpoint version with same random activation
-    log.info("\nTest 3: Generation with checkpointing (same random activation)")
-    
-    with torch.no_grad():
-        result_chkpt = decoder_base.generate_soft_chkpt(
-            activation_input=random_activation,
-            max_length=max_length,
-            gumbel_tau=gumbel_tau,
-            use_projection=True,
-            print_prompt=False,
-            checkpoint_every_n_tokens=4  # Checkpoint every 4 tokens
-        )
-    
-    chkpt_tokens = result_chkpt.hard_token_ids
-    for i in range(batch_size):
-        decoded_text = tokenizer.decode(chkpt_tokens[i], skip_special_tokens=True)
-        decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
-        log.info(f"  Sample {i+1}: {decoded_text}")
-    
-    # Note about randomness
-    log.info("\nNote: Due to Gumbel-Softmax sampling, each generation is random.")
-    log.info("The important thing is that all methods produce coherent English text.")
-    
-    # Test 4: Test with different temperatures
-    log.info("\nTest 4: Generation with different temperatures")
-    temperatures = [0.5, 1.0, 2.0]
-    
-    for temp in temperatures:
-        log.info(f"\n  Temperature = {temp}:")
-        with torch.no_grad():
-            result_temp = decoder_base.generate_soft(
-                activation_input=random_activation[:1],  # Just first sample
-                max_length=max_length,
-                gumbel_tau=temp,
-                use_projection=True,
-                print_prompt=False
-            )
-        
-        temp_tokens = result_temp.hard_token_ids[0]
-        decoded_text = tokenizer.decode(temp_tokens, skip_special_tokens=True)
-        decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
-        log.info(f"    Generated: {decoded_text}")
-    
-    # Test 5: Without projection
-    log.info("\nTest 5: Generation without projection layer")
-    
-    with torch.no_grad():
-        result_noproj = decoder_base.generate_soft(
-            activation_input=random_activation[:1],  # Just first sample
-            max_length=max_length,
-            gumbel_tau=gumbel_tau,
-            use_projection=False,  # Skip projection
-            print_prompt=False
-        )
-    
-    noproj_tokens = result_noproj.hard_token_ids[0]
-    decoded_text = tokenizer.decode(noproj_tokens, skip_special_tokens=True)
-    decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
-    log.info(f"  Without projection: {decoded_text}")
-    
-    # Put models back in train mode
-    decoder_base.train()
-    encoder_base.train()
-    
-    # Test 6: Multiple samples to check variability
-    log.info("\nTest 6: Multiple generations from same activation (checking randomness)")
-    log.info("  Running 3 generations with the same activation to see variability:")
-    
-    test_activation = torch.randn(1, d_model, device=device, dtype=decoder_base.base.get_input_embeddings().weight.dtype) * 0.1
-    for i in range(3):
-        with torch.no_grad():
-            result = decoder_base.generate_soft(
-                activation_input=test_activation,
-                max_length=max_length,
-                gumbel_tau=1.0,
-                use_projection=True,
-                print_prompt=False
-            )
-        tokens = result.hard_token_ids[0]
-        decoded_text = tokenizer.decode(tokens, skip_special_tokens=True)
-        decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
-        log.info(f"    Generation {i+1}: {decoded_text}")
-    
-    log.info("\n" + "="*80)
-    log.info("Generation tests completed!")
-    log.info("  ✓ All methods produce text outputs")
-    log.info("  ✓ Outputs appear to be coherent English (manual verification needed)")
-    log.info("  ✓ Different activations produce different outputs")
-    log.info("  ✓ Temperature affects generation diversity")
-    log.info("="*80 + "\n")
-    
-    # Restore original prompt if provided
-    if original_prompt:
-        log.info(f"Restoring original decoder prompt: \"{original_prompt}\"")
-        decoder_base.set_prompt(original_prompt, tokenizer)
-    else:
-        log.info("No original prompt to restore.")
 
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
@@ -1122,6 +962,22 @@ def main(cfg: DictConfig) -> None:
 
         config['max_train_steps'] = max_steps # Update config dict with calculated max_steps for consistency if other parts rely on it
 
+        # Handle early termination if configured
+        early_termination_config = config.get('early_termination', {})
+        if early_termination_config.get('enabled', False) and early_termination_config.get('steps'):
+            early_term_str = early_termination_config['steps']
+            early_term_steps = _resolve_schedule_to_steps(early_term_str, steps_per_epoch, log, "early_termination.steps", gradient_accumulation_steps)
+            
+            if early_term_steps > 0 and early_term_steps < max_steps:
+                if is_main():
+                    log.info(f"Early termination enabled: will stop after {early_term_steps} steps (original max_steps: {max_steps})")
+                max_steps = early_term_steps
+                config['max_train_steps'] = max_steps  # Update config with early termination limit
+                
+                # Recalculate approximate epochs with early termination
+                if steps_per_epoch > 0:
+                    num_epochs_total_approx = (max_steps - 1) // steps_per_epoch + 1
+
         # Calculate the number of optimizer steps
         max_optimizer_steps = max_steps // gradient_accumulation_steps
         if max_steps % gradient_accumulation_steps != 0: # Account for any remaining steps
@@ -1132,10 +988,10 @@ def main(cfg: DictConfig) -> None:
 
         # Parse flexible interval settings (log / wandb / val) now that steps_per_epoch is known
         # These intervals are based on micro-steps (main loop steps)
-        log_interval = _resolve_schedule_to_steps(config['log_interval'], steps_per_epoch, log, "log_interval")
-        wandb_log_interval = _resolve_schedule_to_steps(config['wandb_log_interval'], steps_per_epoch, log, "wandb_log_interval")
+        log_interval = _resolve_schedule_to_steps(config['log_interval'], steps_per_epoch, log, "log_interval", gradient_accumulation_steps)
+        wandb_log_interval = _resolve_schedule_to_steps(config['wandb_log_interval'], steps_per_epoch, log, "wandb_log_interval", gradient_accumulation_steps)
         val_interval_str = config.get('val_interval', "500s")
-        val_interval = _resolve_schedule_to_steps(val_interval_str, steps_per_epoch, log, "val_interval")
+        val_interval = _resolve_schedule_to_steps(val_interval_str, steps_per_epoch, log, "val_interval", gradient_accumulation_steps)
         
         if is_main():
             log.info(f"Validation setup: val_loader={'exists' if val_loader else 'None'}, interval={val_interval} steps")
@@ -1145,7 +1001,8 @@ def main(cfg: DictConfig) -> None:
         drift_enabled = drift_cfg.get('enabled', True)
         drift_log_interval_str = drift_cfg.get('interval', "1000s")
         drift_log_interval = _resolve_schedule_to_steps(
-            drift_log_interval_str, steps_per_epoch, log, "parameter_drift.interval"
+            drift_log_interval_str, steps_per_epoch, log, "parameter_drift.interval",
+            gradient_accumulation_steps
         ) if drift_enabled else -1
         if drift_enabled and drift_log_interval <= 0:
             drift_log_interval = max(steps_per_epoch, 1000)
@@ -1192,7 +1049,7 @@ def main(cfg: DictConfig) -> None:
         # Learning rate scheduler
         lr_scheduler_cfg = config.get('lr_scheduler', {})
         # Initialize scheduler with max_optimizer_steps
-        lr_scheduler = get_lr_scheduler(optimizer, lr_scheduler_cfg, max_optimizer_steps) 
+        lr_scheduler = get_lr_scheduler(optimizer, lr_scheduler_cfg, max_optimizer_steps, grad_accum_steps=gradient_accumulation_steps) 
         
         # Get mixed precision configuration
         mixed_precision_config = config.get('mixed_precision', {'enabled': True, 'dtype': 'auto'})
@@ -1220,7 +1077,7 @@ def main(cfg: DictConfig) -> None:
 
     # Initialize CheckpointManager (after steps_per_epoch is known)
     # It uses the updated config dict with the run-specific checkpoint directory.
-    checkpoint_manager = CheckpointManager(config, log, steps_per_epoch)
+    checkpoint_manager = CheckpointManager(config, log, steps_per_epoch, gradient_accumulation_steps)
     
     # Initialize W&B (only on main process)
     if is_main():
@@ -1404,7 +1261,8 @@ def main(cfg: DictConfig) -> None:
                     
                     # Recreate the scheduler with the correct last_epoch
                     lr_scheduler = get_lr_scheduler(optimizer, lr_scheduler_cfg, max_optimizer_steps, 
-                                                    last_epoch=scheduler_last_epoch)
+                                                    last_epoch=scheduler_last_epoch,
+                                                    grad_accum_steps=gradient_accumulation_steps)
                     
                     if is_main():
                         current_lr_from_scheduler = lr_scheduler.get_last_lr()[0]
@@ -1416,7 +1274,7 @@ def main(cfg: DictConfig) -> None:
                             log.info(f"Scheduler base_lrs: {[f'{lr:.6f}' for lr in lr_scheduler.base_lrs[:3]]}")
                         
                         # Verify it's working correctly
-                        warmup_steps = parse_schedule_to_steps(lr_scheduler_cfg.get('warmup_steps', 0), steps_per_epoch)
+                        warmup_steps = parse_schedule_to_steps(lr_scheduler_cfg.get('warmup_steps', 0), steps_per_epoch, gradient_accumulation_steps)
                         if current_optimizer_step >= warmup_steps:
                             progress = (current_optimizer_step - warmup_steps) / max(1, max_optimizer_steps - warmup_steps)
                             cosine_factor = 0.5 * (1 + math.cos(math.pi * progress))
@@ -1515,7 +1373,8 @@ def main(cfg: DictConfig) -> None:
             cached_prefix_ids,
             gradient_accumulation_steps=gradient_accumulation_steps,
             is_distributed=(world_size > 1),
-            lr_scheduler=lr_scheduler
+            lr_scheduler=lr_scheduler,
+            steps_per_epoch=steps_per_epoch
         )
         
         # Synchronize metrics across processes
@@ -1571,9 +1430,13 @@ def main(cfg: DictConfig) -> None:
             current_optimizer_step_for_sched = step // gradient_accumulation_steps
             
             current_tau_log = get_schedule_value(config['gumbel_tau_schedule'], step, max_steps,
-                                                         current_optimizer_step_for_sched, gradient_accumulation_steps) # pass micro_step, total_micro_steps, optimizer_step, grad_accum
+                                                         current_epoch=current_epoch, 
+                                                         steps_per_epoch=steps_per_epoch, 
+                                                         grad_accum_steps=gradient_accumulation_steps)
             current_alpha_log = get_schedule_value(config['alpha_schedule'], step, max_steps,
-                                                           current_optimizer_step_for_sched, gradient_accumulation_steps)
+                                                           current_epoch=current_epoch,
+                                                           steps_per_epoch=steps_per_epoch,
+                                                           grad_accum_steps=gradient_accumulation_steps)
             
             wandb_metrics = {
                 'train/loss': avg_loss, # This is the running average loss
@@ -1596,6 +1459,14 @@ def main(cfg: DictConfig) -> None:
                 'performance/avg_step_time': avg_step_time, # This is avg micro-step time
                 'train/gpu_memory_allocated': torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0,
                 'train/gradient_accumulation_step': accumulation_step,
+                # Add explicit step counters for different x-axis options in WandB
+                'progress/optimizer_step': current_optimizer_step_for_sched,
+                'progress/micro_step': step,
+                'progress/samples_seen': step * batch_size * world_size,  # Total samples processed across all GPUs
+                'progress/tokens_seen': step * batch_size * world_size * config.get('t_text', 10),  # Total tokens processed
+                'progress/optimizer_progress': current_optimizer_step_for_sched / max_optimizer_steps if max_optimizer_steps > 0 else 0,  # Fraction of training complete
+                'progress/epoch_fraction': (step / steps_per_epoch) if steps_per_epoch > 0 else 0,  # Fractional epoch (e.g., 1.5 = halfway through 2nd epoch)
+                'progress/epoch': current_epoch,  # Integer epoch number
             }
             
             # Always log gradient and update metrics using last computed values
@@ -1646,11 +1517,13 @@ def main(cfg: DictConfig) -> None:
             # but schedules are evaluated based on optimizer steps.
             current_optimizer_step_for_ckpt = step // gradient_accumulation_steps
             current_tau_ckpt = get_schedule_value(config['gumbel_tau_schedule'], step, max_steps, 
-                                           current_optimizer_step_for_ckpt, 
-                                           gradient_accumulation_steps)
+                                           current_epoch=current_epoch, 
+                                           steps_per_epoch=steps_per_epoch, 
+                                           grad_accum_steps=gradient_accumulation_steps)
             current_alpha_ckpt = get_schedule_value(config['alpha_schedule'], step, max_steps,
-                                             current_optimizer_step_for_ckpt, 
-                                             gradient_accumulation_steps)
+                                             current_epoch=current_epoch, 
+                                             steps_per_epoch=steps_per_epoch, 
+                                             grad_accum_steps=gradient_accumulation_steps)
             # current_wandb_run_id is already defined
             # Epoch for checkpoint filename/metadata: based on micro-steps or optimizer steps?
             # 01_train.py uses current_epoch_num = (micro_step // steps_per_epoch) + 1. Let's stick to that for filename.
@@ -1692,7 +1565,8 @@ def main(cfg: DictConfig) -> None:
                     world_size=world_size,
                     log=log,
                     is_main_process=is_main(),
-                    wandb_run_id=current_wandb_run_id
+                    wandb_run_id=current_wandb_run_id,
+                    steps_per_epoch=steps_per_epoch
                 )
 
         # Verbose sample printing (adapting logic from 01_train.py)
@@ -1708,7 +1582,7 @@ def main(cfg: DictConfig) -> None:
                 try:
                     # Assuming train_module contains _resolve_schedule_to_steps
                     verbose_interval = _resolve_schedule_to_steps(
-                        verbose_interval_str, steps_per_epoch, log, "verbose_interval"
+                        verbose_interval_str, steps_per_epoch, log, "verbose_interval", gradient_accumulation_steps
                     )
                     if step % verbose_interval == 0:
                         should_print_verbose = True
@@ -1734,12 +1608,14 @@ def main(cfg: DictConfig) -> None:
                         current_optimizer_step_for_verbose = step // gradient_accumulation_steps
                         sch_args_verbose = {
                             "tau": get_schedule_value(config['gumbel_tau_schedule'], step, max_steps,
-                                                     current_optimizer_step_for_verbose, 
-                                                     gradient_accumulation_steps),
+                                                     current_epoch=current_epoch, 
+                                                     steps_per_epoch=steps_per_epoch, 
+                                                     grad_accum_steps=gradient_accumulation_steps),
                             "T_text": config.get('t_text', 8),
                             "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps,
-                                                       current_optimizer_step_for_verbose, 
-                                                       gradient_accumulation_steps),
+                                                       current_epoch=current_epoch, 
+                                                       steps_per_epoch=steps_per_epoch, 
+                                                       grad_accum_steps=gradient_accumulation_steps),
                             "lm_base_weight": config.get('lm_base_weight'), 
                             "kl_base_weight": config.get('kl_base_weight', 1.0),
                             "entropy_weight": config.get('entropy_weight', 0.0),
@@ -1802,22 +1678,26 @@ def main(cfg: DictConfig) -> None:
             # calc_total_optimizer_steps_for_final_sched = max_optimizer_steps
 
         # Get final tau and alpha using calculated optimizer step parameters
-        # Note: get_schedule_value expects micro_step, total_micro_steps, optimizer_step, grad_accum_steps
         final_micro_step_for_sched = max_steps -1 if max_steps > 0 else 0
 
+        # Calculate final epoch for schedule calculations
+        final_epoch_for_sched = final_micro_step_for_sched // steps_per_epoch if steps_per_epoch > 0 else 0
+        
         final_tau = get_schedule_value(
             config['gumbel_tau_schedule'], 
             final_micro_step_for_sched, # current micro_step
             max_steps,                   # total micro_steps
-            calc_optimizer_step_for_final_sched, # current optimizer_step
-            gradient_accumulation_steps
+            current_epoch=final_epoch_for_sched, 
+            steps_per_epoch=steps_per_epoch,
+            grad_accum_steps=gradient_accumulation_steps
         )
         final_alpha = get_schedule_value(
             config['alpha_schedule'], 
             final_micro_step_for_sched,
             max_steps,
-            calc_optimizer_step_for_final_sched,
-            gradient_accumulation_steps
+            current_epoch=final_epoch_for_sched,
+            steps_per_epoch=steps_per_epoch,
+            grad_accum_steps=gradient_accumulation_steps
         )
 
         # 'metrics' here would be from the last training step, or undefined if loop didn't run

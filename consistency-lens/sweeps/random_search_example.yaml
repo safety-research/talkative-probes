@@ -1,0 +1,74 @@
+# Random search sweep - simpler alternative to Bayesian
+program: scripts/wandb_sweep_train_only.py
+method: random  # Random search
+metric:
+  name: val/loss
+  goal: minimize
+
+parameters:
+  config:
+    value: conf/gpt2_frozen_postfix.yaml
+  
+  # Learning rate - random sampling from log space
+  learning_rate:
+    min: 1e-5
+    max: 1e-2
+    distribution: log_uniform
+  
+  # Batch size 
+  batch_size:
+    values: [64, 128, 256, 512]
+    probabilities: [0.2, 0.3, 0.3, 0.2]  # Favor middle values
+  
+  # Number of GPUs
+  num_gpus:
+    values: [1, 2]
+    probabilities: [0.7, 0.3]  # Mostly single GPU for more experiments
+  
+  # Gradient accumulation
+  gradient_accumulation_steps:
+    min: 4
+    max: 64
+    distribution: q_log_uniform  # Quantized log uniform (integers)
+  
+  # Gumbel temperature - simple linear schedule
+  gumbel_tau_schedule:
+    values: 
+      - "2.0->0.5@linear"
+      - "3.0->0.5@linear"
+      - "5.0->1.0@linear"
+      - "1.0->0.1@cosine"
+      - "2.0->0.1@exponential"
+  
+  # Alpha schedule variations
+  alpha_schedule:
+    values:
+      - "0.0->1.0@linear"
+      - "0.0->0.5@linear"
+      - "0.0->1.0@cosine"
+      - "0.0->0.8@linear"
+  
+  # Weight sampling
+  kl_base_weight:
+    values: [0.5, 1.0, 1.5, 2.0]
+  
+  # Training settings
+  num_train_epochs:
+    value: 10
+  
+  early_termination.enabled:
+    value: true
+  
+  early_termination.steps:
+    values: ["3000s", "5000s", "10000s"]
+  
+  run_suffix:
+    value: "_random_search_"
+
+# No early termination for random search - 
+# we want to see full training curves
+# early_terminate:
+#   type: hyperband
+#   s: 2
+#   eta: 3
+#   max_iter: 27

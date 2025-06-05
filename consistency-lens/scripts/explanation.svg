@@ -1,0 +1,216 @@
+<svg viewBox="0 0 900 700" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="900" height="700" fill="#fafafa"/>
+  
+  <!-- Title -->
+  <text x="450" y="30" text-anchor="middle" font-family="Arial, sans-serif" font-size="18" font-weight="bold" fill="#2c3e50">
+    Talkative probe, pure KL loss, layer 6 of GPT-2  
+  </text>
+  
+  <!-- Original Text Box -->
+  <rect x="50" y="60" width="800" height="60" fill="#e8f4fd" stroke="#3498db" stroke-width="2" rx="5"/>
+  <text x="60" y="80" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#2c3e50">Original Text:</text>
+  <text x="60" y="100" font-family="monospace" font-size="11" fill="#34495e">
+    "Animal control officers in County [...] capturing a cougar [...] animal control officials are calling 'a cou
+    <tspan fill="#e74c3c" font-weight="bold" id="gar-highlight">gar</tspan>
+    <tspan fill="#34495e">..."</tspan>
+  </text>
+  <!-- Red circle around "gar" -->
+  <ellipse cx="796" cy="97" rx="22" ry="13" fill="none" stroke="#e74c3c" stroke-width="2"/>
+  
+<!-- 
+   
+  Original Text Box
+  <rect x="50" y="60" width="800" height="60" fill="#e8f4fd" stroke="#3498db" stroke-width="2" rx="5"/>
+  <text x="60" y="80" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#2c3e50">Original Text:</text>
+  <text x="60" y="100" font-family="monospace" font-size="11" fill="#34495e">
+    "...Animal control officers in County... capturing... cougar ...animal control officials are calling 'a cou*gar*'"
+  </text>
+  
+   -->
+  <!-- Activation Info -->
+  <!-- <rect x="50" y="140" width="380" height="80" fill="#fff3cd" stroke="#f39c12" stroke-width="2" rx="5"/>
+  <text x="60" y="160" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#d68910">Activation Source:</text>
+  <text x="60" y="180" font-family="Arial, sans-serif" font-size="11" fill="#85651d">Token: 'gar' (Layer 6 of GPT-2)</text>
+  <text x="60" y="200" font-family="Arial, sans-serif" font-size="11" fill="#85651d">Logit Lens Top 5: ',', ' in', '.', '-', ' and'</text> -->
+  
+  <!-- Model Predictions
+  <rect x="470" y="140" width="380" height="80" fill="#d1ecf1" stroke="#17a2b8" stroke-width="2" rx="5"/>
+  <text x="480" y="160" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#0c5460">Base Model Prediction:</text>
+  <text x="480" y="180" font-family="Arial, sans-serif" font-size="11" fill="#0c5460">Top 5: ' ', '', ' in', ' have', ','</text>
+  <text x="480" y="200" font-family="Arial, sans-serif" font-size="11" fill="#0c5460">KL(A||X): 0.000</text> -->
+  
+  <!-- Spliced Forward Pass Section -->
+  <!-- <text x="50" y="260" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#2c3e50"> -->
+    <!-- Spliced Forward Pass Analysis:
+  </text> -->
+  
+  <!-- Encoding Tokens -->
+  <!-- <rect x="50" y="280" width="800" height="60" fill="#f8d7da" stroke="#dc3545" stroke-width="2" rx="5"/> -->
+  <!-- <text x="60" y="300" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#721c24">Enc[prev t tokens]:</text>
+  <foreignObject x="50" y="140" width="800" height="100">
+    <div xmlns="http://www.w3.org/1999/xhtml" style="font-family: Arial, sans-serif; font-size: 13px; color: #2c3e50; line-height: 1.5; background: #f4f8fb; border-radius: 6px; padding: 10px; border: 1px solid #b5d6ee; box-shadow: 0 1px 2px #e0e8ef;">
+      
+    </div>
+  </foreignObject> -->
+
+  
+  <!-- Generated Explanation Header -->
+  <text x="50" y="180" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#2c3e50">
+    Generated Explanations on token:
+  </text>
+  
+  <!-- Decoder Explanation -->
+  <rect x="50" y="200" width="800" height="80" fill="#d4edda" stroke="#28a745" stroke-width="2" rx="5"/>
+  <text x="60" y="220" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#155724">From Decoder (using A, soft prompt, autoregressive):</text>
+    <text x="60" y="240" font-family="Arial, sans-serif" font-size="11" fill="#4a148c">Soft prompt initalised as: "&lt;|endoftext|&gt;Short explanation of &lt;embed&gt;. Language, topic, sentiment, claims, speaker, style, etc:"</text>
+  
+  <!-- Token boxes for decoder -->
+  <g transform="translate(60, 250)">
+    <rect x="0" y="0" width="65" height="25" fill="#ffffff" stroke="#28a745" stroke-width="1" rx="3"/>
+    <text x="32" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#155724">mosquito</text>
+    
+    <rect x="75" y="0" width="50" height="25" fill="#ffffff" stroke="#28a745" stroke-width="1" rx="3"/>
+    <text x="100" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#155724">weapon</text>
+    
+    <rect x="135" y="0" width="55" height="25" fill="#ffffff" stroke="#28a745" stroke-width="1" rx="3"/>
+    <text x="162" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#155724">pokemon</text>
+    
+    <rect x="200" y="0" width="45" height="25" fill="#ffffff" stroke="#28a745" stroke-width="1" rx="3"/>
+    <text x="222" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#155724">hunter</text>
+    
+    <rect x="255" y="0" width="55" height="25" fill="#ffffff" stroke="#28a745" stroke-width="1" rx="3"/>
+    <text x="282" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#155724">elephant</text>
+    
+    <rect x="320" y="0" width="35" height="25" fill="#ffffff" stroke="#28a745" stroke-width="1" rx="3"/>
+    <text x="337" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#155724">frog</text>
+    
+    <rect x="365" y="0" width="35" height="25" fill="#ffffff" stroke="#28a745" stroke-width="1" rx="3"/>
+    <text x="382" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#155724">trap</text>
+    
+    <rect x="410" y="0" width="50" height="25" fill="#ffffff" stroke="#28a745" stroke-width="1" rx="3"/>
+    <text x="435" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#155724">spiders</text>
+    
+    <rect x="470" y="0" width="40" height="25" fill="#ffffff" stroke="#28a745" stroke-width="1" rx="3"/>
+    <text x="490" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#155724">police</text>
+    
+    <rect x="520" y="0" width="45" height="25" fill="#ffffff" stroke="#28a745" stroke-width="1" rx="3"/>
+    <text x="542" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#155724">missile</text>
+    
+    <rect x="575" y="0" width="45" height="25" fill="#ffffff" stroke="#28a745" stroke-width="1" rx="3"/>
+    <text x="597" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#155724">drones</text>
+    
+    <rect x="630" y="0" width="20" height="25" fill="#ffffff" stroke="#28a745" stroke-width="1" rx="3"/>
+    <text x="640" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#155724">.</text>
+    
+    <rect x="660" y="0" width="20" height="25" fill="#ffffff" stroke="#28a745" stroke-width="1" rx="3"/>
+    <text x="670" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#155724">it</text>
+    
+    <rect x="690" y="0" width="20" height="25" fill="#ffffff" stroke="#28a745" stroke-width="1" rx="3"/>
+    <text x="700" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#155724">it</text>
+    
+    <!-- Highlighted star token
+    <rect x="720" y="0" width="30" height="25" fill="#ffeb3b" stroke="#f57c00" stroke-width="2" rx="3"/>
+    <text x="735" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" font-weight="bold" fill="#e65100">star</text> -->
+<!--     
+    <rect x="760" y="0" width="25" height="25" fill="#ffffff" stroke="#28a745" stroke-width="1" rx="3"/>
+    <text x="772" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#155724">the</text> -->
+  </g>
+  
+  <!-- Untrained Model Explanation -->
+  <rect x="50" y="300" width="800" height="80" fill="#f3e5f5" stroke="#9c27b0" stroke-width="2" rx="5"/>
+  <text x="60" y="320" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#4a148c">From Untrained Model (using A, hard promp autoregressive):</text>
+  <text x="60" y="340" font-family="Arial, sans-serif" font-size="11" fill="#4a148c">Prompt: "&lt;|endoftext|&gt;Short explanation of &lt;embed&gt;. Language, topic, sentiment, claims, speaker, style, etc:"</text>
+  
+  <!-- Token boxes for untrained model -->
+  <g transform="translate(60, 350)">
+    <rect x="0" y="0" width="20" height="25" fill="#ffffff" stroke="#9c27b0" stroke-width="1" rx="3"/>
+    <text x="10" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#4a148c">"</text>
+    
+    <rect x="30" y="0" width="15" height="25" fill="#ffffff" stroke="#9c27b0" stroke-width="1" rx="3"/>
+    <text x="37" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#4a148c">I</text>
+    
+    <rect x="55" y="0" width="20" height="25" fill="#ffffff" stroke="#9c27b0" stroke-width="1" rx="3"/>
+    <text x="65" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#4a148c">'m</text>
+    
+    <rect x="85" y="0" width="30" height="25" fill="#ffffff" stroke="#9c27b0" stroke-width="1" rx="3"/>
+    <text x="100" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#4a148c">just</text>
+    
+    <rect x="125" y="0" width="50" height="25" fill="#ffffff" stroke="#9c27b0" stroke-width="1" rx="3"/>
+    <text x="150" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#4a148c">thought</text>
+    
+    <rect x="185" y="0" width="15" height="25" fill="#ffffff" stroke="#9c27b0" stroke-width="1" rx="3"/>
+    <text x="192" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#4a148c">,</text>
+    
+    <rect x="210" y="0" width="30" height="25" fill="#ffffff" stroke="#9c27b0" stroke-width="1" rx="3"/>
+    <text x="225" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#4a148c">just</text>
+    
+    <rect x="250" y="0" width="30" height="25" fill="#ffffff" stroke="#9c27b0" stroke-width="1" rx="3"/>
+    <text x="265" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#4a148c">that</text>
+    
+    <rect x="290" y="0" width="20" height="25" fill="#ffffff" stroke="#9c27b0" stroke-width="1" rx="3"/>
+    <text x="300" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#4a148c">is</text>
+    
+    <rect x="320" y="0" width="25" height="25" fill="#ffffff" stroke="#9c27b0" stroke-width="1" rx="3"/>
+    <text x="332" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#4a148c">not</text>
+    
+    <rect x="355" y="0" width="70" height="25" fill="#ffffff" stroke="#9c27b0" stroke-width="1" rx="3"/>
+    <text x="390" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#4a148c">considered</text>
+    
+    <rect x="435" y="0" width="20" height="25" fill="#ffffff" stroke="#9c27b0" stroke-width="1" rx="3"/>
+    <text x="445" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#4a148c">to</text>
+    
+    <rect x="465" y="0" width="30" height="25" fill="#ffffff" stroke="#9c27b0" stroke-width="1" rx="3"/>
+    <text x="480" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#4a148c">this</text>
+    
+    <rect x="505" y="0" width="20" height="25" fill="#ffffff" stroke="#9c27b0" stroke-width="1" rx="3"/>
+    <text x="515" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#4a148c">is</text>
+    
+    <rect x="535" y="0" width="25" height="25" fill="#ffffff" stroke="#9c27b0" stroke-width="1" rx="3"/>
+    <text x="547" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#4a148c">not</text>
+    
+    <rect x="570" y="0" width="25" height="25" fill="#ffffff" stroke="#9c27b0" stroke-width="1" rx="3"/>
+    <text x="582" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#4a148c">an</text>
+  </g>
+  
+  <!-- Star highlight annotation -->
+  <!-- <path d="M 780 450 Q 820 430 820 390" stroke="#f57c00" stroke-width="2" fill="none" marker-end="url(#arrowhead)"/> -->
+  <!-- <text x="825" y="395" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#f57c00">Layer 6</text> -->
+
+    
+  <!-- Decoder Explanation -->
+  <rect x="50" y="400" width="800" height="80" fill="white" stroke="#28a745" stroke-width="2" rx="5"/>
+  <text x="60" y="420" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#155724">Logit lens (on A, untuned, top 5):</text>
+  
+  <!-- Token boxes for decoder -->
+  <g transform="translate(60, 440)">
+    <rect x="0" y="0" width="20" height="25" fill="#ffffff" stroke="#28a745" stroke-width="1" rx="3"/>
+    <text x="10" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#155724">,</text>
+    
+    <rect x="30" y="0" width="35" height="25" fill="#ffffff" stroke="#28a745" stroke-width="1" rx="3"/>
+    <text x="47" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#155724"> in</text>
+    
+    <rect x="75" y="0" width="20" height="25" fill="#ffffff" stroke="#28a745" stroke-width="1" rx="3"/>
+    <text x="85" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#155724">.</text>
+    
+    <rect x="105" y="0" width="20" height="25" fill="#ffffff" stroke="#28a745" stroke-width="1" rx="3"/>
+    <text x="115" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#155724">-</text>
+    
+    <rect x="135" y="0" width="40" height="25" fill="#ffffff" stroke="#28a745" stroke-width="1" rx="3"/>
+    <text x="155" y="16" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#155724"> and</text>
+
+
+
+  
+  <!-- Arrow marker definition -->
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#f57c00"/>
+    </marker>
+  </defs>
+  
+  <!-- Footer note -->
+  <text x="450" y="680" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#7f8c8d">
+     
+  </text>
+</svg>

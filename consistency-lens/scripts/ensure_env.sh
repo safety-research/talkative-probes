@@ -1,6 +1,7 @@
 #!/bin/bash
 # Simplified environment setup for multi-node environments using uv
 # This script ensures uv is available and sets up the uv_run helper function
+# It also creates the uv environment if it doesn't exist
 
 #set -e
 
@@ -25,7 +26,7 @@ export UV_CACHE_DIR="/workspace/.uv_cache"
 mkdir -p "$UV_CACHE_DIR"
 
 # Set up node-local virtual environment location
-if [ -n "$SLURM_JOB_ID" ] && [ -n "$SLURM_TMPDIR" ]; then
+if [ -n "$SLURM_JOB_ID" ] && [ -n "${SLURM_TMPDIR:-}" ]; then
     # On compute nodes, use fast local storage
     export UV_PROJECT_ENVIRONMENT="$SLURM_TMPDIR/uv-venv-consistency-lens"
     echo "[ensure_env] Using node-local venv: $UV_PROJECT_ENVIRONMENT"
@@ -33,6 +34,15 @@ else
     # On login nodes or local dev, use home directory
     export UV_PROJECT_ENVIRONMENT="$HOME/.cache/uv/envs/consistency-lens"
     echo "[ensure_env] Using cached venv: $UV_PROJECT_ENVIRONMENT"
+fi
+
+# Check if environment exists, create it if not
+if [ ! -d "$UV_PROJECT_ENVIRONMENT" ] || [ ! -f "$UV_PROJECT_ENVIRONMENT/pyvenv.cfg" ]; then
+    echo "[ensure_env] Environment not found, creating it..."
+    cd "$UV_PROJECT_ROOT" && PATH="$HOME/.local/bin:$PATH" UV_CACHE_DIR="$UV_CACHE_DIR" UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" uv sync --frozen
+    echo "[ensure_env] Environment created successfully!"
+else
+    echo "[ensure_env] Environment already exists at $UV_PROJECT_ENVIRONMENT"
 fi
 
 # Helper function that ensures we're in the project root and uses uv run

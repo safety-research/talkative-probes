@@ -17,7 +17,7 @@ from lens.training.schedules import parse_schedule_to_steps
 class CheckpointManager:
     """Manages checkpoint saving, loading, and cleanup during training."""
 
-    def __init__(self, config: dict, logger: logging.Logger, steps_per_epoch: Optional[int] = None):
+    def __init__(self, config: dict, logger: logging.Logger, steps_per_epoch: Optional[int] = None, grad_accum_steps: Optional[int] = None):
         """Initialize checkpoint manager from config."""
         self.config = config.get('checkpoint', {})
         self.logger = logger
@@ -34,7 +34,7 @@ class CheckpointManager:
         if isinstance(save_steps_raw, str) and save_steps_raw == "0":
             self.save_every_n_steps = 0
         else:
-            self.save_every_n_steps = parse_schedule_to_steps(save_steps_raw, steps_per_epoch)
+            self.save_every_n_steps = parse_schedule_to_steps(save_steps_raw, steps_per_epoch, grad_accum_steps)
         
         self.save_every_n_epochs = self.config.get('save_every_n_epochs', 0)
         self.save_at_end = self.config.get('save_at_end', True)

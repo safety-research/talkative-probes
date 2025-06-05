@@ -41,6 +41,7 @@ def get_schedule_value(
     total_steps: int | None = None, # Required for some schedules like cosine_anneal
     current_epoch: int | None = None,  # For epoch-based schedules
     steps_per_epoch: int | None = None,  # For converting epochs to steps
+    grad_accum_steps: int | None = None,  # For converting optimizer steps to steps
 ) -> float:
     """Calculates the current value for a hyperparameter based on its schedule.
 
@@ -71,7 +72,7 @@ def get_schedule_value(
             raise ValueError("total_steps is required when num_steps is -1")
         num_schedule_steps = total_steps
     else:
-        num_schedule_steps = parse_schedule_to_steps(num_steps_raw, steps_per_epoch)
+        num_schedule_steps = parse_schedule_to_steps(num_steps_raw, steps_per_epoch, grad_accum_steps)
         if num_schedule_steps == -1:
             if total_steps is None:
                 raise ValueError("total_steps is required when num_steps is -1")
@@ -85,13 +86,26 @@ def get_schedule_value(
     if schedule_type == "linear_decay":
         return start_value - progress * (start_value - end_value)
     if schedule_type == "linear_decay_after_constant":
-        constant_steps_raw = schedule_config.get("constant_steps_before_linear_decay", 0)
-        constant_steps = parse_schedule_to_steps(constant_steps_raw, steps_per_epoch)
+        constant_steps_raw = schedule_config["constant_steps_before_decay"]
+        constant_steps = parse_schedule_to_steps(constant_steps_raw, steps_per_epoch, grad_accum_steps)
         
         if current_step < constant_steps:
             return start_value
         else:
             return start_value - (current_step - constant_steps) * (start_value - end_value) / (num_schedule_steps - constant_steps)
+    if schedule_type == "exponential_decay_after_constant":
+        constant_steps_raw = schedule_config["constant_steps_before_decay"]
+        constant_steps = parse_schedule_to_steps(constant_steps_raw, steps_per_epoch, grad_accum_steps)
+        if current_step < constant_steps:
+            return start_value
+        else:
+            # Exponential decay: value = start_value * (end_value/start_value) ** (progress)
+            # progress is fraction of decay phase completed
+            decay_steps = num_schedule_steps - constant_steps
+            if decay_steps <= 0:
+                raise ValueError("Decay steps must be > 0 for exponential_decay_after_constant.")
+            decay_progress = min(1.0, (current_step - constant_steps) / decay_steps)
+            return start_value * (end_value / start_value) ** decay_progress
     elif schedule_type == "linear_warmup":
         return start_value + progress * (end_value - start_value)
     elif schedule_type == "cosine_anneal":
@@ -107,7 +121,7 @@ def get_schedule_value(
     elif schedule_type == "cosine_anneal_after_linear_decay":
         linear_decay_steps_raw = schedule_config.get("linear_decay_steps")
         initial_high_lr_raw = schedule_config.get("initial_high_lr")
-        linear_decay_steps = parse_schedule_to_steps(linear_decay_steps_raw, steps_per_epoch)
+        linear_decay_steps = parse_schedule_to_steps(linear_decay_steps_raw, steps_per_epoch, grad_accum_steps)
         initial_high_lr = float(initial_high_lr_raw)
         if current_step < linear_decay_steps:
             return initial_high_lr - progress * (initial_high_lr - start_value)
@@ -129,6 +143,7 @@ def get_lr_scheduler(
     last_epoch: int = -1,
     current_epoch: int = 0,
     steps_per_epoch: int = None,
+    grad_accum_steps: int = None,
 ) -> Optional[_LRScheduler]:
     """Creates a learning rate scheduler based on configuration.
     
@@ -150,7 +165,7 @@ def get_lr_scheduler(
     
     # Handle warmup if specified
     warmup_steps_raw = scheduler_config.get('warmup_steps', 0)
-    warmup_steps = parse_schedule_to_steps(warmup_steps_raw, steps_per_epoch)
+    warmup_steps = parse_schedule_to_steps(warmup_steps_raw, steps_per_epoch, grad_accum_steps)
     
     if warmup_steps > 0:
         return get_lr_scheduler_with_warmup(
@@ -180,7 +195,7 @@ def get_lr_scheduler(
     
     elif scheduler_type == 'cosine_with_restarts':
         eta_min = scheduler_config.get('eta_min', 0.0)
-        T_0 = parse_schedule_to_steps(scheduler_config.get('T_0', 500), steps_per_epoch)
+        T_0 = parse_schedule_to_steps(scheduler_config.get('T_0', 500), steps_per_epoch, grad_accum_steps)
         T_mult = scheduler_config.get('T_mult', 2)
         return CosineAnnealingWarmRestarts(
             optimizer,
@@ -220,12 +235,13 @@ def get_lr_scheduler_with_warmup(
     last_epoch: int = -1,
     current_epoch: int = 0,
     steps_per_epoch: int = None,
+    grad_accum_steps: int = None,
 ) -> _LRScheduler:
     """Creates a learning rate scheduler with linear warmup.
     
     Combines a linear warmup phase with any of the supported schedulers.
     """
-    warmup_steps = parse_schedule_to_steps(scheduler_config.get('warmup_steps', 0), steps_per_epoch)
+    warmup_steps = parse_schedule_to_steps(scheduler_config.get('warmup_steps', 0), steps_per_epoch, grad_accum_steps)
     warmup_start_factor = scheduler_config.get('warmup_start_factor', 0.1)
     scheduler_type = scheduler_config.get('type', 'constant')
     
@@ -307,6 +323,7 @@ def parse_schedule_value(value: Union[str, int, None]) -> Optional[ScheduleSpec]
             (r'^(\d+)e$', 'epochs'),          # "5e"
             (r'^(\d+)steps?$', 'steps'),      # "1000step" or "1000steps"
             (r'^(\d+)epochs?$', 'epochs'),    # "5epoch" or "5epochs"
+            (r'^(\d+)os$', 'optimizer_steps'),          # "1000os"
         ]
         
         for pattern, unit in patterns:
@@ -321,27 +338,29 @@ def parse_schedule_value(value: Union[str, int, None]) -> Optional[ScheduleSpec]
             pass
     
     raise ValueError(f"Invalid schedule value format: {value}. "
-                     f"Expected formats: '1000s', '5e', '2000steps', '10epochs', or integer.")
+                     f"Expected formats: '1000s', '5e', '2000steps', '10epochs', '1000os', or integer.")
 
 
-def spec_to_steps(spec: ScheduleSpec, steps_per_epoch: int = None) -> int:
+def spec_to_steps(spec: ScheduleSpec, steps_per_epoch: int = None, grad_accum_steps: int = None) -> int:
     """Convert a ScheduleSpec to steps, handling epoch conversions."""
     if spec.unit == "epochs" and steps_per_epoch:
         return spec.value * steps_per_epoch
+    elif spec.unit == "optimizer_steps" and grad_accum_steps:
+        return spec.value * grad_accum_steps
     return spec.value
 
 
-def parse_schedule_to_steps(value: Union[str, int], steps_per_epoch: int = None) -> int:
+def parse_schedule_to_steps(value: Union[str, int], steps_per_epoch: int = None, grad_accum_steps: int = None) -> int:
     """Parse a schedule value (string or int) and convert to steps."""
     if isinstance(value, str):
         if value == "-1":
             return -1
         spec = parse_schedule_value(value)
-        return spec_to_steps(spec, steps_per_epoch)
+        return spec_to_steps(spec, steps_per_epoch, grad_accum_steps)
     return int(value)
 
 
-def convert_schedule_strings_in_config(value: Any, current_epoch: int = 0, steps_per_epoch: int = None) -> Any:
+def convert_schedule_strings_in_config(value: Any, current_epoch: int = 0, steps_per_epoch: int = None, grad_accum_steps: int = None) -> Any:
     """Convert schedule strings in a config value to concrete numbers.
     
     This handles strings with s/e notation in config values, converting them
@@ -357,15 +376,15 @@ def convert_schedule_strings_in_config(value: Any, current_epoch: int = 0, steps
         # Try to parse as schedule value
         try:
             spec = parse_schedule_value(value)
-            return spec_to_steps(spec, steps_per_epoch)
+            return spec_to_steps(spec, steps_per_epoch, grad_accum_steps)
         except ValueError:
             # Not a schedule value, return as-is
             return value
     elif isinstance(value, dict):
-        return {k: convert_schedule_strings_in_config(v, current_epoch, steps_per_epoch) 
+        return {k: convert_schedule_strings_in_config(v, current_epoch, steps_per_epoch, grad_accum_steps) 
                 for k, v in value.items()}
     elif isinstance(value, list):
-        return [convert_schedule_strings_in_config(v, current_epoch, steps_per_epoch) 
+        return [convert_schedule_strings_in_config(v, current_epoch, steps_per_epoch, grad_accum_steps) 
                 for v in value]
     else:
         return value
@@ -417,7 +436,7 @@ def parse_schedule_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return parse_recursive(config)
 
 
-def resolve_schedule_at_step(spec: Optional[ScheduleSpec], current_step: int, current_epoch: int) -> bool:
+def resolve_schedule_at_step(spec: Optional[ScheduleSpec], current_step: int, current_epoch: int, grad_accum_steps: int) -> bool:
     """Check if a schedule spec should trigger at the current step/epoch.
     
     Args:
@@ -435,6 +454,8 @@ def resolve_schedule_at_step(spec: Optional[ScheduleSpec], current_step: int, cu
         return current_step >= spec.value
     elif spec.unit == "epochs":
         return current_epoch >= spec.value
+    elif spec.unit == "optimizer_steps":
+        return current_step*grad_accum_steps >= spec.value
     else:
         raise ValueError(f"Unknown schedule unit: {spec.unit}")
 
@@ -543,7 +564,7 @@ def optimizer_step(optimizer, scaler, device):
     else:
         optimizer.step() 
 
-def should_unfreeze_any_component(current_step, current_epoch, freeze_schedule_config, freeze_schedule_enabled):
+def should_unfreeze_any_component(current_step, current_epoch, freeze_schedule_config, freeze_schedule_enabled, grad_accum_steps):
     """Check if any component should be unfrozen at current step/epoch."""
     if not freeze_schedule_enabled:
         return False
@@ -558,7 +579,7 @@ def should_unfreeze_any_component(current_step, current_epoch, freeze_schedule_c
                 if unfreeze_spec_str is not None:
                     try:
                         unfreeze_spec = parse_schedule_value(unfreeze_spec_str)
-                        if resolve_schedule_at_step(unfreeze_spec, current_step, current_epoch):
+                        if resolve_schedule_at_step(unfreeze_spec, current_step, current_epoch, grad_accum_steps):
                             return True
                     except Exception:
                         pass
@@ -568,7 +589,7 @@ def should_unfreeze_any_component(current_step, current_epoch, freeze_schedule_c
     if global_unfreeze_at is not None:
         try:
             unfreeze_spec = parse_schedule_value(global_unfreeze_at)
-            return resolve_schedule_at_step(unfreeze_spec, current_step, current_epoch)
+            return resolve_schedule_at_step(unfreeze_spec, current_step, current_epoch, grad_accum_steps)
         except Exception:
             pass
     
@@ -584,7 +605,7 @@ def should_unfreeze_any_component(current_step, current_epoch, freeze_schedule_c
     return False
 
 
-def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr_multiplier, embedding_lr_multiplier, prompt_lr_multiplier, opt_state_dict=None, current_step=None, current_epoch=None):
+def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr_multiplier, embedding_lr_multiplier, prompt_lr_multiplier, opt_state_dict=None, current_step=None, current_epoch=None, grad_accum_steps=None):
     """Unfreeze non-adapter parameters and create new optimizer with all parameters."""
     log = logging.getLogger(__name__)
     
@@ -618,7 +639,7 @@ def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr
             if unfreeze_spec_str is not None:
                 try:
                     unfreeze_spec = parse_schedule_value(unfreeze_spec_str)
-                    return resolve_schedule_at_step(unfreeze_spec, current_step or 0, current_epoch or 0)
+                    return resolve_schedule_at_step(unfreeze_spec, current_step or 0, current_epoch or 0, grad_accum_steps)
                 except Exception as e:
                     print(f"Warning: Failed to parse unfreeze_at for {component}.{param_name}: {e}")
         
@@ -627,7 +648,7 @@ def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr
         if global_unfreeze_at is not None:
             try:
                 unfreeze_spec = parse_schedule_value(global_unfreeze_at)
-                return resolve_schedule_at_step(unfreeze_spec, current_step or 0, current_epoch or 0)
+                return resolve_schedule_at_step(unfreeze_spec, current_step or 0, current_epoch or 0, grad_accum_steps)
             except Exception as e:
                 print(f"Warning: Failed to parse global unfreeze_at: {e}")
         

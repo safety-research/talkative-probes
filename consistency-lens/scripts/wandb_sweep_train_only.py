@@ -2,12 +2,14 @@
 """
 W&B Sweep wrapper for direct training (bypasses submit_with_config.sh)
 Use this when activations are already dumped and data is pretokenized.
+Supports both single-GPU and multi-GPU distributed training.
 """
 
 import subprocess
 import sys
 import os
 import wandb
+import torch
 
 def main():
     # Initialize wandb to get sweep parameters
@@ -27,25 +29,44 @@ def main():
     config_dir = os.path.dirname(config_path)
     config_name = os.path.basename(config_path).replace('.yaml', '')
     
-    # Build the command to call 01_train.py directly
-    cmd = [
-        "python",
-        "scripts/01_train.py",
+    # Detect number of GPUs available or use configured value
+    num_gpus = int(config.get('num_gpus', torch.cuda.device_count()))
+    
+    # Ensure we don't exceed available GPUs
+    available_gpus = torch.cuda.device_count()
+    if num_gpus > available_gpus:
+        print(f"Warning: Requested {num_gpus} GPUs but only {available_gpus} available. Using {available_gpus}.")
+        num_gpus = available_gpus
+    
+    # Build the base arguments
+    base_args = [
         f"--config-path={config_dir}",
         f"--config-name={config_name}",
-        f"learning_rate={config.learning_rate}",
-        f"num_train_epochs={config.num_train_epochs}",
-        f"run_suffix={os.environ['SLURM_JOB_ID']}"
+        f"run_suffix={config.run_suffix}{os.environ.get('SLURM_JOB_ID', 'local')}"
     ]
-    for key, value in config.items():
-        if key not in ["config", "learning_rate", "num_train_epochs"]:
-            cmd.append(f"{key}={value}")
     
-    print(f"Executing: {' '.join(cmd)}")
+    # Add all sweep parameters
+    for key, value in config.items():
+        if key not in ["config", "num_gpus"]:
+            base_args.append(f"{key}={value}")
     
     # Change to project root directory
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
+    
+    # Always use distributed script - it handles single GPU efficiently
+    cmd = [
+        "torchrun",
+        "--nproc_per_node", str(num_gpus),
+        "--nnodes", "1",
+        "--node_rank", "0",
+        "--master_addr", "127.0.0.1",
+        "--master_port", os.environ.get("MASTER_PORT", "29500"),
+        "scripts/01_train_distributed.py"
+    ] + base_args
+    
+    print(f"Running with {num_gpus} GPU(s)")
+    print(f"Executing: {' '.join(cmd)}")
     
     # Execute the command
     result = subprocess.run(cmd, cwd=project_root)

@@ -45,7 +45,7 @@ alpha_schedule:
 
 gumbel_tau_schedule:
   type: "linear_decay_after_constant"
-  constant_steps_before_linear_decay: 103349
+  constant_steps_before_decay: 103349
   start_value: 0.1
   end_value: 0.1
   num_steps: -1      

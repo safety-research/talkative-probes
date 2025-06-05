@@ -1,0 +1,64 @@
+# Configuration for GPT-2 Frozen Base Model Experiment
+# This config trains consistency lens on GPT-2 with the base model frozen throughout
+
+defaults:
+  - gpt2_frozen
+  - _self_
+
+# Training hyperparameters
+t_text: 16                       # Number of tokens to generate with the Decoder
+decoder_prompt: "<|endoftext|>Short explanation of <embed>. Language, topic, senitment, claims, speaker, points and message, style and details, etc:"
+encoder_prompt: "<|endoftext|>Text to summarise:<text>. Concise summary of the text, covering the language, topic, sentiment, claims, speaker, points, message, style and details, etc:" # this is an error
+lm_loss_natural_prefix: "<|endoftext|>Short explanation of something. Language, topic, sentiment, claims, speaker, points, message, style and details, etc:"  # Natural language prefix for base model in LM loss
+
+# Trainable components - FROZEN base model
+trainable_components:
+  decoder:
+    base_model: false                 # FROZEN throughout
+    projection_layer: true            # Train projection
+    eye_init: true
+    output_head: false                # Keep LM head frozen too
+    use_flash_attention: false
+    use_checkpointing: false
+    use_kv_cache: true
+    patch_all_layers: true
+    per_layer_projections: true 
+    use_dropout: false
+    use_gumbel_for_LMorig: false # shouldn't matter too much
+  encoder:
+    base_model: false                 # FROZEN throughout
+    use_base_model: true
+    projection_layer: true            # Train projection
+    eye_init: true
+    output_layer: 6
+    soft_prompt_init_text: ${encoder_prompt}
+    use_dropout: false
+
+alpha_schedule: 
+  type: "constant"
+  value: 1.0
+
+num_train_epochs: 10                   # 2 epochs should be plenty for OpenWebText
+
+learning_rate: 2.0e-3
+# Learning rate scheduler
+lr_scheduler:
+  type: "cosine"                      # Cosine annealing works well
+  warmup_steps: "10os"                # 10 optimizer steps = ~320 micro-steps (with grad_accum=32)
+  warmup_start_factor: 0.1            # Start at 10% of target LR
+  eta_min: 1.0e-5   
+
+gumbel_tau_schedule:
+  start_value: 3.0
+  end_value: 0.1
+  constant_steps_before_decay: "128os"  # 31 optimizer steps = ~1000 micro-steps (with grad_accum=32)
+  type: "exponential_decay_after_constant"
+
+lm_base_weight: 0.001
+kl_base_weight: 1.0
+mse_weight: 0.000001
+
+resample_ablation: false
+
+batch_size: 256
+gradient_accumulation_steps: 16

@@ -45,6 +45,12 @@ max_train_steps: 0              # Set to 0 when using num_train_epochs
 # For step-based training:
 # num_train_epochs: 0           # Set to 0 when using max_train_steps  
 # max_train_steps: 50000        # Number of training steps (set > 0 for step-based)
+
+# Early termination (useful for sweeps and testing)
+early_termination:
+  enabled: false                # Enable early termination
+  steps: null                   # Terminate after N steps - Examples: "1000s", "100os", "5000steps"
+                               # This overrides max_train_steps/num_train_epochs if set
 compile_models: true             # Wrap Decoder & Encoder with torch.compile if True
 log_interval: "10s"           # Log metrics interval - Examples: "10s", "0.1e", "100steps", "1epoch"
 wandb_log_interval: "1s"      # WandB log interval - Examples: "1s", "0.01e", "10steps"
@@ -146,7 +152,7 @@ custom_lr_multipliers:
 # Gumbel-Softmax temperature (tau) schedule
 gumbel_tau_schedule:
   type: "linear_decay_after_constant"  # Options: constant, linear_decay, cosine_anneal, exponential_decay, linear_decay_after_constant
-  constant_steps_before_linear_decay: "5000s"  # Duration of constant phase - Examples: "5000s", "2e", "10000steps", "5epochs"
+  constant_steps_before_decay: "5000s"  # Duration of constant phase - Examples: "5000s", "2e", "10000steps", "5epochs"
   start_value: 1.0
   end_value: 0.1
   num_steps: "-1"       # Duration of schedule - "-1" = full training, or use "10000s", "5e", etc.

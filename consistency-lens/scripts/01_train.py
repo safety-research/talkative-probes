@@ -67,13 +67,13 @@ from lens.utils.embedding_remap import remap_embeddings
 from types import SimpleNamespace
 
 
-def _resolve_schedule_to_steps(schedule_str: str | int, steps_per_epoch: int, log: logging.Logger, setting_name: str) -> int:
+def _resolve_schedule_to_steps(schedule_str: str | int, steps_per_epoch: int, log: logging.Logger, setting_name: str, grad_accum_steps: int) -> int:
     """Helper to parse schedule strings (e.g., "100s", "2e") into steps."""
     if isinstance(schedule_str, int):
         return schedule_str
     try:
         spec = parse_schedule_value(schedule_str)
-        return spec_to_steps(spec, steps_per_epoch)
+        return spec_to_steps(spec, steps_per_epoch, grad_accum_steps)
     except Exception as e:
         log.warning(f"Failed to parse {setting_name} '{schedule_str}': {e}. Using raw value if integer, else raising error.")
         if isinstance(schedule_str, str) and schedule_str.isdigit():
@@ -959,8 +959,8 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
             raise ValueError("Either 'num_train_epochs' or 'max_train_steps' must be > 0 in config")
     
     # Parse intervals with flexible notation (now that we have steps_per_epoch)
-    wandb_log_interval = _resolve_schedule_to_steps(config['wandb_log_interval'], steps_per_epoch, log, "wandb_log_interval")
-    log_interval = _resolve_schedule_to_steps(config['log_interval'], steps_per_epoch, log, "log_interval")
+    wandb_log_interval = _resolve_schedule_to_steps(config['wandb_log_interval'], steps_per_epoch, log, "wandb_log_interval", gradient_accumulation_steps)
+    log_interval = _resolve_schedule_to_steps(config['log_interval'], steps_per_epoch, log, "log_interval", gradient_accumulation_steps)
     
     if log_interval <= 0:
         raise ValueError(f"log_interval must be positive, got {config['log_interval']}")
@@ -969,10 +969,10 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     
     # val_interval is used by the training loop
     val_interval_str = config['val_interval']
-    val_interval = _resolve_schedule_to_steps(val_interval_str, steps_per_epoch, log, "val_interval")
+    val_interval = _resolve_schedule_to_steps(val_interval_str, steps_per_epoch, log, "val_interval", gradient_accumulation_steps)
     
     # Initialize checkpoint manager with updated config (now that we have steps_per_epoch)
-    checkpoint_manager = CheckpointManager(config, log, steps_per_epoch)
+    checkpoint_manager = CheckpointManager(config, log, steps_per_epoch, gradient_accumulation_steps)
 
     log.info("Starting training run – Model: %s, Activations: %s", model_name, activation_dir)
     log.info(
@@ -1312,7 +1312,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
     
     # Track warmup for newly unfrozen parameters
     unfreeze_warmup_duration = freeze_schedule_config.get('warmup_duration', "100s")
-    unfreeze_warmup_steps = _resolve_schedule_to_steps(unfreeze_warmup_duration, steps_per_epoch, log, "warmup_duration")
+    unfreeze_warmup_steps = _resolve_schedule_to_steps(unfreeze_warmup_duration, steps_per_epoch, log, "warmup_duration", gradient_accumulation_steps)
 
     newly_unfrozen_params = set()
     unfreeze_transition_step = None
@@ -1714,7 +1714,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
             # Check if we should print based on flexible interval notation
             verbose_interval_str = verbose_config.get('interval', "1000s")
             try:
-                verbose_interval = _resolve_schedule_to_steps(verbose_interval_str, steps_per_epoch, log, "verbose_interval")
+                verbose_interval = _resolve_schedule_to_steps(verbose_interval_str, steps_per_epoch, log, "verbose_interval", gradient_accumulation_steps)
                 if step % verbose_interval == 0:
                     should_print = True
             except Exception as e:

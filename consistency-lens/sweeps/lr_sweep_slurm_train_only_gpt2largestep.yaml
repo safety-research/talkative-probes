@@ -12,7 +12,7 @@ parameters:
     value: conf/gpt2_frozen_e6_wider1p0.yaml
   num_train_epochs:
     value: 10
-  gumbel_tau_schedule.constant_steps_before_linear_decay:
+  gumbel_tau_schedule.constant_steps_before_decay:
       values: ["1000s", "2000s", "4000s", "8000s"]
       
 

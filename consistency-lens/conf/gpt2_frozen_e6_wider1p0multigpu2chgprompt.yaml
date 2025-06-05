@@ -8,7 +8,7 @@ defaults:
 # Training hyperparameters
 t_text: 8                       # Number of tokens to generate with the Decoder
 decoder_prompt: "<|endoftext|>Short explanation of <embed>. Language, topic, sentiment, claims, speaker, style, etc:"
-encoder_prompt: "<|endoftext|>Summary of the above text, encapsulating the main points and message, style and details:"
+encoder_prompt: "<|endoftext|>Summary of the above text, encapsulating the main points and message, style and details:<text>" # this is an error
 lm_loss_natural_prefix: "<|endoftext|>Short explanation of something. Language, topic, sentiment, claims, speaker, style, etc:"  # Natural language prefix for base model in LM loss
 
 # Trainable components - FROZEN base model
@@ -37,13 +37,11 @@ learning_rate: 1.0e-3
 # Learning rate scheduler
 lr_scheduler:
   type: "cosine"                      # Cosine annealing works well
-  warmup_steps: 10                  # Number of *optimizer steps* for warmup.
-                                    # Total micro-steps for warmup = warmup_steps * gradient_accumulation_steps.
-                                    # E.g., 10 optimizer steps * 32 accum steps = 320 micro-steps for warmup.
+  warmup_steps: "10os"                # 10 optimizer steps = ~320 micro-steps (with grad_accum=32)
   warmup_start_factor: 0.1            # Start at 10% of target LR
   eta_min: 1.0e-5   
 
 batch_size: 256
 gradient_accumulation_steps: 32
 gumbel_tau_schedule:
-  constant_steps_before_linear_decay: 1000
+  constant_steps_before_decay: "31os"  # 31 optimizer steps = ~1000 micro-steps (with grad_accum=32)

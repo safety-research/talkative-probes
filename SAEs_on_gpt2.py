@@ -1,11 +1,12 @@
 # %%
-# Dictionary Learning and Sparse Autoencoders on GPT-2
+# Dictionary Learning and Sparse Autoencoders on Llama
 
-# This interactive script demonstrates how to use a Sparse Autoencoder (SAE) to extract and visualize monosemantic features from a GPT-2 model's activations.
+# This interactive script demonstrates how to use a Sparse Autoencoder (SAE) to extract and visualize monosemantic features from a Llama model's activations.
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 from dotenv import load_dotenv
 print("loaded successfully?",load_dotenv())
+
 
 import sys
 import gc
@@ -14,43 +15,49 @@ def free_unused_cuda_memory():
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     else:
-        print("not using cuda")
-        #raise RuntimeError("not using cuda")
+        raise RuntimeError("not using cuda")
     gc.collect()
 print(sys.executable)
 print(sys.version)
 # Get the SLURM environment variables
 slurm_gpus = os.environ.get('CUDA_VISIBLE_DEVICES', None)
 print(slurm_gpus)
+#os.environ["CUDA_VISIBLE_DEVICES"] = ','.join(str(i) for i in range(int(slurm_gpus)))
+#os.environ["CUDA_VISIBLE_DEVICES"] = '5,6'
 print(f"Restricted to {slurm_gpus} GPU(s)")
 !pwd
-
 # %%
 # Core libraries
 import torch
 print(torch.cuda.is_available())
 print(torch.cuda.device_count())
 free_unused_cuda_memory()
-
 # %%
 # --- Setup: Install and Import Dependencies ---
 
 from IPython.display import clear_output, display
-try:
-    import google.colab
-    is_colab = True
-except ImportError:
-    is_colab = False
+# try:
+#     import google.colab
+#     is_colab = True
+# except ImportError:
+#     is_colab = False
 
-if is_colab:
-    pass
+# if is_colab:
+#     # Install required packages in Colab
+#     # Note: Uncomment the following lines if running in Colab
+#     # !uv pip install -U nnsight
+#     # !git clone https://github.com/saprmarks/dictionary_learning
+#     # %cd dictionary_learning
+#     # !uv pip install -r requirements.txt
+#     pass
 clear_output()
 
 # %%
 from nnsight import LanguageModel
+from dictionary_learning.dictionary import AutoEncoder
 import torch
 import torch.nn as nn
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer
 from safetensors.torch import load_file
 import requests
 import os
@@ -63,63 +70,76 @@ import torch
 import nnsight
 from nnsight import LanguageModel
 from nnsight import CONFIG, util
+#from nnsight.intervention import InterventionProxy
+#from nnsight.tracing.graph import Proxy # For 
 from SAEclasses import *
+import goodfire
+
+
+# %%
+# --- Helper Functions ---
+
+
+# %%
+# --- SAE Class Definition ---
+
 
 # %%
 # --- Configuration ---
 
-# Base Model Configuration - GPT-2 models
-MODEL_ID = "openai-community/gpt2"  # Options: "gpt2", "gpt2-medium", "gpt2-large", "gpt2-xl"
+# Base Model Configuration
+MODEL_ID = "openai-community/gpt2" # Base model ID
+#MODEL_ID = "meta-llama/Llama-3.3-70B-Instruct" # Base model ID
 
-# SAE Configuration for different GPT-2 models
-if MODEL_ID == "openai-community/gpt2":
-    # GPT-2 small (117M parameters, 768 hidden dim, 12 layers)
-    SAE_REPO_ID = "jbloom/GPT2-Small-SAEs"  # Joseph Bloom's GPT-2 SAEs
-    SAE_LAYER = 6  # Middle layer for GPT-2 small
-    EXPANSION_FACTOR = 32  # As specified in the repository
-    MODEL_HIDDEN_DIM = 768
-    MODEL_NUM_LAYERS = 12
-elif MODEL_ID == "gpt2-medium":
-    # GPT-2 medium (345M parameters, 1024 hidden dim, 24 layers)
-    SAE_REPO_ID = "openai/sparse_autoencoder"  # May need to check available SAEs
-    SAE_LAYER = 12
-    EXPANSION_FACTOR = 16  # Common expansion factor
-    MODEL_HIDDEN_DIM = 1024
-    MODEL_NUM_LAYERS = 24
-elif MODEL_ID == "gpt2-large":
-    # GPT-2 large (774M parameters, 1280 hidden dim, 36 layers)
-    SAE_REPO_ID = "openai/sparse_autoencoder"
-    SAE_LAYER = 18
-    EXPANSION_FACTOR = 16
-    MODEL_HIDDEN_DIM = 1280
-    MODEL_NUM_LAYERS = 36
-elif MODEL_ID == "gpt2-xl":
-    # GPT-2 xl (1.5B parameters, 1600 hidden dim, 48 layers)
-    SAE_REPO_ID = "openai/sparse_autoencoder"
-    SAE_LAYER = 24
-    EXPANSION_FACTOR = 16
-    MODEL_HIDDEN_DIM = 1600
-    MODEL_NUM_LAYERS = 48
+# SAE Configuration
 
-# GPT-2 uses different module naming convention
-TARGET_MODULE_PATH = f"h.{SAE_LAYER}"  # GPT-2 transformer blocks are named h.0, h.1, etc.
+SAE_REPO_ID = "jbloom/GPT2-Small-SAEs" # SAE repository on Hugging Face
+SAE_LAYER = 6 # The layer the SAE was trained on (usually indicated in repo name)
+
+# Common paths: Residual stream: model.layers[N].output[0], MLP out: model.layers[N].mlp.output
+# Verify based on SAE training details if unsure.
+TARGET_MODULE_PATH = f"transformer.h.{SAE_LAYER}"  # For GPT-2 residual stream
+# Expansion factor needed for Goodfire SAEs (determines d_hidden = d_model * expansion_factor)
+# Check the SAE repo card or config if unsure
+# Goodfire Llama-3.1-8B uses 16, Llama-3.1-70B uses 8
+EXPANSION_FACTOR = 32# 16 if "8B" in SAE_REPO_ID else 8 
+
+# --- Optional: Alternative Configurations ---
+# Example for a different model/SAE:
+# MODEL_ID = "meta-llama/Meta-Llama-3.1-70B-Instruct"
+# SAE_REPO_ID = "Goodfire/Llama-3.3-70B-Instruct-SAE-l50"
+# SAE_LAYER = 50
+# TARGET_MODULE_PATH = f"model.layers[{SAE_LAYER}].output[0]"
+# EXPANSION_FACTOR = 8
+
+# Example for a standard safetensors SAE:
+# MODEL_ID = "EleutherAI/pythia-70m-deduped"
+# SAE_REPO_ID = "ArthurConmy/pythia-70m-deduped-layer-0-av-sparsity-target-10" # Example standard SAE
+# SAE_LAYER = 0
+# TARGET_MODULE_PATH = f"gpt_neox.layers[{SAE_LAYER}].mlp.output" # Example path for Pythia MLP
+# EXPANSION_FACTOR = None # Not needed if cfg.json exists
+
+
 
 print("--- Configuration Loaded ---")
 print(f"Model ID: {MODEL_ID}")
 print(f"SAE Repo ID: {SAE_REPO_ID}")
 print(f"Target Layer: {SAE_LAYER}")
 print(f"Target Module Path: {TARGET_MODULE_PATH}")
-print(f"Model Hidden Dim: {MODEL_HIDDEN_DIM}")
-print(f"Expansion Factor: {EXPANSION_FACTOR}")
+print(f"Expansion Factor (for Goodfire): {EXPANSION_FACTOR}")
+#print(f"Tokens to Generate: {N_GENERATE_TOKENS}")
 
 # %%
 # --- Load Model and Tokenizer ---
 
-print(f"Loading GPT-2 model: {MODEL_ID}...")
-# Use nnsight's LanguageModel for GPT-2
-model = ObservableLanguageModel(MODEL_ID, device_map="auto", device="cuda" if torch.cuda.is_available() else "cpu", dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32)
+print(f"Loading base model using ObservableLanguageModel: {MODEL_ID}...")
+# Note: Ensure you have necessary HF credentials/access if required for the model
+# device='auto' should work, but specify GPU if needed e.g., 'cuda:0'
+# dtype=torch.bfloat16 is used by default, matching the demo.
+model = ObservableLanguageModel(MODEL_ID, device_map="auto",device="cuda", dtype=torch.bfloat16)
 tokenizer = model.tokenizer 
 
+# Get model properties needed for SAE loading
 model_d_model = model.d_model # Get d_model inferred by ObservableLanguageModel
 model_device = model.model_device # Get device from the wrapped nnsight model
 model_dtype = model.model_dtype # Get dtype from the wrapped nnsight model
@@ -128,229 +148,333 @@ if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
     print("Tokenizer pad_token set to eos_token")
 
-print(f"GPT-2 model loaded. D_model={model_d_model}, Device={model_device}, Dtype={model_dtype}")
+print(f"ObservableLanguageModel loaded. D_model={model_d_model}, Device={model_device}, Dtype={model_dtype}")
 
 # %%
-# --- Simple SAE Loading for GPT-2 ---
+# --- Load Sparse Autoencoder (SAE) ---
 
-class SimpleGPT2SAE(nn.Module):
-    """Simple SAE class for GPT-2 compatible with standard SAE formats"""
-    def __init__(self, d_in, d_hidden):
-        super().__init__()
-        self.d_in = d_in
-        self.d_hidden = d_hidden
-        
-        # Standard SAE components
-        self.encoder = nn.Linear(d_in, d_hidden, bias=False)
-        self.decoder = nn.Linear(d_hidden, d_in, bias=False)
-        self.bias = nn.Parameter(torch.zeros(d_in))
-        
-    def encode(self, x):
-        """Encode input to sparse features"""
-        return torch.relu(self.encoder(x - self.bias))
-    
-    def decode(self, features):
-        """Decode features back to original space"""
-        return self.decoder(features) + self.bias
-    
-    def forward(self, x):
-        features = self.encode(x)
-        reconstruction = self.decode(features)
-        return reconstruction
+print(f"Loading SAE from {SAE_REPO_ID}...")
 
-def load_gpt2_sae(repo_id, layer_num, d_model, expansion_factor):
-    """Load SAE for GPT-2 from HuggingFace repository"""
-    print(f"Loading SAE from {repo_id} for layer {layer_num}...")
-    
-    try:
-        # Try to load from jbloom's repository format
-        if "jbloom" in repo_id:
-            # jbloom's SAEs are stored as individual layer files
-            filename = f"layer_{layer_num}.safetensors"
-            weights_path = hf_hub_download(repo_id=repo_id, filename=filename)
-            weights = load_file(weights_path)
-            
-            # Create SAE with correct dimensions
-            d_hidden = d_model * expansion_factor
-            sae = SimpleGPT2SAE(d_model, d_hidden)
-            
-            # Load weights (adjust key names if needed)
-            if 'encoder.weight' in weights:
-                sae.encoder.weight.data = weights['encoder.weight']
-            if 'decoder.weight' in weights:
-                sae.decoder.weight.data = weights['decoder.weight']
-            if 'bias' in weights:
-                sae.bias.data = weights['bias']
-                
-        else:
-            # Try OpenAI format or other formats
-            # This may need adjustment based on actual file structure
-            config_file = hf_hub_download(repo_id=repo_id, filename="config.json")
-            with open(config_file, 'r') as f:
-                config = json.load(f)
-            
-            filename = f"sae_{layer_num}.safetensors"
-            weights_path = hf_hub_download(repo_id=repo_id, filename=filename)
-            weights = load_file(weights_path)
-            
-            sae = SimpleGPT2SAE(config['d_in'], config['d_hidden'])
-            sae.load_state_dict(weights)
-            
-    except Exception as e:
-        print(f"Error loading SAE: {e}")
-        print("Creating a random SAE for demonstration...")
-        d_hidden = d_model * expansion_factor
-        sae = SimpleGPT2SAE(d_model, d_hidden)
-    
-    return sae.to(model_device).to(model_dtype)
+sae = load_sae_from_repo(
+    repo_id=SAE_REPO_ID,
+    model_device=model_device,
+    model_dtype=model_dtype,
+    d_model=model_d_model,
+    layer=SAE_LAYER,
+    hook_point="hook_resid_pre",
+    expansion_factor=EXPANSION_FACTOR  # This will be ignored for jbloom but kept for compatibility
+)
 
-# Load the SAE
-sae = load_gpt2_sae(SAE_REPO_ID, SAE_LAYER, model_d_model, EXPANSION_FACTOR)
 print(f"SAE loaded: input dimension (d_in): {sae.d_in}, feature dimension (d_hidden): {sae.d_hidden}")
 
-# %%
-# --- Modified helper functions for GPT-2 with proper nnsight syntax ---
+# --- Extract Activations from Base Model ---
 
-def generate_gpt2_output(model, prompt, n_generate_tokens):
-    """Generate continuation from GPT-2 model using nnsight context."""
-    print(f"Generating {n_generate_tokens} tokens...")
+#print(f"Extracting activations from module: {TARGET_MODULE_PATH}")
+
+# Prepare inputs for the model's forward method
+# Needs token IDs as a PyTorch tensor
+# Use add_generation_prompt=True for instruct models if appropriate
+# based on how the model expects input.
+#input_tokens = tokenizer(PROMPT, return_tensors="pt")["input_ids"]
+# For instruct/chat models, consider using apply_chat_template:
+
+def prompt_model_baseformat(model, tokenizer, model_device, PROMPT, N_GENERATE_TOKENS):
+    """Generate text using a base model and return full sequence for analysis"""
+    # For base models, just tokenize the raw prompt
+    input_tokens = tokenizer(PROMPT, return_tensors="pt")["input_ids"].to(model_device)
+    initial_prompt_len = input_tokens.shape[1]
     
-    # Tokenize input
-    inputs = model.tokenizer(prompt, return_tensors="pt").to(model_device)
-    chat_input = inputs.input_ids
-    initial_prompt_len = chat_input.shape[1]
+    print(f"Generating {N_GENERATE_TOKENS} tokens...")
+    print(f"Initial prompt length: {initial_prompt_len} tokens")
     
-    # Use nnsight generate context
-    with model._model.generate(chat_input, max_new_tokens=n_generate_tokens) as tracer:
+    # Generate continuation using nnsight
+    with model._model.generate(input_tokens, max_new_tokens=N_GENERATE_TOKENS) as tracer:
         generated_output = model._model.generator.output.save()
     
-    # Get full conversation tokens
+    # Extract the full generated sequence
+    full_tokens = generated_output[0]  # Shape: [sequence_length]
+    print(f"Full generated length: {full_tokens.shape[0]} tokens")
+    
+    # For display purposes, separate prompt and continuation
+    start_idx_response = initial_prompt_len
+    decoded_prompt = tokenizer.decode(full_tokens[:start_idx_response].cpu())
+    decoded_continuation = tokenizer.decode(full_tokens[start_idx_response:].cpu())
+    
+    print("\n\n******Full Text for Analysis:")
+    print(decoded_prompt)
+    print("--- GENERATED CONTINUATION STARTS HERE ---")
+    print(decoded_continuation)
+    print("\n\n")
+    
+    return full_tokens, start_idx_response, decoded_continuation
+
+def generate_model_output(model, chat_input, n_generate_tokens):
+    """Generate continuation from the model."""
+    print(f"Generating {n_generate_tokens} tokens...")
+    with model._model.generate(chat_input, max_newtokens=n_generate_tokens) as tracer:
+        generated_output = model._model.generator.output.save()
+    return generated_output
+
+def process_conversation(tokenizer, generated_output):
+    """Process the generated conversation to extract tokens and response position."""
     full_conversation_tokens = generated_output[0]  # Shape: [sequence_length]
     print(f"Full conversation length: {full_conversation_tokens.shape[0]} tokens")
-    
-    # For GPT-2, the response starts right after the prompt
-    start_idx_response = initial_prompt_len
-    
-    # Decode the generated text
-    decoded_prompt = model.tokenizer.decode(full_conversation_tokens[:start_idx_response].cpu())
-    decoded_answer = model.tokenizer.decode(full_conversation_tokens[start_idx_response:].cpu())
-    
-    print(f"Prompt: {decoded_prompt}")
-    print(f"Generated text: {decoded_answer[:200]}...")
-    
-    return full_conversation_tokens, start_idx_response, decoded_answer
 
-def extract_gpt2_activations(model, full_conversation_tokens, target_module_path):
-    """Extract activations from GPT-2 model using nnsight trace context."""
+    # Find the position where the model's response starts
+    end_header_positions = [i for i, t in enumerate(full_conversation_tokens) if tokenizer.decode([t]) == "<|end_header_id|>"]
+    start_idx_response = end_header_positions[-1] + 1 if end_header_positions else 0
+
+    # Decode and print the prompt and generated answer
+    decoded_prompt = tokenizer.decode(full_conversation_tokens[:start_idx_response].cpu())
+    decoded_answer = tokenizer.decode(full_conversation_tokens[start_idx_response:].cpu())
+    print("\n\n******Prompt: ", decoded_prompt)
+    print("\n\n******Generated Answer: ", decoded_answer, "\n\n")
+    
+    return full_conversation_tokens, start_idx_response
+
+def extract_activations(model, full_conversation_tokens, target_module_path):
+    """Extract activations from the model for the full conversation."""
     print(f"Extracting activations for the full conversation from module: {target_module_path}")
-    
     with torch.no_grad():
-        with model._model.trace(full_conversation_tokens.unsqueeze(0)):
-            # Access the specific transformer block for GPT-2
-            if "h." in target_module_path:
-                layer_num = int(target_module_path.split('.')[1])
-                # GPT-2 transformer blocks are accessed as transformer.h[layer_num]
-                activations = model.transformer.h[layer_num].output[0].save()
-            else:
-                raise ValueError(f"Unsupported module path: {target_module_path}")
-    
-    # Ensure activations are in the right shape [seq_len, hidden_dim]
-    if activations.ndim == 3 and activations.shape[0] == 1:
-        activations = activations.squeeze(0)
-    
-    print(f"Activations extracted. Shape: {activations.shape}, Dtype: {activations.dtype}")
-    return activations
+        # Use the ObservableLanguageModel's forward method on the full sequence
+        # Add batch dimension back for forward pass
+        last_token_logits, activation_cache = model.forward(
+            inputs=full_conversation_tokens.unsqueeze(0),
+            cache_activations_at=[target_module_path]
+        )
+
+    # Get the specific activation tensor from the cache dictionary
+    if target_module_path not in activation_cache:
+        raise KeyError(f"Target module path '{target_module_path}' not found in activation cache. Cached keys: {list(activation_cache.keys())}")
+        
+    activations_val = activation_cache[target_module_path]
+
+    # If activations have batch, sequence and hidden_dim (e.g., [1, seq_len, hidden_dim])
+    # often we need [seq_len, hidden_dim] for the SAE
+    if activations_val.ndim == 3 and activations_val.shape[0] == 1:
+        activations_val = activations_val.squeeze(0)
+
+    print(f"Activations extracted. Shape: {activations_val.shape}, Dtype: {activations_val.dtype}")
+    return activations_val
 
 def apply_sae_to_activations(sae, activations_val):
     """Apply SAE to the extracted activations."""
     print("Applying SAE to activations...")
     with torch.no_grad():
+        # Pass activations to the SAE's encode method
+        # The encode method handles moving the input to the correct device/dtype
         sae_features = sae.encode(activations_val)
-    
-    print(f"SAE features obtained. Shape: {sae_features.shape}, Dtype: {sae_features.dtype}")
+        # features will have shape [seq_len, d_hidden]
+
+    #print(f"SAE features obtained. Shape: {sae_features.shape}, Dtype: {sae_features.dtype}")
+    #print(torch.sum(sae_features,axis=-1)[0:10].detach().float().cpu().numpy(), "...")
     return sae_features
 
-def create_feature_mask(sae_features, start_idx_response=None, analyze_only_response=True):
-    """Create a mask for SAE features based on analysis scope."""
-    sae_features_cpu = sae_features.detach().cpu()
+def prepare_tokens_for_visualization(tokenizer, full_tokens):
+    """Prepare token strings for visualization"""
+    return [tokenizer.decode([t]) for t in full_tokens]
+
+def get_top_features(masked_sae_features, num_features=100):
+    """Find the top activating features based on max activation value."""
+    max_feature_activations, _ = masked_sae_features.abs().max(dim=0)
+    top_feature_indices = max_feature_activations.topk(num_features).indices
+    return top_feature_indices, max_feature_activations
+
+def visualize_sae_features(masked_sae_features, display_tokens, start_idx_response, 
+                          model_id, num_features=8192, goodfire_api_key=None, feature_labels=None):
+    """Visualize SAE features using CircuitsVis."""
+    print("Visualizing SAE features using CircuitsVis...")
+    client = goodfire.Client(goodfire_api_key)
+    variant = goodfire.Variant(model_id)
     
-    if analyze_only_response and start_idx_response is not None:
-        # Create a response-only mask (1 for response tokens, 0 for everything else)
-        mask = torch.zeros(sae_features_cpu.shape[0], device='cpu')
-        mask[start_idx_response:] = 1
-        print(f"Analyzing only the generated response ({mask.sum().item()} tokens)")
-    else:
-        # Create mask (1 for all tokens)
-        mask = torch.ones(sae_features_cpu.shape[0], device='cpu')
-        print("Analyzing all tokens in the conversation")
+    # Get the top features to visualize (limit to specified number)
+    num_features_to_visualize = min(num_features, masked_sae_features.shape[1])
+    feature_importance = masked_sae_features.abs().mean(dim=0)
+    top_feature_indices = feature_importance.topk(num_features_to_visualize).indices.cpu().numpy()
+
+    # Prepare data for visualization
+    tokens_for_vis = display_tokens
+    features_for_vis = masked_sae_features[:, top_feature_indices].cpu().numpy()
     
-    # Apply mask to features
-    masked_sae_features = sae_features_cpu * mask.unsqueeze(-1)  # Expand mask to feature dim
+    # Get feature labels from Goodfire API
+    if feature_labels is None:
+        feature_labels = get_feature_labels(client, top_feature_indices, model_id)
+
+    # Use CircuitsVis SAE visualization
+    from circuitsvis import sae as sae_vis
+
+    # Create the visualization
+    sae_vis_output = sae_vis.sae_vis(
+        tokens=tokens_for_vis,
+        feature_activations=features_for_vis,
+        feature_labels=feature_labels,
+        feature_ids=top_feature_indices.tolist(),
+        initial_ranking_metric="l1",        # Rank by mean absolute activation initially
+        num_top_features_overall=15,        # Show top 15 features in the list
+        num_top_features_per_token=3,       # Show top 3 features in token tooltips
+    )
+
+    # Display the visualization
+    from IPython.display import display
+    display(sae_vis_output)
     
-    return masked_sae_features, sae_features_cpu
+    # Print some info about where the continuation starts
+    print(f"Tokens 0-{start_idx_response-1}: Original prompt")
+    print(f"Tokens {start_idx_response}-{len(tokens_for_vis)-1}: Generated continuation")
+    print("--- SAE Feature Visualization Complete ---")
+    
+    return sae_vis_output, top_feature_indices
+
+def get_feature_labels(client, top_feature_indices, model_id):
+    """Get feature labels from Goodfire API."""
+    feature_labels = []
+    try:
+        # Query Goodfire API for feature labels
+        feature_dict = client.features.lookup(
+            top_feature_indices.tolist(), 
+            model=model_id
+        )
+        sorted_top_feature_indices = {i: feature_dict.get(i, f"Feature {i}") for i in top_feature_indices}
+        feature_labels = [sorted_top_feature_indices[i].label if isinstance(sorted_top_feature_indices[i], goodfire.Feature) 
+                         else sorted_top_feature_indices[i] for i in top_feature_indices]
+        print(f"Retrieved {len(feature_labels)} feature labels from Goodfire API")
+    except Exception as e:
+        print(f"Error retrieving feature labels: {e}")
+        # Fallback to generic labels if API fails
+        feature_labels = [f"Feature {i}" for i in top_feature_indices]
+    
+    return feature_labels
 
 # %%
-# --- Main Analysis with proper nnsight syntax ---
+# --- Analyze and Visualize SAE Features ---
+# Visualization Configuration
+NUM_TOP_FEATURES = 100 # Number of top activating features to visualize
+N_GENERATE_TOKENS = 50 # Number of tokens to generate after the prompt
 
-# Configuration
-NUM_TOP_FEATURES = 100
-N_GENERATE_TOKENS = 200
+# Input Prompt (Modify as needed)
+PROMPT = """
+Call me Ishmael. Some years ago--never mind how long precisely--having little or no money in my purse, and nothing particular to interest me on shore,
+"""
+PROMPT = """
+Veracruz was in a heap of trouble before week 15 of the Liga MX Clausura 2017. Most people had deemed Veracruz as the franchise that was doomed to abandon the Liga MX and relegate to the Ascenso MX. Many people also wanted to see Los Tiburones suffer after the incidents from the fans and the ownership that had occurred all year long. In week 15 the ‘jarochos’ got an enormous 2-0 victory over"""
+# # Load prompt from file
+# with open("talkative_probes_prompts/steg_attempt_firstletter.txt", "r") as f:
+#     PROMPT = f.read()
 
-# Input Prompt
-PROMPT = "The quick brown fox jumps over the lazy dog. This sentence contains"
+full_conversation_tokens, start_idx_response, decoded_continuation = prompt_model_baseformat(model, tokenizer, model_device, PROMPT, N_GENERATE_TOKENS)
 
-# Generate text using nnsight context
-full_conversation_tokens, start_idx_response, generated_text = generate_gpt2_output(model, PROMPT, N_GENERATE_TOKENS)
+# --- Extract Activations for Full Sequence ---
+print(f"Extracting activations for the full sequence from module: {TARGET_MODULE_PATH}")
+with torch.no_grad():
+    # Use the ObservableLanguageModel's forward method on the full sequence
+    last_token_logits, activation_cache = model.forward(
+        inputs=full_conversation_tokens.unsqueeze(0),
+        cache_activations_at=[TARGET_MODULE_PATH]
+    )
 
-# Extract activations using nnsight trace context
-activations = extract_gpt2_activations(model, full_conversation_tokens, TARGET_MODULE_PATH)
+# Get activations and apply SAE
+if TARGET_MODULE_PATH not in activation_cache:
+    raise KeyError(f"Target module path '{TARGET_MODULE_PATH}' not found in activation cache.")
+    
+activations_val = activation_cache[TARGET_MODULE_PATH]
 
-# Apply SAE
-sae_features = apply_sae_to_activations(sae, activations)
+if activations_val.ndim == 3 and activations_val.shape[0] == 1:
+    activations_val = activations_val.squeeze(0)
 
-# Create feature mask
-analyze_only_response = True
-masked_sae_features, sae_features_cpu = create_feature_mask(
-    sae_features, 
-    start_idx_response=start_idx_response, 
-    analyze_only_response=analyze_only_response
+print(f"Activations extracted. Shape: {activations_val.shape}, Dtype: {activations_val.dtype}")
+
+# Apply SAE to get features
+sae_features = apply_sae_to_activations(sae, activations_val)
+sae_features_cpu = sae_features.detach().float().cpu()
+
+print(f"SAE features obtained. Shape: {sae_features_cpu.shape}, Dtype: {sae_features_cpu.dtype}")
+
+# Prepare tokens for visualization (no separators)
+str_tokens = prepare_tokens_for_visualization(tokenizer, full_conversation_tokens)
+
+# Print the separation info
+print(f"Tokens 0-{start_idx_response-1}: Original prompt")
+print(f"Tokens {start_idx_response}-{len(str_tokens)-1}: Generated continuation")
+
+# Visualize features for the full sequence
+ntok = len(str_tokens)
+sae_vis, top_feature_indices = visualize_sae_features(
+    sae_features_cpu[:ntok], 
+    str_tokens[:ntok], 
+    start_idx_response, 
+    MODEL_ID, 
+    num_features=8192, 
+    goodfire_api_key=os.environ.get('GOODFIRE_API_KEY')
 )
 
-# Get token strings for visualization
-str_tokens = [model.tokenizer.decode([t]) for t in full_conversation_tokens]
-display_tokens = str_tokens[start_idx_response:] if analyze_only_response else str_tokens
+# # Decode steganographic message from the continuation only
+# print("Capital-letter-based steganography decoded message:")
+# print(decode_steganographic_message_firstletter(decoded_continuation))
 
-# Find top activating features
-max_feature_activations, _ = masked_sae_features.abs().max(dim=0)
-top_feature_indices = max_feature_activations.topk(NUM_TOP_FEATURES).indices
 
-print(f"Top {NUM_TOP_FEATURES} features found")
-print(f"Generated text: {generated_text}")
 
-# %%
-# --- Visualization ---
 
-# Get activations for visualization
-if analyze_only_response:
-    vis_features = masked_sae_features[start_idx_response:start_idx_response+len(display_tokens), :]
-else:
-    vis_features = masked_sae_features[:len(display_tokens), :]
-
-vis_features = vis_features[:, top_feature_indices[:20]]  # Show top 20 features
-
-# Create visualization
-print("Creating visualization...")
-try:
-    vis_html = colored_tokens_multi(display_tokens, vis_features.numpy())
-    display(vis_html)
-    print("--- Feature Visualization Complete ---")
-except Exception as e:
-    print(f"Visualization error: {e}")
-    print("Feature activation summary:")
-    for i, feat_idx in enumerate(top_feature_indices[:10]):
-        max_activation = max_feature_activations[feat_idx].item()
-        print(f"Feature {feat_idx.item()}: max activation = {max_activation:.4f}")
-
-print("--- GPT-2 SAE Analysis Complete ---")
+# %% [markdown]
+#### Control Experiment - capital-letter-based steganography
 
 # %%
+
+
+# Visualization Configuration
+NUM_TOP_FEATURES = 100 # Number of top activating features to visualize
+N_GENERATE_TOKENS = 500 # Number of tokens to generate after the prompt
+
+# # Load prompt from file
+# with open("talkative_probes_prompts/steg_attempt_firstletter_control.txt", "r") as f:
+#     PROMPT = f.read()
+
+full_conversation_tokens, start_idx_response, decoded_continuation = prompt_model_baseformat(model, tokenizer, model_device, PROMPT, N_GENERATE_TOKENS)
+
+# --- Extract Activations for Full Sequence ---
+print(f"Extracting activations for the full sequence from module: {TARGET_MODULE_PATH}")
+with torch.no_grad():
+    # Use the ObservableLanguageModel's forward method on the full sequence
+    last_token_logits, activation_cache = model.forward(
+        inputs=full_conversation_tokens.unsqueeze(0),
+        cache_activations_at=[TARGET_MODULE_PATH]
+    )
+
+# Get activations and apply SAE
+if TARGET_MODULE_PATH not in activation_cache:
+    raise KeyError(f"Target module path '{TARGET_MODULE_PATH}' not found in activation cache.")
+    
+activations_val = activation_cache[TARGET_MODULE_PATH]
+
+if activations_val.ndim == 3 and activations_val.shape[0] == 1:
+    activations_val = activations_val.squeeze(0)
+
+print(f"Activations extracted. Shape: {activations_val.shape}, Dtype: {activations_val.dtype}")
+
+# Apply SAE to get features
+sae_features = apply_sae_to_activations(sae, activations_val)
+sae_features_cpu = sae_features.detach().float().cpu()
+
+print(f"SAE features obtained. Shape: {sae_features.shape}, Dtype: {sae_features.dtype}")
+
+# Prepare tokens for visualization (no separators)
+str_tokens = prepare_tokens_for_visualization(tokenizer, full_conversation_tokens)
+
+# Print the separation info
+print(f"Tokens 0-{start_idx_response-1}: Original prompt")
+print(f"Tokens {start_idx_response}-{len(str_tokens)-1}: Generated continuation")
+
+# Visualize features for the full sequence
+ntok = len(str_tokens)
+sae_vis, top_feature_indices = visualize_sae_features(
+    sae_features_cpu[:ntok], 
+    str_tokens[:ntok], 
+    start_idx_response, 
+    MODEL_ID, 
+    num_features=8192, 
+    goodfire_api_key=os.environ.get('GOODFIRE_API_KEY')
+)
+# %% [markdown]
+
+
+
+

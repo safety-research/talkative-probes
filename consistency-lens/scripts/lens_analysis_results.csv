@@ -1,75 +1,157 @@
 position,token,explanation,kl_divergence,mse,text,token_length
-0,The, CSIConfigConfigurationConfiguration() actors can be implemented using scripts by installing them.,5.292661666870117,11973.39453125,The cat sat on the mat.,3
-1, cat," Mouse puppy kitten kitten game cat cat The animal
-
-
-cat family the rabbit",1.0267333984375,10.23007583618164,The cat sat on the mat.,4
-2, sat,He dances moves sat sits looked sleptthought went sat sounded satiated sounded shook walked,1.8927048444747925,13.297476768493652,The cat sat on the mat.,4
-3, on, hide eating scratch brace surrounded perform hanging scrape on stomach obstruction onacing over on on,0.8554235696792603,6.986169338226318,The cat sat on the mat.,3
-4, the, rotate the on the on the on the the the the the the the the the,1.2633912563323975,5.095979690551758,The cat sat on the mat.,4
-5, mat, cellphone tower tents setup setup table plans helicopter jacket jacket jacket spot operation rooms them it,0.8955800533294678,11.297534942626953,The cat sat on the mat.,4
-6,.,File ConfigurationUIConfigurationInitActivityConfiguration {LoaderConfigurationConfiguration.} {..,0.44400495290756226,5.727040767669678,The cat sat on the mat.,1
-0,The," Lavrov documentation tells Java plugin setConfig()
+0,The,"
 
 
 
-Creating servers to verify",6.596650123596191,11917.76953125,The dog ran in the park.,3
-1, dog,Dog doll son animal pup chicken dog crisis dog owner the dog beast the animal the,0.8271017074584961,9.924371719360352,The dog ran in the park.,4
-2, ran, hurd bite distracted hitting ridden raced hasn reached gets attacked ran runs ran runs ran ran,0.5302848815917969,7.347311019897461,The dog ran in the park.,4
-3, in, walk running in encounter pass movement out in running out in in room in considered in,1.309877634048462,5.20856237411499,The dog ran in the park.,3
-4, the, journey the in the in the an in the the the in the the the in,2.2802929878234863,5.792808532714844,The dog ran in the park.,4
-5, park, programme officesme camp stronghold stronghold airport congestion operation planned website in university palace palace.,1.3873882293701172,9.603896141052246,The dog ran in the park.,5
-6,., ConfigurationConfigurationViewSettingsConfiguration { Configuration switch. { poll { {.ConfigurationState,0.24288032948970795,7.561872482299805,The dog ran in the park.,1
-0,Machine," admin
-
-Configuration is simple xmlConfig() are mapping them
 
 
-They",2.518728256225586,12304.9052734375,Machine learning is powerful.,7
-1, learning,Education cryptography registration robotics programming analytics robotics analytics architecture growth analytics optimization speculationdevelopment Acquisition learning,1.2111105918884277,10.267898559570312,Machine learning is powerful.,9
-2, is, TECH society is computation tends are aims are Reality is is is is is are is,0.42109304666519165,5.2817463874816895,Machine learning is powerful.,3
-3, powerful,complex instability strategies are ineffective strategies are expensive profitable resilient effective daunting brilliant effective effective strong,1.0462498664855957,10.082500457763672,Machine learning is powerful.,9
-4,., Configuration configuration Configuration Configuration Configuration console ConfigurationServiceProvider. { allow method {=:,0.3821898400783539,6.389407634735107,Machine learning is powerful.,1
-0,Hello, Hiring another method They create documentation is comparing them modules validate them. They are,1.792020559310913,11829.0224609375,Hello world!,5
-1, world,"Everyone chaotic joke wise- conspiracy adventurenation town idea people
-.life day life",1.117737054824829,9.746929168701172,Hello world!,6
-2,!, avatar: insight methods:Anyone commands !!!!.!!:!,1.455895185470581,8.432665824890137,Hello world!,1
-0,import," scheduler scripts can medic tests allow configurations are required for a validation
 
 
-",2.2109336853027344,11940.8818359375,import numpy as np,6
-1, n," Original excel create?? javascript vulgar attribute
- sudo set nity 3 n% n",1.1034704446792603,8.034605026245117,import numpy as np,2
-2,umpy, Python Python Python mathematics Python pandumpy mathematicsumpy graphicalumpyumpyumpyumpyumpyumpy,2.5651583671569824,9.537763595581055,import numpy as np,4
-3, as, � Software npm pdf. Zoo asm as as as as as as as as,4.85989236831665,7.2664031982421875,import numpy as np,3
-4, np," database software nodes generate schemes ultrator email variables, cedition Hz. python cards",2.373246192932129,13.844406127929688,import numpy as np,3
-0,def," document config importing plugins are statements are configured to deploy files they
+they are using them.
 
 
-The",2.4379591941833496,11552.587890625,"def hello():
+",3.718184471130371,12015.53515625,The cat sat on the mat.,3
+1, cat,"
+
+
+
+
+
+ cat
+ kitten cat the the the the the the",1.056626558303833,9.3204345703125,The cat sat on the mat.,4
+2, sat,"
+
+
+
+ is sits sits sits is sitting sits will will will is will",0.5283644199371338,11.718683242797852,The cat sat on the mat.,4
+3, on, on on on will sitting on will on on on on will on on on on,0.5953388214111328,7.5675368309021,The cat sat on the mat.,3
+4, the, on the the the the the the the the the the the the the the the,1.0582157373428345,5.810954570770264,The cat sat on the mat.,4
+5, mat, room lamp in it window the tower them the the the it the them the them,1.0248558521270752,11.20334243774414,The cat sat on the mat.,4
+6,.,"
+
+Configuration : { ConfigurationConfiguration { ........",0.3258443772792816,5.78879451751709,The cat sat on the mat.,1
+0,The,"
+
+
+
+
+
+
+
+The
+
+ I will try them
+",4.273764610290527,12029.2841796875,The dog ran in the park.,3
+1, dog,"
+
+
+
+ dog cat he animal dogThe dog the dog the the the",0.5565574765205383,9.856919288635254,The dog ran in the park.,4
+2, ran, will tried will tried will went walked ran drove went went ran ran ran ran ran,0.3331499695777893,8.205732345581055,The dog ran in the park.,4
+3, in, will go in will in in encounter in in in in in in in in in,2.7232182025909424,5.906485557556152,The dog ran in the park.,3
+4, the, in the the in the the in the the the the the the the the the,1.9132201671600342,4.65330696105957,The dog ran in the park.,4
+5, park," town them facility them them, it park them it them them the the the the",1.0185514688491821,9.845938682556152,The dog ran in the park.,5
+6,., { ConfigurationConfigurationConfiguration {Configuration {Configuration {Configuration......,0.14300695061683655,4.938012599945068,The dog ran in the park.,1
+0,Machine,"
+
+
+
+
+
+
+they are
+
+they are the
+
+",3.1192116737365723,12358.37109375,Machine learning is powerful.,7
+1, learning,"science.abiliseeducation gaming management, technology it combatthefulness the the the",1.1268534660339355,10.27188491821289,Machine learning is powerful.,9
+2, is, is is is is is is is is is is is is is is is is,0.8249130249023438,6.084268093109131,Machine learning is powerful.,3
+3, powerful, is extremely effective will be useful will improve their power effectiveness will powerful powerful will powerful,1.0954512357711792,8.376644134521484,Machine learning is powerful.,9
+4,., Configuration Setup configuration file { Configuration { Configuration........,0.372107595205307,5.823856353759766,Machine learning is powerful.,1
+0,Hello,"
+
+
+
+
+
+
+
+
+They will
+
+
+
+ they",2.196289539337158,11924.62890625,Hello world!,5
+1, world, it world it's it! itworld it worldIt it the world the the,2.199608087539673,8.967521667480469,Hello world!,6
+2,!,"Program!
+
+Name: function!!!!!!!!!",0.38125813007354736,8.34066390991211,Hello world!,1
+0,import,"
+
+
+
+
+
+
+
+
+
+The
+
+they are the",3.162605047225952,11940.595703125,import numpy as np,6
+1, n,"
+
+N 1n, n n n n
+ n n n n n",1.195611834526062,9.167680740356445,import numpy as np,2
+2,umpy, analyticalbergraphumpyöumpyumpyumpyberberumpytheumpyumpy theumpy,3.9788131713867188,10.358585357666016,import numpy as np,4
+3, as, as as as. as as as as as as as as as as as as,7.135196685791016,7.871677398681641,import numpy as np,3
+4, np, them steps them tools them.ibr them ps them codes using them their it them,2.968842029571533,13.225318908691406,import numpy as np,3
+0,def,"
+
+
+
+
+
+
+
+ they are the
+
+they are the",3.6248228549957275,11624.9482421875,"def hello():
     print('Hi')",3
-1, hello, fantasy Moto workout selfies hello peasant hello Naruto hello hello Birthday hello hello Heart hello hello,2.5044384002685547,8.752225875854492,"def hello():
+1, hello,"
+
+
+
+
+ServicesHello!office it2 the hello hello hello hello",2.387592315673828,9.493415832519531,"def hello():
     print('Hi')",6
-2,():, upgrades() plugin conversion script: settings: Startup() apps:():::():,0.8272273540496826,9.124458312988281,"def hello():
+2,():, url()::(): (():: version()::()::::,0.8290481567382812,10.671276092529297,"def hello():
     print('Hi')",3
 3,"
-", define UserUser user characters etc`User MessageUserUserUserUserUserUserUser,0.0008433200418949127,10.847881317138672,"def hello():
+","UserUserClickUserActor
+
+UserUserUserUserUserUserUserUser
+",0.0009338632225990295,9.095172882080078,"def hello():
     print('Hi')",1
 4, ,"
-Sym
- 
-Anyone
-Since        ",0.8687238693237305,6.52325439453125,"def hello():
+
+
+             ",0.4826071262359619,7.353271484375,"def hello():
     print('Hi')",1
-5, , TherePlugin # src = One  Sequence:       ,2.515591621398926,8.438224792480469,"def hello():
+5, ,"
+
+
+ This            ",3.584987163543701,9.406472206115723,"def hello():
     print('Hi')",1
-6, ,  AN Pleaseäੈ !     ing  ,4.264754295349121,8.770462036132812,"def hello():
+6, , À              ,5.037557125091553,9.439094543457031,"def hello():
     print('Hi')",1
-7, print,We printprint replywrite download print completion startelligent query print print print add command,3.151183605194092,13.17457103729248,"def hello():
+7, print,"
+
+Use should print to print fromprint print will print(print print:",3.0233261585235596,11.888936996459961,"def hello():
     print('Hi')",6
-8,(', final value: custom) assert ' t ' silent ' message ') ':,1.4536967277526855,11.684078216552734,"def hello():
+8,('," "" "" { "" "" "" "" "" "" "" "" "" "" "" "" """,4.506757736206055,11.173673629760742,"def hello():
     print('Hi')",2
-9,Hi, Skyrim Sorry hey hello friendsbye Hello helloHit accomplishmentHiHiWelcomeHiHiHi,0.7439109086990356,7.344893455505371,"def hello():
+9,Hi,WhenHiHiMy funHelloHello!!Hi my the helloHiHiHey,0.7268439531326294,9.231468200683594,"def hello():
     print('Hi')",2
-10,'),Script() scriptuments() script (FileLoader()(Image.().(),0.21659451723098755,8.513089179992676,"def hello():
+10,'), script scriptfile ( script(). script() (() script()(). script script,0.44387051463127136,10.843363761901855,"def hello():
     print('Hi')",2

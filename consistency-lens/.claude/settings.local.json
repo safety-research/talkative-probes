@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep:*)",
+      "Bash(find:*)",
+      "Bash(uv help:*)",
+      "Bash(uv:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(git stash show:*)",
+      "Bash(python:*)",
+      "Bash(source:*)",
+      "Bash(rg:*)",
+      "Bash(/home/kitf/.npm-global/lib/node_modules/@anthropic-ai/claude-code/vendor/ripgrep/x64-linux/rg \"OrigWrapper\\(\" scripts/01_train.py -A 5 -B 5)",
+      "Bash(/home/kitf/.npm-global/lib/node_modules/@anthropic-ai/claude-code/vendor/ripgrep/x64-linux/rg \"OrigWrapper\\(\" scripts/01_train.py -A 20 -B 20)",
+      "Bash(/home/kitf/.npm-global/lib/node_modules/@anthropic-ai/claude-code/vendor/ripgrep/x64-linux/rg \"forward_with_replacement\" lens/training/loop.py -A 3 -B 3)",
+      "Bash(python tests/test_kv_cached_simple.py)",
+      "Bash(make:*)",
+      "Bash(convert:*)"
+    ]
+  },
+  "enableAllProjectMcpServers": false
+}

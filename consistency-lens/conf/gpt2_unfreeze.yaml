@@ -65,7 +65,7 @@ custom_lr_multipliers:
 # Gumbel temperature schedule
 gumbel_tau_schedule:
   type: "linear_decay_after_constant"
-  constant_steps_before_linear_decay: 20000
+  constant_steps_before_decay: 20000
   start_value: 1.0
   end_value: 0.1
   num_steps: -1                       # Use total training steps

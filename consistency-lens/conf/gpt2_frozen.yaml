@@ -23,10 +23,10 @@ batch_size: 128                     # Can go higher with 8xH100
 # Learning rate scheduler
 lr_scheduler:
   type: "cosine_anneal"                      # Cosine annealing works well
-  warmup_steps: 10 # 1k warmup steps - #OPTIMIZER STEPS, COMPARE TO GRAD_ACCUMULATION_STEPS
+  warmup_steps: "64os"                # 64 optimizer steps = ~1024 micro-steps
   warmup_start_factor: 0.1            # Start at 10% of target LR
   eta_min: 1.0e-5                     # Min LR at end of cosine
-  linear_decay_steps: 3000
+  linear_decay_steps: "200os"         # 200 optimizer steps = ~3200 micro-steps
   initial_high_lr: 1.0e-2
 
 # Training duration
@@ -34,8 +34,8 @@ num_train_epochs: 2                   # 2 epochs should be plenty for OpenWebTex
 max_train_steps: 0                    # Use epochs instead
 
 compile_models: true                  # Enable torch.compile for speed
-log_interval: 100                     # Log every 100 steps
-wandb_log_interval: 10                # WandB every 10 steps
+log_interval: "6os"                   # Log every 6 optimizer steps = ~100 micro-steps
+wandb_log_interval: "1os"             # WandB every optimizer step = ~16 micro-steps
 grad_clip: 1.0
 
 # Trainable components - FROZEN base model
@@ -62,7 +62,7 @@ custom_lr_multipliers:
 # Gumbel temperature schedule
 gumbel_tau_schedule:
   type: "linear_decay_after_constant"
-  constant_steps_before_linear_decay: 10000
+  constant_steps_before_decay: "625os"  # 625 optimizer steps = ~10000 micro-steps
   start_value: 1.0
   end_value: 0.1
   num_steps: -1                       # Use total training steps
@@ -74,7 +74,7 @@ alpha_schedule:
   type: "linear_warmup"
   start_value: 0.0
   end_value: 1
-  num_steps: 5000                     # Warmup LM constraint over 5k steps
+  num_steps: "312os"                  # 312 optimizer steps = ~5000 micro-steps
 
 # Activation dumper config for OpenWebText
 activation_dumper:
@@ -95,7 +95,7 @@ activation_dumper:
 val_activation_dir: "./data/openwebtext_val"
 val_fraction: 0.01                    # Only used if separate val dir doesn't exist
 split_seed: 42
-val_interval: 500                     # Validate every 500 steps
+val_interval: "31os"                  # Validate every 31 optimizer steps = ~500 micro-steps
 
 # WandB configuration
 wandb:
@@ -107,7 +107,7 @@ checkpoint:
   enabled: true
   output_dir: "outputs/checkpoints"
   name_pattern: "gpt2_frozen_step{step}_epoch{epoch}"
-  save_every_n_steps: 5000
+  save_every_n_steps: "312os"        # Save every 312 optimizer steps = ~5000 micro-steps
   save_every_n_epochs: 1
   save_at_end: true
   track_best_n: 3
@@ -132,10 +132,13 @@ verbose_samples:
   enabled: true
   num_samples: 5
   interval_type: "steps"
-  interval: 1000
+  interval: "62os"                    # Every 62 optimizer steps = ~1000 micro-steps
   top_n_predictions: 5
   generate_continuation: true
   continuation_tokens: 50
+
+# Gradient accumulation (assuming ~16 steps)
+gradient_accumulation_steps: 16       # Adjust based on GPU memory
 
 # For multi-GPU: adjust per_device_batch_size in DeepSpeed config
 # Total batch_size = per_device_batch_size * num_gpus * gradient_accumulation_steps

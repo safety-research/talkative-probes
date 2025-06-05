@@ -51,7 +51,7 @@ lr_scheduler:
 batch_size: 512
 gradient_accumulation_steps: 32
 gumbel_tau_schedule:
-  constant_steps_before_linear_decay: 1000
+  constant_steps_before_decay: 1000
 
 
 freeze_schedule:

@@ -10,7 +10,7 @@ parameters:
     value: conf/simplestories_frozenl4e40p1largebatch3072.yaml
   num_train_epochs:
     value: 10
-  gumbel_tau_schedule.constant_steps_before_linear_decay:
+  gumbel_tau_schedule.constant_steps_before_decay:
       values: ["1e", "2e", "4e", "8e"]
 
 command:

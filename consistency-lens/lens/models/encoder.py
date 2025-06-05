@@ -118,10 +118,11 @@ class Encoder(nn.Module):
                 torch.randn(cfg.soft_prompt_length, d_model) * cfg.soft_prompt_init_std
             )
             self.soft_prompt_embeddings.requires_grad_(cfg.trainable_soft_prompt)
+            self.soft_prompt_embeddings_postfix = None  
             log.info(f"Initialized {cfg.soft_prompt_length} soft prompt tokens for encoder "
                     f"(trainable: {cfg.trainable_soft_prompt}, init_std: {cfg.soft_prompt_init_std})")
 
-    def set_soft_prompt_from_text(self, prefix: str, tokenizer, postfix: str = None) -> None:
+    def set_soft_prompt_from_text(self, string: str, tokenizer) -> None:
         """Initialize soft prompt embeddings from text string using tokenizer.
         When called, this will create or recreate the soft prompt with length matching the tokenized text.
         
@@ -129,6 +130,11 @@ class Encoder(nn.Module):
             text: Text string to convert to embeddings for soft prompt initialization
             tokenizer: Tokenizer to use for text conversion
         """
+        prefix, postfix = string.split("<text>")
+        if postfix == "":
+            postfix = None
+        if prefix == "":
+            prefix = None
         # Tokenize the text
         token_ids = tokenizer(prefix, add_special_tokens=False, return_tensors="pt").input_ids.squeeze(0)
         if postfix is not None:
@@ -202,8 +208,13 @@ class Encoder(nn.Module):
             B = embeddings.shape[0]
             # Expand soft prompt for batch size: (soft_prompt_length, d_model) -> (B, soft_prompt_length, d_model)
             soft_prompt_expanded = self.soft_prompt_embeddings.unsqueeze(0).expand(B, -1, -1)
-            # Concatenate: [soft_prompt, decoder_generated_tokens]
-            embeddings = torch.cat([soft_prompt_expanded, embeddings], dim=1)  # (B, soft_prompt_length + T_text, d_model)
+            if self.soft_prompt_embeddings_postfix is not None:
+                soft_prompt_expanded_postfix = self.soft_prompt_embeddings_postfix.unsqueeze(0).expand(B, -1, -1)
+                # Concatenate: [soft_prompt, decoder_generated_tokens]
+                embeddings = torch.cat([soft_prompt_expanded, embeddings, soft_prompt_expanded_postfix], dim=1)  # (B, soft_prompt_length + T_text, d_model)
+            else:
+                # Concatenate: [soft_prompt, decoder_generated_tokens]
+                embeddings = torch.cat([soft_prompt_expanded, embeddings], dim=1)  # (B, soft_prompt_length + T_text, d_model)
         
         # If the Encoder's base model is meant to process the embeddings first:
         if self._use_base:

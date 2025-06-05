@@ -1,0 +1,105 @@
+# Bayesian optimization sweep for hyperparameter search
+program: scripts/wandb_sweep_train_only.py
+method: bayes  # Bayesian optimization
+metric:
+  name: val/loss  # Optimize based on validation loss
+  goal: minimize
+
+parameters:
+  config:
+    value: conf/gpt2_frozen_postfix.yaml
+  
+  # Learning rate - log uniform distribution for better exploration
+  learning_rate:
+    min: 1e-5
+    max: 1e-2
+    distribution: log_uniform  # Better for learning rates
+  
+  # Batch size - discrete values
+  batch_size:
+    values: [64, 128, 256, 512]
+  
+  # Number of GPUs
+  num_gpus:
+    value: 2  # Fixed for consistent comparison
+  
+  # Gradient accumulation - explore different effective batch sizes
+  gradient_accumulation_steps:
+    values: [8, 16, 32, 64]
+  
+  # Gumbel temperature schedule - explore different starting temperatures
+  gumbel_tau_schedule.start_value:
+    min: 0.5
+    max: 5.0
+    distribution: uniform
+  
+  # Gumbel temperature end value
+  gumbel_tau_schedule.end_value:
+    min: 0.1
+    max: 1.0
+    distribution: uniform
+  
+  # Alpha schedule for LM loss - explore different ramp-up speeds
+  alpha_schedule.start_value:
+    value: 0.0  # Always start at 0
+  
+  alpha_schedule.end_value:
+    min: 0.1
+    max: 1.0
+    distribution: uniform
+  
+  # When to reach end value (as fraction of training)
+  alpha_schedule.schedule:
+    value: "linear"  # Can also try "cosine", "exponential"
+  
+  # KL weight - explore importance of KL loss
+  kl_base_weight:
+    min: 0.5
+    max: 2.0
+    distribution: uniform
+  
+  # Entropy regularization
+  entropy_weight:
+    min: 0.0
+    max: 0.1
+    distribution: uniform
+  
+  # Training duration
+  num_train_epochs:
+    value: 10
+  
+  # Early stopping
+  early_termination.enabled:
+    value: true
+  
+  early_termination.steps:
+    value: "5000s"
+  
+  # Run suffix
+  run_suffix:
+    value: "_bayes_hyperopt_"
+
+# Bayesian-specific configuration
+# This controls how the Bayesian optimization explores the space
+bayes:
+  # Number of random runs before starting Bayesian optimization
+  # Good to have 10-20 for initial exploration
+  random_starts: 15
+  
+  # Acquisition function hyperparameters
+  # Controls exploration vs exploitation
+  kappa: 2.5  # Higher = more exploration
+  xi: 0.1     # Expected improvement threshold
+
+# Early termination for poorly performing runs
+# More aggressive than grid search since we're exploring
+early_terminate:
+  type: hyperband
+  s: 3        # Maximum early stopping factor
+  eta: 2      # Halving rate
+  max_iter: 50  # Maximum iterations to consider
+
+# Optional: Set a target metric value to stop the sweep early
+# target:
+#   name: val/loss
+#   value: 0.5  # Stop if we achieve validation loss < 0.5
