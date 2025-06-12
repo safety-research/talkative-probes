@@ -26,7 +26,7 @@ export UV_CACHE_DIR="/workspace/.uv_cache"
 mkdir -p "$UV_CACHE_DIR"
 
 # Set up node-local virtual environment location
-if [ -n "$SLURM_JOB_ID" ] && [ -n "${SLURM_TMPDIR:-}" ]; then
+if [ -n "${SLURM_JOB_ID:-}" ] && [ -n "${SLURM_TMPDIR:-}" ]; then
     # On compute nodes, use fast local storage
     export UV_PROJECT_ENVIRONMENT="$SLURM_TMPDIR/uv-venv-consistency-lens"
     echo "[ensure_env] Using node-local venv: $UV_PROJECT_ENVIRONMENT"
@@ -55,7 +55,7 @@ if [ -n "$BASH_VERSION" ]; then
 fi
 
 # Let users know the environment is ready
-if [ -n "$SLURM_JOB_ID" ]; then
+if [ -n "${SLURM_JOB_ID:-}" ]; then
     echo "[ensure_env] Running on SLURM node: $(hostname)"
 fi
 echo "[ensure_env] Environment ready. Use 'uv run' (not uv_run) for all Python commands."

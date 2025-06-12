@@ -230,6 +230,13 @@ The `submit_with_config.sh` script now works on both SLURM and non-SLURM environ
     resume_checkpoint=outputs/checkpoints/run_name/checkpoint_step5000.pt \
     wandb_resume_id=abc123xyz
 
+# Resume with smooth LR transition (useful when changing learning rate)
+./scripts/submit_with_config.sh config=conf/simplestories_frozen.yaml \
+    resume_checkpoint=outputs/checkpoints/run_name/checkpoint_step5000.pt \
+    learning_rate=5e-4 \
+    smooth_lr_transition.enabled=true \
+    smooth_lr_transition.transition_steps=1000s
+
 # Use specific SLURM nodes (optional - defaults to current node, SLURM only)
 ./scripts/submit_with_config.sh config=conf/gpt2_frozen.yaml nodelist=node001,node002
 

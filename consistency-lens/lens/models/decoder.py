@@ -1,13 +1,15 @@
 """Decoder with Gumbel-Softmax generation over projection-injected activation."""
 
 from dataclasses import dataclass
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Optional, Tuple, Dict
 from contextlib import contextmanager
+from contextlib import nullcontext
+import copy
 
 import torch
 from torch import nn
 from transformers import AutoModelForCausalLM, PreTrainedModel
-from transformers.cache_utils import DynamicCache 
+from transformers.cache_utils import DynamicCache, Cache
 import logging
 __all__ = ["Decoder", "Generated"]
 
@@ -26,6 +28,7 @@ class DecoderConfig:
     projection_layer: bool = True    # YAML `projection_layer`
     output_head: bool = True         # YAML `output_head`
     embedding_head: bool = False     # YAML `embedding_head`
+    pos_embeddings: bool = True      # YAML `pos_embeddings`
     eye_init: bool = True            # YAML `eye_init`
     trainable_prompts: bool = True   # YAML `trainable_prompts`
     use_checkpointing: bool = False # YAML `use_checkpointing`
@@ -36,6 +39,16 @@ class DecoderConfig:
     patch_all_layers: bool = False   # YAML `patch_all_layers` - patch activation at all layers
     per_layer_projections: bool = False  # YAML `per_layer_projections` - use separate projection for each layer
     use_dropout: bool = True         # YAML `use_dropout` - whether to use dropout during training (False = deterministic)
+    detach_after_each_sample: bool = False
+    end_to_end: bool = True
+    projection_init_method: str = "default"  # YAML `projection_init_method` - how to initialize the projection layer
+    projection_init_tl_checkpoint: str = None  # e.g., "path/to/tuned_lens_checkpoint" or "username/model-tuned-lens"
+    projection_init_tl_model_name: str = None
+    projection_init_tl_comp_src_layer: int = None  # e.g., 5
+    projection_init_tl_comp_tgt_layer: int = None  # e.g., 1
+    projection_init_tl_comp_use_composed_bias: bool = True
+    subtract_add_pos_embeddings: bool = False
+    extra_pos_embeddings: bool = True
     
     def __post_init__(self):
         """Validate configuration parameters."""
@@ -70,6 +83,15 @@ class Decoder(nn.Module):
         # Configure trainability of the base model
         for p in self.base.parameters():
             p.requires_grad_(cfg.base_model)
+
+        # Set requires_grad for positional embeddings if present in base model
+        if hasattr(self.base, "transformer") and hasattr(self.base.transformer, "wpe"):
+            self.base.transformer.wpe.weight.requires_grad_(cfg.pos_embeddings)
+            log.info("Set requires_grad for positional embeddings in base model (wpe)")
+        elif hasattr(self.base, "model") and hasattr(self.base.model, "embed_positions"):
+            self.base.model.embed_positions.weight.requires_grad_(cfg.pos_embeddings)
+            log.info("Set requires_grad for positional embeddings in base model (embed_positions)")
+
         self.config = cfg
         d_model = self.base.config.hidden_size
         n_layers = self.base.config.num_hidden_layers
@@ -155,6 +177,9 @@ class Decoder(nn.Module):
                     p.requires_grad_(cfg.embedding_head)
             else:
                 log.warning("Could not access output embeddings for freezing control")
+            
+        #if not cfg.embedding_head and not cfg.output_head:
+        #    embed_prod_out = self.out.weight @ self.base.get_output_embeddings().weight.T
         
         # --- Prompt placeholders -------------------------------------------------
         self.prompt_left_emb = None      # type: nn.Parameter | None
@@ -163,6 +188,17 @@ class Decoder(nn.Module):
         self.prompt_text = []
         # keep prompt_ids only for logging/debug convenience
         self.register_buffer("prompt_ids", torch.empty(0, dtype=torch.long))
+
+        # Activation-specific positional embedder
+        self.activation_pos_embedder = None
+        if self.config.subtract_add_pos_embeddings:
+            d_model = self.base.config.hidden_size
+            num_pos_embeddings = self.base.config.max_position_embeddings
+            self.activation_pos_embedder = nn.Embedding(num_pos_embeddings, d_model)
+            # Initialize weights (e.g., small random values or from base model's pos embeddings)
+            self.activation_pos_embedder.weight.data = self.base.transformer.wpe.weight.data.clone()
+            self.activation_pos_embedder.weight.requires_grad_(cfg.extra_pos_embeddings) # Ensure trainable
+            log.info(f"Initialized activation positional embedder for Decoder with {num_pos_embeddings} embeddings.")
 
 
     def forward(self, *args: Any, **kwargs: Any):  # noqa: D401
@@ -302,7 +338,8 @@ class Decoder(nn.Module):
         hard_right_emb: list[int] = None,
         override_model_base_and_out  = None,
         do_patching: bool = True,
-        special_token = None
+        special_token = None,
+        original_token_pos: Optional[torch.Tensor] = None,
     ) -> Generated:
         """Differentiable autoregressive sampling with Gumbel-Softmax.
 
@@ -359,12 +396,30 @@ class Decoder(nn.Module):
         B, d_model = activation_input.shape
         device = activation_input.device
         
+        # Subtract positional embedding from activation_input if configured
+        activation_input_modified = activation_input
+        if self.config.subtract_add_pos_embeddings and original_token_pos is not None and self.activation_pos_embedder is not None:
+            original_token_pos = original_token_pos.to(device=device, dtype=torch.long)
+            original_token_pos = original_token_pos.squeeze() if original_token_pos.dim() == 2 else original_token_pos
+            
+            pos_embeds_to_subtract = self.activation_pos_embedder(original_token_pos)
+            
+            if pos_embeds_to_subtract.shape != activation_input.shape:
+                raise ValueError(
+                    f"Shape mismatch for positional embedding subtraction: "
+                    f"activation_input shape {activation_input.shape}, "
+                    f"pos_embeds_to_subtract shape {pos_embeds_to_subtract.shape}"
+                )
+            activation_input_modified = activation_input - pos_embeds_to_subtract
+        
         # Get both input and output embedding tables
-        input_emb_table = main_base.get_input_embeddings().weight  # (V, d_model)
-        output_emb_table = main_base.get_output_embeddings().weight  # (V, d_model)
+        input_emb_table = main_base.get_input_embeddings().weight
+        output_emb_table = main_base.get_output_embeddings().weight
+        embeddings_tied = (input_emb_table.data_ptr() == output_emb_table.data_ptr())
         
         # Check if embeddings are tied (same memory location)
-        embeddings_tied = (input_emb_table.data_ptr() == output_emb_table.data_ptr()) # TODO - better check?
+        if not embeddings_tied or self.config.output_head:
+            raise ValueError("Embeddings are not tied or output head is trainable - this is not supported")
         
 
         # 0) prepend textual prompt (pre-computed at set_prompt)
@@ -376,13 +431,13 @@ class Decoder(nn.Module):
         if use_projection:
             if self.config.patch_all_layers and self.config.per_layer_projections:
                 # Use first layer's projection
-                a_proj = self._apply_projection(activation_input, layer_idx=0).unsqueeze(1)
+                a_proj = self._apply_projection(activation_input_modified, layer_idx=0).unsqueeze(1)
             else:
                 # Use single projection
-                a_proj = self._apply_projection(activation_input).unsqueeze(1)
+                a_proj = self._apply_projection(activation_input_modified).unsqueeze(1)
         else:
             # No projection
-            a_proj = activation_input.unsqueeze(1)
+            a_proj = activation_input_modified.unsqueeze(1)
         if do_patching: 
             parts.append(a_proj)
         else: 
@@ -425,9 +480,9 @@ class Decoder(nn.Module):
                 # Pre-compute single projection if not using per-layer projections
                 if not self.config.per_layer_projections:
                     if use_projection:
-                        single_proj = self._apply_projection(activation_input)
+                        single_proj = self._apply_projection(activation_input_modified)
                     else:
-                        single_proj = activation_input
+                        single_proj = activation_input_modified
                 
                 # Calculate embed position (where activation should be patched)
                 embed_pos = prompt_left_emb.size(0) if prompt_left_emb is not None else 0
@@ -455,9 +510,9 @@ class Decoder(nn.Module):
                         if self.config.per_layer_projections:
                             # Use layer-specific projection
                             if use_projection:
-                                a_proj_layer = self._apply_projection(activation_input, layer_idx=layer_idx)
+                                a_proj_layer = self._apply_projection(activation_input_modified, layer_idx=layer_idx)
                             else:
-                                a_proj_layer = activation_input
+                                a_proj_layer = activation_input_modified
                             # Replace at embed position
                             input_to_this_layer[:, embed_pos] = a_proj_layer
                         else:
@@ -536,269 +591,270 @@ class Decoder(nn.Module):
 
         return Generated(text_embs, logits_seq, hard_ids)
 
-
-    def generate_soft_chkpt(
-        self,
-        activation_input: torch.Tensor,
-        max_length: int,
-        gumbel_tau: float,
-        use_projection: bool = True,
-        print_prompt: bool = False,
-        hard_left_emb: list[int] = None,
-        hard_right_emb: list[int] = None,
-        override_model_base_and_out = None,
-        checkpoint_every_n_tokens: int = 4,
-    ) -> Generated:
-        """Differentiable autoregressive generation with gradient checkpointing.
+    # #@DeprecationWarning("use generate_soft_kv_cached instead")
+    # # TODO FIX THIS implementaiton - do not use as is
+    # def generate_soft_chkpt(
+    #     self,
+    #     activation_input: torch.Tensor,
+    #     max_length: int,
+    #     gumbel_tau: float,
+    #     use_projection: bool = True,
+    #     print_prompt: bool = False,
+    #     hard_left_emb: list[int] = None,
+    #     hard_right_emb: list[int] = None,
+    #     override_model_base_and_out = None,
+    #     checkpoint_every_n_tokens: int = 4,
+    # ) -> Generated:
+    #     """Differentiable autoregressive generation with gradient checkpointing.
         
-        This version maintains full differentiability through all generated tokens
-        while using gradient checkpointing to reduce memory usage.
+    #     This version maintains full differentiability through all generated tokens
+    #     while using gradient checkpointing to reduce memory usage.
         
-        Args:
-            Same as generate_soft, plus:
-            checkpoint_every_n_tokens: How often to checkpoint (default: every 4 tokens)
-        """
-        from torch.utils.checkpoint import checkpoint
+    #     Args:
+    #         Same as generate_soft, plus:
+    #         checkpoint_every_n_tokens: How often to checkpoint (default: every 4 tokens)
+    #     """
+    #     from torch.utils.checkpoint import checkpoint
         
-        if print_prompt and hasattr(self, 'prompt_text'):
-            print(f"Prompt template: {self.prompt_text}")
+    #     if print_prompt and hasattr(self, 'prompt_text'):
+    #         print(f"Prompt template: {self.prompt_text}")
 
-        # Ensure dtype matches linear layer to avoid Half/Float mismatch during eval.
-        # Parameters are automatically on the correct device when the module is moved
+    #     # Ensure dtype matches linear layer to avoid Half/Float mismatch during eval.
+    #     # Parameters are automatically on the correct device when the module is moved
 
-        if override_model_base_and_out is not None:
-            main_model = override_model_base_and_out
-            # Handle both OrigWrapper (has .model) and raw model cases
-            if hasattr(main_model, 'model'):
-                main_base = main_model.model
-                main_out = main_model.model.lm_head if hasattr(main_model.model, 'lm_head') else main_model.model.get_output_embeddings()
-            else:
-                # Direct model passed (e.g., GPT2LMHeadModel)
-                main_base = main_model
-                main_out = main_model.lm_head if hasattr(main_model, 'lm_head') else main_model.get_output_embeddings()
-        else:   
-            main_model = self
-            main_base = self.base
-            main_out = self.out
+    #     if override_model_base_and_out is not None:
+    #         main_model = override_model_base_and_out
+    #         # Handle both OrigWrapper (has .model) and raw model cases
+    #         if hasattr(main_model, 'model'):
+    #             main_base = main_model.model
+    #             main_out = main_model.model.lm_head if hasattr(main_model.model, 'lm_head') else main_model.model.get_output_embeddings()
+    #         else:
+    #             # Direct model passed (e.g., GPT2LMHeadModel)
+    #             main_base = main_model
+    #             main_out = main_model.lm_head if hasattr(main_model, 'lm_head') else main_model.get_output_embeddings()
+    #     else:   
+    #         main_model = self
+    #         main_base = self.base
+    #         main_out = self.out
 
-        if hard_left_emb is not None:
-            prompt_left_emb = main_base.get_input_embeddings().weight[hard_left_emb].clone()
-        else:
-            prompt_left_emb = self.prompt_left_emb
-        if hard_right_emb is not None:
-            prompt_right_emb = main_base.get_input_embeddings().weight[hard_right_emb].clone()
-        else:
-            prompt_right_emb = self.prompt_right_emb
+    #     if hard_left_emb is not None:
+    #         prompt_left_emb = main_base.get_input_embeddings().weight[hard_left_emb].clone()
+    #     else:
+    #         prompt_left_emb = self.prompt_left_emb
+    #     if hard_right_emb is not None:
+    #         prompt_right_emb = main_base.get_input_embeddings().weight[hard_right_emb].clone()
+    #     else:
+    #         prompt_right_emb = self.prompt_right_emb
 
-        # Get dtype from projection layer
-        if self.config.per_layer_projections:
-            activation_input = activation_input.to(self.proj_weight.dtype)
-        else:
-            activation_input = activation_input.to(self.proj.weight.dtype)
+    #     # Get dtype from projection layer
+    #     if self.config.per_layer_projections:
+    #         activation_input = activation_input.to(self.proj_weight.dtype)
+    #     else:
+    #         activation_input = activation_input.to(self.proj.weight.dtype)
 
-        B, d_model = activation_input.shape
-        device = activation_input.device
+    #     B, d_model = activation_input.shape
+    #     device = activation_input.device
         
-        # Get both input and output embedding tables
-        input_emb_table = main_base.get_input_embeddings().weight  # (V, d_model)
-        output_emb_table = main_base.get_output_embeddings().weight  # (V, d_model)
+    #     # Get both input and output embedding tables
+    #     input_emb_table = main_base.get_input_embeddings().weight  # (V, d_model)
+    #     output_emb_table = main_base.get_output_embeddings().weight  # (V, d_model)
         
-        # Check if embeddings are tied (same memory location)
-        embeddings_tied = (input_emb_table.data_ptr() == output_emb_table.data_ptr())
+    #     # Check if embeddings are tied (same memory location)
+    #     embeddings_tied = (input_emb_table.data_ptr() == output_emb_table.data_ptr())
 
-        # 0) prepend textual prompt (pre-computed at set_prompt)
-        parts = []
-        if prompt_left_emb is not None:
-            parts.append(prompt_left_emb.expand(B, -1, -1))
+    #     # 0) prepend textual prompt (pre-computed at set_prompt)
+    #     parts = []
+    #     if prompt_left_emb is not None:
+    #         parts.append(prompt_left_emb.expand(B, -1, -1))
         
-        # Always insert activation as a token (will be replaced at each layer if patch_all_layers=True)
-        if use_projection and not self.config.patch_all_layers:
-            # Only apply projection here if not patching all layers
-            a_proj = self._apply_projection(activation_input).unsqueeze(1)
-        else:
-            # Use unprojected activation as placeholder
-            a_proj = activation_input.unsqueeze(1)
-        parts.append(a_proj)
+    #     # Always insert activation as a token (will be replaced at each layer if patch_all_layers=True)
+    #     if use_projection and not self.config.patch_all_layers:
+    #         # Only apply projection here if not patching all layers
+    #         a_proj = self._apply_projection(activation_input).unsqueeze(1)
+    #     else:
+    #         # Use unprojected activation as placeholder
+    #         a_proj = activation_input.unsqueeze(1)
+    #     parts.append(a_proj)
             
-        if prompt_right_emb is not None:
-            parts.append(prompt_right_emb.expand(B, -1, -1))
+    #     if prompt_right_emb is not None:
+    #         parts.append(prompt_right_emb.expand(B, -1, -1))
             
-        seq_embs = torch.cat(parts, dim=1)
+    #     seq_embs = torch.cat(parts, dim=1)
 
-        logits_list = []
-        hard_ids_list = []
-        output_embs_list = []  # Store embeddings for encoder
+    #     logits_list = []
+    #     hard_ids_list = []
+    #     output_embs_list = []  # Store embeddings for encoder
         
-        # Define single step function for checkpointing as a method
-        def generation_step(seq_embs_input, step_idx, 
-                          main_base, main_out, 
-                          input_emb_table, output_emb_table, embeddings_tied,
-                          activation_input, use_projection, prompt_left_emb,
-                          B, device, config, decoder_module,
-                          gumbel_tau, max_gumbel_tau=0.1):
-            """Single generation step that can be checkpointed."""
-            if config.patch_all_layers:
-                # Custom forward pass with activation patching at all layers
-                # Get transformer module and detect architecture
-                if hasattr(main_base, 'transformer'):
-                    # GPT-2 style model
-                    transformer = main_base.transformer
-                    layers = transformer.h
-                    final_norm = transformer.ln_f
-                elif hasattr(main_base, 'model'):
-                    # LLaMA style model (model.layers)
-                    transformer = main_base.model
-                    layers = transformer.layers
-                    final_norm = transformer.norm
-                else:
-                    raise ValueError(f"Unknown model architecture. Expected transformer or model attribute.")
+    #     # Define single step function for checkpointing as a method
+    #     def generation_step(seq_embs_input, step_idx, 
+    #                       main_base, main_out, 
+    #                       input_emb_table, output_emb_table, embeddings_tied,
+    #                       activation_input, use_projection, prompt_left_emb,
+    #                       B, device, config, decoder_module,
+    #                       gumbel_tau, max_gumbel_tau=0.1):
+    #         """Single generation step that can be checkpointed."""
+    #         if config.patch_all_layers:
+    #             # Custom forward pass with activation patching at all layers
+    #             # Get transformer module and detect architecture
+    #             if hasattr(main_base, 'transformer'):
+    #                 # GPT-2 style model
+    #                 transformer = main_base.transformer
+    #                 layers = transformer.h
+    #                 final_norm = transformer.ln_f
+    #             elif hasattr(main_base, 'model'):
+    #                 # LLaMA style model (model.layers)
+    #                 transformer = main_base.model
+    #                 layers = transformer.layers
+    #                 final_norm = transformer.norm
+    #             else:
+    #                 raise ValueError(f"Unknown model architecture. Expected transformer or model attribute.")
                 
-                # Embedding layer
-                hidden_states = seq_embs_input
+    #             # Embedding layer
+    #             hidden_states = seq_embs_input
                 
-                # Get position IDs
-                seq_length = hidden_states.size(1)
-                position_ids = torch.arange(seq_length, dtype=torch.long, device=device).unsqueeze(0).expand(B, -1)
+    #             # Get position IDs
+    #             seq_length = hidden_states.size(1)
+    #             position_ids = torch.arange(seq_length, dtype=torch.long, device=device).unsqueeze(0).expand(B, -1)
                 
-                # Pre-compute single projection if not using per-layer projections
-                if not config.per_layer_projections:
-                    if use_projection:
-                        single_proj = decoder_module._apply_projection(activation_input)
-                    else:
-                        single_proj = activation_input
+    #             # Pre-compute single projection if not using per-layer projections
+    #             if not config.per_layer_projections:
+    #                 if use_projection:
+    #                     single_proj = decoder_module._apply_projection(activation_input)
+    #                 else:
+    #                     single_proj = activation_input
                 
-                # Calculate embed position (where activation should be patched)
-                embed_pos = prompt_left_emb.size(0) if prompt_left_emb is not None else 0
+    #             # Calculate embed position (where activation should be patched)
+    #             embed_pos = prompt_left_emb.size(0) if prompt_left_emb is not None else 0
                 
-                # Compute rotary embeddings for LLaMA if needed
-                if hasattr(main_base, 'model') and hasattr(transformer, 'rotary_emb'):
-                    # LLaMA uses rotary embeddings
-                    cos, sin = transformer.rotary_emb(hidden_states, position_ids)
-                    position_embeddings = (cos, sin)
-                else:
-                    position_embeddings = None
+    #             # Compute rotary embeddings for LLaMA if needed
+    #             if hasattr(main_base, 'model') and hasattr(transformer, 'rotary_emb'):
+    #                 # LLaMA uses rotary embeddings
+    #                 cos, sin = transformer.rotary_emb(hidden_states, position_ids)
+    #                 position_embeddings = (cos, sin)
+    #             else:
+    #                 position_embeddings = None
                 
-                # Run through transformer layers with activation patching
-                for layer_idx, layer_module in enumerate(layers):
-                    # Apply layer
-                    if hasattr(main_base, 'model'):
-                        # LLaMA style - pass position embeddings
-                        layer_outputs = layer_module(
-                            hidden_states,
-                            position_ids=position_ids,
-                            position_embeddings=position_embeddings,
-                        )
-                    else:
-                        # GPT-2 style
-                        layer_outputs = layer_module(hidden_states, position_ids=position_ids)
-                    hidden_states = layer_outputs[0]
+    #             # Run through transformer layers with activation patching
+    #             for layer_idx, layer_module in enumerate(layers):
+    #                 # Apply layer
+    #                 if hasattr(main_base, 'model'):
+    #                     # LLaMA style - pass position embeddings
+    #                     layer_outputs = layer_module(
+    #                         hidden_states,
+    #                         position_ids=position_ids,
+    #                         position_embeddings=position_embeddings,
+    #                     )
+    #                 else:
+    #                     # GPT-2 style
+    #                     layer_outputs = layer_module(hidden_states, position_ids=position_ids)
+    #                 hidden_states = layer_outputs[0]
                     
-                    # Replace activation at the embed position for this layer
-                    # Skip layer 0 for per-layer projections since it's already applied
-                    if layer_idx > 0 or not config.per_layer_projections:
-                        if config.per_layer_projections:
-                            # Use layer-specific projection
-                            if use_projection:
-                                a_proj_layer = decoder_module._apply_projection(activation_input, layer_idx=layer_idx)
-                            else:
-                                a_proj_layer = activation_input
-                            hidden_states[:, embed_pos] = a_proj_layer
-                        else:
-                            # Use pre-computed single projection
-                            hidden_states[:, embed_pos] = single_proj
+    #                 # Replace activation at the embed position for this layer
+    #                 # Skip layer 0 for per-layer projections since it's already applied
+    #                 if layer_idx > 0 or not config.per_layer_projections:
+    #                     if config.per_layer_projections:
+    #                         # Use layer-specific projection
+    #                         if use_projection:
+    #                             a_proj_layer = decoder_module._apply_projection(activation_input, layer_idx=layer_idx)
+    #                         else:
+    #                             a_proj_layer = activation_input
+    #                         hidden_states[:, embed_pos] = a_proj_layer
+    #                     else:
+    #                         # Use pre-computed single projection
+    #                         hidden_states[:, embed_pos] = single_proj
                 
-                # Final layer norm
-                hidden_states = final_norm(hidden_states)
+    #             # Final layer norm
+    #             hidden_states = final_norm(hidden_states)
                 
-                # Get logits
-                h_last = hidden_states
-                logits_t = main_out(h_last[:, -1])  # (B, V)
-            else:
-                # Original behavior
-                # Model forward pass
-                out = main_base(inputs_embeds=seq_embs_input, output_hidden_states=True)
-                h_last = out.last_hidden_state if hasattr(out, "last_hidden_state") else out.hidden_states[-1]
-                logits_t = main_out(h_last[:, -1])  # (B, V)
+    #             # Get logits
+    #             h_last = hidden_states
+    #             logits_t = main_out(h_last[:, -1])  # (B, V)
+    #         else:
+    #             # Original behavior
+    #             # Model forward pass
+    #             out = main_base(inputs_embeds=seq_embs_input, output_hidden_states=True)
+    #             h_last = out.last_hidden_state if hasattr(out, "last_hidden_state") else out.hidden_states[-1]
+    #             logits_t = main_out(h_last[:, -1])  # (B, V)
 
-            # 1. Apply forward sampling temperature
-            current_T_sampling = 1.0  # TODO: could add schedule
-            logits_t_scaled = logits_t / current_T_sampling
+    #         # 1. Apply forward sampling temperature
+    #         current_T_sampling = 1.0  # TODO: could add schedule
+    #         logits_t_scaled = logits_t / current_T_sampling
 
-            # 2. Apply Gumbel-Softmax with STE temperature (hard=True)
-            # Add numerical stability for low tau values
-            with torch.amp.autocast('cuda',enabled=False):
-                logits_t_f32 = logits_t_scaled.float()
-                # Subtract max for numerical stability (detached)
-                logits_t_f32 = logits_t_f32 - logits_t_f32.max(dim=-1, keepdim=True)[0].detach()
-                ste_token_dist = torch.nn.functional.gumbel_softmax(
-                    logits_t_f32,
-                    tau=max(gumbel_tau, 0.1),  # Prevent extremely low tau
-                    hard=True  # Keep using STE as in original
-                ).to(logits_t_scaled.dtype)
+    #         # 2. Apply Gumbel-Softmax with STE temperature (hard=True)
+    #         # Add numerical stability for low tau values
+    #         with torch.amp.autocast('cuda',enabled=False):
+    #             logits_t_f32 = logits_t_scaled.float()
+    #             # Subtract max for numerical stability (detached)
+    #             logits_t_f32 = logits_t_f32 - logits_t_f32.max(dim=-1, keepdim=True)[0].detach()
+    #             ste_token_dist = torch.nn.functional.gumbel_softmax(
+    #                 logits_t_f32,
+    #                 tau=max(gumbel_tau, 0.1),  # Prevent extremely low tau
+    #                 hard=True  # Keep using STE as in original
+    #             ).to(logits_t_scaled.dtype)
             
-            # Use input embeddings for autoregressive feedback
-            emb_t_input = ste_token_dist @ input_emb_table  # (B, d_model)
+    #         # Use input embeddings for autoregressive feedback
+    #         emb_t_input = ste_token_dist @ input_emb_table  # (B, d_model)
             
-            # Use output embeddings for the encoder (or reuse input if tied)
-            if embeddings_tied:
-                emb_t_output = emb_t_input
-            else:
-                emb_t_output = ste_token_dist @ output_emb_table  # (B, d_model)
+    #         # Use output embeddings for the encoder (or reuse input if tied)
+    #         if embeddings_tied:
+    #             emb_t_output = emb_t_input
+    #         else:
+    #             emb_t_output = ste_token_dist @ output_emb_table  # (B, d_model)
             
-            # Store hard token IDs derived from the STE output
-            hard_ids = ste_token_dist.argmax(dim=-1)
+    #         # Store hard token IDs derived from the STE output
+    #         hard_ids = ste_token_dist.argmax(dim=-1)
             
-            return logits_t, emb_t_input, emb_t_output, hard_ids
+    #         return logits_t, emb_t_input, emb_t_output, hard_ids
 
-        # Main generation loop with checkpointing
-        for step in range(max_length):
-            # Checkpoint all tokens except the first few (need some non-checkpointed for gradients)
-            # When checkpoint_every_n_tokens=1, checkpoint all but first token
-            # When checkpoint_every_n_tokens>1, checkpoint every N tokens
-            should_checkpoint = (
-                checkpoint_every_n_tokens == 1 and step > 0  # For every-token mode
-            ) or (
-                checkpoint_every_n_tokens > 1 and step % checkpoint_every_n_tokens == 0 and step > 0
-            )
+    #     # Main generation loop with checkpointing
+    #     for step in range(max_length):
+    #         # Checkpoint all tokens except the first few (need some non-checkpointed for gradients)
+    #         # When checkpoint_every_n_tokens=1, checkpoint all but first token
+    #         # When checkpoint_every_n_tokens>1, checkpoint every N tokens
+    #         should_checkpoint = (
+    #             checkpoint_every_n_tokens == 1 and step > 0  # For every-token mode
+    #         ) or (
+    #             checkpoint_every_n_tokens > 1 and step % checkpoint_every_n_tokens == 0 and step > 0
+    #         )
             
-            if should_checkpoint:
-                # Use gradient checkpointing
-                logits_t, emb_t_input, emb_t_output, hard_ids = checkpoint(
-                    generation_step, seq_embs, step, 
-                    main_base, main_out,
-                    input_emb_table, output_emb_table, embeddings_tied,
-                    activation_input, use_projection, prompt_left_emb,
-                    B, device, self.config, self,
-                    gumbel_tau,
-                    use_reentrant=False
-                )
-            else:
-                # Regular forward pass
-                logits_t, emb_t_input, emb_t_output, hard_ids = generation_step(
-                    seq_embs, step,
-                    main_base, main_out,
-                    input_emb_table, output_emb_table, embeddings_tied,
-                    activation_input, use_projection, prompt_left_emb,
-                    B, device, self.config, self,
-                    gumbel_tau
-                )
+    #         if should_checkpoint:
+    #             # Use gradient checkpointing
+    #             logits_t, emb_t_input, emb_t_output, hard_ids = checkpoint(
+    #                 generation_step, seq_embs, step, 
+    #                 main_base, main_out,
+    #                 input_emb_table, output_emb_table, embeddings_tied,
+    #                 activation_input, use_projection, prompt_left_emb,
+    #                 B, device, self.config, self,
+    #                 gumbel_tau,
+    #                 use_reentrant=False
+    #             )
+    #         else:
+    #             # Regular forward pass
+    #             logits_t, emb_t_input, emb_t_output, hard_ids = generation_step(
+    #                 seq_embs, step,
+    #                 main_base, main_out,
+    #                 input_emb_table, output_emb_table, embeddings_tied,
+    #                 activation_input, use_projection, prompt_left_emb,
+    #                 B, device, self.config, self,
+    #                 gumbel_tau
+    #             )
             
-            # Feed input embedding back for next autoregressive step
-            seq_embs = torch.cat([seq_embs, emb_t_input.unsqueeze(1)], dim=1)
+    #         # Feed input embedding back for next autoregressive step
+    #         seq_embs = torch.cat([seq_embs, emb_t_input.unsqueeze(1)], dim=1)
             
-            # Store outputs
-            logits_list.append(logits_t)
-            output_embs_list.append(emb_t_output)
-            hard_ids_list.append(hard_ids)
+    #         # Store outputs
+    #         logits_list.append(logits_t)
+    #         output_embs_list.append(emb_t_output)
+    #         hard_ids_list.append(hard_ids)
 
-        # Stack along time dim (B, T, ...)
-        logits_seq = torch.stack(logits_list, dim=1)
-        hard_ids = torch.stack(hard_ids_list, dim=1)
+    #     # Stack along time dim (B, T, ...)
+    #     logits_seq = torch.stack(logits_list, dim=1)
+    #     hard_ids = torch.stack(hard_ids_list, dim=1)
         
-        # Stack output embeddings for encoder
-        text_embs = torch.stack(output_embs_list, dim=1)  # (B, T, d_model)
+    #     # Stack output embeddings for encoder
+    #     text_embs = torch.stack(output_embs_list, dim=1)  # (B, T, d_model)
 
-        return Generated(text_embs, logits_seq, hard_ids)
+    #     return Generated(text_embs, logits_seq, hard_ids)
 
     # ------------------------------------------------------------------
     # Prompt helpers
@@ -857,7 +913,8 @@ class Decoder(nn.Module):
         hard_right_emb: list[int] = None,
         override_model_base_and_out = None,
         do_patching: bool = True,
-        special_token = None
+        special_token = None,
+        original_token_pos: Optional[torch.Tensor] = None,
     ) -> Generated:
         """Differentiable generation with KV caching for O(n) attention computation.
         
@@ -912,6 +969,25 @@ class Decoder(nn.Module):
         B, d_model = activation_input.shape
         device = activation_input.device
         
+        # Subtract positional embedding from activation_input if configured
+        activation_input_modified = activation_input
+        if self.config.subtract_add_pos_embeddings and original_token_pos is not None and self.activation_pos_embedder is not None:
+            original_token_pos = original_token_pos.to(device=device, dtype=torch.long)
+            original_token_pos = original_token_pos.squeeze() if original_token_pos.dim() == 2 else original_token_pos
+            
+            pos_embeds_to_subtract = self.activation_pos_embedder(original_token_pos)
+            
+            if pos_embeds_to_subtract.shape != activation_input.shape:
+                if pos_embeds_to_subtract.shape[0] == 1 and activation_input.shape[0] > 1:
+                    pos_embeds_to_subtract = pos_embeds_to_subtract.expand_as(activation_input)
+                else:
+                     raise ValueError(
+                        f"Shape mismatch for positional embedding subtraction: "
+                        f"activation_input shape {activation_input.shape}, "
+                        f"pos_embeds_to_subtract shape {pos_embeds_to_subtract.shape}"
+                    )
+            activation_input_modified = activation_input - pos_embeds_to_subtract
+        
         # Get embedding tables
         input_emb_table = main_base.get_input_embeddings().weight
         output_emb_table = main_base.get_output_embeddings().weight
@@ -926,13 +1002,13 @@ class Decoder(nn.Module):
         if use_projection:
             if self.config.patch_all_layers and self.config.per_layer_projections:
                 # Use first layer's projection
-                a_proj = self._apply_projection(activation_input, layer_idx=0).unsqueeze(1)
+                a_proj = self._apply_projection(activation_input_modified, layer_idx=0).unsqueeze(1)
             else:
                 # Use single projection
-                a_proj = self._apply_projection(activation_input).unsqueeze(1)
+                a_proj = self._apply_projection(activation_input_modified).unsqueeze(1)
         else:
             # No projection
-            a_proj = activation_input.unsqueeze(1)
+            a_proj = activation_input_modified.unsqueeze(1)
         if do_patching: 
             parts.append(a_proj)
         else: 
@@ -976,9 +1052,9 @@ class Decoder(nn.Module):
             # Pre-compute single projection if not using per-layer projections
             if not self.config.per_layer_projections:
                 if use_projection:
-                    single_proj = self._apply_projection(activation_input)
+                    single_proj = self._apply_projection(activation_input_modified)
                 else:
-                    single_proj = activation_input
+                    single_proj = activation_input_modified
             
             # Calculate embed position
             embed_pos = prompt_left_emb.size(0) if prompt_left_emb is not None else 0
@@ -998,7 +1074,8 @@ class Decoder(nn.Module):
                 position_embeddings = None
             
             # Process each layer with activation patching
-            past_key_values = DynamicCache()
+            past_key_values = DynamicCacheEnableDisable()
+
             for layer_idx, layer_module in enumerate(layers):
                 # FIRST: Apply patching to the input of this layer
                 input_to_this_layer = hidden_states.clone()
@@ -1006,17 +1083,35 @@ class Decoder(nn.Module):
                     # For per-layer projections, skip layer 0 since it's already applied in seq_embs
                     if layer_idx > 0:
                         if use_projection:
-                            a_proj_layer = self._apply_projection(activation_input, layer_idx=layer_idx)
+                            a_proj_layer = self._apply_projection(activation_input_modified, layer_idx=layer_idx)
                         else:
-                            a_proj_layer = activation_input
+                            a_proj_layer = activation_input_modified
                         #input_to_this_layer = hidden_states.clone()
                         input_to_this_layer[:, embed_pos] = a_proj_layer
                 elif do_patching:
-                    # For single projection, apply to all layers except layer 0 if already applied
-                    # Check if layer 0 already has projection applied (it should in seq_embs)
-                    #if layer_idx > 0:
-                    #input_to_this_layer = hidden_states.clone()
-                    input_to_this_layer[:, embed_pos] = single_proj
+                    # For single projection, apply to all layers.
+                    # The `single_proj` was already computed using `activation_input_modified`.
+                    # The initial `a_proj` in `seq_embs` for layer 0 was also from `activation_input_modified`.
+                    # So, if not per_layer_projections, we use single_proj.
+                    # If per_layer, layer 0's projection (in parts) used modified input.
+                    # Subsequent layers (layer_idx > 0) also use modified input for their projections.
+                    # This seems consistent. The key is that `single_proj` or `a_proj_layer`
+                    # should be derived from `activation_input_modified`.
+
+                    # The current structure of `input_to_this_layer[:, embed_pos] = single_proj` is for the non-per-layer case.
+                    # Let's clarify the patching logic for patch_all_layers:
+                    # `seq_embs` contains `a_proj` from `activation_input_modified` (layer 0 projection or single projection)
+                    # In the loop:
+                    #   `input_to_this_layer = hidden_states.clone()`
+                    #   If per_layer_projections:
+                    #     if layer_idx > 0: patch with `_apply_projection(activation_input_modified, layer_idx)`
+                    #   Else (not per_layer_projections):
+                    #     patch with `single_proj` (derived from `activation_input_modified`)
+                    # This is correct. The `single_proj` used in the loop for non-per-layer already incorporates `activation_input_modified`.
+                    # The `a_proj_layer` for per-layer (idx > 0) now also correctly uses `activation_input_modified`.
+                    if not self.config.per_layer_projections: # Only apply single_proj patch if not per_layer
+                         input_to_this_layer[:, embed_pos] = single_proj
+
 
                 # THEN: Process the patched input through the layer
                 with self._maybe_disable_dropout():
@@ -1049,7 +1144,7 @@ class Decoder(nn.Module):
                 #    print(layer_module)
                 #    print(dir(layer_module))
                 #    raise ValueError("past_key_values is None")
-            # Final layer norm
+            # Final layer norm 0 necessary as we go layer by layer!
             hidden_states = final_norm(hidden_states)
             
             # Convert list to tuple for compatibility
@@ -1057,13 +1152,13 @@ class Decoder(nn.Module):
         else:
             # Original behavior - use standard forward pass with caching
             with self._maybe_disable_dropout():
-                outputs = main_base(
+                outputs = transformer(
                     inputs_embeds=seq_embs,
                     use_cache=True,
-                    output_hidden_states=True
                 )
-            hidden_states = outputs.hidden_states[-1]
+            hidden_states = outputs.last_hidden_state
             past_key_values = outputs.past_key_values
+
         
         # print("patchalllayers", self.config.patch_all_layers)
         # print("perlayerprojections", self.config.per_layer_projections)
@@ -1072,268 +1167,436 @@ class Decoder(nn.Module):
         # Generate tokens
         current_position = seq_embs.size(1)
         
-        for step in range(max_length):
-            # Get logits for the last position
-            logits_t = main_out(hidden_states[:, -1])  # (B, V)
-            
-            # Gumbel-Softmax sampling with numerical stability
-            logits_t_scaled = logits_t / 1.0  # T_sampling = 1.0
-            with torch.amp.autocast('cuda',enabled=False):
-                logits_f32 = logits_t_scaled.float()
-                # Subtract max for numerical stability (detached)
-                logits_f32 = logits_f32 - logits_f32.max(dim=-1, keepdim=True)[0].detach()
-                ste_token_dist = torch.nn.functional.gumbel_softmax(
-                    logits_f32,
-                    tau=max(gumbel_tau, 0.1),  # Prevent extremely low tau
-                    hard=True
-                ).to(logits_t.dtype)
-            
-            # Get embeddings
-            emb_t_input = ste_token_dist @ input_emb_table
-            if embeddings_tied:
-                emb_t_output = emb_t_input
+        # Convert to DynamicCacheEnableDisable if needed
+        if not isinstance(past_key_values, DynamicCacheEnableDisable):
+            # Convert regular tuple/DynamicCache to our custom cache
+            new_cache = DynamicCacheEnableDisable()
+            if hasattr(past_key_values, 'key_cache'):
+                # It's already a DynamicCache, just copy
+                for i in range(len(past_key_values.key_cache)):
+                    new_cache.key_cache.append(past_key_values.key_cache[i])
+                    new_cache.value_cache.append(past_key_values.value_cache[i])
+                new_cache._seen_tokens = past_key_values._seen_tokens
             else:
-                emb_t_output = ste_token_dist @ output_emb_table
+                # It's a tuple of (key, value) pairs per layer
+                for layer_past in past_key_values:
+                    if layer_past is not None:
+                        new_cache.key_cache.append(layer_past[0])
+                        new_cache.value_cache.append(layer_past[1])
+                new_cache._seen_tokens = seq_embs.size(1)
+            past_key_values = new_cache
+        
+        if self.config.detach_after_each_sample:
+            past_key_values.disable_new_grads()# after each sample, detach gradients! radically reduce memory usage
             
-            # Store outputs
-            logits_list.append(logits_t)
-            output_embs_list.append(emb_t_output)
-            hard_ids_list.append(ste_token_dist.argmax(dim=-1))
-            
-            # Process new token through transformer with cached K,V
-            if step < max_length - 1:  # Don't process last token if we won't use it
-                if self.config.patch_all_layers:
-                    # Custom processing with patching at each layer
-                    hidden_states = emb_t_input.unsqueeze(1)
-                    # Original behavior - use native caching
-                    with self._maybe_disable_dropout():
-                        outputs = main_base(
-                            inputs_embeds=emb_t_input.unsqueeze(1),
-                            past_key_values=past_key_values,
-                            use_cache=True,
-                            output_hidden_states=True
+        if not self.config.end_to_end:
+            ctxt = torch.no_grad()  
+            copy_of_kvs = clone_dynamic_cache_detach(past_key_values)
+            #copy_of_hidden_states_with_grads = hidden_states.clone()
+            copy_of_last_of_last_hidden_state=(main_out(hidden_states[:,-1])@input_emb_table).clone()
+        elif self.config.end_to_end:
+            ctxt = nullcontext()        
+            copy_of_kvs = past_key_values
+        with ctxt:
+            gumbel_noise_list = [] # Store gumbel noise if not end-to-end
+            for step in range(max_length):
+                # Get logits for the last position
+                logits_t = main_out(hidden_states[:, -1])  # (B, V)
+
+                # Gumbel-Softmax sampling with numerical stability
+                logits_t_scaled = logits_t / 1.0  # T_sampling = 1.0
+                with torch.amp.autocast('cuda',enabled=False):
+                    logits_f32 = logits_t_scaled.float()
+                    # Subtract max for numerical stability (detached)
+                    logits_f32 = logits_f32 - logits_f32.max(dim=-1, keepdim=True)[0].detach()
+                    if self.config.end_to_end:
+                        ste_token_dist = torch.nn.functional.gumbel_softmax(
+                            logits_f32,
+                            tau=max(gumbel_tau, 0.1),  # Prevent extremely low tau
+                            hard=True
+                        ).to(logits_t.dtype)
+                    else:
+                        # In the non-end-to-end case, we sample with Gumbel noise
+                        # but detach the computation graph for the forward pass.
+                        # The noise is stored for use in the backward pass recomputation.
+                        gumbels = (
+                            -torch.empty_like(logits_f32, memory_format=torch.legacy_contiguous_format)
+                            .exponential_()
+                            .log()
                         )
-                    hidden_states = outputs.hidden_states[-1]
-                    past_key_values = outputs.past_key_values
-                    current_position += 1
-                    # position_ids = torch.arange(current_position, current_position + 1, dtype=torch.long, device=device).unsqueeze(0).expand(B, -1)
-                    
-                    # # For incremental generation, we're processing new tokens only
-                    # # The activation was already inserted and cached in the initial pass
-                    # # So we just need to process normally through layers
-                    
-                    # # Add position embeddings for GPT-2 (but not for LLaMA)
-                    # if hasattr(main_base, 'transformer'):
-                    #     # GPT-2 needs position embeddings added before layers
-                    #     position_embeds = transformer.wpe(position_ids)
-                    #     hidden_states = transformer.drop(hidden_states + position_embeds)
-                    
-                    # # # Compute rotary embeddings for LLaMA if needed
-                    # # if hasattr(main_base, 'model') and hasattr(transformer, 'rotary_emb'):
-                    # #     # LLaMA uses rotary embeddings for the new position
-                    # #     cos, sin = transformer.rotary_emb(hidden_states, position_ids)
-                    # #     position_embeddings = (cos, sin)
-                    # # else:
-                    # #     position_embeddings = None
-                    
-                    # # Process through layers using native KV caching
-                    # new_past_key_values = []
-                    # for layer_idx, (layer_module, past_kv) in enumerate(zip(layers, past_key_values)):
-                    #     if hasattr(main_base, 'transformer'):
-                    #         # GPT-2 - position embeddings already added, don't pass position_ids
-                    #         layer_outputs = layer_module(
-                    #             hidden_states,
-                    #             past_key_value=past_kv,
-                    #             use_cache=True
-                    #         )
-                    #     else:
-                    #         # LLaMA - needs position_ids for RoPE
-                    #         layer_outputs = layer_module(
-                    #             hidden_states,
-                    #             past_key_value=past_kv,
-                    #             position_ids=position_ids,
-                    #             use_cache=True
-                    #         )
-                    #     hidden_states = layer_outputs[0]
+                        gumbel_noise_list.append(gumbels)
+
+                        # Sample using Gumbel-max trick (argmax of logits + Gumbel noise)
+                        gumbel_logits = logits_f32 + gumbels
+                        hard_token_ids = gumbel_logits.argmax(dim=-1)
                         
-                    #     # Update past_key_values
-                    #     #if len(layer_outputs) > 1 and layer_outputs[1] is not None:
-                    #     # FORONE
-                    #     new_past_key_values[layer_idx][0].append(layer_outputs[1][0])#layer, keyval, tokenindex? maybe?
-                    #     new_past_key_values[layer_idx][1].append(layer_outputs[1][1])
-                    #     print("HELP")
-                    #     print(new_past_key_values[layer_idx][0])
-                    #     print(new_past_key_values[layer_idx][1])
-                    #     print(layer_outputs[1][0].shape)
-                    #     print(layer_outputs[1][1].shape)
-                    #     print(layer_outputs[1][0][0].shape)
-                    #     print(layer_outputs[1][1][0].shape)
-                    #     print(layer_outputs[1][0][0][0].shape)
-                    #     print(layer_outputs[1][1][0][0].shape)
-                    #     exit()
-                    
-                    # # Final layer norm
-                    # hidden_states = final_norm(hidden_states)
-                    
-                    # # Update past_key_values for next iteration
-                    # past_key_values = tuple(new_past_key_values)
-                    current_position += 1
+                        ste_token_dist = torch.nn.functional.one_hot(
+                            hard_token_ids, num_classes=logits_f32.shape[-1]
+                        ).to(logits_t.dtype)
+
+                # Get embeddings
+                emb_t_input = ste_token_dist @ input_emb_table
+                if embeddings_tied:
+                    emb_t_output = emb_t_input
                 else:
+                    output_embs = ste_token_dist @ output_emb_table
+
+                # Store outputs
+                logits_list.append(logits_t)
+                if self.config.end_to_end:
+                    output_embs_list.append(emb_t_output)
+                hard_ids_list.append(ste_token_dist.argmax(dim=-1))
+                #if not self.config.end_to_end and not embeddings_tied:
+                #    input_embs_list.append(emb_t_input)
+
+                # Process new token through transformer with cached K,V
+                if step < max_length - 1:  # Don't process last token if we won't use it
                     # Original behavior - use native caching
                     with self._maybe_disable_dropout():
-                        outputs = main_base(
+                        outputs = transformer(
                             inputs_embeds=emb_t_input.unsqueeze(1),
-                            past_key_values=past_key_values,
+                            past_key_values=copy_of_kvs,
                             use_cache=True,
-                            output_hidden_states=True
                         )
-                    hidden_states = outputs.hidden_states[-1]
-                    past_key_values = outputs.past_key_values
+                    hidden_states = outputs.last_hidden_state
+                    if self.config.detach_after_each_sample:
+                        hidden_states = hidden_states.detach()
+                    copy_of_kvs = outputs.past_key_values
                     current_position += 1
-                    #print("HELPHELPHELPHELP")
+
+        if not self.config.end_to_end:
+            # RL = style - here is where the gradients flow??
+            # allow the gradient to flow here through copy of hidden states with grads - why not.
+            # Concatenate the initial hidden state with the embeddings of the selected hard token ids (excluding the last token)
+            hard_ids = torch.stack(hard_ids_list, dim=1)  # (B, T)
+            inputs_embeds = torch.cat( #want the logits for these guys - the next tokens
+                [copy_of_last_of_last_hidden_state.unsqueeze(1), input_emb_table[hard_ids[:, :-1]]],
+                dim=1
+            )
+            outputs = main_base(inputs_embeds=inputs_embeds, past_key_values=past_key_values, use_cache=True, output_hidden_states=False)
+            with torch.amp.autocast('cuda',enabled=False):
+                logits_f32 = outputs.logits.float()
+                # The graph from outputs.logits is now attached to logits_f32.
+                # We can free the original outputs object and its graph.
+                del outputs
+
+                logits_f32 = logits_f32 - logits_f32.max(dim=-1, keepdim=True)[0].detach()
+                
+                # For the reparameterization trick to be valid, we must use the same Gumbel noise
+                # that was used in the forward sampling pass.
+                gumbel_noise = torch.stack(gumbel_noise_list, dim=1)  # (B, T, V)
+                del gumbel_noise_list
+                
+                gumbel_logits = (logits_f32 + gumbel_noise) / max(gumbel_tau, 0.1)
+                del gumbel_noise
+                
+                y_soft = gumbel_logits.softmax(dim=-1)
+                del gumbel_logits
+
+                y_hard = torch.nn.functional.one_hot(hard_ids, num_classes=logits_f32.shape[-1]).to(y_soft.dtype)
+                del logits_f32
+
+                # Straight-through estimator, computed in the smaller embedding space
+                # to avoid creating a massive (B, T, V) intermediate tensor.
+                y_soft_embs = y_soft @ output_emb_table
+                del y_soft
+
+                # y_hard is a one-hot (B, T, V) tensor. Multiplying it by the embedding table
+                # is equivalent to a much more efficient indexing operation.
+                y_hard_embs = output_emb_table[hard_ids]
+                del y_hard
+
+                # The STE trick, now applied to embeddings. The gradient path is preserved
+                # through y_soft_embs.
+                output_embs = y_hard_embs - y_soft_embs.detach() + y_soft_embs
+
+            text_embs = output_embs
+        else:
+            hard_ids = torch.stack(hard_ids_list, dim=1)
+            text_embs = torch.stack(output_embs_list, dim=1)
         
         # Stack outputs
         logits_seq = torch.stack(logits_list, dim=1)
-        hard_ids = torch.stack(hard_ids_list, dim=1)
-        text_embs = torch.stack(output_embs_list, dim=1)
+        #hard_ids = torch.stack(hard_ids_list, dim=1)
         
+        #text_embs = torch.stack(output_embs_list, dim=1)
+        # should be embedded with enc's input, but it's the same so ok for now! 
         return Generated(text_embs, logits_seq, hard_ids)
     
-    def generate_soft_kv_flash(
-        self,
-        activation_input,
-        max_length=64,
-        gumbel_tau=1.0,
-        hard_left_emb=None,
-        hard_right_emb=None,
-        print_prompt=False,
-        override_model_base_and_out=None,
-    ):
-        """Generate soft text using Flash Attention with KV caching.
+    # #@DeprecationWarning("use generate_soft_kv_cached instead")
+    # # TODO FIX THIS implementaiton - do not use as is
+    # def generate_soft_kv_flash(
+    #     self,
+    #     activation_input,
+    #     max_length=64,
+    #     gumbel_tau=1.0,
+    #     hard_left_emb=None,
+    #     hard_right_emb=None,
+    #     print_prompt=False,
+    #     override_model_base_and_out=None,
+    # ):
+    #     """Generate soft text using Flash Attention with KV caching.
         
-        This method combines Flash Attention's optimized computation with
-        KV caching for O(n) generation complexity.
+    #     This method combines Flash Attention's optimized computation with
+    #     KV caching for O(n) generation complexity.
         
-        Args:
-            Same as generate_soft
+    #     Args:
+    #         Same as generate_soft
         
-        Returns:
-            Same as generate_soft
-        """
-        from lens.models.flash_kv_cache_v2 import FlashKVCache, compute_with_flash_kv_cache, FLASH_AVAILABLE
+    #     Returns:
+    #         Same as generate_soft
+    #     """
+    #     from lens.models.flash_kv_cache_v2 import FlashKVCache, compute_with_flash_kv_cache, FLASH_AVAILABLE
         
-        if not FLASH_AVAILABLE:
-            raise RuntimeError(
-                "Flash Attention requested but not available. "
-                "Install with: make flash-attention"
-            )
+    #     if not FLASH_AVAILABLE:
+    #         raise RuntimeError(
+    #             "Flash Attention requested but not available. "
+    #             "Install with: make flash-attention"
+    #         )
         
-        # Setup similar to generate_soft_kv_cached
-        if print_prompt and hasattr(self, 'prompt_text'):
-            print(f"Prompt template: {self.prompt_text}")
+    #     # Setup similar to generate_soft_kv_cached
+    #     if print_prompt and hasattr(self, 'prompt_text'):
+    #         print(f"Prompt template: {self.prompt_text}")
 
-        if override_model_base_and_out is not None:
-            main_model = override_model_base_and_out
-            # Handle both OrigWrapper (has .model) and raw model cases
-            if hasattr(main_model, 'model'):
-                main_base = main_model.model
-                main_out = main_model.model.lm_head if hasattr(main_model.model, 'lm_head') else main_model.model.get_output_embeddings()
-            else:
-                # Direct model passed (e.g., GPT2LMHeadModel)
-                main_base = main_model
-                main_out = main_model.lm_head if hasattr(main_model, 'lm_head') else main_model.get_output_embeddings()
-        else:   
-            main_model = self
-            main_base = self.base
-            main_out = self.out
+    #     if override_model_base_and_out is not None:
+    #         main_model = override_model_base_and_out
+    #         # Handle both OrigWrapper (has .model) and raw model cases
+    #         if hasattr(main_model, 'model'):
+    #             main_base = main_model.model
+    #             main_out = main_model.model.lm_head if hasattr(main_model.model, 'lm_head') else main_model.model.get_output_embeddings()
+    #         else:
+    #             # Direct model passed (e.g., GPT2LMHeadModel)
+    #             main_base = main_model
+    #             main_out = main_model.lm_head if hasattr(main_model, 'lm_head') else main_model.get_output_embeddings()
+    #     else:   
+    #         main_model = self
+    #         main_base = self.base
+    #         main_out = self.out
 
-        if hard_left_emb is not None:
-            prompt_left_emb = main_base.get_input_embeddings().weight[hard_left_emb].clone()
-        else:
-            prompt_left_emb = self.prompt_left_emb
-        if hard_right_emb is not None:
-            prompt_right_emb = main_base.get_input_embeddings().weight[hard_right_emb].clone()
-        else:
-            prompt_right_emb = self.prompt_right_emb
+    #     if hard_left_emb is not None:
+    #         prompt_left_emb = main_base.get_input_embeddings().weight[hard_left_emb].clone()
+    #     else:
+    #         prompt_left_emb = self.prompt_left_emb
+    #     if hard_right_emb is not None:
+    #         prompt_right_emb = main_base.get_input_embeddings().weight[hard_right_emb].clone()
+    #     else:
+    #         prompt_right_emb = self.prompt_right_emb
 
-        activation_input = activation_input.to(self.proj.weight.dtype)
-        B, d_model = activation_input.shape
-        device = activation_input.device
+    #     activation_input = activation_input.to(self.proj.weight.dtype)
+    #     B, d_model = activation_input.shape
+    #     device = activation_input.device
         
-        # Get embedding tables
-        input_emb_table = main_base.get_input_embeddings().weight
+    #     # Get embedding tables
+    #     input_emb_table = main_base.get_input_embeddings().weight
         
-        # Project activation to embedding space
-        emb_a = self.proj(activation_input)
+    #     # Project activation to embedding space
+    #     emb_a = self.proj(activation_input)
         
-        # Build initial prompt: [left_prompt, projected_activation, right_prompt]
-        left_prompt_embs = prompt_left_emb.unsqueeze(0).expand(B, -1, -1)
-        right_prompt_embs = prompt_right_emb.unsqueeze(0).expand(B, -1, -1)
-        prompt_embs = torch.cat([left_prompt_embs, emb_a.unsqueeze(1), right_prompt_embs], dim=1)
+    #     # Build initial prompt: [left_prompt, projected_activation, right_prompt]
+    #     left_prompt_embs = prompt_left_emb.unsqueeze(0).expand(B, -1, -1)
+    #     right_prompt_embs = prompt_right_emb.unsqueeze(0).expand(B, -1, -1)
+    #     prompt_embs = torch.cat([left_prompt_embs, emb_a.unsqueeze(1), right_prompt_embs], dim=1)
         
-        # Get transformer backbone
-        transformer = main_base.transformer if hasattr(main_base, 'transformer') else main_base
+    #     # Get transformer backbone
+    #     transformer = main_base.transformer if hasattr(main_base, 'transformer') else main_base
         
-        # Process initial prompt through transformer with Flash Attention
-        hidden_states, kv_cache = compute_with_flash_kv_cache(
-            transformer, 
-            prompt_embs,
-            use_cache=True
-        )
+    #     # Process initial prompt through transformer with Flash Attention
+    #     hidden_states, kv_cache = compute_with_flash_kv_cache(
+    #         transformer, 
+    #         prompt_embs,
+    #         use_cache=True
+    #     )
         
-        # Get logits for last position
-        logits = main_out(hidden_states[:, -1])
+    #     # Get logits for last position
+    #     logits = main_out(hidden_states[:, -1])
         
-        # Start autoregressive generation
-        current_position = prompt_embs.size(1)
-        logits_list = []
-        hard_ids_list = []
-        output_embs_list = []
+    #     # Start autoregressive generation
+    #     current_position = prompt_embs.size(1)
+    #     logits_list = []
+    #     hard_ids_list = []
+    #     output_embs_list = []
         
-        for step in range(max_length):
-            # Apply Gumbel-Softmax
-            if gumbel_tau > 0:
-                # For Flash Attention, avoid casting to float32 as it only supports fp16/bf16
-                # Subtract max for numerical stability (detached)
-                logits_stable = logits - logits.max(dim=-1, keepdim=True)[0].detach()
-                ste_token_dist = torch.nn.functional.gumbel_softmax(
-                    logits_stable, tau=max(gumbel_tau, 0.1), hard=True
-                )
-            else:
-                # Straight-through estimator with hard argmax
-                # For Flash Attention, avoid casting to float32
-                # Subtract max for numerical stability (detached)
-                logits_stable = logits - logits.max(dim=-1, keepdim=True)[0].detach()
-                probs = torch.nn.functional.softmax(logits_stable, dim=-1)
-                hard_indices = probs.argmax(dim=-1)
-                ste_token_dist = torch.zeros_like(probs)
-                ste_token_dist.scatter_(-1, hard_indices.unsqueeze(-1), 1.0)
-                ste_token_dist = ste_token_dist - probs.detach() + probs
+    #     for step in range(max_length):
+    #         # Apply Gumbel-Softmax
+    #         if gumbel_tau > 0:
+    #             # For Flash Attention, avoid casting to float32 as it only supports fp16/bf16
+    #             # Subtract max for numerical stability (detached)
+    #             logits_stable = logits - logits.max(dim=-1, keepdim=True)[0].detach()
+    #             ste_token_dist = torch.nn.functional.gumbel_softmax(
+    #                 logits_stable, tau=max(gumbel_tau, 0.1), hard=True
+    #             )
+    #         else:
+    #             # Straight-through estimator with hard argmax
+    #             # For Flash Attention, avoid casting to float32
+    #             # Subtract max for numerical stability (detached)
+    #             logits_stable = logits - logits.max(dim=-1, keepdim=True)[0].detach()
+    #             probs = torch.nn.functional.softmax(logits_stable, dim=-1)
+    #             hard_indices = probs.argmax(dim=-1)
+    #             ste_token_dist = torch.zeros_like(probs)
+    #             ste_token_dist.scatter_(-1, hard_indices.unsqueeze(-1), 1.0)
+    #             ste_token_dist = ste_token_dist - probs.detach() + probs
             
-            # Get embedding using Gumbel weights
-            emb_t_input = ste_token_dist @ input_emb_table
+    #         # Get embedding using Gumbel weights
+    #         emb_t_input = ste_token_dist @ input_emb_table
             
-            # Store outputs
-            logits_list.append(logits)
-            output_embs_list.append(emb_t_input)
-            hard_ids_list.append(ste_token_dist.argmax(dim=-1))
+    #         # Store outputs
+    #         logits_list.append(logits)
+    #         output_embs_list.append(emb_t_input)
+    #         hard_ids_list.append(ste_token_dist.argmax(dim=-1))
             
-            # Process new token through transformer with Flash KV cache
-            if step < max_length - 1:  # Don't process last token if we won't use it
-                hidden_states, kv_cache = compute_with_flash_kv_cache(
-                    transformer,
-                    emb_t_input.unsqueeze(1), 
-                    kv_cache,
-                    position_offset=current_position
-                )
-                current_position += 1
+    #         # Process new token through transformer with Flash KV cache
+    #         if step < max_length - 1:  # Don't process last token if we won't use it
+    #             hidden_states, kv_cache = compute_with_flash_kv_cache(
+    #                 transformer,
+    #                 emb_t_input.unsqueeze(1), 
+    #                 kv_cache,
+    #                 position_offset=current_position
+    #             )
+    #             current_position += 1
                 
-                # Get logits for next token
-                logits = main_out(hidden_states[:, -1])
+    #             # Get logits for next token
+    #             logits = main_out(hidden_states[:, -1])
         
-        # Stack outputs
-        logits_seq = torch.stack(logits_list, dim=1)
-        hard_ids = torch.stack(hard_ids_list, dim=1)
-        text_embs = torch.stack(output_embs_list, dim=1)
+    #     # Stack outputs
+    #     logits_seq = torch.stack(logits_list, dim=1)
+    #     hard_ids = torch.stack(hard_ids_list, dim=1)
+    #     text_embs = torch.stack(output_embs_list, dim=1)
         
-        return Generated(text_embs, logits_seq, hard_ids)
+    #     return Generated(text_embs, logits_seq, hard_ids)
+
+class DynamicCacheEnableDisable(DynamicCache):
+    """
+    A DynamicCache that can enable/disable gradients for new key-value states.
+    When gradients are disabled, new key-value states are detached before being added to the cache.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.grads_enabled: bool = True
+
+    def enable_new_grads(self) -> None:
+        """Enable gradients for new additions to the KV cache."""
+        self.grads_enabled = True
+
+    def disable_new_grads(self) -> None:
+        """Disable gradients for new additions to the KV cache."""
+        self.grads_enabled = False
+
+    def update(
+        self,
+        key_states: torch.Tensor,
+        value_states: torch.Tensor,
+        layer_idx: int,
+        cache_kwargs: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Updates the cache with the new `key_states` and `value_states` for the layer `layer_idx`.
+
+        If `self.grads_enabled` is `False`, the new states are detached before being passed to the superclass.
+        """
+        if not self.grads_enabled and key_states is not None:
+            key_states = key_states.detach()
+            value_states = value_states.detach()
+
+        return super().update(key_states, value_states, layer_idx, cache_kwargs)
+
+#from torch.nn.functional import
+import warnings
+from torch.overrides import (
+    handle_torch_function,
+    has_torch_function,
+    has_torch_function_unary,
+    has_torch_function_variadic,
+)
+
+def gumbel_softmax_fixed_choice(
+    logits: torch.Tensor,
+    tau: float = 1,
+    hard: bool = False,
+    eps: float = 1e-10,
+    dim: int = -1,
+    selected_indices = None,
+) -> torch.Tensor:
+    r"""
+    Sample from the Gumbel-Softmax distribution (`Link 1`_  `Link 2`_) and optionally discretize.
+
+    Args:
+      logits: `[..., num_features]` unnormalized log probabilities
+      tau: non-negative scalar temperature
+      hard: if ``True``, the returned samples will be discretized as one-hot vectors,
+            but will be differentiated as if it is the soft sample in autograd
+      dim (int): A dimension along which softmax will be computed. Default: -1.
+
+    Returns:
+      Sampled tensor of same shape as `logits` from the Gumbel-Softmax distribution.
+      If ``hard=True``, the returned samples will be one-hot, otherwise they will
+      be probability distributions that sum to 1 across `dim`.
+
+    .. note::
+      This function is here for legacy reasons, may be removed from nn.Functional in the future.
+
+    .. note::
+      The main trick for `hard` is to do  `y_hard - y_soft.detach() + y_soft`
+
+      It achieves two things:
+      - makes the output value exactly one-hot
+      (since we add then subtract y_soft value)
+      - makes the gradient equal to y_soft gradient
+      (since we strip all other gradients)
+
+    Examples::
+        >>> logits = torch.randn(20, 32)
+        >>> # Sample soft categorical using reparametrization trick:
+        >>> F.gumbel_softmax(logits, tau=1, hard=False)
+        >>> # Sample hard categorical using "Straight-through" trick:
+        >>> F.gumbel_softmax(logits, tau=1, hard=True)
+
+    .. _Link 1:
+        https://arxiv.org/abs/1611.00712
+    .. _Link 2:
+        https://arxiv.org/abs/1611.01144
+    """
+    if has_torch_function_unary(logits):
+        return handle_torch_function(
+            gumbel_softmax_fixed_choice, (logits,), logits, tau=tau, hard=hard, eps=eps, dim=dim, selected_indices=selected_indices
+        )
+    if eps != 1e-10:
+        warnings.warn("`eps` parameter is deprecated and has no effect.")
+
+    gumbels = (
+        -torch.empty_like(logits, memory_format=torch.legacy_contiguous_format)
+        .exponential_()
+        .log()
+    )  # ~Gumbel(0,1)
+    gumbels = (logits + gumbels) / tau  # ~Gumbel(logits,tau)
+    y_soft = gumbels.softmax(dim)
+
+    if hard:
+        # Straight through.
+        if selected_indices is not None:
+            index = selected_indices
+        else:
+            index = y_soft.max(dim, keepdim=True)[1]
+        y_hard = torch.zeros_like(
+            logits, memory_format=torch.legacy_contiguous_format
+        ).scatter_(dim, index, 1.0)
+        ret = y_hard - y_soft.detach() + y_soft
+    else:
+        # Reparametrization trick.
+        ret = y_soft
+    return ret
+
+def clone_dynamic_cache_detach(original_cache):
+    # Create new cache
+    new_cache = DynamicCacheEnableDisable()
+
+    # Copy each layer's key/value tensors
+    for i in range(len(original_cache.key_cache)):
+        if original_cache.key_cache[i] is not None:
+            new_cache.key_cache.append(original_cache.key_cache[i].clone().detach())
+            new_cache.value_cache.append(original_cache.value_cache[i].clone().detach())
+
+    # Copy the _seen_tokens attribute
+    new_cache._seen_tokens = original_cache._seen_tokens
+
+    return new_cache

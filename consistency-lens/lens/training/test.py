@@ -433,7 +433,8 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
             max_length=max_length,
             gumbel_tau=gumbel_tau,
             use_projection=True,
-            print_prompt=True
+            print_prompt=True,
+            original_token_pos=torch.tensor([0]*batch_size, device=device),
         )
     
     # Decode the generated tokens
@@ -453,7 +454,8 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
             max_length=max_length,
             gumbel_tau=gumbel_tau,
             use_projection=True,
-            print_prompt=False
+            print_prompt=False,
+            original_token_pos=torch.tensor([0]*batch_size, device=device),
         )
     
     random_tokens = result_random.hard_token_ids
@@ -462,24 +464,24 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
         decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
         log.info(f"  Sample {i+1}: {decoded_text}")
     
-    # Test 3: Checkpoint version with same random activation
-    log.info("\nTest 3: Generation with checkpointing (same random activation)")
+    # # Test 3: Checkpoint version with same random activation
+    # log.info("\nTest 3: Generation with checkpointing (same random activation)")
     
-    with torch.no_grad():
-        result_chkpt = decoder_base.generate_soft_chkpt(
-            activation_input=random_activation,
-            max_length=max_length,
-            gumbel_tau=gumbel_tau,
-            use_projection=True,
-            print_prompt=False,
-            checkpoint_every_n_tokens=4  # Checkpoint every 4 tokens
-        )
+    # with torch.no_grad():
+    #     result_chkpt = decoder_base.generate_soft_chkpt(
+    #         activation_input=random_activation,
+    #         max_length=max_length,
+    #         gumbel_tau=gumbel_tau,
+    #         use_projection=True,
+    #         print_prompt=False,
+    #         checkpoint_every_n_tokens=4  # Checkpoint every 4 tokens
+    #     )
     
-    chkpt_tokens = result_chkpt.hard_token_ids
-    for i in range(batch_size):
-        decoded_text = tokenizer.decode(chkpt_tokens[i], skip_special_tokens=True)
-        decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
-        log.info(f"  Sample {i+1}: {decoded_text}")
+    # chkpt_tokens = result_chkpt.hard_token_ids
+    # for i in range(batch_size):
+    #     decoded_text = tokenizer.decode(chkpt_tokens[i], skip_special_tokens=True)
+    #     decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
+    #     log.info(f"  Sample {i+1}: {decoded_text}")
     
     # Note about randomness
     log.info("\nNote: Due to Gumbel-Softmax sampling, each generation is random.")
@@ -497,7 +499,8 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
                 max_length=max_length,
                 gumbel_tau=temp,
                 use_projection=True,
-                print_prompt=False
+                print_prompt=False,
+                original_token_pos=torch.tensor([0], device=device),
             )
         
         temp_tokens = result_temp.hard_token_ids[0]
@@ -514,7 +517,8 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
             max_length=max_length,
             gumbel_tau=gumbel_tau,
             use_projection=False,  # Skip projection
-            print_prompt=False
+            print_prompt=False,
+            original_token_pos=torch.tensor([0], device=device),
         )
     
     noproj_tokens = result_noproj.hard_token_ids[0]
@@ -538,7 +542,8 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
                 max_length=max_length,
                 gumbel_tau=1.0,
                 use_projection=True,
-                print_prompt=False
+                print_prompt=False,
+                original_token_pos=torch.tensor([0], device=device),
             )
         tokens = result.hard_token_ids[0]
         decoded_text = tokenizer.decode(tokens, skip_special_tokens=True)

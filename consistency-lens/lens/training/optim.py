@@ -14,6 +14,7 @@ def param_groups(
     embedding_lr_mult: float = 1.0,
     prompt_lr_mult: float = 10.0,
     base_model_lr_mult: float = 1.0,
+    weight_decay: float = 0.01,
 ) -> List[dict]:  # noqa: D401
     """Create parameter groups for AdamW.
 
@@ -41,7 +42,7 @@ def param_groups(
             if not p.requires_grad:
                 continue
 
-            decay = 0.0 if p.ndim == 1 else 0.01
+            decay = 0.0 if p.ndim == 1 else weight_decay
             
             # Check parameter type for learning rate scaling
             is_adapter = ("proj" in n) or (".out" in n)
@@ -60,10 +61,13 @@ def param_groups(
             
             if is_adapter:
                 lr_scale = proj_lr_mult
+                weight_decay = 0.0
             elif is_embedding:
                 lr_scale = embedding_lr_mult
+                weight_decay = 0.0
             elif is_prompt:
                 lr_scale = prompt_lr_mult
+                weight_decay = 0.0
             elif is_base_model:
                 lr_scale = base_model_lr_mult
             else:

@@ -6,6 +6,7 @@ from transformers import AutoModelForCausalLM, PreTrainedModel
 from dataclasses import dataclass
 import logging
 from contextlib import contextmanager
+from typing import Optional
 __all__ = ["Encoder", "EncoderConfig"]
 
 log = logging.getLogger(__name__)
@@ -15,6 +16,7 @@ log = logging.getLogger(__name__)
 class EncoderConfig:
     model_name: str
     base_model: bool = True          # YAML `base_model`
+    pos_embeddings: bool = True # YAML `pos_embeddings` - whether to train positional embeddings
     projection_layer: bool = True    # YAML `projection_layer`
     use_base_model: bool = False     # YAML `use_base_model`
     embedding_head: bool = False     # YAML `embedding_head`
@@ -24,8 +26,11 @@ class EncoderConfig:
     trainable_soft_prompt: bool = True  # YAML `trainable_soft_prompt` - whether soft prompt is trainable
     soft_prompt_init_std: float = 0.1   # YAML `soft_prompt_init_std` - standard deviation for random initialization
     soft_prompt_init_text: str | None = None  # YAML `soft_prompt_init_text` - text to initialize from (overrides random init)
-    output_layer: int = -1           # YAML `output_layer` - which layer to extract activations from (-1 = last layer)
+    output_layer: int = -1           # YAML `output_layer` - which layer to extract activations from (-1=last, -2=pre-first-layer embeddings, 0..N-1 for specific layers)
     use_dropout: bool = True         # YAML `use_dropout` - whether to use dropout during training (False = deterministic)
+    projection_init_method: str = "default"  # YAML `projection_init_method` - how to initialize the projection layer
+    subtract_add_pos_embeddings: bool = False # YAML `subtract_add_pos_embeddings`
+    extra_pos_embeddings: bool = False # YAML `extra_pos_embeddings` - whether to add extra positional embeddings to the activation
     
     def __post_init__(self):
         """Validate configuration parameters."""
@@ -69,11 +74,24 @@ class Encoder(nn.Module):
         else:
             self.base = None
 
+        if hasattr(self.base, "transformer") and hasattr(self.base.transformer, "wpe"):
+            self.base.transformer.wpe.weight.requires_grad_(cfg.pos_embeddings)
+            log.info("Set requires_grad for positional embeddings in base model (wpe)")
+        elif hasattr(self.base, "model") and hasattr(self.base.model, "embed_positions"):
+            self.base.model.embed_positions.weight.requires_grad_(cfg.pos_embeddings)
+            log.info("Set requires_grad for positional embeddings in base model (embed_positions)")
+
+        # if hasattr(self.base, "transformer") and hasattr(self.base.transformer, "wte"):
+        #     self.base.transformer.wte.weight.requires_grad_(False)
+        #     log.info("Set requires_grad for input embeddings in base model (wte) to False")
+        #     log.info(f"Separately control 'input embeddings' trainability with 'embedding_head'")
+
         # This is Proj_E_hidden_to_A from the README
         self.proj = nn.Linear(d_model, d_model, bias=True)
         # Initialize as identity matrix
         if cfg.eye_init:
             nn.init.eye_(self.proj.weight)
+            nn.init.zeros_(self.proj.bias) # Also initialize bias to zeros with eye_init
             log.info("Initialized projection layer as identity matrix")
         # Configure trainability of the output projection layer
         for p in self.proj.parameters():
@@ -122,6 +140,16 @@ class Encoder(nn.Module):
             log.info(f"Initialized {cfg.soft_prompt_length} soft prompt tokens for encoder "
                     f"(trainable: {cfg.trainable_soft_prompt}, init_std: {cfg.soft_prompt_init_std})")
 
+        # Activation-specific positional embedder
+        self.activation_pos_embedder = None
+        if self.config.subtract_add_pos_embeddings:
+            num_pos_embeddings = self.base.config.max_position_embeddings
+            self.activation_pos_embedder = nn.Embedding(num_pos_embeddings, d_model)
+            # Initialize weights (e.g., small random values or from base model's pos embeddings)
+            self.activation_pos_embedder.weight.data = self.base.transformer.wpe.weight.data.clone()
+            self.activation_pos_embedder.weight.requires_grad_(cfg.extra_pos_embeddings) # Ensure trainable
+            log.info(f"Initialized activation positional embedder for Encoder with {num_pos_embeddings} embeddings.")
+
     def set_soft_prompt_from_text(self, string: str, tokenizer) -> None:
         """Initialize soft prompt embeddings from text string using tokenizer.
         When called, this will create or recreate the soft prompt with length matching the tokenized text.
@@ -130,7 +158,12 @@ class Encoder(nn.Module):
             text: Text string to convert to embeddings for soft prompt initialization
             tokenizer: Tokenizer to use for text conversion
         """
-        prefix, postfix = string.split("<text>")
+        if "<text>" in string:
+            prefix, postfix = string.split("<text>")
+        else:
+            prefix = string
+            postfix = None
+
         if postfix == "":
             postfix = None
         if prefix == "":
@@ -174,7 +207,7 @@ class Encoder(nn.Module):
             if postfix is not None:
                 self.soft_prompt_embeddings_postfix.data.copy_(emb_table[token_ids_postfix])
             
-        log.info(f"Initialized encoder soft prompt from text: '{prefix}' ({text_length} tokens, " + (f"postfix: '{postfix}' ({len(token_ids_postfix) if postfix is not None else 0} tokens, " if postfix is not None else "")+f"   trainable: {self.cfg.trainable_soft_prompt})")
+        log.info(f"Initialized encoder soft prompt from text: '{prefix}' ({text_length} tokens, " + (f"postfix: '{postfix}' ({len(token_ids_postfix) if postfix is not None else 0} tokens, " if postfix is not None else "(no postfix) ")+f"   trainable: {self.cfg.trainable_soft_prompt})")
 
         # Store flag for forward()
     
@@ -196,7 +229,7 @@ class Encoder(nn.Module):
             # No change needed
             yield
 
-    def forward(self, embeddings: torch.Tensor) -> torch.Tensor:  # type: ignore[override]
+    def forward(self, embeddings: torch.Tensor, original_token_pos: Optional[torch.Tensor] = None) -> torch.Tensor:  # type: ignore[override]
         """Project final token embedding back to activation space."""
         # The Encoder base model processes the embeddings from the Decoder
         # to obtain hidden states.
@@ -218,31 +251,144 @@ class Encoder(nn.Module):
         
         # If the Encoder's base model is meant to process the embeddings first:
         if self._use_base:
-            with self._maybe_disable_dropout():
-                # Pass embeddings through the base model; request hidden_states
-                outputs = self.base(inputs_embeds=embeddings, output_hidden_states=True)
-                if outputs.hidden_states is None:
-                    raise RuntimeError("Model did not return hidden_states despite request.")
-                
-                # Select the appropriate layer based on output_layer config
-                if self.config.output_layer == -1:
-                    # Last layer (default behavior)
-                    processed_embeddings = outputs.hidden_states[-1]
-                elif self.config.output_layer == 0:
-                    # Input embeddings (before any transformer layers)
-                    processed_embeddings = outputs.hidden_states[0]
-                else:
-                    # Specific layer (0-indexed, so we shift by 1)
-                    # hidden_states[1] = output of first transformer layer 0
-                    # hidden_states[n] = output of nth transformer layer n-1
-                    if self.config.output_layer > len(outputs.hidden_states) - 2:
-                        raise ValueError(f"Requested output_layer {self.config.output_layer} but model only has {len(outputs.hidden_states)-1} hidden states (0 to {len(outputs.hidden_states) - 2})")
-                    processed_embeddings = outputs.hidden_states[self.config.output_layer+1]
-                
-                # Then take the embedding of the final token for projection
-                last_emb_to_proj = processed_embeddings[:, -1] # (B, d_model)
+            if True:
+                with self._maybe_disable_dropout():
+                    # Use a forward hook for memory-efficient hidden state extraction,
+                    # avoiding the overhead of `output_hidden_states=True`.
+                    captured_output = None
+                    hook_handle = None
+
+                    def _get_layers(model):
+                        """Helper to find the list of transformer layers in a model."""
+                        if hasattr(model, 'transformer'):
+                            model = model.transformer
+                        if hasattr(model, 'layers'):
+                            return model.layers
+                        if hasattr(model, 'h'):
+                            return model.h
+                        if hasattr(model, 'blocks'):
+                            return model.blocks
+                        if hasattr(model, 'encoder') and hasattr(model.encoder, 'layer'):
+                            return model.encoder.layer
+                        if hasattr(model, 'decoder') and hasattr(model.decoder, 'layer'):
+                            return model.decoder.layer
+                        raise AttributeError("Could not find transformer layers in the base model.")
+
+                    try:
+                        layers = _get_layers(self.base)
+                        if not layers:
+                            raise RuntimeError("Base model has no transformer layers to hook.")
+
+                        if self.config.output_layer == -2:
+                            # Capture input to the first transformer layer (i.e., final embeddings).
+                            def pre_hook(module, args, kwargs):
+                                nonlocal captured_output
+                                # Hidden states may be passed as positional or keyword arguments
+                                if args:
+                                    captured_output = args[0]
+                                elif "hidden_states" in kwargs:
+                                    captured_output = kwargs["hidden_states"]
+                                else:
+                                    raise RuntimeError(
+                                        "Could not find hidden states in layer input (args or kwargs)."
+                                        f" Args: {len(args)}, Kwargs: {list(kwargs.keys())}"
+                                    )
+
+                            target_module = layers[0]
+                            hook_handle = target_module.register_forward_pre_hook(pre_hook, with_kwargs=True)
+                        else:
+                            # Capture output of a specific transformer layer.
+                            def post_hook(module, args, output):
+                                nonlocal captured_output
+                                # Layer output can be a tuple (hidden_state, ...), so grab the first element.
+                                captured_output = output[0] if isinstance(output, tuple) else output
+
+                            if self.config.output_layer == -1:
+                                # Last layer
+                                layer_idx = len(layers) - 1
+                            else:
+                                # Specific layer (0-indexed)
+                                layer_idx = self.config.output_layer
+
+                            if not (0 <= layer_idx < len(layers)):
+                                 raise ValueError(f"Requested output_layer {layer_idx} is out of bounds for model with {len(layers)} layers.")
+
+                            target_module = layers[layer_idx]
+                            hook_handle = target_module.register_forward_hook(post_hook)
+
+                        # Run forward pass to trigger the hook.
+                        self.base(inputs_embeds=embeddings)
+
+                    finally:
+                        # Ensure the hook is removed to prevent memory leaks.
+                        if hook_handle:
+                            hook_handle.remove()
+
+                    if captured_output is None:
+                        raise RuntimeError("Hook failed to capture hidden state.")
+
+                    processed_embeddings = captured_output
+
+                    # Then take the embedding of the final token for projection.
+                    last_emb_to_proj = processed_embeddings[:, -1] # (B, d_model)
+            else:
+                with self._maybe_disable_dropout():
+                    # Pass embeddings through the base model; request hidden_states
+                    outputs = self.base(inputs_embeds=embeddings, output_hidden_states=True)
+                    if outputs.hidden_states is None:
+                        raise RuntimeError("Model did not return hidden_states despite request.")
+
+                    # Select the appropriate layer based on output_layer config
+                    if self.config.output_layer == -1:
+                        # Last layer (default behavior)
+                        processed_embeddings = outputs.hidden_states[-1]
+                    elif self.config.output_layer == 0:
+                        # Input embeddings (before any transformer layers)
+                        processed_embeddings = outputs.hidden_states[0]
+                    else:
+                        # Specific layer (0-indexed, so we shift by 1)
+                        # hidden_states[1] = output of first transformer layer 0
+                        # hidden_states[n] = output of nth transformer layer n-1
+                        if self.config.output_layer > len(outputs.hidden_states) - 2:
+                            raise ValueError(f"Requested output_layer {self.config.output_layer} but model only has {len(outputs.hidden_states)-1} hidden states (0 to {len(outputs.hidden_states) - 2})")
+                        processed_embeddings = outputs.hidden_states[self.config.output_layer+1]
+
+                    # Then take the embedding of the final token for projection
+                    last_emb_to_proj = processed_embeddings[:, -1] # (B, d_model)
         else:
             # Project the last token embedding directly if `self.base` is not in use.
             last_emb_to_proj = embeddings[:, -1]  # (B, d_model)
             
-        return self.proj(last_emb_to_proj)
+        A_hat_intermediate = self.proj(last_emb_to_proj)
+
+        if self.config.subtract_add_pos_embeddings and original_token_pos is not None and self.activation_pos_embedder is not None:
+            # Ensure original_token_pos is long type and on the correct device
+            original_token_pos = original_token_pos.to(device=A_hat_intermediate.device, dtype=torch.long)
+            original_token_pos = original_token_pos.squeeze() if original_token_pos.dim() == 2 else original_token_pos
+            # Get positional embeddings
+            # Handle cases where original_token_pos might be scalar for a batch of size 1
+            #raise ValueError(f"original_token_pos has shape {original_token_pos.shape} but A_hat_intermediate has shape {A_hat_intermediate.shape}")
+
+
+            pos_embeds_to_add = self.activation_pos_embedder(original_token_pos) # (B, d_model)
+            
+            # # Ensure pos_embeds_to_add has the same shape as A_hat_intermediate
+            # if pos_embeds_to_add.shape != A_hat_intermediate.shape:
+            #     # This might happen if original_token_pos was scalar and then unsqueezed for a batch > 1
+            #     # or if broadcasting rules didn't align. For safety, explicitly check.
+            #     # Example: pos_embeds_to_add could be (1, d_model) if original_token_pos became (1,)
+            #     # while A_hat_intermediate is (B, d_model).
+            #     if pos_embeds_to_add.shape[0] == 1 and A_hat_intermediate.shape[0] > 1:
+            #         pos_embeds_to_add = pos_embeds_to_add.expand_as(A_hat_intermediate)
+            #     else:
+            #         raise ValueError(
+            #             f"Shape mismatch for positional embedding addition: "
+            #             f"A_hat_intermediate shape {A_hat_intermediate.shape}, "
+            #             f"pos_embeds_to_add shape {pos_embeds_to_add.shape}"
+            #         )
+            
+            final_A_hat = A_hat_intermediate + pos_embeds_to_add
+        else:
+            final_A_hat = A_hat_intermediate
+            
+        return final_A_hat

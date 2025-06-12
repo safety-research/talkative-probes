@@ -1,157 +1,51 @@
 position,token,explanation,kl_divergence,mse,text,token_length
-0,The,"
-
-
-
-
-
-
-
-they are using them.
-
-
-",3.718184471130371,12015.53515625,The cat sat on the mat.,3
-1, cat,"
-
-
-
-
-
- cat
- kitten cat the the the the the the",1.056626558303833,9.3204345703125,The cat sat on the mat.,4
-2, sat,"
-
-
-
- is sits sits sits is sitting sits will will will is will",0.5283644199371338,11.718683242797852,The cat sat on the mat.,4
-3, on, on on on will sitting on will on on on on will on on on on,0.5953388214111328,7.5675368309021,The cat sat on the mat.,3
-4, the, on the the the the the the the the the the the the the the the,1.0582157373428345,5.810954570770264,The cat sat on the mat.,4
-5, mat, room lamp in it window the tower them the the the it the them the them,1.0248558521270752,11.20334243774414,The cat sat on the mat.,4
-6,.,"
-
-Configuration : { ConfigurationConfiguration { ........",0.3258443772792816,5.78879451751709,The cat sat on the mat.,1
-0,The,"
-
-
-
-
-
-
-
-The
-
- I will try them
-",4.273764610290527,12029.2841796875,The dog ran in the park.,3
-1, dog,"
-
-
-
- dog cat he animal dogThe dog the dog the the the",0.5565574765205383,9.856919288635254,The dog ran in the park.,4
-2, ran, will tried will tried will went walked ran drove went went ran ran ran ran ran,0.3331499695777893,8.205732345581055,The dog ran in the park.,4
-3, in, will go in will in in encounter in in in in in in in in in,2.7232182025909424,5.906485557556152,The dog ran in the park.,3
-4, the, in the the in the the in the the the the the the the the the,1.9132201671600342,4.65330696105957,The dog ran in the park.,4
-5, park," town them facility them them, it park them it them them the the the the",1.0185514688491821,9.845938682556152,The dog ran in the park.,5
-6,., { ConfigurationConfigurationConfiguration {Configuration {Configuration {Configuration......,0.14300695061683655,4.938012599945068,The dog ran in the park.,1
-0,Machine,"
-
-
-
-
-
-
-they are
-
-they are the
-
-",3.1192116737365723,12358.37109375,Machine learning is powerful.,7
-1, learning,"science.abiliseeducation gaming management, technology it combatthefulness the the the",1.1268534660339355,10.27188491821289,Machine learning is powerful.,9
-2, is, is is is is is is is is is is is is is is is is,0.8249130249023438,6.084268093109131,Machine learning is powerful.,3
-3, powerful, is extremely effective will be useful will improve their power effectiveness will powerful powerful will powerful,1.0954512357711792,8.376644134521484,Machine learning is powerful.,9
-4,., Configuration Setup configuration file { Configuration { Configuration........,0.372107595205307,5.823856353759766,Machine learning is powerful.,1
-0,Hello,"
-
-
-
-
-
-
-
-
-They will
-
-
-
- they",2.196289539337158,11924.62890625,Hello world!,5
-1, world, it world it's it! itworld it worldIt it the world the the,2.199608087539673,8.967521667480469,Hello world!,6
-2,!,"Program!
-
-Name: function!!!!!!!!!",0.38125813007354736,8.34066390991211,Hello world!,1
-0,import,"
-
-
-
-
-
-
-
-
-
-The
-
-they are the",3.162605047225952,11940.595703125,import numpy as np,6
-1, n,"
-
-N 1n, n n n n
- n n n n n",1.195611834526062,9.167680740356445,import numpy as np,2
-2,umpy, analyticalbergraphumpyöumpyumpyumpyberberumpytheumpyumpy theumpy,3.9788131713867188,10.358585357666016,import numpy as np,4
-3, as, as as as. as as as as as as as as as as as as,7.135196685791016,7.871677398681641,import numpy as np,3
-4, np, them steps them tools them.ibr them ps them codes using them their it them,2.968842029571533,13.225318908691406,import numpy as np,3
-0,def,"
-
-
-
-
-
-
-
- they are the
-
-they are the",3.6248228549957275,11624.9482421875,"def hello():
+0,The, Vill Titans O Gods Other States Vill Grass? N Sl Other Gen Souls Players Noir Goth Materials Gen Humans? Others Gods Continent Vill A Powers O Dor Masters Players?,2.682731866836548,11624.3193359375,The cat sat on the mat.,3
+1, cat, Whitman WM Vanity Wax Snow Ghost Twin Kitt Comet Grey Park Bronx NX Fur VA Wis Ghostbusters Tor Caroljob Graveyard Johnny Geniuscule Lur Chu UL Preston Mountains Johnny Gumont,0.31650856137275696,2.0175719261169434,The cat sat on the mat.,4
+2, sat, Ty squatOWER borough widgets womrow Chester boohoverppelin Leslie Wembley beaut Berks widget hotsuch Row Lud Stellar Moose pronouns Yard Fle Pixelesley Zimmerァ Yards Fleutenant,0.09864768385887146,2.5180585384368896,The cat sat on the mat.,4
+3, on, bombed ranked hover cleaned searched Monroe Unified squares Wilkinson weak electrons KKK Harriet Monk Witt Jets mem hovering Lum Zimbabwe township Lew clothed fingerprint brute Dynam Clarks Kw disciplined Lamb Crusader tyr,0.20438610017299652,1.4852666854858398,The cat sat on the mat.,3
+4, the, functional Louis Plum Monroe UL Kl regimenturch pilgr surve regiment mem Junk dict architect Muss Wil Lud Holl sem Kerr strict Lew enrol phones Zhu decl enrol Lud Wilkinson dotted decre,0.13182882964611053,1.1187732219696045,The cat sat on the mat.,4
+5, mat, Obj Devilscats Pier Decklua Muskflies Model Knightiffs LPQL GillespieiffsVM Knights Bridges \\ MoonBur pollenMac Knightconn JamFlow Labyrinthval Devils Park Labyrinth,0.3327781558036804,3.481513500213623,The cat sat on the mat.,4
+6,., Weld Louisville Measures Lew welfikers Voting Lawrence gram MPsohl Mayer Wilkinson Students Julie vocabulary Lexittle electorsomet HumphurchLouis Fergusonzsche Labour pills welfdylibzsche Labour Worcester,0.08245226740837097,1.0822556018829346,The cat sat on the mat.,1
+0,The, Vill Titans O Gods Other States Vill Grass? N Sl Other Gen Souls Players Noir Goth Materials Gen Humans? Others Gods Continent Vill A Powers O Dor Masters Players?,2.682731866836548,11624.3193359375,The dog ran in the park.,3
+1, dog, Witch WM Hyper TW Kitty Pluto Umb Corvette NX Lex Whale Pul Hospital Volt Ghost Gw Zimbabwe VS Colossus lyn Supership Beetle Fiat Club Chocobo Lunaphan Lou Capcom Disability Nec,0.12133561074733734,1.8915936946868896,The dog ran in the park.,4
+2, ran, Wilmington guild Shaw dw Charleston SQ McGill spl NYU CLS vag sergeant Wolfe MD Squ lich Glow sergeant Boll liner Gust Whitman Anonymous Walter Doct Freddy Lac dys lou Dup Fle pus,0.08808811753988266,1.6558113098144531,The dog ran in the park.,4
+3, in, settled GwHH Welch dw Kenneth Phi streamed maj Welch ghost doct looted workflow disbanded Phi blank Kier psyque nun CCP met unsc Byr lived ger Phi Skinner sober corp Brow,0.6152272820472717,1.7566697597503662,The dog ran in the park.,3
+4, the, hive labor Williams bureaucr Ken Mass Charl � kn moder Cong widow vis exper bureaucr Luk incorpor Pes ju vet quant McCull vis ped bureaucr Gins studied nec Lud McCull sy decre,1.1743077039718628,1.4042065143585205,The dog ran in the park.,4
+5, park, MW DLcats MAS Mansion widgets Von Mode Dur Catalog GB kittens Unicorius Wax modules Kw Dunk \\ Mut Dir Lac sculpt Berks Vonfleet Rei Sims Levi Warp Fur mathemat,0.22653602063655853,2.0740575790405273,The dog ran in the park.,5
+6,., Weld Louisville Nietzscheا�KER WM MPsь violations Mishvor Musseters voter Ludwig Wilkinsoninks Ellis dissertation Wilkinson Shirley~~~~Louis FergusonNev 1968 GutenbergMeasuredylibislux Buckley,0.08767087012529373,0.9052569270133972,The dog ran in the park.,1
+0,Machine, Vill Titans O Gods Other States Vill Grass? N Sl Other Gen Souls Players Noir Goth Materials Gen Humans? Others Gods Continent Vill A Powers O Dor Masters Players?,3.291477918624878,11952.1904296875,Machine learning is powerful.,7
+1, learning, Violetyg Ellis Violet manners Oro yuan Xue ghosts Coco mul Logic Piyg riots Ghost worms Template zo Dys volumes Chill void Edinburgh Lithuania Ellis Brut kittensThings Lamb Gu Template,0.47744715213775635,3.0711421966552734,Machine learning is powerful.,9
+2, is, Elena folds Beauty Kimmie GinnyJean Noir NYUinition Rogue Elsa cultures Faust IG Brut vagina Cinema Vil Sins Venus Rogue Zoe Purg Ellis Bone Forge Ellis genetics Fem Rog Clojure,0.11767233908176422,1.2564492225646973,Machine learning is powerful.,3
+3, powerful,ァ cake Pagan Burgess sugar Vegan lich Rogue sulph Gol Spirit Cake acidic Pharaoh Gods Bone Grac Lichbot Curry Ur philosopher Impossible Ren Bleach rabbits Ichigo Merlin phyl Rog Guth Beer,0.46293458342552185,1.8380162715911865,Machine learning is powerful.,9
+4,., Guthrites virt Ginnyukemia Malfoy Spells Georg adulpythonorumomanverbs Yel humour Column Faustisms PythonAnna Beautrepreneodor Commitols Ginsutenberg Painting Lic Edinburghfig BAS,0.07868266105651855,0.9295892715454102,Machine learning is powerful.,1
+0,Hello, Vill Titans O Gods Other States Vill Grass? N Sl Other Gen Souls Players Noir Goth Materials Gen Humans? Others Gods Continent Vill A Powers O Dor Masters Players?,3.1659164428710938,11494.71875,Hello world!,5
+1, world, Eld Fro EX Yug GH Yenz Penn Ashes Moss FD Bombs Nicole Gest Legends Cull Omn Quentin Sins Cooper Ult FN Liquid decisions Impossible Lum Kens Ogre Fallout Moons Gu Fn,0.27384328842163086,2.3475639820098877,Hello world!,6
+2,!, Wyomingongs Hidden Keys Hog Beesucksies NYUFGies Doughies MD Gothustom Funkonom hashes Reviews RichardsEls Anonymous Meyer Fold essays Delete guitars Gifts MonsById Mons,0.10555341839790344,1.6827276945114136,Hello world!,1
+0,import, Vill Titans O Gods Other States Vill Grass? N Sl Other Gen Souls Players Noir Goth Materials Gen Humans? Others Gods Continent Vill A Powers O Dor Masters Players?,3.160830497741699,11544.5498046875,import numpy as np,6
+1, n,Albert XueLIDL Bald JinNYiamond Fox RyLeeTal NicoleAkmarksNFLGrey KiwodorForce PompeNaz MarshalDuillusRaven GermKIWeissHunteryangAli,0.4306830167770386,2.130481481552124,import numpy as np,2
+2,umpy, Ashes Cic FluTL TL66CF Audio Diabetesmal Touch limeYang Ciclib GemsPingTY Cats handwriting SMPixel KiYang Glovesmia TileMac YangML Cats handwriting,2.4695842266082764,5.167018413543701,import numpy as np,4
+3, as,aigneeneum lover Emmaolate mother emailianeum Liberiaylene Mothers workflow Flowers acne Writer emotion Bees Sue UrMiller FAwolf Painter Flu Butlerullivan plugin Dee Gaul Germ,3.043229103088379,2.519497871398926,import numpy as np,3
+4, np, GlyCI PearceYang Augusta Hunters EmeraldPict Coffee Cigulated DogsPingLexmia MoniquesLuaRC PixelClub McCullPi picturesLatbatsPiKitMiller CatsBrew tattoo,0.934649646282196,5.175383567810059,import numpy as np,3
+0,def, Vill Titans O Gods Other States Vill Grass? N Sl Other Gen Souls Players Noir Goth Materials Gen Humans Vit Others Gods Continent Vill A Powers O Dor Masters Players?,4.936205863952637,11227.73828125,"def hello():
     print('Hi')",3
-1, hello,"
-
-
-
-
-ServicesHello!office it2 the hello hello hello hello",2.387592315673828,9.493415832519531,"def hello():
+1, hello, Loftoi Zombie RoofGaza Tanks Hol Angels Jay Flores614� Halo DVDs Ken Zeal Ire ChouOps Loft Fergusonmodules Mafia Rudy Hig Literature Pulhett Feinamo Zombies Mei,2.1609151363372803,3.5884666442871094,"def hello():
     print('Hi')",6
-2,():, url()::(): (():: version()::()::::,0.8290481567382812,10.671276092529297,"def hello():
+2,():,illinneum Liesgage Instagramarchives ______leesaign microbes Gutenbergiae Loll humanities Anonymous Takeru Grimes ZIPhyde Reviews ______Rober Anonymous Bitcoins Jessie essays Boom Vinyl HarbaughMicroograms Lud,0.7004023194313049,3.7252020835876465,"def hello():
     print('Hi')",3
 3,"
-","UserUserClickUserActor
-
-UserUserUserUserUserUserUserUser
-",0.0009338632225990295,9.095172882080078,"def hello():
+",ukemialloazel ali alias Lee mailingodorails Yu electrons Lew Gram 338 Jessie182 label incarcer comma archiveUrl notation editor instructions Vil argumentsjsonullivan pluginfiles Alexa microbes,0.00126903026830405,1.8294204473495483,"def hello():
     print('Hi')",1
-4, ,"
-
-
-             ",0.4826071262359619,7.353271484375,"def hello():
+4, ,ake Beeillaona KahLee HickaroPi Allenona RiveraDeb Roe2012 Column MurrayDiamondgmAIN YangFuhtml Dodgersevil GinsDayIREDaveIIDMoo,1.1316019296646118,3.249131917953491,"def hello():
     print('Hi')",1
-5, ,"
-
-
- This            ",3.584987163543701,9.406472206115723,"def hello():
+5, ,oe Fox BeeLee Mansion Keneivi YinDiamond HaleYuiceīWiRiver lawnfeeiy CainErResults XYwallQuote FAQGilewgmiiraseNR,2.0927646160125732,4.383854866027832,"def hello():
     print('Hi')",1
-6, , À              ,5.037557125091553,9.439094543457031,"def hello():
+6, ,oe Foxee Seedjee ColoSun HaleXYihDiamond Foxieth Utahice $$Ge509millquote CUMoney�reeegg jokeLiermphabetfee journalsCR,0.9040001630783081,4.501373291015625,"def hello():
     print('Hi')",1
-7, print,"
-
-Use should print to print fromprint print will print(print print:",3.0233261585235596,11.888936996459961,"def hello():
+7, print,oyleLL pencil Len Holmes hook Ezraloop nail Zoeloop leukemiayl Letters notebook Chicago Reading pie Jay formulas XYsie XY PH Wichita Pharma Kelley Winnipeg Scene buds Elliot PH,1.2595491409301758,4.539821147918701,"def hello():
     print('Hi')",6
-8,('," "" "" { "" "" "" "" "" "" "" "" "" "" "" "" """,4.506757736206055,11.173673629760742,"def hello():
+8,(',lee oxyielyleazing Ezraiel mailingielyonative Judaism 412yl Jewish Oxy Martyinatesyz Zoe Chelorie blogsoly Whitmanlore CherryJD remissionyz Emilyobia,0.35916876792907715,4.512312412261963,"def hello():
     print('Hi')",2
-9,Hi,WhenHiHiMy funHelloHello!!Hi my the helloHiHiHey,0.7268439531326294,9.231468200683594,"def hello():
+9,Hi, Hazel Junk Hol Ell Iron Ken Hook LR Lipalf Radio OHents Lowell BT IE Empty � Vim Ley weddingsPing JerichoHUD Moto Rhythm Puzzles MAC Quit RIazel Shopping,0.39319872856140137,3.505455732345581,"def hello():
     print('Hi')",2
-10,'), script scriptfile ( script(). script() (() script()(). script script,0.44387051463127136,10.843363761901855,"def hello():
+10,'),LR ebookhtml Greene oxy Email URLsLew IRS Mormon LR leaflets PHPyz Ezraphilheit 2013lly Essex IRSabeth emails Springfield hairc Emaillly Yahoophi Anonymous Gibbsphil,0.20313715934753418,2.86783766746521,"def hello():
     print('Hi')",2

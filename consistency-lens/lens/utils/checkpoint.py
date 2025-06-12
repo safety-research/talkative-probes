@@ -18,6 +18,15 @@ def save(path: str | Path, models: Dict[str, torch.nn.Module], optim: torch.opti
         ckpt["optim"] = optim.state_dict()
     if scheduler is not None:
         ckpt["scheduler"] = scheduler.state_dict()
+    
+    # Save random states for reproducibility
+    import numpy as np
+    ckpt["rng_states"] = {
+        "torch": torch.get_rng_state(),
+        "cuda": torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
+        "numpy": np.random.get_state(),
+    }
+    
     ckpt.update(extra)
 
     path = Path(path)
@@ -25,14 +34,35 @@ def save(path: str | Path, models: Dict[str, torch.nn.Module], optim: torch.opti
     torch.save(ckpt, path)
 
 
-def load(path: str | Path, models: Dict[str, torch.nn.Module], optim: torch.optim.Optimizer | None = None, map_location: str | torch.device = "cpu") -> Dict[str, Any]:  # noqa: D401
+def load(path: str | Path, models: Dict[str, torch.nn.Module], optim: torch.optim.Optimizer | None = None, map_location: str | torch.device = "cpu", load_rng_state: bool = True, strict_load: bool = True) -> Dict[str, Any]:  # noqa: D401
     """Load checkpoint *path* and restore weights into *models* / *optim*.
 
     Returns the checkpoint dictionary so caller can read ``step`` or any extra
     metadata stored during ``save``.
     """
 
-    ckpt = torch.load(path, map_location=map_location)
+    ckpt = torch.load(path, map_location=map_location, weights_only=False)
+    
+    # Restore random states if available and requested
+    if load_rng_state and "rng_states" in ckpt:
+        import numpy as np
+        rng_states = ckpt["rng_states"]
+        if "torch" in rng_states and rng_states["torch"] is not None:
+            # Ensure the state is on CPU and is a ByteTensor
+            state = rng_states["torch"]
+            if isinstance(state, torch.Tensor):
+                state = state.cpu()
+                if state.dtype != torch.uint8:
+                    state = state.to(torch.uint8)
+            torch.set_rng_state(state)
+        if "cuda" in rng_states and rng_states["cuda"] is not None and torch.cuda.is_available():
+            # CUDA state should already be correct format
+            state = rng_states["cuda"]
+            if isinstance(state, torch.Tensor):
+                state = state.cpu()
+            torch.cuda.set_rng_state(state)
+        if "numpy" in rng_states:
+            np.random.set_state(rng_states["numpy"])
     for k, m in models.items():
         if k in ckpt["models"]:
             state_dict = ckpt["models"][k]
@@ -53,10 +83,41 @@ def load(path: str | Path, models: Dict[str, torch.nn.Module], optim: torch.opti
                     # Remove _orig_mod prefix from all keys
                     state_dict = {k.replace('_orig_mod.', '', 1): v for k, v in state_dict.items()}
             
-            m.load_state_dict(state_dict)
+            # Debug: Check if prompt embeddings are in state dict
+            if k == 'decoder':
+                import logging
+                log = logging.getLogger(__name__)
+                if 'prompt_left_emb' in state_dict:
+                    log.info(f"Loading decoder prompt_left_emb with norm {state_dict['prompt_left_emb'].norm().item():.4f}")
+                if 'prompt_right_emb' in state_dict:
+                    log.info(f"Loading decoder prompt_right_emb with norm {state_dict['prompt_right_emb'].norm().item():.4f}")
+            
+            try:
+                if strict_load:
+                    m.load_state_dict(state_dict, strict=strict_load)
+                else:
+                    missing, unexpected = m.load_state_dict(state_dict, strict=False)
+                    if missing:
+                        log.warning(f"Missing keys: {missing}")
+                    if unexpected:
+                        log.warning(f"Unexpected keys: {unexpected}")
+            except RuntimeError as e:
+                log = logging.getLogger(__name__)
+                log.error(f"Failed to load state dict for {k}: {e}")
+                # Try with strict=False to see what's missing/unexpected
+                missing, unexpected = m.load_state_dict(state_dict, strict=False)
+                if missing:
+                    log.error(f"Missing keys: {missing}")
+                if unexpected:
+                    log.error(f"Unexpected keys: {unexpected}")
+                raise
     if optim is not None and "optim" in ckpt:
         try:
             optim.load_state_dict(ckpt["optim"])
+            # Ensure initial_lr is set for each param group (required by LR schedulers)
+            for group in optim.param_groups:
+                if 'initial_lr' not in group:
+                    group['initial_lr'] = group['lr']
         except ValueError:
             # Param group mismatch (e.g., eval build uses flat param list). Skip.
             pass

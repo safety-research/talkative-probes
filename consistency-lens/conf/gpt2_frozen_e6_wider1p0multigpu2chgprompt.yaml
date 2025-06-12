@@ -19,6 +19,12 @@ trainable_components:
     eye_init: true
     output_head: false                # Keep LM head frozen too
     use_flash_attention: false
+    use_checkpointing: false
+    use_kv_cache: true
+    #patch_all_layers: true
+    #per_layer_projections: true 
+    use_dropout: false
+    use_gumbel_for_LMorig: false # shouldn't matter too much
   encoder:
     base_model: false                 # FROZEN throughout
     use_base_model: true
@@ -41,6 +47,7 @@ lr_scheduler:
   warmup_start_factor: 0.1            # Start at 10% of target LR
   eta_min: 1.0e-5   
 
+resample_ablation: false
 batch_size: 256
 gradient_accumulation_steps: 32
 gumbel_tau_schedule:

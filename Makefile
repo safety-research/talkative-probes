@@ -29,6 +29,11 @@ clean:
 	@rm -rf $(VENV_DIR)
 	@find . -type f -name '*.py[co]' -delete
 	@find . -type d -name '__pycache__' -delete
+
+jupyter:
+	@echo "---installing jupyter and seaborn"
+	@source $(VENV_DIR)/bin/activate
+	@uv add jupyter seaborn plotly
 # Target to install git hooks using pre-commit
 .PHONY: hooks
 hooks:

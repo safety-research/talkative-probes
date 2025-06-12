@@ -281,14 +281,23 @@ submit_pretokenize_job() {
         echo -e "${YELLOW}Running pretokenization directly...${NC}" >&2
         echo "Config: $config" >&2
         
-        # Run pretokenization directly
+        # Ensure logs directory exists
+        mkdir -p logs
+        
+        # Run pretokenization directly with logging
         # Get absolute path to config directory
         local config_dir="$(pwd)/$(dirname "$config")"
-        if uv_run python scripts/pretokenize_dataset.py --config-path="$config_dir" --config-name=$(basename "$config" .yaml) >&2; then
+        local log_out="logs/${job_name}_pretok_direct.out"
+        local log_err="logs/${job_name}_pretok_direct.err"
+        
+        echo -e "${BLUE}Logs: $log_out and $log_err${NC}" >&2
+        
+        if uv_run python scripts/pretokenize_dataset.py --config-path="$config_dir" --config-name=$(basename "$config" .yaml) > "$log_out" 2> "$log_err"; then
             echo -e "${GREEN}Pretokenization completed successfully${NC}" >&2
             echo "completed"
         else
             echo -e "${RED}ERROR: Pretokenization failed${NC}" >&2
+            echo -e "${RED}Check logs: $log_out and $log_err${NC}" >&2
             exit 1
         fi
     fi
@@ -348,13 +357,22 @@ submit_dump_job() {
             exit 1
         fi
         
-        # Run activation dumping directly (always pretokenized)
+        # Ensure logs directory exists
+        mkdir -p logs
+        
+        # Run activation dumping directly (always pretokenized) with logging
         export NUM_GPUS="$NUM_GPUS"
-        if ./scripts/launch_multigpu_dump.sh "$config" "" "" "$layer" >&2; then
+        local log_out="logs/${job_name}_dump_direct.out"
+        local log_err="logs/${job_name}_dump_direct.err"
+        
+        echo -e "${BLUE}Logs: $log_out and $log_err${NC}" >&2
+        
+        if ./scripts/launch_multigpu_dump.sh "$config" "" "" "$layer" > "$log_out" 2> "$log_err"; then
             echo -e "${GREEN}Activation dumping completed successfully${NC}" >&2
             echo "completed"
         else
             echo -e "${RED}ERROR: Activation dumping failed${NC}" >&2
+            echo -e "${RED}Check logs: $log_out and $log_err${NC}" >&2
             exit 1
         fi
     fi
@@ -522,6 +540,9 @@ submit_train_job() {
         
         echo -e "${GREEN}Running training with config: $config_file${NC}" >&2
         
+        # Ensure logs directory exists
+        mkdir -p logs
+        
         # Run training with resume parameters if set
         local config_dir="$(dirname "$config_file")"
         local config_name="$(basename "$config_file" .yaml)"
@@ -561,16 +582,33 @@ submit_train_job() {
         if [ -n "$HYDRA_OVERRIDES" ]; then
             train_cmd="$train_cmd $HYDRA_OVERRIDES"
         fi
+        timestamp=$(date +%Y%m%d_%H%M%S)
+        local log_out="logs/${job_name}_train_direct_${timestamp}.out"
+        local log_err="logs/${job_name}_train_direct_${timestamp}.err"
         
-        if eval "$train_cmd"; then
+        echo -e "${BLUE}Logs: $log_out and $log_err${NC}" >&2
+        
+        if eval "$train_cmd" > "$log_out" 2> "$log_err"; then
             echo -e "${GREEN}Training completed successfully${NC}" >&2
             echo "completed"
         else
             echo -e "${RED}ERROR: Training failed${NC}" >&2
+            echo -e "${RED}Check logs: $log_out and $log_err${NC}" >&2
             exit 1
         fi
     fi
 }
+#         fi
+        
+#         if eval "$train_cmd"; then
+#             echo -e "${GREEN}Training completed successfully${NC}" >&2
+#             echo "completed"
+#         else
+#             echo -e "${RED}ERROR: Training failed${NC}" >&2
+#             exit 1
+#         fi
+#     fi
+# }
 
 # Main logic
 echo -e "${BLUE}=== Running experiment from $CONFIG_FILE ===${NC}"

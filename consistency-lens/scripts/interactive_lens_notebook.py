@@ -6,12 +6,13 @@
 
 
 # need to source the proper uv env /home/kitf/.cache/uv/envs/consistency-lens/bin/python
+# need to uv add jupyter seaborn
 # and install jupyter if necessary
 
 # %%
 # Imports and setup
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 import torch
 import sys
 from pathlib import Path
@@ -46,7 +47,12 @@ print("✓ Imports complete")
 CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_frozen_e6_wider1p0multigpu2chgprompt_OC_GPT2_L6_e5_frozen_lr1e-4_t32_5ep_resume_0604_1343_zeroLMKLkvNO_RA_NEW_bestWID_dist4/gpt2_frozen_step10000_epoch2_.pt"#outputs/checkpoints/YOUR_CHECKPOINT.pt"  # <-- Change this!
 CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_frozen_e6_wider1p0multigpu2chgprompt_OC_GPT2_L6_e5_frozen_lr1e-3_t16_5ep_resume_0604_1516_zeroLMKLkvNO_RA_NEW_bestWIDsmallLM_dist4/gpt2_frozen_step10000_epoch3_.pt"
 CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_frozen_e6_wider1p0multigpu2chgprompt_OC_GPT2_L6_e5_frozen_lr1e-3_t16_5ep_resume_0604_1516_zeroLMKLkvNO_RA_NEW_bestWIDsmallLM_dist4/gpt2_frozen_step19564_epoch6_final.pt"
-
+CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_frozen_e6_wider1p0multigpu2chgprompt_OC_GPT2_L6_e5_prog-unfreeze_lr1e-3_t32_20ep_resume_0609_1410_tinyLMKVext_fl32_dist4_slurm634/gpt2_frozen_step124000_epoch16_.pt"
+CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_frozen_postfix_warmup_OC_GPT2_L6_e5_prog-unfreeze_lr1e-4_t16_30ep_resume_0609_1456_tinyLMKV_ufwarmup_resume_dist4/gpt2_frozen_step27000_epoch7_.pt"
+CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_frozen_postfix_warmup_OC_GPT2_L6_e5_prog-unfreeze_lr1e-3_t16_30ep_resume_0609_1655_tinyLMKV_ufwarmup_resumeMSE_dist4/gpt2_frozen_step16000_epoch5_.pt"
+CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_frozen_e6_wider1p0multigpu2chgprompt_OC_GPT2_L6_e5_prog-unfreeze_lr3e-4_t32_20ep_resume_0609_2327_tinyLMKVext_dist4/gpt2_frozen_step49000_epoch7_.pt"
+CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_frozen_e6_wider1p0multigpu2chgprompt_OC_GPT2_L6_e5_prog-unfreeze_lr3e-4_t32_20ep_resume_0609_2327_tinyLMKVext_dist4/gpt2_frozen_step116000_epoch15_.pt"
+CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_frozen_e6_wider1p0multigpu2chgprompt_OC_GPT2_L6_e5_prog-unfreeze_lr3e-4_t32_4ep_resume_0611_1502_tinyLMKVext_resumeold2highlr_dist4/"
 # Optional: specify device
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -59,12 +65,18 @@ class LensAnalyzer:
     
     def __init__(self, checkpoint_path: str, device: str = "cuda"):
         self.device = torch.device(device)
-        self.checkpoint_path = Path(checkpoint_path)
-        
-        # Load checkpoint to get config first
+        checkpoint_path = Path(checkpoint_path)
+        if checkpoint_path.is_dir():
+            pt_files = sorted(checkpoint_path.glob("*.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if not pt_files:
+                raise FileNotFoundError(f"No .pt files found in directory {checkpoint_path}")
+            checkpoint_path = pt_files[0]
+            print(f"Selected most recent checkpoint: {checkpoint_path}")
+        self.checkpoint_path = checkpoint_path
+
         print(f"Loading checkpoint from {checkpoint_path}...")
-        ckpt = torch.load(checkpoint_path, map_location='cpu')  # Load to CPU first
-        
+        ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)  # Load to CPU first
+
         # Extract config
         if 'config' in ckpt:
             self.config = ckpt['config']
@@ -179,6 +191,7 @@ class LensAnalyzer:
             hidden_states = outputs.hidden_states
         
         results = []
+        torch.manual_seed(42)
         for pos in range(seq_len):
             with torch.no_grad():
                 # Extract activation
@@ -241,6 +254,207 @@ class LensAnalyzer:
                 })
         
         return pd.DataFrame(results)
+    
+    def causal_intervention(self, 
+                           original_text: str, 
+                           intervention_position: int, 
+                           intervention_string: str,
+                           max_new_tokens: int = 20,
+                           visualize: bool = True) -> Dict[str, Any]:
+        """Perform causal intervention by swapping in an encoded representation.
+        
+        Args:
+            original_text: The original input text
+            intervention_position: Token position to intervene at (0-indexed)
+            intervention_string: String to encode and swap in
+            max_new_tokens: Number of tokens to generate after intervention
+            visualize: Whether to show visualization of the intervention
+            
+        Returns:
+            Dictionary containing intervention results and analysis
+        """
+        # Tokenize original text
+        inputs = self.tokenizer(original_text, return_tensors="pt", truncation=True, max_length=512)
+        input_ids = inputs.input_ids.to(self.device)
+        seq_len = input_ids.shape[1]
+        
+        if intervention_position >= seq_len:
+            raise ValueError(f"Intervention position {intervention_position} exceeds sequence length {seq_len}")
+        
+        with torch.no_grad():
+            # Get original hidden states
+            outputs_orig = self.orig_model.model(input_ids, output_hidden_states=True)
+            hidden_states_orig = outputs_orig.hidden_states
+            
+            # Get original activation at intervention position
+            A_orig = hidden_states_orig[self.layer + 1][:, intervention_position, :]
+            
+            # Decode original activation to get its explanation
+            if self.decoder.config.use_kv_cache:
+                gen_orig = self.decoder.generate_soft_kv_cached(A_orig, max_length=self.t_text, gumbel_tau=self.tau)
+            else:
+                gen_orig = self.decoder.generate_soft(A_orig, max_length=self.t_text, gumbel_tau=self.tau)
+            
+            explanation_orig = self.tokenizer.decode(gen_orig.hard_token_ids[0], skip_special_tokens=True)
+            
+            # Create soft embeddings for intervention string
+            # First tokenize it
+            intervention_tokens = self.tokenizer(intervention_string, return_tensors="pt")
+            intervention_ids = intervention_tokens.input_ids.to(self.device)
+            
+            # Get embeddings for intervention text
+            if hasattr(self.orig_model.model, 'transformer'):
+                embed_layer = self.orig_model.model.transformer.wte
+            elif hasattr(self.orig_model.model, 'model'):
+                embed_layer = self.orig_model.model.model.embed_tokens
+            else:
+                embed_layer = self.orig_model.model.get_input_embeddings()
+            
+            intervention_embeddings = embed_layer(intervention_ids)
+            
+            # Encode the intervention embeddings
+            A_intervention = self.encoder(intervention_embeddings)
+            
+            # Take mean if multiple tokens
+            #if A_intervention.shape[1] > 1:
+            #    A_intervention = A_intervention.mean(dim=1, keepdim=True)
+            #A_intervention = A_intervention.squeeze(1)
+            
+            # Get predictions with original activation
+            outputs_orig_full = self.orig_model.forward_with_replacement(
+                input_ids=input_ids,
+                new_activation=A_orig,
+                layer_idx=self.layer,
+                token_pos=intervention_position,
+                no_grad=True
+            )
+            
+            # Get predictions with intervention
+            outputs_intervention = self.orig_model.forward_with_replacement(
+                input_ids=input_ids,
+                new_activation=A_intervention,
+                layer_idx=self.layer,
+                token_pos=intervention_position,
+                no_grad=True
+            )
+            
+            # Generate continuations
+            continuation_orig = self.orig_model.model.generate(
+                input_ids[:, :intervention_position+1],
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                pad_token_id=self.tokenizer.eos_token_id
+            )
+            
+            # For intervention, we need to patch in the activation during generation
+            # This is more complex - for now, let's just compare next-token predictions
+            
+            # Get next token predictions
+            next_token_logits_orig = outputs_orig_full.logits[:, intervention_position, :]
+            next_token_logits_intervention = outputs_intervention.logits[:, intervention_position, :]
+            
+            # Get top predictions
+            top_k = 10
+            probs_orig = torch.softmax(next_token_logits_orig, dim=-1)
+            probs_intervention = torch.softmax(next_token_logits_intervention, dim=-1)
+            
+            top_k_orig = torch.topk(probs_orig[0], k=top_k)
+            top_k_intervention = torch.topk(probs_intervention[0], k=top_k)
+            
+            # Decode top predictions
+            top_tokens_orig = [(self.tokenizer.decode([idx]), prob.item()) 
+                              for idx, prob in zip(top_k_orig.indices, top_k_orig.values)]
+            top_tokens_intervention = [(self.tokenizer.decode([idx]), prob.item()) 
+                                      for idx, prob in zip(top_k_intervention.indices, top_k_intervention.values)]
+            
+            # Compute KL divergence between distributions
+            kl_div = torch.nn.functional.kl_div(
+                torch.log_softmax(next_token_logits_intervention, dim=-1),
+                torch.softmax(next_token_logits_orig, dim=-1),
+                reduction='batchmean'
+            ).item()
+            
+            # Decode what actually happened
+            intervened_token = self.tokenizer.decode([input_ids[0, intervention_position].item()])
+            
+            # Decode intervention explanation
+            if self.decoder.config.use_kv_cache:
+                gen_intervention = self.decoder.generate_soft_kv_cached(A_intervention, max_length=self.t_text, gumbel_tau=self.tau)
+            else:
+                gen_intervention = self.decoder.generate_soft(A_intervention, max_length=self.t_text, gumbel_tau=self.tau)
+            
+            explanation_intervention = self.tokenizer.decode(gen_intervention.hard_token_ids[0], skip_special_tokens=True)
+            
+        results = {
+            'original_text': original_text,
+            'intervention_position': intervention_position,
+            'intervened_token': intervened_token,
+            'intervention_string': intervention_string,
+            'explanation_original': explanation_orig,
+            'explanation_intervention': explanation_intervention,
+            'top_predictions_original': top_tokens_orig,
+            'top_predictions_intervention': top_tokens_intervention,
+            'kl_divergence': kl_div,
+            'continuation_original': self.tokenizer.decode(continuation_orig[0], skip_special_tokens=True)
+        }
+        
+        # Print results
+        print(f"\n🔬 Causal Intervention Analysis")
+        print(f"{'='*60}")
+        print(f"Original text: '{original_text}'")
+        print(f"Intervened at position {intervention_position}: '{intervened_token}'")
+        print(f"Intervention string: '{intervention_string}'")
+        print(f"\n📝 Explanations:")
+        print(f"  Original: {explanation_orig}")
+        print(f"  Intervention: {explanation_intervention}")
+        print(f"\n📊 KL Divergence: {kl_div:.4f}")
+        print(f"\n🎯 Top next-token predictions:")
+        print(f"\nOriginal:")
+        for token, prob in top_tokens_orig[:5]:
+            print(f"  {repr(token):15} {prob:.3f}")
+        print(f"\nWith intervention:")
+        for token, prob in top_tokens_intervention[:5]:
+            print(f"  {repr(token):15} {prob:.3f}")
+        
+        if visualize:
+            self._visualize_intervention(results)
+        
+        return results
+    
+    def _visualize_intervention(self, results: Dict[str, Any]):
+        """Visualize the intervention results."""
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+        
+        # Plot probability distributions
+        tokens_orig = [t[0] for t in results['top_predictions_original'][:10]]
+        probs_orig = [t[1] for t in results['top_predictions_original'][:10]]
+        tokens_int = [t[0] for t in results['top_predictions_intervention'][:10]]
+        probs_int = [t[1] for t in results['top_predictions_intervention'][:10]]
+        
+        x = np.arange(len(tokens_orig))
+        width = 0.35
+        
+        bars1 = ax1.bar(x - width/2, probs_orig, width, label='Original', alpha=0.8, color='blue')
+        bars2 = ax1.bar(x + width/2, probs_int, width, label='Intervention', alpha=0.8, color='red')
+        
+        ax1.set_xlabel('Tokens')
+        ax1.set_ylabel('Probability')
+        ax1.set_title(f'Next Token Predictions\nKL Divergence: {results["kl_divergence"]:.4f}')
+        ax1.set_xticks(x)
+        ax1.set_xticklabels([repr(t) for t in tokens_orig], rotation=45, ha='right')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        
+        # Plot KL divergence as a bar chart
+        ax2.bar(['Original\n→\nOriginal', 'Original\n→\nIntervention'], 
+                [0, results['kl_divergence']], 
+                color=['gray', 'red'], alpha=0.7)
+        ax2.set_ylabel('KL Divergence')
+        ax2.set_title('Distribution Shift')
+        ax2.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.show()
 
 # Initialize the analyzer
 analyzer = LensAnalyzer(CHECKPOINT_PATH, DEVICE)
@@ -256,8 +470,8 @@ TEST_STRING = "The cat sat on the mat."
 TEST_STRING = "<|endoftext|>No less than three sources (who wish to remain anonymous) have indicated to PPP that the Leafs are close to a contract extension with goaltender Jonas Gustavsson that will keep him in Toronto for the foreseeable future. I'm sort of at a loss for words. I mean, Gustavsson did have that one month where he wasn't hot"
 TEST_STRING = "A paper butterfly is displayed on a coffin during Asia Funeral Expo (AFE) in Hong Kong May 19, 2011. REUTERS/Bobby Yip\n\nLONDON (Reuters) - A sharp increase in the number of deaths in Britain in 2015 compared with the previous year helped funeral services firm Dignity post a 16-*percent* profit increase, the firm said on Wednesday.\n\nDignity said the 7-percent year-on-year rise in the number of deaths..."
 
-TEST_STRING = """This photo shows an image of a cougar in Wyoming. Animal control officers in Fairfax County have set up cameras this week in hopes of capturing the image of a cougar reported in the Alexandria section of the county. (Neil Wight/AP)\n\nMultiple sightings of what animal control officials are calling “possibly a cougar” have authorities in Fairfax County on high alert.\n\nOfficials received two reports this week of a “large cat” with an orange"""
-TEST_STRING = "India fearing Chinese submarines is not unwarranted. In 2014, the Chinese Navy frequently docked its submarines in Sri Lanka, saying they were goodwill visits and to replenish ships on deployment to the Arabian Sea.\n\nLater, in 2015, the Chinese Navy, or the People's Liberation Army Navy (PLAN), was seen docking in vessels Pakistan. The frequent visits and the constant reporting on them has led Indian Navy to get the best aircraft in its inventory, P-8I"
+TEST_STRING = """This photo shows an image of a cougar in Wyoming. Animal control officers in Fairfax County have set up cameras this week in hopes of capturing the image of a cougar reported in the Alexandria section of the county. (Neil Wight/AP)\n\nMultiple sightings of what animal control officials are calling "possibly a cougar" have authorities in Fairfax County on high alert.\n\nOfficials received two reports this week of a "large cat" with an orange"""
+# TEST_STRING = "India fearing Chinese submarines is not unwarranted. In 2014, the Chinese Navy frequently docked its submarines in Sri Lanka, saying they were goodwill visits and to replenish ships on deployment to the Arabian Sea.\n\nLater, in 2015, the Chinese Navy, or the People's Liberation Army Navy (PLAN), was seen docking in vessels Pakistan. The frequent visits and the constant reporting on them has led Indian Navy to get the best aircraft in its inventory, P-8I"
 df = analyzer.analyze_all_tokens(TEST_STRING)
 
 # Display the results
@@ -439,7 +653,7 @@ def quick_analyze(text: str, show_plot: bool = True):
 
 # %%
 # Try it out!
-quick_analyze("The quick brown fox jumps over the lazy dog.\n"*10)
+quick_analyze("The quick brown cat jumps over the lazy mouse.\n"*10)
 
 # %%
 # Analyze your own text
@@ -564,4 +778,107 @@ if 'df' in locals():
 # 5. Save interesting results using the provided functions
 # 
 # Happy analyzing! 🔍
+# %%
+TEST_STRING = " t h e   c a t   s a t   o n   t h e   m a t"
+TEST_STRING = " t h e   c a t   s a t   o n   t h e   m a t\n\n the cat sat on the"
+df = analyzer.analyze_all_tokens(TEST_STRING)
+
+# Display the results
+print(f"Analysis of: '{TEST_STRING}'")
+print(f"Total tokens: {len(df)}")
+print("\nToken-by-token breakdown:")
+print(df.to_string(index=False))
+
+# %%
+
+# %%
+TEST_STRING = "John met Mary. He gave her a book. She thanked him."
+df = analyzer.analyze_all_tokens(TEST_STRING)
+
+# Display the results
+print(f"Analysis of: '{TEST_STRING}'")
+print(f"Total tokens: {len(df)}")
+print("\nToken-by-token breakdown:")
+print(df.to_string(index=False))
+
+# %%
+TEST_STRING = "French: monsieur, votre chien est un problème\nEnglish: Mister, your dog is a problem.\n\nFrench: je suis un chat\nEnglish: I am a cat\n\nFrench: Ou est la gare? English: Where is the station? \n\n French: Tu n'aime pas les chats? English:"
+#TEST_STRING = "French: chien\n English: dog\n\nFrench: chat\n English: cat\n\nFrench: gare\n English: station\n\nFrench: voiture\nEnglish: car\n\nFrench: maison\nEnglish:"
+TEST_STRING = " H"
+encodestring = analyzer.tokenizer.encode(TEST_STRING)
+# generateddirectly = analyzer.model.generate(torch.tensor([encodestring]).to(analyzer.device), max_new_tokens=100)
+# print(generateddirectly)
+# tokenizerstring = analyzer.tokenizer.decode(generateddirectly[0])
+# print(tokenizerstring)
+
+# %%
+TEST_STRING = "The door was closed. Alice opened it. Now the door is open.\n\nThe door was closed. Bob closed it. Now the door is closed.\n\nThe door was open. Carol shut it. Now the door is shut.\n\nThe door was open. David closed it. Now the door is"
+df = analyzer.analyze_all_tokens(TEST_STRING)
+
+# Display the results
+print(f"Analysis of: '{TEST_STRING}'")
+print(f"Total tokens: {len(df)}")
+print("\nToken-by-token breakdown:")
+print(df.to_string(index=False))
+
+# %%
+
+TEST_STRING = "Looking to leave a two-fight winless streak behind him, Manny Gamburyan will return to the UFC octagon on Sept. 27 in Las Vegas at UFC 178 in a new weight class.\n\nGamburyan is set to make his 135-pound men's bantamweight debut against Cody \"The Renegade\" Gibson at the MGM Grand Arena on a pay-per-view card headlined by the UFC light heavyweight title fight between champion Jon Jones and Daniel Cormierr"
+df = analyzer.analyze_all_tokens(TEST_STRING)
+
+# Display the results
+print(f"Analysis of: '{TEST_STRING}'")
+print(f"Total tokens: {len(df)}")
+print("\nToken-by-token breakdown:")
+print(df.to_string(index=False))
+
+# %%
+
+# %% [markdown]
+# ## Causal Intervention Analysis
+# 
+# Perform causal interventions by encoding alternate strings and swapping them into the forward pass:
+
+# %%
+# Example 1: Simple pronoun intervention
+original = "The cat sat on the mat. It was very comfortable."
+intervention_result = analyzer.causal_intervention(
+    original_text=original,
+    intervention_position=10,  # Position of "It"
+    intervention_string="The dog",
+    max_new_tokens=10
+)
+
+# %%
+# Example 2: Conceptual intervention
+original = "The scientist discovered a new element. This was"
+intervention_result = analyzer.causal_intervention(
+    original_text=original,
+    intervention_position=8,  # Position of "This"
+    intervention_string="The failure",
+    max_new_tokens=15
+)
+
+# %%
+# Example 3: Language intervention
+original = "Bonjour means hello in French. Merci means"
+intervention_result = analyzer.causal_intervention(
+    original_text=original,
+    intervention_position=9,  # Position of "Merci"
+    intervention_string="Gracias",
+    max_new_tokens=10
+)
+
+# %%
+# Interactive intervention - customize these!
+YOUR_TEXT = "The door was open. She closed it. Now the door is"
+YOUR_POSITION = 11  # Token position to intervene at
+YOUR_INTERVENTION = "He opened"  # What to encode and swap in
+
+result = analyzer.causal_intervention(
+    original_text=YOUR_TEXT,
+    intervention_position=YOUR_POSITION,
+    intervention_string=YOUR_INTERVENTION
+)
+
 # %%

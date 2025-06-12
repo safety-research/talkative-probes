@@ -1,0 +1,72 @@
+# Example W&B sweep configuration with multi-GPU support
+program: scripts/wandb_sweep_train_only.py
+method: grid
+metric:
+  name: loss/kl
+  goal: minimize
+
+parameters:
+  config:
+    value: conf/gpt2_frozen_postfix.yaml
+  
+  # Learning rate sweep
+  learning_rate:
+    values: [3e-3]
+  
+  # Batch size options (per GPU)
+  batch_size:
+    value: 256
+  
+  # Number of GPUs to use (1-8)
+  num_gpus:
+    value: 2
+
+  gradient_accumulation_steps:
+    values: [2,4,8,16]
+
+
+  gumbel_tau_schedule.start_value:
+    values: [5.0]
+
+  num_train_epochs:
+    value: 10
+
+
+  early_termination.enabled:
+    value: true
+
+  early_termination.steps:
+    value: "10000s"
+
+  
+  gumbel_tau_schedule.type:
+    values: ["exponential_decay_after_constant", "cosine_decay_after_constant"]
+
+  gumbel_tau_schedule.constant_steps_before_decay:
+    values: ["128os", "256os", "512os", "1024os"]
+  
+  # Run suffix for unique naming
+  run_suffix:
+    value: "_sweep_multigpu_"
+  
+  # # Other fixed parameters
+  # max_train_steps:
+  #   value: 10000
+  
+  # gradient_accumulation_steps:
+  #   value: 4
+  
+  # # Gumbel temperature schedule
+  # gumbel_tau_schedule:
+  #   value: "2.0->0.5@linear"
+  
+  # # Alpha schedule for LM loss
+  # alpha_schedule:
+  #   value: "0.0->1.0@linear"
+
+# Optional: Add early termination
+early_terminate:
+  type: hyperband
+  s: 2
+  eta: 3
+  max_iter: 27

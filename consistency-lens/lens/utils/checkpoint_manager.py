@@ -207,7 +207,7 @@ class CheckpointManager:
                        optimizer: Optional[torch.optim.Optimizer] = None,
                        map_location: Any = None) -> dict:
         """Load a checkpoint and return the metadata."""
-        return checkpoint.load(checkpoint_path, models=models, optim=optimizer, map_location=map_location)
+        return checkpoint.load(checkpoint_path, models=models, optim=optimizer, map_location=map_location, strict_load=self.config['strict_load'])
 
     def get_best_checkpoint_path(self) -> Optional[Path]:
         """Get path to the best checkpoint."""

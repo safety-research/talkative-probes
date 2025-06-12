@@ -7,6 +7,7 @@
 #tokenizer_name: "Qilex/tinyStories-10k-tokenizer"
 model_name: "SimpleStories/SimpleStories-5M"
 tokenizer_name: "SimpleStories/SimpleStories-5M"
+# this is the layer idx!!!!
 layer_l: 5                      # Target layer for activation extraction (LLM_orig)
 #token_pos_p: 0                   # Target token position for activation extraction (LLM_orig) - currently fixed in MVP dumper
 
@@ -22,7 +23,7 @@ lr_scheduler:
   type: "constant"              # Options: constant, linear, cosine, cosine_with_restarts, polynomial, exponential
   # Common parameters (not all apply to every scheduler type):
   warmup_steps: "100s"          # Warmup duration - Examples: "100s", "0.5e", "200steps", "1epoch"
-  warmup_start_factor: 0.01      # Starting LR multiplier for warmup (lr * warmup_start_factor)
+  warmup_start_factor: 0.0000001      # Starting LR multiplier for warmup (lr * warmup_start_factor)
   # Scheduler-specific parameters:
   # For linear:
   # end_factor: 0.0             # Final LR multiplier (lr * end_factor)
@@ -72,6 +73,7 @@ trainable_components:
     projection_layer: true   # Train Proj_A_to_D_emb (self.proj)
     output_head: false # Train the Decoder's output LM head (self.out)
     embedding_head: false      # Train the input/output embeddings of the base model (may be tied)
+    pos_embeddings: true
     eye_init: true
     trainable_prompts: true   # Train the decoder's soft prompt embeddings
     use_checkpointing: false  # Use generate_soft_chkpt with gradient checkpointing
@@ -81,6 +83,18 @@ trainable_components:
     patch_all_layers: false
     per_layer_projections: false
     use_dropout: false        # Whether to use dropout during training (False = deterministic, recommended for frozen models)
+    detach_after_each_sample: false
+    end_to_end: true
+    projection_init_method: "default"  # Options: "default", "tuned_lens_composition"
+    # TunedLens initialization (when projection_init_method = "tuned_lens_composition"):
+    # RECOMMENDED: Leave checkpoint null to auto-load pre-trained lens from HuggingFace
+    projection_init_tl_checkpoint: null  # null = auto-load, or specify "username/model-tuned-lens" or "/path/to/checkpoint"
+    projection_init_tl_model_name: null  # null = use main model_name, or specify different model
+    projection_init_tl_comp_src_layer: null  # Not used - src layer is always layer_l from config
+    projection_init_tl_comp_tgt_layer: 0  # Target decoder layer (for single projection mode)
+    projection_init_tl_comp_use_composed_bias: true
+    subtract_add_pos_embeddings: false
+    extra_pos_embeddings: false
   encoder:
     base_model: false          # Train the underlying LLM weights of the Encoder
     use_base_model: true      # Use the base model to process the embeddings
@@ -93,6 +107,9 @@ trainable_components:
     soft_prompt_init_text: ${encoder_prompt} # Text to initialize soft prompt from (overrides random init, e.g. "reconstruct activation:")
     output_layer: -1          # Which layer to extract encoder activations from (-1 = last layer, 0 = embeddings, 1..n = specific layer)
     use_dropout: false        # Whether to use dropout during training (False = deterministic, recommended for frozen models)
+    projection_init_method: "default"
+    subtract_add_pos_embeddings: false  
+    extra_pos_embeddings: false
 
 # Freeze schedule for non-adapter parameters
 # When enabled, non-adapter parameters (base_model, output_head, embedding_head) will be frozen
@@ -127,11 +144,17 @@ freeze_schedule:
       embedding_head:
         enabled: null
         unfreeze_at: null      # Embedding heads can have their own schedule
+      soft_prompt_embeddings:
+        enabled: null
+        unfreeze_at: null
     encoder:
       base_model:
         enabled: null
         unfreeze_at: null
       embedding_head:
+        enabled: null
+        unfreeze_at: null
+      soft_prompt_embeddings:
         enabled: null
         unfreeze_at: null
         
@@ -242,6 +265,7 @@ checkpoint:
   # Checkpoint management
   max_checkpoints: 20             # Maximum total checkpoints to keep (-1 for unlimited)
   delete_old_checkpoints: true    # Delete oldest checkpoints when max_checkpoints reached
+  strict_load: true
 
 # Loss weights
 lm_base_weight: 1.0                  # Base LM weight; final LM multiplier = lm_base_weight * alpha_schedule  
@@ -267,7 +291,9 @@ verbose_samples:
   top_n_predictions: 3          # Number of top predictions to show in analysis
   generate_continuation: true   # Generate autoregressive continuation
   continuation_tokens: 30       # Number of tokens to generate for continuation
-  
+  compare_with_tuned_lens: true # Set to true to enable this feature
+  tuned_lens_checkpoint_path_or_name: null # Or "AlignmentResearch/tuned-lens-pythia-160m", or "/local/path/to/tl_checkpoint"
+                                         # If null, will try to auto-load from HuggingFace based on model_name
   # WandB table management
   wandb_table_limit: true       # Keep only first 1 and last 3 rows in wandb table to save memory
   
@@ -285,6 +311,14 @@ activation_dir: null    # Override activation_dumper.output_dir
 max_train_samples: null  # Cap training dataset size
 max_val_samples: null    # Cap validation dataset size
 resume_reset_steps: false
+strict_optimizer_load: true
+
+# Smooth LR transition when resuming from checkpoint
+# When enabled and the checkpoint LR differs from config LR, this will
+# smoothly transition between them instead of an abrupt change
+smooth_lr_transition:
+  enabled: false        # Enable smooth LR transition on resume
+  transition_steps: "1000s"  # Duration of transition - Examples: "1000s", "1e", "500steps", "2epochs"
 
 # ------------------------------------------------------------------------------
 # Evaluation configuration (for 02_eval.py)
@@ -320,3 +354,12 @@ mixed_precision:
   enabled: true  # Enable automatic mixed precision
   dtype: "auto"  # Options: "auto", "float16", "bfloat16", "float32"
                # "auto" will use bfloat16 if available, otherwise float32 (safest option)
+
+weight_decay: 0.01
+force_data_conversion: false
+
+group_n: 1
+do_kl_computation: true
+do_lm_computation: true
+
+allow_reset_optimizer_on_resume: false

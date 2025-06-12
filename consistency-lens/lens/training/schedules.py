@@ -13,9 +13,10 @@ from torch.amp import autocast
 import logging
 from lens.training.optim import param_groups
 from lens.utils.logging import init as log_init, log as log_metrics
+import os
 
 ScheduleType = Literal["constant", "linear_decay", "linear_warmup", "cosine_anneal", "exponential_decay"]
-LRSchedulerType = Literal["constant", "linear", "cosine", "cosine_with_restarts", "polynomial", "exponential"]
+LRSchedulerType = Literal["constant", "linear", "cosine", "cosine_with_restarts", "polynomial", "exponential", "resume_with_transition"]
 
 __all__ = [
     "get_schedule_value", 
@@ -31,8 +32,150 @@ __all__ = [
     "optimizer_step",
     "convert_schedule_strings_in_config",
     "spec_to_steps",
-    "parse_schedule_to_steps"
+    "parse_schedule_to_steps",
+    "SmoothTransitionScheduler"
 ]
+
+
+class SmoothTransitionScheduler(_LRScheduler):
+    """LR Scheduler that smoothly transitions from checkpoint LR to target scheduler LR.
+    
+    This is useful when resuming from a checkpoint where the learning rate might be
+    different from what the scheduler would normally produce at that step.
+    """
+    
+    def __init__(
+        self,
+        optimizer: Optimizer,
+        base_scheduler: _LRScheduler,
+        transition_steps: int,
+        start_lr: float = None, # The LR to start the transition from
+        last_epoch: int = -1    # Should be absolute_current_optimizer_step - 1 when resuming
+    ):
+        """Initialize the smooth transition scheduler.
+        
+        Args:
+            optimizer: The optimizer to schedule
+            base_scheduler: The underlying scheduler to transition to
+            transition_steps: Number of optimizer steps over which to transition
+            start_lr: Starting LR for the transition (e.g., LR from checkpoint)
+            last_epoch: The index of the last optimizer step completed before this scheduler starts.
+                        Typically absolute_current_optimizer_step - 1.
+        """
+        self.base_scheduler = base_scheduler
+        # Ensure transition_steps is at least 1 to avoid division by zero and ensure a discrete step.
+        self.transition_steps = max(1, int(transition_steps))
+        
+        # Store the starting LRs for each param group, based on the provided start_lr
+        if start_lr is not None:
+            # Scale start_lr proportionally for all parameter groups
+            # based on the optimizer's current LRs (which should be new_base_lr from main script)
+            # Handle cases where the leading learning rate might be zero
+            first_pg_lr = optimizer.param_groups[0]['lr'] if optimizer.param_groups else 1.0
+            if first_pg_lr == 0: # Avoid division by zero if base LR is 0
+                 self.start_lrs = [start_lr for _ in optimizer.param_groups]
+            else:
+                self.start_lrs = [start_lr * (pg['lr'] / first_pg_lr)
+                                  for pg in optimizer.param_groups]
+        else:
+            # If start_lr is not given, use current LRs in optimizer as starting points
+            self.start_lrs = [pg['lr'] for pg in optimizer.param_groups]
+        
+        # Crucially, synchronize base_scheduler's last_epoch with ours *after* super().__init__
+        # This ensures they are aligned from the very beginning of this scheduler's life.
+        # self.last_epoch is now set by super().__init__ to the passed 'last_epoch' argument.
+        self._sts_transition_log_count = 0 # Initialize log counter
+        super().__init__(optimizer, last_epoch) # Initializes self.last_epoch and self._step_count
+        self.base_scheduler.last_epoch = self.last_epoch
+
+    
+    def get_lr(self):
+        """Calculate learning rates with smooth transition."""
+        # self._step_count is the number of times step() has been called.
+        # It's 1 after __init__ completes (due to internal step()), 
+        # 2 after the first explicit step() call from training loop, and so on.
+        current_scheduler_call_count = self._step_count 
+
+        # Get a logger instance
+        logger = logging.getLogger(__name__)
+        is_main_proc = os.environ.get('RANK') is None or os.environ.get('RANK') == '0'
+
+        # step_in_transition is 0-indexed for how many steps we are *into* the transition period.
+        # If _step_count = 1 (first get_lr call after init), step_in_transition = 0.
+        step_in_transition = current_scheduler_call_count - 1
+        
+        if step_in_transition < 0: # Should not happen if _step_count starts at 1
+            if is_main_proc and logger.isEnabledFor(logging.WARNING):
+                logger.warning(f"SmoothTransitionScheduler (call count {current_scheduler_call_count}): step_in_transition is negative ({step_in_transition}). Using start_lrs: {self.start_lrs}")
+            return self.start_lrs
+
+        if step_in_transition >= self.transition_steps:
+            # Transition is complete.
+            final_lrs = self.base_scheduler.get_lr()
+            if is_main_proc and logger.isEnabledFor(logging.DEBUG) and (step_in_transition == self.transition_steps or (step_in_transition - self.transition_steps) % 100 == 0) : # Log first time and periodically after
+                logger.debug(f"SmoothTransitionScheduler (call count {current_scheduler_call_count}, step_in_trans {step_in_transition}): Transition complete. Using base_scheduler LRs: {final_lrs}")
+            return final_lrs
+        
+        # During transition:
+        # transition_progress will go from 0 up to (transition_steps-1)/transition_steps
+        transition_progress = step_in_transition / self.transition_steps
+        
+        # The target LRs for the interpolation are what the base_scheduler would provide
+        # for the current_scheduler_call_count. Since they are synchronized, base_scheduler.get_lr() is correct.
+        target_lrs_for_current_step = self.base_scheduler.get_lr()
+        
+        interpolated_lrs = []
+        for i in range(len(self.start_lrs)):
+            # Interpolate from the fixed self.start_lrs
+            # towards the target LR for the current step from the base_scheduler.
+            s_lr = self.start_lrs[i]
+            t_lr = target_lrs_for_current_step[i]
+            lr = s_lr + transition_progress * (t_lr - s_lr)
+            interpolated_lrs.append(lr)
+        
+        if is_main_proc and self._sts_transition_log_count < 5:
+            logger.info(f"SmoothTransitionScheduler (call count {current_scheduler_call_count}): Transitioning.")
+            logger.info(f"  transition_steps_optimizer: {self.transition_steps}")
+            logger.info(f"  step_in_transition_optimizer (0-indexed): {step_in_transition}")
+            logger.info(f"  transition_progress: {transition_progress:.4f}")
+            logger.info(f"  start_lrs: {[f'{slr:.3e}' for slr in self.start_lrs]}")
+            logger.info(f"  target_lrs_current_step (from base): {[f'{tlr:.3e}' for tlr in target_lrs_for_current_step]}")
+            logger.info(f"  interpolated_lrs: {[f'{ilr:.3e}' for ilr in interpolated_lrs]}")
+            self._sts_transition_log_count += 1
+
+        return interpolated_lrs
+    
+    def step(self, epoch=None):
+        """Step the scheduler."""
+        # Increment self.last_epoch (and _step_count via super)
+        # Note: PyTorch schedulers typically update optimizer LRs within their step()
+        # by calling self.get_lr() and then setting param_group['lr'].
+        # Our super().step() will do this using the LRs from self.get_lr().
+        super().step(epoch)
+        
+        # Also step the base scheduler to keep it in sync.
+        # This ensures its internal state (e.g., last_epoch) also advances.
+        # Its LRs will be updated in the optimizer by its own step() if it were used alone,
+        # but here, self.get_lr() is what dictates the optimizer's LRs.
+        # We just need its state advanced.
+        self.base_scheduler.step(epoch) # Keep base_scheduler's state (last_epoch) aligned
+    
+    def state_dict(self):
+        """Returns the state of the scheduler as a dict."""
+        state = super().state_dict()
+        state['base_scheduler'] = self.base_scheduler.state_dict()
+        state['transition_steps'] = self.transition_steps
+        state['start_lrs'] = self.start_lrs
+        return state
+    
+    def load_state_dict(self, state_dict):
+        """Loads the schedulers state."""
+        base_state = state_dict.pop('base_scheduler')
+        self.transition_steps = state_dict.pop('transition_steps')
+        self.start_lrs = state_dict.pop('start_lrs')
+        
+        super().load_state_dict(state_dict)
+        self.base_scheduler.load_state_dict(base_state)
 
 
 def get_schedule_value(
@@ -99,13 +242,24 @@ def get_schedule_value(
         if current_step < constant_steps:
             return start_value
         else:
-            # Exponential decay: value = start_value * (end_value/start_value) ** (progress)
-            # progress is fraction of decay phase completed
             decay_steps = num_schedule_steps - constant_steps
             if decay_steps <= 0:
                 raise ValueError("Decay steps must be > 0 for exponential_decay_after_constant.")
             decay_progress = min(1.0, (current_step - constant_steps) / decay_steps)
             return start_value * (end_value / start_value) ** decay_progress
+
+    if schedule_type == "cosine_decay_after_constant":
+        constant_steps_raw = schedule_config["constant_steps_before_decay"]
+        constant_steps = parse_schedule_to_steps(constant_steps_raw, steps_per_epoch, grad_accum_steps)
+        if current_step < constant_steps:
+            return start_value
+        else:
+            decay_steps = num_schedule_steps - constant_steps
+            if decay_steps <= 0:
+                raise ValueError("Decay steps must be > 0 for cosine_decay_after_constant.")
+            decay_progress = min(1.0, (current_step - constant_steps) / decay_steps)
+            # Cosine decay: value = end_value + 0.5 * (start_value - end_value) * (1 + cos(pi * decay_progress))
+            return end_value + 0.5 * (start_value - end_value) * (1 + math.cos(math.pi * decay_progress))
     elif schedule_type == "linear_warmup":
         return start_value + progress * (end_value - start_value)
     elif schedule_type == "cosine_anneal":
@@ -605,7 +759,7 @@ def should_unfreeze_any_component(current_step, current_epoch, freeze_schedule_c
     return False
 
 
-def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr_multiplier, embedding_lr_multiplier, prompt_lr_multiplier, opt_state_dict=None, current_step=None, current_epoch=None, grad_accum_steps=None):
+def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr_multiplier, embedding_lr_multiplier, prompt_lr_multiplier, base_model_lr_multiplier, opt_state_dict=None, current_step=None, current_epoch=None, grad_accum_steps=None):
     """Unfreeze non-adapter parameters and create new optimizer with all parameters."""
     log = logging.getLogger(__name__)
     
@@ -705,7 +859,7 @@ def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr
     
     # Unfreeze based on effective config and timing
     for name, param in dec_raw.named_parameters():
-        if 'base' in name and 'embed' not in name:  # Base model params (excluding embeddings)
+        if 'base' in name and '.embed' not in name and '.wte' not in name:  # Base model params (excluding embeddings)
             was_frozen = not param.requires_grad
             should_enable = get_effective_config('decoder', 'base_model', decoder_train_cfg)
             should_unfreeze_now = should_unfreeze_component('decoder', 'base_model')
@@ -735,7 +889,7 @@ def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr
         unfreeze_embedding_heads(dec_raw.base, True)
     
     for name, param in enc_raw.named_parameters():
-        if 'base' in name and 'embed' not in name:  # Base model params (excluding embeddings)
+        if 'base' in name and 'embed' not in name and 'wte' not in name:  # Base model params (excluding embeddings)
             was_frozen = not param.requires_grad
             should_enable = get_effective_config('encoder', 'base_model', encoder_train_cfg)
             should_unfreeze_now = should_unfreeze_component('encoder', 'base_model')
@@ -766,7 +920,7 @@ def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr
                        [p for p in enc.parameters() if p.requires_grad]
     
     # Create new optimizer with updated parameters
-    optimizer_groups = param_groups([dec, enc], learning_rate, projection_lr_multiplier, embedding_lr_multiplier, prompt_lr_multiplier)
+    optimizer_groups = param_groups([dec, enc], learning_rate, projection_lr_multiplier, embedding_lr_multiplier, prompt_lr_multiplier, base_model_lr_multiplier)
     new_opt = torch.optim.AdamW(optimizer_groups)
     
     # Set initial_lr for each parameter group (required for LR scheduler)

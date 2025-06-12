@@ -25,6 +25,9 @@ dependencies = [
     "omegaconf>=2.3.0",
     "matplotlib>=3.10.3",
     "cairosvg>=2.8.2",
+    "jupyter>=1.1.1",
+    "seaborn>=0.13.2",
+    "tuned-lens>=0.2.0",
 ]
 
 [tool.setuptools]

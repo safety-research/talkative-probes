@@ -1,41 +1,25 @@
 
 Consistency Lens Analysis Report
 ================================
-Text: "India fearing Chinese submarines is not unwarranted. In 2014, the Chinese Navy frequently docked its..."
-Checkpoint: gpt2_frozen_step19564_epoch6_final.pt
+Text: "This photo shows an image of a cougar in Wyoming. Animal control officers in Fairfax County have set..."
+Checkpoint: gpt2_frozen_step205000_epoch7_.pt
 Model: openai-community/gpt2
 Layer: 6
 
 Summary Statistics:
 - Total tokens: 11
-- Average KL divergence: 2.2408
-- Std deviation: 1.8148
-- Min KL: 0.0009
-- Max KL: 5.0376
+- Average KL divergence: 1.2857
+- Std deviation: 1.4047
+- Min KL: 0.0013
+- Max KL: 4.9362
 
 Top 3 most consistent tokens (lowest KL):
   - [3] '
-' → 'UserUserClickUserActor
-
-UserUserUserUserUserUserUserUser
-' (KL: 0.0009)
-  - [10] '')' → ' script scriptfile ( script(). script() (() script()(). script script' (KL: 0.4439)
-  - [4] ' ' → '
-
-
-             ' (KL: 0.4826)
+' → 'ukemialloazel ali alias Lee mailingodorails Yu electrons Lew Gram 338 Jessie182 label incarcer comma archiveUrl notation editor instructions Vil argumentsjsonullivan pluginfiles Alexa microbes' (KL: 0.0013)
+  - [10] '')' → 'LR ebookhtml Greene oxy Email URLsLew IRS Mormon LR leaflets PHPyz Ezraphilheit 2013lly Essex IRSabeth emails Springfield hairc Emaillly Yahoophi Anonymous Gibbsphil' (KL: 0.2031)
+  - [8] '('' → 'lee oxyielyleazing Ezraiel mailingielyonative Judaism 412yl Jewish Oxy Martyinatesyz Zoe Chelorie blogsoly Whitmanlore CherryJD remissionyz Emilyobia' (KL: 0.3592)
 
 Top 3 least consistent tokens (highest KL):
-  - [6] ' ' → ' À              ' (KL: 5.0376)
-  - [8] '('' → ' " " { " " " " " " " " " " " " "' (KL: 4.5068)
-  - [0] 'def' → '
-
-
-
-
-
-
-
- they are the
-
-they are the' (KL: 3.6248)
+  - [0] 'def' → ' Vill Titans O Gods Other States Vill Grass? N Sl Other Gen Souls Players Noir Goth Materials Gen Humans Vit Others Gods Continent Vill A Powers O Dor Masters Players?' (KL: 4.9362)
+  - [1] ' hello' → ' Loftoi Zombie RoofGaza Tanks Hol Angels Jay Flores614� Halo DVDs Ken Zeal Ire ChouOps Loft Fergusonmodules Mafia Rudy Hig Literature Pulhett Feinamo Zombies Mei' (KL: 2.1609)
+  - [5] ' ' → 'oe Fox BeeLee Mansion Keneivi YinDiamond HaleYuiceīWiRiver lawnfeeiy CainErResults XYwallQuote FAQGilewgmiiraseNR' (KL: 2.0928)

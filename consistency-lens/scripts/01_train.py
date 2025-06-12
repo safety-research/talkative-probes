@@ -363,7 +363,7 @@ def _prepare_dataloaders(
     split_seed = config['split_seed']
     val_fraction = config.get('val_fraction', 0.1) # Default val_fraction if not in config
     batch_size = config['batch_size']
-
+    group_n = config.get('group_n', 1)
 
     if effective_val_activation_dir and Path(effective_val_activation_dir).exists():
         log.info(f"Loading training data from {activation_dir} (limit: {max_train_samples_req if max_train_samples_req is not None else 'all'}).")
@@ -487,7 +487,7 @@ def _prepare_dataloaders(
 
     val_loader: DataLoader | None = None
     if val_ds and len(val_ds) > 0:
-        val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate)
+        val_loader = DataLoader(val_ds, batch_size=batch_size*group_n, shuffle=False, collate_fn=collate)
     else:
         # This is an expected outcome if no validation data was configured or found.
         log.info("Validation dataset is empty or None. Validation will be skipped during training.")
@@ -830,6 +830,12 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
         log.info(f"Using user-specified run name: {run_name}")
     else:
         run_name = generate_run_name(config, dataset_info, config.get('resume'), config_name, config.get('run_suffix'))
+    
+    # Append SLURM job ID if running under SLURM
+    slurm_job_id = os.environ.get('SLURM_JOB_ID')
+    if slurm_job_id:
+        run_name = f"{run_name}_slurm{slurm_job_id}"
+        log.info(f"Appended SLURM job ID to run name: {run_name}")
     
     # Update checkpoint output directory to include run name
     checkpoint_config = config.get('checkpoint', {})

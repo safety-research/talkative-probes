@@ -1,0 +1,123 @@
+# Configuration for GPT-2 Frozen Base Model Experiment
+# This config trains consistency lens on GPT-2 with the base model frozen throughout
+
+defaults:
+  - gpt2_frozen
+  - _self_
+
+# Training hyperparameters
+t_text: 32                      # Number of tokens to generate with the Decoder
+# decoder_prompt: "<|endoftext|>Short explanation of <embed>. Language, topic, senitment, claims, speaker, points and message, style and details, etc:"
+# encoder_prompt: "<|endoftext|>Text to summarise:<text>. Concise summary of the text, covering the language, topic, sentiment, claims, speaker, points, message, style and details, etc:" # this is an error
+# lm_loss_natural_prefix: "<|endoftext|>Short explanation of something. Language, topic, sentiment, claims, speaker, points, message, style and details, etc:"  # Natural language prefix for base model in LM loss
+decoder_prompt: "<|endoftext|>Short explanation of <embed>. Language, topic, senitment, claims, speaker, points and message, style and details, etc:"
+encoder_prompt: "<|endoftext|>Text to summarise:<text>. Concise summary of the text, covering the language, topic, sentiment, claims, speaker, points, message, style and details, etc:" # this is an error
+lm_loss_natural_prefix: "<|endoftext|>Short explanation of something. Language, topic, sentiment, claims, speaker, points, message, style and details, etc:"  # Natural language prefix for base model in LM loss
+
+# Trainable components - FROZEN base model
+trainable_components:
+  decoder:
+    base_model: false                 # FROZEN throughout
+    projection_layer: true            # Train projection
+    pos_embeddings: true
+    eye_init: true
+    output_head: false                # Keep LM head frozen too
+    use_flash_attention: false
+    use_checkpointing: false
+    use_kv_cache: true
+    patch_all_layers: true
+    per_layer_projections: true 
+    use_dropout: false
+    use_gumbel_for_LMorig: false # shouldn't matter too much
+    projection_init_method: "tuned_lens_composition"  # Options: "default", "tuned_lens_composition"
+    projection_init_tl_comp_use_composed_bias: true
+    subtract_add_pos_embeddings: true
+    extra_pos_embeddings: true
+  encoder:
+    base_model: true                 # FROZEN throughout
+    use_base_model: true
+    projection_layer:   true          # Train projection
+    trainable_soft_prompt: true
+    embedding_head: false
+    eye_init: true
+    output_layer: 5 # this is the 7th layer, as this is the idx
+    soft_prompt_init_text: ${encoder_prompt}
+    use_dropout: false
+    subtract_add_pos_embeddings: true
+    extra_pos_embeddings: true
+
+alpha_schedule: 
+  type: "constant"
+  value: 1.0
+
+num_train_epochs: 2                   # 2 epochs should be plenty for OpenWebText
+
+learning_rate: 1.0e-3
+# Learning rate scheduler
+lr_scheduler:
+  type: "cosine"                      # Cosine annealing works well
+  warmup_steps: "10os"                # 10 optimizer steps = ~320 micro-steps (with grad_accum=32)
+  warmup_start_factor: 0.0000001            # Start at 10% of target LR
+  eta_min: 1.0e-5   
+
+gumbel_tau_schedule:
+  start_value: 5.0
+  end_value: 0.1
+  constant_steps_before_decay: "512os"  # 31 optimizer steps = ~1000 micro-steps (with grad_accum=32)
+  type: "cosine_decay_after_constant"
+
+
+custom_lr_multipliers:
+  base_models: 0.1
+
+lm_base_weight: 0.001
+kl_base_weight: 1.0
+mse_weight: 0.000001
+
+resample_ablation: false
+
+weight_decay: 0.00001
+
+batch_size: 32
+group_n: 4
+gradient_accumulation_steps: 8
+
+freeze_schedule:
+  enabled:   true              # Enable freeze schedule
+  
+  # Global unfreeze timing (applies to all components unless overridden)
+  unfreeze_at: "256os"         # When to unfreeze non-adapter parameters
+                               # Examples: "1000s", "5e", "2000steps", "10epochs"
+  
+  # Warmup settings for newly unfrozen parameters
+  warmup_duration: "100os"      # Duration to warmup newly unfrozen parameters
+  warmup_start_factor: 0.000001    # Starting LR multiplier for warmup (1% of target LR)
+  # The learning rate will linearly increase from start_factor * lr to full lr over warmup_duration
+  
+  # Fine-grained component control with individual timing
+  # Each component can have its own unfreeze timing that overrides the global unfreeze_at
+  components:
+    decoder:
+      base_model:
+        enabled: null          # null = use trainable_components setting, true/false = override
+        unfreeze_at: null      # null = use global unfreeze_at, or specify like "500s", "3e"
+      output_head:
+        enabled: null
+        unfreeze_at: null      # Can unfreeze at different time than base_model
+      embedding_head:
+        enabled: null
+        unfreeze_at: null      # Embedding heads can have their own schedule
+    encoder:
+      base_model:
+        enabled: null
+        unfreeze_at: null
+      embedding_head:
+        enabled: null
+        unfreeze_at: null
+      soft_prompt_embeddings:
+        enabled: null
+        unfreeze_at: null
+
+
+do_kl_computation: false
+do_lm_computation: false

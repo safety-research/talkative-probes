@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import torch
-from typing import Any, Dict, List, Optional, NamedTuple, Union, Tuple
+from typing import Any, Dict, List, Optional, NamedTuple, Union, Tuple, TYPE_CHECKING
 from transformers import PreTrainedTokenizerBase
 from torch.nn import functional as F  # Added for gumbel_softmax
 
@@ -11,6 +11,9 @@ from lens.models.decoder import Decoder
 from lens.models.encoder import Encoder
 from lens.models.orig import OrigWrapper
 from lens.training.loop import compute_kl_divergence_robust
+
+if TYPE_CHECKING:
+    from tuned_lens import TunedLens
 
 
 def escape_newlines(text: str) -> str:
@@ -310,8 +313,9 @@ def compute_single_sample_losses(
     cached_prefix_ids: torch.Tensor | None = None,
     config: Dict[str, Any] = None,
     resample_ablation: bool = True,
+    tokenizer = None,
 ) -> Dict[str, Any]:
-    """Compute all loss components and relevant tensors for a single sample.
+    """Compute all loss components and relevant tensors for a single sample using train_step.
     
     Args:
         A_single: Single activation [1, hidden_size]
@@ -325,160 +329,104 @@ def compute_single_sample_losses(
         device: Device to run on
         cached_prefix_ids: Pre-tokenized prefix for LM loss
         config: Configuration dictionary
+        tokenizer: Tokenizer for natural prefix
         
     Returns:
         Dictionary with "losses" and "computed_values".
         "losses" contains various loss components including MSEs.
         "computed_values" contains tensors like generated text, A_hat, A_train, and logits.
     """
-    dec = models["dec"]
-    enc = models["enc"]
-    
-    # Get parameters from schedule args
-    tau = sch_args.get("tau", 1.0)
-    T_text = sch_args.get("T_text", 8)
-    if config and "t_text" in config and T_text == 8:
-        T_text = config["t_text"]
-
-    alpha = sch_args.get("alpha", 0.1)
-    kl_base = sch_args.get("kl_base_weight", 1.0)
-    lm_w = sch_args.get("lm_base_weight", 0.0)
-    ent_w = sch_args.get("entropy_weight", 0.0)
-    mse_w = sch_args.get("mse_weight", 0.0)
+    from lens.training.loop import train_step
     
     # Ensure input_ids is 2D [1, seq_len]
     if input_ids_single.dim() == 1:
         input_ids_single = input_ids_single.unsqueeze(0)
     
-    # Generate from A_single
-    gen_A_single = dec.generate_soft(A_single, max_length=T_text, gumbel_tau=tau)
-    A_hat_A_single = enc(gen_A_single.generated_text_embeddings)
+    # Create a batch dictionary for train_step
+    batch = {
+        "A": A_single,
+        "input_ids_A": input_ids_single,
+        "layer_idx": torch.tensor([layer_idx], device=device),
+        "token_pos_A": torch.tensor([token_pos], device=device),
+    }
     
-    # Other MSEs involving A_single
-    mse_A_vs_zero = torch.nn.functional.mse_loss(A_single, torch.zeros_like(A_single)).item()
-    mse_A_vs_aprime = None
+    # Add A_prime if available
     if A_prime_single is not None:
+        batch["A_prime"] = A_prime_single
+    else:
+        # For verbose samples, we typically have A_prime, but handle the case where we don't
+        # Use A itself as A_prime (no delta contribution)
+        batch["A_prime"] = A_single.clone()
+    
+    # Prepare loss functions dict
+    _loss_fns = {
+        "T_text": sch_args.get("T_text", 8),
+        "tau": sch_args.get("tau", 1.0),
+        "alpha": sch_args.get("alpha", 0.1),
+        "kl_base_weight": sch_args.get("kl_base_weight", 1.0),
+        "entropy_weight": sch_args.get("entropy_weight", 0.0),
+        "mse_weight": sch_args.get("mse_weight", 0.0),
+        "lm_base_weight": sch_args.get("lm_base_weight", 0.0),
+    }
+    
+    # Override T_text from config if available
+    if config and "t_text" in config:
+        _loss_fns["T_text"] = config["t_text"]
+    
+    # Call train_step with verbose_eval=True to get intermediate values
+    with torch.no_grad():  # We don't need gradients for verbose samples
+        losses = train_step(
+            batch=batch,
+            models=models,
+            _loss_fns=_loss_fns,
+            lm_loss_natural_prefix=config.get('lm_loss_natural_prefix') if config else None,
+            tokenizer=tokenizer,
+            cached_prefix_ids=cached_prefix_ids,
+            resample_ablation=resample_ablation,
+            eval_mode=False,  # Normal mode, not intervention mode
+            verbose_eval=True  # Get intermediate values
+        )
+    
+    # Extract intermediate values from verbose output
+    verbose_intermediate = losses.get("verbose_intermediate", {})
+    
+    # Get the generation results and reconstructions from train_step
+    gen_A_single = verbose_intermediate.get("gen")
+    A_hat_A_single = verbose_intermediate.get("A_hat")
+    A_train = verbose_intermediate.get("A_train")
+    logits_A_single_pos = verbose_intermediate.get("logits_orig")
+    logits_A_train_kl_pos = verbose_intermediate.get("logits_approx")
+    
+    # Compute additional MSEs that train_step doesn't provide
+    mse_A_vs_zero = torch.nn.functional.mse_loss(A_single, torch.zeros_like(A_single)).item()
+    mse_A_vs_Ahat = torch.nn.functional.mse_loss(A_single, A_hat_A_single).item() if A_hat_A_single is not None else 0.0
+    
+    mse_A_vs_aprime = None
+    if A_prime_single is not None and not torch.equal(A_prime_single, A_single):
         mse_A_vs_aprime = torch.nn.functional.mse_loss(A_single, A_prime_single).item()
-
-    # Language Model Loss - Always compute for monitoring, even when weight is 0
-    loss_lm = 0.0
-    if orig is not None and cached_prefix_ids is not None:
-        d_model_pred_logits = gen_A_single.raw_lm_logits  # [1, T_text, V]
-        
-        # Expand prefix for batch size 1
-        natural_prefix_expanded = cached_prefix_ids.expand(1, -1).to(device)
-        
-        # Use hard tokens with original model
-        base_model_input_ids = torch.cat([natural_prefix_expanded, gen_A_single.hard_token_ids], dim=1)
-        
-        with torch.no_grad():
-            orig_model_pred_logits_all_pos = orig.model(
-                input_ids=base_model_input_ids
-            ).logits
-            
-        prefix_len = natural_prefix_expanded.shape[1]
-        start_idx = prefix_len - 1
-        num_generated_tokens = d_model_pred_logits.shape[1]
-        end_idx = prefix_len + num_generated_tokens - 1
-        
-        orig_model_pred_logits = orig_model_pred_logits_all_pos[:, start_idx:end_idx, :]
-        
-        # Compute KL divergence - always compute for monitoring
-        with torch.no_grad():
-            with torch.amp.autocast('cuda', enabled=False):
-                d_logits_f32 = d_model_pred_logits.float()
-                d_logits_f32 = d_logits_f32 - d_logits_f32.max(dim=-1, keepdim=True)[0]
-                log_P_D = torch.nn.functional.log_softmax(d_logits_f32, dim=-1)
-            
-                orig_logits_f32 = orig_model_pred_logits.float()
-                orig_logits_f32 = orig_logits_f32 - orig_logits_f32.max(dim=-1, keepdim=True)[0]
-                P_Orig = torch.nn.functional.softmax(orig_logits_f32, dim=-1)
-            
-                V_lm = d_model_pred_logits.size(-1)
-                log_P_D_flat = log_P_D.reshape(-1, V_lm)
-                P_Orig_flat = P_Orig.reshape(-1, V_lm)
-            
-                loss_lm = torch.nn.functional.kl_div(
-                    input=log_P_D_flat,
-                    target=P_Orig_flat,
-                    reduction='batchmean',
-                    log_target=False
-                ).item()
     
-    # Entropy
-    logits_entropy = gen_A_single.raw_lm_logits
-    with torch.no_grad():
-        logits_f32_ent = logits_entropy.float()
-        logits_f32_ent = logits_f32_ent - logits_f32_ent.max(dim=-1, keepdim=True)[0]
-        probs_ent = torch.softmax(logits_f32_ent, dim=-1)
-        probs_ent = probs_ent.clamp(min=1e-10)
-        entropy = (-probs_ent * torch.log(probs_ent)).sum(-1).mean().item()
-    
-    # KL divergence for training loss & related tensors
-    A_train = None
-    logits_A_single_pos = None
-    logits_A_train_kl_pos = None
-    loss_kl = 0.0
-    mse_A_vs_A_train = None
-
-    if orig is not None and A_prime_single is not None:
-        with torch.no_grad():
-            gen_ap = dec.generate_soft(A_prime_single, max_length=T_text, gumbel_tau=tau)
-            Ap_hat = enc(gen_ap.generated_text_embeddings)
-            
-            delta = (A_prime_single - Ap_hat).detach()
-            if resample_ablation:
-                A_train = A_hat_A_single + delta
-            else:
-                A_train = A_hat_A_single
-            mse_A_vs_A_train = torch.nn.functional.mse_loss(A_single, A_train).item()
-            mse_A_vs_Ahat = torch.nn.functional.mse_loss(A_single, A_hat_A_single).item()
-            
-            logits_A_single_pos = orig.forward_with_replacement(
-                input_ids=input_ids_single,
-                new_activation=A_single,
-                layer_idx=layer_idx,
-                token_pos=token_pos,
-                no_grad=True,
-            ).logits[:, token_pos]
-            
-            logits_A_train_kl_pos = orig.forward_with_replacement(
-                input_ids=input_ids_single,
-                new_activation=A_train,
-                layer_idx=layer_idx,
-                token_pos=token_pos,
-                no_grad=True,
-            ).logits[:, token_pos]
-            
-            from lens.evaluation.metrics import kl as kl_fn
-            loss_kl = kl_fn(
-                torch.log_softmax(logits_A_train_kl_pos.float(), dim=-1),
-                torch.softmax(logits_A_single_pos.float(), dim=-1)
-            ).item()
-            
-    total_loss = (lm_w * alpha) * loss_lm + kl_base * loss_kl - ent_w * entropy + mse_w * mse_A_vs_A_train
-    
+    # Build loss dictionary matching the original format
     loss_dict = {
-        "total": total_loss,
-        "mse": mse_A_vs_A_train,
-        "lm": loss_lm,
-        "kl": loss_kl,
-        "entropy": entropy,
-        "mse_weighted": mse_w * mse_A_vs_A_train,
-        "lm_weighted": (lm_w * alpha) * loss_lm,
-        "kl_weighted": kl_base * loss_kl,
-        "entropy_weighted": -ent_w * entropy,
+        "total": losses["total"].item() if torch.is_tensor(losses["total"]) else losses["total"],
+        "mse": losses["mse"].item() if torch.is_tensor(losses["mse"]) else losses["mse"],
+        "lm": losses["lm"].item() if torch.is_tensor(losses["lm"]) else losses["lm"],
+        "kl": losses["kl"].item() if torch.is_tensor(losses["kl"]) else losses["kl"],
+        "entropy": losses["entropy"].item() if torch.is_tensor(losses["entropy"]) else losses["entropy"],
+        "mse_weighted": _loss_fns["mse_weight"] * (losses["mse"].item() if torch.is_tensor(losses["mse"]) else losses["mse"]),
+        "lm_weighted": (_loss_fns["lm_base_weight"] * _loss_fns["alpha"]) * (losses["lm"].item() if torch.is_tensor(losses["lm"]) else losses["lm"]),
+        "kl_weighted": _loss_fns["kl_base_weight"] * (losses["kl"].item() if torch.is_tensor(losses["kl"]) else losses["kl"]),
+        "entropy_weighted": -_loss_fns["entropy_weight"] * (losses["entropy"].item() if torch.is_tensor(losses["entropy"]) else losses["entropy"]),
         "mse_A_vs_zero": mse_A_vs_zero,
         "mse_A_vs_aprime": mse_A_vs_aprime,
         "mse_A_vs_Ahat": mse_A_vs_Ahat,
-        "mse_A_vs_A_train": mse_A_vs_A_train,
+        "mse_A_vs_A_train": losses["mse"].item() if torch.is_tensor(losses["mse"]) else losses["mse"],
     }
     
     computed_values_dict = {
         "gen_A_single": gen_A_single,
         "A_hat_A_single": A_hat_A_single,
-        "A_train_kl": A_train, 
-        "logits_A_single_pos": logits_A_single_pos, 
+        "A_train_kl": A_train,
+        "logits_A_single_pos": logits_A_single_pos,
         "logits_A_train_kl_pos": logits_A_train_kl_pos,
     }
     
@@ -502,6 +450,7 @@ def process_and_print_verbose_batch_samples(
     capture_output: bool = False,
     cached_prefix_ids: torch.Tensor | None = None,
     resample_ablation: bool = True,
+    comparison_tuned_lens: Optional["TunedLens"] = None,
 ) -> Union[int, Tuple[int, List[Dict[str, Any]]], Tuple[int, str]]:
     """Processes and prints verbose samples from a batch.
     
@@ -520,6 +469,9 @@ def process_and_print_verbose_batch_samples(
         continuation_tokens: Number of tokens to generate for continuation
         return_structured_data: If True, return structured data for logging
         capture_output: If True, capture console output and return it
+        cached_prefix_ids: Pre-tokenized cached prefix for LM loss
+        resample_ablation: Whether to resample ablation
+        comparison_tuned_lens: Optional comparison TunedLens
         
     Returns:
         If return_structured_data is False and capture_output is False: Number of samples printed from this batch
@@ -545,19 +497,27 @@ def process_and_print_verbose_batch_samples(
             idx_for_aprime = i % batch["A_prime"].size(0)
             A_prime_i = batch["A_prime"][idx_for_aprime : idx_for_aprime + 1].to(device)
         
+        # Create models dict with orig included for train_step
+        models_with_orig = {
+            "dec": dec,
+            "enc": enc,
+            "orig": orig
+        }
+        
         results_from_compute = compute_single_sample_losses(
             A_single=A_i,
             A_prime_single=A_prime_i,
             input_ids_single=batch["input_ids_A"][i].to(device),
             layer_idx=l,
             token_pos=p,
-            models=models,
+            models=models_with_orig,
             orig=orig,
             sch_args=sch_args,
             device=device,
             cached_prefix_ids=cached_prefix_ids,
             config=cfg,
             resample_ablation=resample_ablation,
+            tokenizer=tok,
         )
         sample_losses = results_from_compute["losses"] 
         computed_tensors = results_from_compute["computed_values"]
@@ -645,14 +605,88 @@ def process_and_print_verbose_batch_samples(
         
         # Compute MSE for baseline
         mse_baseline_vs_A = torch.nn.functional.mse_loss(A_i, A_hat_baseline).item()
+        
+        # Compute shuffle intervention: shuffle first (n-3) tokens of decoder output
+        T_text = cfg.get("t_text", 8)
+        shuffle_count = max(0, T_text - 3)
+        shuffled_embeds = gen_single.generated_text_embeddings.clone()
+        
+        if shuffle_count > 0:
+            # Shuffle the first shuffle_count tokens
+            indices = torch.randperm(shuffle_count, device=device)
+            shuffled_embeds[0, :shuffle_count] = gen_single.generated_text_embeddings[0, indices]
+        
+        # Pass shuffled embeddings through encoder
+        A_hat_shuffled = enc(shuffled_embeds)
+        
+        # Compute predictions for shuffled reconstruction
+        logits_shuffled_all_pos = orig.forward_with_replacement(input_ids_seq, A_hat_shuffled, l, p).logits
+        logits_shuffled_at_p_batched = logits_shuffled_all_pos[:, p]
+        top_n_shuffled_tokens = get_top_n_tokens(logits_shuffled_at_p_batched.squeeze(0), tok, top_n_analysis)
+        
+        # Compute MSE for shuffled
+        mse_shuffled_vs_A = torch.nn.functional.mse_loss(A_i, A_hat_shuffled).item()
+        
+        # Compute full shuffle intervention: shuffle ALL tokens of decoder output
+        full_shuffled_embeds = gen_single.generated_text_embeddings.clone()
+        indices_full = torch.randperm(T_text, device=device)
+        full_shuffled_embeds[0] = gen_single.generated_text_embeddings[0, indices_full]
+        
+        # Pass full shuffled embeddings through encoder
+        A_hat_full_shuffled = enc(full_shuffled_embeds)
+        
+        # Compute predictions for full shuffled reconstruction
+        logits_full_shuffled_all_pos = orig.forward_with_replacement(input_ids_seq, A_hat_full_shuffled, l, p).logits
+        logits_full_shuffled_at_p_batched = logits_full_shuffled_all_pos[:, p]
+        top_n_full_shuffled_tokens = get_top_n_tokens(logits_full_shuffled_at_p_batched.squeeze(0), tok, top_n_analysis)
+        
+        # Compute MSE for full shuffled
+        mse_full_shuffled_vs_A = torch.nn.functional.mse_loss(A_i, A_hat_full_shuffled).item()
+
+        # TunedLens predictions
+        top_n_tuned_lens_tokens = ["N/A"] * top_n_analysis
+        logits_tuned_lens_at_p_batched = None
+        tuned_lens_prediction_key = f"TunedLens (L{l})"
+
+        if comparison_tuned_lens is not None:
+            # Ensure comparison_tuned_lens is on the correct device
+            # This should ideally be done before this function if it's used multiple times.
+            # However, for safety, we can try to move its components or the whole thing.
+            # Assuming comparison_tuned_lens was moved to `device` by the caller.
+            if l < len(comparison_tuned_lens.layer_translators) and \
+               l < len(comparison_tuned_lens.layer_norm) and \
+               comparison_tuned_lens.layer_translators[l] is not None and \
+               comparison_tuned_lens.layer_norm[l] is not None:
+                try:
+                    A_i_for_tl = A_i.to(
+                        device=comparison_tuned_lens.layer_translators[l].weight.device,
+                        dtype=comparison_tuned_lens.layer_translators[l].weight.dtype
+                    )
+                    with torch.no_grad():
+                        h_l_translated = comparison_tuned_lens.layer_translators[l](A_i_for_tl)
+                        h_l_norm = comparison_tuned_lens.layer_norm[l](h_l_translated)
+                        # Ensure unembed is called with tensor on the same device as its parameters
+                        h_l_norm_for_unembed = h_l_norm.to(comparison_tuned_lens.unembed.weight.device if hasattr(comparison_tuned_lens.unembed, 'weight') else device)
+                        logits_tuned_lens_at_p_batched = comparison_tuned_lens.unembed(h_l_norm_for_unembed)
+                    
+                    top_n_tuned_lens_tokens = get_top_n_tokens(logits_tuned_lens_at_p_batched.squeeze(0), tok, top_n_analysis)
+                except Exception as e:
+                    # print(f"Error during TunedLens prediction for layer {l}: {e}") # For debugging
+                    top_n_tuned_lens_tokens = [f"ERR TL pred"] * top_n_analysis # Keep it short
+            elif comparison_tuned_lens is not None:
+                 top_n_tuned_lens_tokens = [f"L{l} OOB/cfg TL"] * top_n_analysis
+
 
         analysis_preds_dict = {
             "Base Model's natural prediction": top_n_natural_base_preds_for_p_plus_1,
             "Zero Vector Baseline": top_n_zero_tokens,
             "Prev Tokens Baseline (Enc[prev t tokens])": top_n_baseline_tokens,
+            "Shuffled Decoder Output (first n-3)": top_n_shuffled_tokens,
+            "Shuffled Decoder Output (ALL tokens)": top_n_full_shuffled_tokens,
             "Logit Lens (from A_i)": top_n_logit_lens_tokens,
             "Base Model (orig A)": top_n_orig_A_tokens,
             "Base Model (A')": top_n_aprime_tokens,
+            tuned_lens_prediction_key: top_n_tuned_lens_tokens,
             "Log w/o Ablation (A_hat)" + ("train" if resample_ablation else ""): top_n_lens_recon_tokens,
             "Log training " + ("(A_hat+Δ)" if resample_ablation else "(A_hat)"): top_n_train_ablation_tokens,
         }
@@ -746,28 +780,40 @@ def process_and_print_verbose_batch_samples(
         kl_ahat_from_natural = safe_kl(logits_approx_at_p_batched, logits_natural_at_p_batched)
         kl_ahat_delta_from_natural = safe_kl(logits_train_at_p_batched, logits_natural_at_p_batched)
         kl_baseline_from_natural = safe_kl(logits_baseline_at_p_batched, logits_natural_at_p_batched)
+        kl_shuffled_from_natural = safe_kl(logits_shuffled_at_p_batched, logits_natural_at_p_batched)
+        kl_full_shuffled_from_natural = safe_kl(logits_full_shuffled_at_p_batched, logits_natural_at_p_batched)
+        kl_tuned_lens_from_natural = safe_kl(logits_tuned_lens_at_p_batched, logits_natural_at_p_batched)
 
         kl_zero_from_orig = safe_kl(logits_zero_at_p_batched, logits_orig_at_p_batched)
         kl_aprime_from_orig = safe_kl(logits_aprime_at_p_batched, logits_orig_at_p_batched)
         kl_ahat_from_orig = safe_kl(logits_approx_at_p_batched, logits_orig_at_p_batched)
         kl_baseline_from_orig = safe_kl(logits_baseline_at_p_batched, logits_orig_at_p_batched)
+        kl_shuffled_from_orig = safe_kl(logits_shuffled_at_p_batched, logits_orig_at_p_batched)
+        kl_full_shuffled_from_orig = safe_kl(logits_full_shuffled_at_p_batched, logits_orig_at_p_batched)
         training_kl_loss_value = sample_losses['kl'] 
+        kl_tuned_lens_from_orig = safe_kl(logits_tuned_lens_at_p_batched, logits_orig_at_p_batched)
 
         kl_divergences_for_print_section = {
             "From Natural Prediction (no intervention)": {
                 "KL(Natural || Zero)": kl_zero_from_natural,
                 "KL(Natural || Prev Tokens Baseline)": kl_baseline_from_natural,
+                "KL(Natural || Shuffled Decoder - first n-3)": kl_shuffled_from_natural,
+                "KL(Natural || Shuffled Decoder - ALL tokens)": kl_full_shuffled_from_natural,
                 "KL(Natural || A)": kl_orig_from_natural, 
                 "KL(Natural || A')": kl_aprime_from_natural,
                 "KL(Natural || A_hat)": kl_ahat_from_natural,
                 "KL(Natural || A_hat+Δ)": kl_ahat_delta_from_natural,
+                f"KL(Natural || {tuned_lens_prediction_key})": kl_tuned_lens_from_natural,
             },
             "From Original Activation A (training objective)": {
                 "KL(A || Zero)": kl_zero_from_orig,
                 "KL(A || Prev Tokens Baseline)": kl_baseline_from_orig,
+                "KL(A || Shuffled Decoder - first n-3)": kl_shuffled_from_orig,
+                "KL(A || Shuffled Decoder - ALL tokens)": kl_full_shuffled_from_orig,
                 "KL(A || A')": kl_aprime_from_orig,
                 "KL(A || A_hat)": kl_ahat_from_orig,
                 ("KL(A || A_hat+Δ) [TRAINING LOSS]" if resample_ablation else "KL(A || A_hat) [TRAINING LOSS]"): training_kl_loss_value,
+                f"KL(A || {tuned_lens_prediction_key})": kl_tuned_lens_from_orig,
             }
         }
         
@@ -786,6 +832,16 @@ def process_and_print_verbose_batch_samples(
                 "mse_vs_A": mse_baseline_vs_A,
                 "kl_vs_A": kl_baseline_from_orig,
                 "kl_vs_natural": kl_baseline_from_natural,
+            },
+            "Shuffled Decoder Output (first n-3)": {
+                "mse_vs_A": mse_shuffled_vs_A,
+                "kl_vs_A": kl_shuffled_from_orig,
+                "kl_vs_natural": kl_shuffled_from_natural,
+            },
+            "Shuffled Decoder Output (ALL tokens)": {
+                "mse_vs_A": mse_full_shuffled_vs_A,
+                "kl_vs_A": kl_full_shuffled_from_orig,
+                "kl_vs_natural": kl_full_shuffled_from_natural,
             },
             "Base Model (orig A)": { 
                 "mse_vs_A": 0.0, 
@@ -806,6 +862,11 @@ def process_and_print_verbose_batch_samples(
                 "mse_vs_A": sample_losses["mse_A_vs_A_train"], 
                 "kl_vs_A": training_kl_loss_value, 
                 "kl_vs_natural": kl_ahat_delta_from_natural, 
+            },
+            tuned_lens_prediction_key: {
+                "mse_vs_A": None,
+                "kl_vs_A": kl_tuned_lens_from_orig,
+                "kl_vs_natural": kl_tuned_lens_from_natural,
             },
         }
         

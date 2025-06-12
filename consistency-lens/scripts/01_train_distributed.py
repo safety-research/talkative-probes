@@ -30,6 +30,7 @@ from transformers import AutoTokenizer
 
 # Enable TF32 for better performance on Ampere GPUs (A100, H100)
 torch.set_float32_matmul_precision('high')
+from tqdm import tqdm
 
 from lens.data.collate import collate
 from lens.data.dataset import ActivationDataset
@@ -56,6 +57,7 @@ from lens.training.schedules import (
     unfreeze_non_adapters,
     apply_gradient_scaling,
 )
+from lens.training.schedules import SmoothTransitionScheduler
 from lens.training.distributed import (
     init_distributed,
     cleanup_distributed,
@@ -71,6 +73,10 @@ from lens.training.distributed import set_seed
 from lens.evaluation.wandb_logger import verbose_samples_logger
 from lens.training.fast_distributed_sampler import FastDistributedSampler
 from lens.training.test import diagnose_activation_mismatch, diagnose_activation_save_load, check_dataset_activation_format, test_autocast_difference, check_layer_indexing, test_decoder_generation
+from lens.models.tuned_lens import initialize_consistency_lens_projection, load_full_tuned_lens  # Add this line
+from typing import TYPE_CHECKING # Added import
+if TYPE_CHECKING: # Added import
+    from tuned_lens import TunedLens # type: ignore # Added import
 
 # Import all the utility functions from the original training script
 sys.path.insert(0, str(Path(__file__).parent))
@@ -128,9 +134,24 @@ def log_parameter_drift(
                 group = "projection"
             elif name.startswith("out."):  # Decoder specific output head
                 group = "output_head"
+            elif name =="activation_pos_embedder":  # Decoder specific
+                group = "extra_pos_embeddings"
             elif name.startswith("base."):
-                if any(emb_keyword in name for emb_keyword in [".wte.", ".wpe.", ".embed_tokens.", ".word_embeddings.", ".position_embeddings."]):
+                # Position embeddings
+                if any(pos_emb in name for pos_emb in [".wpe.", ".position_embeddings."]):
+                    group = "base_model_position_embeddings"
+                # Input embeddings
+                elif any(pos_emb in name for pos_emb in ["activation_pos_embedder"]):
+                    group = "extra_pos_embeddings"
+                elif any(emb_keyword in name for emb_keyword in [".wte.", ".embed_tokens.", ".word_embeddings."]):
                     group = "base_model_input_embeddings"
+                # Output embeddings
+                elif any(emb_keyword in name for emb_keyword in [".lm_head.", ".embed_out.", ".output_embeddings.m"]):
+                    group = "base_model_output_embeddings"
+                # LayerNorms (catch common LayerNorm naming)
+                elif any(norm_keyword in name for norm_keyword in [".ln_", ".layernorm", ".norm."]):
+                    group = "base_model_layernorms"
+                # Transformer layers (blocks, attention, mlp, etc)
                 elif any(layer_keyword in name for layer_keyword in [".h.", ".layers.", ".layer.", ".block.", ".attention.", ".mlp."]):
                     group = "base_model_transformer_layers"
                 else:
@@ -185,6 +206,82 @@ class Timer:
                 log_metrics({metric_name: self.elapsed_time}, step=self.wandb_step)
 
 
+# Track if we've logged the first conversion
+_first_conversion_logged = False
+
+def convert_batch_dtype(batch, config, device, logger=None, is_main_process=True):
+    """Convert batch tensors to the appropriate dtype based on config.
+    
+    Args:
+        batch: Dictionary containing batch data
+        config: Training configuration
+        device: Target device
+        logger: Optional logger for first-time conversion message
+        is_main_process: Whether this is the main process
+        
+    Returns:
+        tuple: (converted_count, target_dtype) or (0, None) if no conversion
+    """
+    global _first_conversion_logged
+    
+    if not config.get('force_data_conversion', False):
+        return 0, None
+    
+    # Determine target dtype based on mixed precision config
+    mixed_precision_config = config.get('mixed_precision', {'enabled': True, 'dtype': 'auto'})
+    target_dtype = torch.float32  # Default
+    
+    if device.type == "cuda" and mixed_precision_config.get('enabled', True):
+        dtype_str = mixed_precision_config.get('dtype', 'auto')
+        if dtype_str == 'float16':
+            target_dtype = torch.float16
+        elif dtype_str == 'bfloat16':
+            target_dtype = torch.bfloat16
+        # For 'auto' and 'float32', keep float32
+    
+    # Convert batch tensors to target dtype
+    converted_count = 0
+    source_dtype = None
+    for key, val in batch.items():
+        if isinstance(val, torch.Tensor) and val.dtype in [torch.float16, torch.bfloat16, torch.float32]:
+            if val.dtype != target_dtype:
+                if source_dtype is None:
+                    source_dtype = val.dtype
+                batch[key] = val.to(dtype=target_dtype)
+                converted_count += 1
+    
+    # Log first conversion
+    if converted_count > 0 and not _first_conversion_logged and logger and is_main_process:
+        logger.info(f"Converting batch data from {source_dtype} to {target_dtype} (first batch)")
+        _first_conversion_logged = True
+    
+    return converted_count, target_dtype
+
+
+def check_model_dtypes(models_dict, expected_dtype, logger, step=None):
+    """Debug function to check all model tensors have the expected dtype."""
+    issues = []
+    for model_name, model in models_dict.items():
+        # Check parameters
+        for name, param in model.named_parameters():
+            if param.dtype != expected_dtype:
+                issues.append(f"{model_name}.{name}: {param.dtype} (expected {expected_dtype})")
+        
+        # Check buffers
+        for name, buffer in model.named_buffers():
+            if buffer.dtype in [torch.float16, torch.bfloat16, torch.float32] and buffer.dtype != expected_dtype:
+                issues.append(f"{model_name}.{name} (buffer): {buffer.dtype} (expected {expected_dtype})")
+    
+    if issues:
+        logger.error(f"Dtype mismatches found at step {step}:")
+        for issue in issues[:10]:  # Show first 10 issues
+            logger.error(f"  - {issue}")
+        if len(issues) > 10:
+            logger.error(f"  ... and {len(issues) - 10} more")
+        return False
+    return True
+
+
 def distributed_train_step(
     decoder,
     encoder, 
@@ -197,6 +294,7 @@ def distributed_train_step(
     device,
     tokenizer,
     cached_prefix_ids,
+    rank,
     gradient_accumulation_steps=1,
     is_distributed=False,
     lr_scheduler=None,
@@ -257,6 +355,9 @@ def distributed_train_step(
         mixed_precision_config = config.get('mixed_precision', {'enabled': True, 'dtype': 'auto'})
         autocast_context = get_autocast_context(device, mixed_precision_config)
         
+        # Handle batch data dtype conversion if requested
+        convert_batch_dtype(batch, config, device)
+        
         # Forward pass with autocast
         with autocast_context:
             losses = original_train_step(
@@ -266,11 +367,21 @@ def distributed_train_step(
                 lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'),
                 tokenizer=tokenizer,
                 cached_prefix_ids=cached_prefix_ids,
-                resample_ablation=config.get('resample_ablation', True)
+                resample_ablation=config.get('resample_ablation', True),
+                do_kl_computation=config.get('do_kl_computation'),
+                do_lm_computation=config.get('do_lm_computation')
             )
             
             # Scale loss by accumulation steps
             loss = losses['total'] / gradient_accumulation_steps
+            
+            # Debug: Check loss dtype before backward
+            if step == 0 and rank == 0:
+                print(f"DEBUG: loss dtype before backward: {loss.dtype}")
+                print(f"DEBUG: autocast enabled: {autocast_context != nullcontext()}")
+                # Check a model parameter dtype
+                param = next(decoder_base.parameters())
+                print(f"DEBUG: decoder param dtype: {param.dtype}")
         
         # Backward pass
         if device.type == "cuda" and scaler is not None:
@@ -336,7 +447,8 @@ def distributed_train_step(
         'loss_mse': losses['mse'].item(),
         'loss_lm': losses['lm'].item(),
         'loss_kl': losses['kl'].item(),
-        'loss_entropy': losses.get('entropy', 0.0).item() if 'entropy' in losses else 0.0,
+        'loss_entropy': losses['entropy'].item(),
+        'fraction_variance_explained': losses['fraction_variance_explained'].item(),
         'grad_norm': grad_norm.item() if grad_norm is not None else 0.0,
         'update_norm': update_norm,
         'param_norm': param_norm,
@@ -346,7 +458,7 @@ def distributed_train_step(
     return metrics
 
 
-def setup_distributed_models(decoder, encoder, orig_model, device, rank, world_size):
+def setup_distributed_models(decoder, encoder, orig_model, device, rank, world_size, decoder_has_trainable_params=True, encoder_has_trainable_params=True):
     """Wrap models with DistributedDataParallel.
     
     Args:
@@ -356,6 +468,8 @@ def setup_distributed_models(decoder, encoder, orig_model, device, rank, world_s
         device: Device to use
         rank: Current process rank
         world_size: Total number of processes
+        decoder_has_trainable_params: Whether the decoder has trainable parameters
+        encoder_has_trainable_params: Whether the encoder has trainable parameters
         
     Returns:
         Tuple of (decoder, encoder, orig_model) wrapped with DDP if needed
@@ -364,24 +478,27 @@ def setup_distributed_models(decoder, encoder, orig_model, device, rank, world_s
         # Move models to device before wrapping with DDP
         decoder = decoder.to(device)
         encoder = encoder.to(device)
-        orig_model = orig_model.to(device)
+        orig_model = orig_model.to(device) # orig_model is always moved
         
-        # Wrap with DDP
-        # Note: We don't wrap orig_model as it's frozen and doesn't need gradients
-        decoder = DDP(
-            decoder, 
-            device_ids=[rank], 
-            output_device=rank,
-            find_unused_parameters=False,  # Set to True if you have unused parameters
-            gradient_as_bucket_view=True,  # Memory optimization
-        )
-        encoder = DDP(
-            encoder, 
-            device_ids=[rank], 
-            output_device=rank,
-            find_unused_parameters=False,
-            gradient_as_bucket_view=True,
-        )
+        # Wrap with DDP only if the model has trainable parameters
+        if decoder_has_trainable_params:
+            decoder = DDP(
+                decoder, 
+                device_ids=[rank], 
+                output_device=rank,
+                find_unused_parameters=False,
+                gradient_as_bucket_view=True,
+            )
+        
+        if encoder_has_trainable_params:
+            encoder = DDP(
+                encoder, 
+                device_ids=[rank], 
+                output_device=rank,
+                find_unused_parameters=False,
+                gradient_as_bucket_view=True,
+            )
+        # Note: orig_model is not wrapped as it's typically frozen.
         
     else:
         # Single GPU - just move to device
@@ -453,6 +570,169 @@ def sync_metrics(metrics_dict, world_size):
     
     return result_dict
 
+def generate_verbose_samples_from_batch(
+    decoder_base,
+    encoder_base, 
+    orig_model,
+    batch,
+    config,
+    step,
+    current_epoch,
+    max_steps,
+    steps_per_epoch,
+    gradient_accumulation_steps,
+    tokenizer,
+    cached_prefix_ids,
+    device,
+    current_wandb_run_id,
+    log,
+    data_source="validation",
+    comparison_tuned_lens: Optional["TunedLens"] = None, # New argument
+):
+    """Generate verbose samples from a given batch."""
+    verbose_config = config.get('verbose_samples', {})
+    
+    # Get schedule arguments for verbose samples
+    sch_args_verbose = {
+        "tau": get_schedule_value(config['gumbel_tau_schedule'], step, max_steps,
+                                 current_epoch=current_epoch, 
+                                 steps_per_epoch=steps_per_epoch, 
+                                 grad_accum_steps=gradient_accumulation_steps),
+        "T_text": config.get('t_text', 8),
+        "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps,
+                                   current_epoch=current_epoch, 
+                                   steps_per_epoch=steps_per_epoch, 
+                                   grad_accum_steps=gradient_accumulation_steps),
+        "lm_base_weight": config.get('lm_base_weight'), 
+        "kl_base_weight": config.get('kl_base_weight', 1.0),
+        "entropy_weight": config.get('entropy_weight', 0.0),
+        "mse_weight": config.get('mse_weight', 0.0),
+    }
+
+    # Set models to eval mode
+    decoder_base.eval()
+    encoder_base.eval()
+    orig_model.model.eval()
+
+    try:
+        # Generate verbose samples
+        num_printed, captured_text = process_and_print_verbose_batch_samples(
+            batch=batch,
+            cfg=config,
+            models={"dec": decoder_base, "enc": encoder_base},
+            orig=orig_model,
+            tok=tokenizer,
+            sch_args=sch_args_verbose,
+            device=device,
+            num_samples=verbose_config.get('num_samples', 2),
+            top_n_analysis=verbose_config.get('top_n_predictions', 3),
+            printed_count_so_far=0,
+            generate_continuation=verbose_config.get('generate_continuation', True),
+            continuation_tokens=verbose_config.get('continuation_tokens', 30),
+            return_structured_data=False,
+            capture_output=True,
+            cached_prefix_ids=cached_prefix_ids,
+            resample_ablation=config.get('resample_ablation', True),
+            comparison_tuned_lens=comparison_tuned_lens # Pass it down
+        )
+        
+        # Log to wandb
+        if captured_text and current_wandb_run_id:
+            table_name = f"{data_source}_verbose_samples_dist"
+            verbose_samples_logger.log_verbose_samples(
+                captured_text,
+                step=step,
+                table_name=table_name,
+                limit_rows=verbose_config.get('wandb_table_limit', False)
+            )
+            
+    finally:
+        # Always restore training mode
+        decoder_base.train()
+        encoder_base.train()
+        # orig_model.model stays in eval mode
+
+def _check_and_generate_verbose_samples(
+    decoder_base,
+    encoder_base,
+    orig_model,
+    val_loader,
+    config,
+    step,
+    current_epoch,
+    max_steps,
+    steps_per_epoch,
+    gradient_accumulation_steps,
+    val_interval,
+    tokenizer,
+    cached_prefix_ids,
+    device,
+    wandb_run_id,
+    log,
+    comparison_tuned_lens: Optional["TunedLens"] = None, # New argument
+):
+    """Check if verbose samples should be generated and generate them if needed."""
+    verbose_config = config.get('verbose_samples', {})
+    if not verbose_config.get('enabled', False):
+        return
+    
+    # Check if we should generate verbose samples at this step
+    should_generate_verbose = False
+    
+    # Check interval-based conditions
+    verbose_interval_str = verbose_config.get('interval', "1000s")
+    try:
+        verbose_interval = _resolve_schedule_to_steps(
+            verbose_interval_str, steps_per_epoch, log, "verbose_interval", gradient_accumulation_steps
+        )
+        # Only generate verbose samples every verbose interval.
+        # if this step is the first val_interval step after a verbose_interval step.
+        if (step % verbose_interval) < val_interval:
+            should_generate_verbose = True
+    except Exception as e:
+        log.warning(f"Failed to parse verbose_samples interval '{verbose_interval_str}': {e}")
+    
+    # Check legacy conditions
+    epoch_just_finished = (steps_per_epoch > 0 and (step + 1) % steps_per_epoch == 0)
+    if verbose_config.get('print_every_epoch', False) and epoch_just_finished:
+        should_generate_verbose = True
+    
+    print_every_n_steps_val = verbose_config.get('print_every_n_steps', 0)
+    if print_every_n_steps_val > 0 and step > 0 and step % print_every_n_steps_val == 0:
+        should_generate_verbose = True
+    
+    if should_generate_verbose:
+        with Timer("Verbose Sample Generation", log, main_process=True, log_wandb=True, wandb_step=step):
+            log.info(f"Generating verbose samples from validation data at step {step}")
+            
+            # Get a fresh validation batch for verbose samples
+            try:
+                temp_val_iter = iter(val_loader)
+                val_batch = next(temp_val_iter)
+                val_batch = {k: v.to(device) for k, v in val_batch.items() if isinstance(v, torch.Tensor)}
+                
+                generate_verbose_samples_from_batch(
+                    decoder_base=decoder_base,
+                    encoder_base=encoder_base,
+                    orig_model=orig_model,
+                    batch=val_batch,
+                    config=config,
+                    step=step,
+                    current_epoch=current_epoch,
+                    max_steps=max_steps,
+                    steps_per_epoch=steps_per_epoch,
+                    gradient_accumulation_steps=gradient_accumulation_steps,
+                    tokenizer=tokenizer,
+                    cached_prefix_ids=cached_prefix_ids,
+                    device=device,
+                    current_wandb_run_id=wandb_run_id,
+                    log=log,
+                    data_source="validation",
+                    comparison_tuned_lens=comparison_tuned_lens # Pass it down
+                )
+            except Exception as e:
+                log.warning(f"Failed to generate verbose samples from validation data: {e}")
+
 
 def validate_distributed(
     decoder,
@@ -468,7 +748,12 @@ def validate_distributed(
     log,
     is_main_process,
     wandb_run_id=None,
-    steps_per_epoch=None
+    steps_per_epoch=None,
+    current_epoch=None,
+    max_steps=None,
+    gradient_accumulation_steps=None,
+    val_interval=None,
+    comparison_tuned_lens: Optional["TunedLens"] = None, # New argument
 ):
     """Distributed validation function using train_step without gradients.
     
@@ -513,14 +798,31 @@ def validate_distributed(
     total_lm = 0.0
     total_kl = 0.0
     total_entropy = 0.0
+    total_fraction_variance_explained = 0.0
     num_batches = 0
     
     # Activation statistics accumulators
     all_activations = []
     all_reconstructions = []
     
+    # Intervention metrics accumulators
+    intervention_metrics = {
+        'mse_baseline': 0.0,
+        'mse_decoder': 0.0,
+        'mse_shuffle': 0.0,
+        'mse_shuffle_all': 0.0,
+        'kl_baseline': 0.0,
+        'kl_decoder': 0.0,
+        'kl_shuffle': 0.0,
+        'kl_shuffle_all': 0.0,
+        'fraction_variance_explained': 0.0,
+    }
+    intervention_batches = 0
+    
     # Limit validation batches for efficiency
     max_val_batches = config.get('max_val_batches', 50)
+    # Run interventions on a subset of validation batches
+    max_intervention_batches = min(10, max_val_batches)  # Limit interventions to first 10 batches
     
     # No gradients needed for validation
     with torch.no_grad():
@@ -530,8 +832,16 @@ def validate_distributed(
                 
             # Move batch to device
             batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
+
+            # No group_n in valdiation batch
+            
+            # Handle batch data dtype conversion if requested
+            convert_batch_dtype(batch, config, device)
             
             # Forward pass using train_step (but with no_grad context)
+            # Run with eval_mode=True for first few batches to get intervention metrics
+            run_interventions = batch_idx < max_intervention_batches
+            
             losses = original_train_step(
                 batch=batch,
                 models=models,
@@ -539,7 +849,11 @@ def validate_distributed(
                 lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'),
                 tokenizer=tokenizer,
                 cached_prefix_ids=cached_prefix_ids,
-                resample_ablation=config.get('resample_ablation', True)
+                resample_ablation=config.get('resample_ablation', True),
+                eval_mode=run_interventions,  # Enable eval mode for interventions
+                verbose_eval=False,  # We don't need verbose data for now
+                do_kl_computation=True, 
+                do_lm_computation=True 
             )
             
             # Accumulate losses
@@ -547,8 +861,17 @@ def validate_distributed(
             total_mse += losses['mse'].item()
             total_lm += losses['lm'].item()
             total_kl += losses['kl'].item()
-            total_entropy += losses.get('entropy', 0.0).item()
+            total_fraction_variance_explained += losses['fraction_variance_explained'].item()
+            total_entropy += losses['entropy'].item()
             num_batches += 1
+            
+            # Accumulate intervention metrics if available
+            if run_interventions:
+                for key in intervention_metrics.keys():
+                    metric_key = f"intervention_{key}"
+                    if metric_key in losses:
+                        intervention_metrics[key] += losses[metric_key].item()
+                intervention_batches += 1
             
             # Collect activation statistics
             if batch_idx < 10:  # Only collect for first 10 batches to avoid memory issues
@@ -573,7 +896,18 @@ def validate_distributed(
             total_lm,
             total_kl,
             total_entropy,
-            float(num_batches)
+            total_fraction_variance_explained,
+            float(num_batches),
+            # Add intervention metrics
+            intervention_metrics['mse_baseline'],
+            intervention_metrics['mse_decoder'],
+            intervention_metrics['mse_shuffle'],
+            intervention_metrics['mse_shuffle_all'],
+            intervention_metrics['kl_baseline'],
+            intervention_metrics['kl_decoder'],
+            intervention_metrics['kl_shuffle'],
+            intervention_metrics['kl_shuffle_all'],
+            float(intervention_batches)
         ], device=device)
         
         # All-reduce
@@ -585,7 +919,18 @@ def validate_distributed(
         total_lm = metrics_tensor[2].item()
         total_kl = metrics_tensor[3].item()
         total_entropy = metrics_tensor[4].item()
-        num_batches = int(metrics_tensor[5].item())
+        total_fraction_variance_explained = metrics_tensor[5].item()
+        num_batches = int(metrics_tensor[6].item())
+        # Extract intervention metrics
+        intervention_metrics['mse_baseline'] = metrics_tensor[7].item()
+        intervention_metrics['mse_decoder'] = metrics_tensor[8].item()
+        intervention_metrics['mse_shuffle'] = metrics_tensor[8].item()
+        intervention_metrics['mse_shuffle_all'] = metrics_tensor[9].item()
+        intervention_metrics['kl_baseline'] = metrics_tensor[10].item()
+        intervention_metrics['kl_decoder'] = metrics_tensor[11].item()
+        intervention_metrics['kl_shuffle'] = metrics_tensor[12].item()
+        intervention_metrics['kl_shuffle_all'] = metrics_tensor[13].item()
+        intervention_batches = int(metrics_tensor[14].item())
     
     # Compute averages
     avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
@@ -593,7 +938,7 @@ def validate_distributed(
     avg_lm = total_lm / num_batches if num_batches > 0 else 0.0
     avg_kl = total_kl / num_batches if num_batches > 0 else 0.0
     avg_entropy = total_entropy / num_batches if num_batches > 0 else 0.0
-    
+    avg_fraction_variance_explained = total_fraction_variance_explained / num_batches if num_batches > 0 else 0.0
     # Compute activation statistics (only on main process)
     if is_main_process and all_activations:
         all_activations = torch.cat(all_activations, dim=0)
@@ -630,6 +975,12 @@ def validate_distributed(
         # Relative error
         relative_error = (torch.abs(all_activations - all_reconstructions) / (torch.abs(all_activations) + 1e-8)).mean().item()
         
+        # Compute average intervention metrics
+        avg_intervention_metrics = {}
+        if intervention_batches > 0:
+            for key, value in intervention_metrics.items():
+                avg_intervention_metrics[key] = value / intervention_batches
+        
         log.info(f"\n{'='*60}")
         log.info(f"Validation Results at Step {step}")
         log.info(f"{'='*60}")
@@ -639,6 +990,7 @@ def validate_distributed(
         log.info(f"  LM Loss: {avg_lm:.4f}")
         log.info(f"  KL Loss: {avg_kl:.4f}")
         log.info(f"  Entropy: {avg_entropy:.4f}")
+        log.info(f"  Fraction Variance Explained: {avg_fraction_variance_explained:.4f}")
         log.info(f"\nActivation Statistics:")
         log.info(f"  Original - Mean: {act_mean:.4f}, Std: {act_std:.4f}")
         log.info(f"  Original - Min: {act_min:.4f}, Max: {act_max:.4f}")
@@ -653,6 +1005,19 @@ def validate_distributed(
         log.info(f"\nAdditional Metrics:")
         log.info(f"  Correlation (original vs reconstructed): {correlation:.4f}")
         log.info(f"  Mean Relative Error: {relative_error:.4f}")
+        
+        # Log intervention metrics if available
+        if intervention_batches > 0:
+            log.info(f"\nIntervention Analysis (on {intervention_batches} batches):")
+            log.info(f"  MSE Baseline (original tokens): {avg_intervention_metrics['mse_baseline']:.4f}")
+            log.info(f"  MSE Decoder (generated explanation): {avg_intervention_metrics['mse_decoder']:.4f}")
+            log.info(f"  MSE Shuffle (first n-3 tokens): {avg_intervention_metrics['mse_shuffle']:.4f}")
+            log.info(f"  MSE Shuffle (ALL tokens): {avg_intervention_metrics['mse_shuffle_all']:.4f}")
+            log.info(f"  KL Baseline: {avg_intervention_metrics['kl_baseline']:.4f}")
+            log.info(f"  KL Decoder: {avg_intervention_metrics['kl_decoder']:.4f}")
+            log.info(f"  KL Shuffle (first n-3): {avg_intervention_metrics['kl_shuffle']:.4f}")
+            log.info(f"  KL Shuffle (ALL tokens): {avg_intervention_metrics['kl_shuffle_all']:.4f}")
+        
         log.info(f"{'='*60}\n")
         
         # Log to wandb
@@ -663,6 +1028,7 @@ def validate_distributed(
                 'val/loss_lm': avg_lm,
                 'val/loss_kl': avg_kl,
                 'val/loss_entropy': avg_entropy,
+                'val/fraction_variance_explained': avg_fraction_variance_explained,
                 'val/activation_mean': act_mean,
                 'val/activation_std': act_std,
                 'val/activation_min': act_min,
@@ -679,12 +1045,500 @@ def validate_distributed(
                 'val/correlation': correlation,
                 'val/relative_error': relative_error,
             }
-            log_metrics(val_metrics, step=step)
+            
+            # Add intervention metrics to wandb if available
+            if intervention_batches > 0:
+                for key, value in avg_intervention_metrics.items():
+                    val_metrics[f'val/intervention_{key}'] = value
+                val_metrics['val/intervention_batches'] = intervention_batches
+            
+            log_metrics(val_metrics, step)
+    
+
+    # Generate verbose samples if on main process and conditions are met
+    if is_main_process and all(v is not None for v in [current_epoch, max_steps, gradient_accumulation_steps, val_interval]):
+        # Move comparison_tuned_lens to device if it exists
+        active_comparison_tuned_lens = None
+        if comparison_tuned_lens:
+            try:
+                active_comparison_tuned_lens = comparison_tuned_lens.to(device)
+            except Exception as e:
+                log.error(f"Failed to move comparison_tuned_lens to device {device}: {e}")
+                active_comparison_tuned_lens = None
+
+        _check_and_generate_verbose_samples(
+            decoder_base=decoder_base,
+            encoder_base=encoder_base,
+            orig_model=orig_model,
+            val_loader=val_loader,
+            config=config,
+            step=step,
+            current_epoch=current_epoch,
+            max_steps=max_steps,
+            steps_per_epoch=steps_per_epoch,
+            gradient_accumulation_steps=gradient_accumulation_steps,
+            val_interval=val_interval,
+            tokenizer=tokenizer,
+            cached_prefix_ids=cached_prefix_ids,
+            device=device,
+            wandb_run_id=wandb_run_id,
+            log=log,
+            comparison_tuned_lens=active_comparison_tuned_lens # Pass it down
+        )
     
     # Put models back in train mode
     decoder_base.train()
     encoder_base.train()
     # orig_model typically stays in eval mode
+    
+    # Return the average validation loss
+    return avg_loss
+
+# Load checkpoint BEFORE moving models to device if resuming
+def maybe_resume_from_checkpoint(
+    config, decoder, encoder, log, is_main, decoder_train_cfg, encoder_train_cfg, gradient_accumulation_steps
+):
+    start_step = 0
+    checkpoint_data = None
+
+    if not config.get('resume'):
+        return start_step, checkpoint_data
+
+    checkpoint_path_str = config['resume']
+    checkpoint_path = Path(checkpoint_path_str)
+
+    # If the resume path is a directory, find the latest checkpoint file within it.
+    if checkpoint_path.is_dir():
+        if is_main():
+            log.info(f"Resume path is a directory. Searching for the latest checkpoint in {checkpoint_path}...")
+        checkpoint_files = [f for f in checkpoint_path.glob('*.pt') if f.is_file()]
+        if not checkpoint_files:
+            if is_main():
+                log.warning(f"No checkpoint files (.pt) found in directory: {checkpoint_path}. Cannot resume.")
+            checkpoint_path_str = None
+        else:
+            latest_checkpoint = max(checkpoint_files, key=lambda p: p.stat().st_mtime)
+            checkpoint_path_str = str(latest_checkpoint)
+            if is_main():
+                log.info(f"Found latest checkpoint to resume from: {checkpoint_path_str}")
+
+    if checkpoint_path_str and Path(checkpoint_path_str).is_file():
+        if is_main():
+            log.info(f"Loading checkpoint before device setup: {checkpoint_path_str}")
+
+        models_to_load = {"decoder": decoder, "encoder": encoder}
+        reset_steps = config.get('resume_reset_steps', False)
+
+        try:
+            temp_ckpt_mgr = CheckpointManager({'checkpoint': {'enabled': True, 'strict_load': config['checkpoint'].get('strict_load', True)}}, log, None, gradient_accumulation_steps)
+
+            if is_main():
+                log.info(f"Loading checkpoint from exact path: {checkpoint_path_str}")
+                log.info(f"File exists: {Path(checkpoint_path_str).exists()}")
+                log.info(f"File size: {Path(checkpoint_path_str).stat().st_size / 1024 / 1024:.1f} MB")
+
+                raw_ckpt = torch.load(checkpoint_path_str, map_location='cpu', weights_only=False)
+                if 'models' in raw_ckpt and 'decoder' in raw_ckpt['models']:
+                    decoder_state = raw_ckpt['models']['decoder']
+                    if 'prompt_left_emb' in decoder_state:
+                        emb = decoder_state['prompt_left_emb']
+                        log.info(f"RAW checkpoint prompt_left_emb: shape={emb.shape}, norm={emb.norm().item():.6f}, mean={emb.mean().item():.6f}")
+                    if 'prompt_right_emb' in decoder_state:
+                        emb = decoder_state['prompt_right_emb']
+                        log.info(f"RAW checkpoint prompt_right_emb: shape={emb.shape}, norm={emb.norm().item():.6f}, mean={emb.mean().item():.6f}")
+
+            rec = temp_ckpt_mgr.load_checkpoint(
+                checkpoint_path_str,
+                models=models_to_load,
+                optimizer=None,
+                map_location="cpu"
+            )
+
+            if is_main():
+                if hasattr(decoder, 'prompt_left_emb') and decoder.prompt_left_emb is not None:
+                    log.info(f"After checkpoint load - Decoder left prompt norm: {decoder.prompt_left_emb.norm().item():.6f}")
+                if hasattr(decoder, 'prompt_right_emb') and decoder.prompt_right_emb is not None:
+                    log.info(f"After checkpoint load - Decoder right prompt norm: {decoder.prompt_right_emb.norm().item():.6f}")
+
+            if reset_steps:
+                start_step = 0
+                if is_main():
+                    log.info("Resetting training steps to 0 (keeping model weights only)")
+            else:
+                start_step = int(rec.get("step", -1)) + 1
+
+            if is_main():
+                log.info(f"Checkpoint loaded successfully. Will resume from step {start_step}")
+                if 'tau' in rec:
+                    log.info(f"Checkpoint tau: {rec['tau']}")
+                if 'alpha' in rec:
+                    log.info(f"Checkpoint alpha: {rec['alpha']}")
+                if 'metrics' in rec and rec['metrics']:
+                    log.info(f"Checkpoint metrics: {rec['metrics']}")
+
+            checkpoint_data = rec
+
+            if is_main():
+                log.info("Verifying checkpoint compatibility...")
+
+                checkpoint_models = checkpoint_data.get('models', {})
+                checkpoint_decoder_state = checkpoint_models.get('decoder', {})
+
+                ckpt_has_per_layer = 'proj_weight' in checkpoint_decoder_state and 'proj_bias' in checkpoint_decoder_state
+                ckpt_has_single = 'proj.weight' in checkpoint_decoder_state and 'proj.bias' in checkpoint_decoder_state
+                model_has_per_layer = decoder_train_cfg.get('per_layer_projections', False)
+
+                if ckpt_has_per_layer and not model_has_per_layer:
+                    error_msg = (
+                        "Checkpoint was saved with per_layer_projections=True but config has per_layer_projections=False!\n"
+                        "Add 'per_layer_projections: true' to trainable_components.decoder in your config."
+                    )
+                    log.error(error_msg)
+                    raise RuntimeError(error_msg)
+                elif ckpt_has_single and model_has_per_layer:
+                    error_msg = (
+                        "Checkpoint was saved with per_layer_projections=False but config has per_layer_projections=True!\n"
+                        "Set 'per_layer_projections: false' in trainable_components.decoder in your config."
+                    )
+                    log.error(error_msg)
+                    raise RuntimeError(error_msg)
+
+                decoder_has_left = hasattr(decoder, 'prompt_left_emb') and decoder.prompt_left_emb is not None
+                decoder_has_right = hasattr(decoder, 'prompt_right_emb') and decoder.prompt_right_emb is not None
+
+                ckpt_has_left = 'prompt_left_emb' in checkpoint_decoder_state
+                ckpt_has_right = 'prompt_right_emb' in checkpoint_decoder_state
+
+                if ckpt_has_left or ckpt_has_right:
+                    log.info("Checkpoint contains trained decoder prompt embeddings")
+                    if decoder_has_left and ckpt_has_left:
+                        fresh_norm = decoder.prompt_left_emb.norm().item()
+                        ckpt_norm = checkpoint_decoder_state['prompt_left_emb'].norm().item()
+                        log.info(f"Decoder prompt_left_emb - Fresh norm: {fresh_norm:.4f}, Checkpoint norm: {ckpt_norm:.4f}")
+                        if abs(fresh_norm - ckpt_norm) < 1e-6:
+                            log.warning("WARNING: Decoder left prompt embeddings might not have been loaded correctly!")
+                    if decoder_has_right and ckpt_has_right:
+                        fresh_norm = decoder.prompt_right_emb.norm().item()
+                        ckpt_norm = checkpoint_decoder_state['prompt_right_emb'].norm().item()
+                        log.info(f"Decoder prompt_right_emb - Fresh norm: {fresh_norm:.4f}, Checkpoint norm: {ckpt_norm:.4f}")
+                        if abs(fresh_norm - ckpt_norm) < 1e-6:
+                            log.warning("WARNING: Decoder right prompt embeddings might not have been loaded correctly!")
+
+                if (ckpt_has_left and not decoder_has_left) or (ckpt_has_right and not decoder_has_right):
+                    error_msg = (
+                        "Checkpoint contains decoder prompt embeddings but model doesn't have them!\n"
+                        f"Checkpoint has: left={ckpt_has_left}, right={ckpt_has_right}\n"
+                        f"Model has: left={decoder_has_left}, right={decoder_has_right}\n"
+                        "This likely means set_prompt() was not called before loading."
+                    )
+                    log.error(error_msg)
+                    raise RuntimeError(error_msg)
+
+                encoder_has_soft = hasattr(encoder, 'soft_prompt_embeddings')
+                checkpoint_encoder_state = checkpoint_models.get('encoder', {})
+                ckpt_has_soft = 'soft_prompt_embeddings' in checkpoint_encoder_state
+
+                if ckpt_has_soft and not encoder_has_soft:
+                    soft_prompt_shape = checkpoint_encoder_state['soft_prompt_embeddings'].shape
+                    error_msg = (
+                        f"Checkpoint contains encoder soft_prompt_embeddings (shape {soft_prompt_shape}) "
+                        f"but model has soft_prompt_length={encoder_train_cfg.get('soft_prompt_length', 0)}!\n"
+                        f"Update encoder config to match checkpoint: soft_prompt_length={soft_prompt_shape[0]}"
+                    )
+                    log.error(error_msg)
+                    raise RuntimeError(error_msg)
+
+                log.info("Checkpoint compatibility verification passed!")
+
+                if ckpt_has_left and decoder_has_left:
+                    rec['_expected_left_norm'] = checkpoint_decoder_state['prompt_left_emb'].norm().item()
+                    rec['_expected_right_norm'] = checkpoint_decoder_state['prompt_right_emb'].norm().item() if ckpt_has_right else None
+
+        except Exception as e:
+            error_msg = f"Failed to load checkpoint from {checkpoint_path_str}: {str(e)}"
+            if is_main():
+                log.error(error_msg)
+            raise RuntimeError(error_msg) from e
+    else:
+        error_msg = f"Resume checkpoint path not found: {checkpoint_path_str}"
+        if is_main():
+            log.error(error_msg)
+        raise FileNotFoundError(error_msg)
+
+    return start_step, checkpoint_data
+
+def setup_wandb_and_save_config(
+    config, 
+    run_name, 
+    dataset_info, 
+    world_size, 
+    run_checkpoint_dir, 
+    log, 
+    cfg
+):
+    wandb_config = config.get('wandb', {})
+    wandb_run_id = config.get('wandb_resume_id')
+    force_disable_wandb = False
+    if wandb_run_id is not None and str(wandb_run_id).lower() == 'none':
+        wandb_run_id = None
+        force_disable_wandb = True
+        log.info("Explicitly disabling WandB run resumption (wandb_resume_id=None)")
+    wandb_resume_mode = None
+
+    wandb_init_kwargs = {
+        'project': wandb_config.get('project', 'consistency-lens'),
+        'name': run_name,
+        'config': config,
+        'mode': wandb_config.get('mode', 'online'),
+        'tags': []
+    }
+
+    if dataset_info.get('dataset'):
+        wandb_init_kwargs['tags'].append(f"dataset-{dataset_info['dataset']}")
+    if dataset_info.get('model_name'):
+        model_tag = dataset_info['model_name'].replace('/', '-')
+        wandb_init_kwargs['tags'].append(f"model-{model_tag}")
+    if dataset_info.get('layer') is not None:
+        wandb_init_kwargs['tags'].append(f"layer-{dataset_info['layer']}")
+    wandb_init_kwargs['tags'].append(f"distributed-{world_size}gpu")
+
+    command_line_args = ' '.join(sys.argv)
+    wandb_init_kwargs['config']['command_line'] = command_line_args
+
+    submit_script_command = os.environ.get('SUBMIT_SCRIPT_COMMAND', None)
+    if submit_script_command:
+        wandb_init_kwargs['config']['submit_script_command'] = submit_script_command
+        log.info(f"Submit script command: {submit_script_command}")
+
+    slurm_job_id = os.environ.get('SLURM_JOB_ID', None)
+    if slurm_job_id:
+        slurm_info = {
+            'slurm_job_id': slurm_job_id,
+            'slurm_job_name': os.environ.get('SLURM_JOB_NAME', 'unknown'),
+            'slurm_nodelist': os.environ.get('SLURM_NODELIST', 'unknown'),
+            'slurm_array_task_id': os.environ.get('SLURM_ARRAY_TASK_ID', None),
+        }
+        wandb_init_kwargs['config']['slurm_info'] = slurm_info
+        wandb_init_kwargs['tags'].append(f"slurm-{slurm_job_id}")
+        wandb_init_kwargs['tags'].append(f"node-{slurm_info['slurm_nodelist']}")
+        log.info(f"Running under SLURM job ID: {slurm_job_id} on nodes: {slurm_info['slurm_nodelist']}")
+
+    if wandb_run_id and not force_disable_wandb:
+        wandb_init_kwargs['id'] = wandb_run_id
+        wandb_init_kwargs['resume'] = wandb_resume_mode or "allow"
+        log.info(f"Resuming WandB run: {wandb_run_id}")
+
+    current_wandb_run_id = log_init(**wandb_init_kwargs)
+
+    config_save_path = run_checkpoint_dir / "config.yaml"
+    with open(config_save_path, "w") as f:
+        OmegaConf.save(cfg, f)
+    log.info(f"Config saved to: {config_save_path}")
+
+    return current_wandb_run_id
+
+def maybe_restore_optimizer_and_scheduler_from_checkpoint(
+    checkpoint_data,
+    config,
+    optimizer,
+    lr_scheduler,
+    decoder,
+    encoder,
+    decoder_base,
+    encoder_base,
+    param_groups,
+    projection_lr_multiplier,
+    embedding_lr_multiplier,
+    prompt_lr_multiplier,
+    base_model_lr_multiplier,
+    weight_decay,
+    learning_rate,
+    steps_per_epoch,
+    gradient_accumulation_steps,
+    max_optimizer_steps,
+    lr_scheduler_cfg,
+    start_step,
+    log,
+    is_main,
+    SmoothTransitionScheduler,
+    get_lr_scheduler,
+    _resolve_schedule_to_steps,
+):
+    if checkpoint_data is None:
+        return optimizer, lr_scheduler
+
+    reset_steps = config.get('resume_reset_steps', False)
+    strict_opt_load = config.get('strict_optimizer_load', True)
+
+    # Load optimizer state if not resetting steps
+    if not reset_steps and optimizer is not None and "optim" in checkpoint_data:
+        if is_main():
+            log.info("Preparing to load optimizer state from checkpoint. Current optimizer group structure:")
+            param_to_name_map = {}
+            current_decoder_model_for_params = decoder.module if hasattr(decoder, 'module') else decoder
+            current_encoder_model_for_params = encoder.module if hasattr(encoder, 'module') else encoder
+
+            for name, p in current_decoder_model_for_params.named_parameters():
+                param_to_name_map[id(p)] = f"decoder.{name}"
+            for name, p in current_encoder_model_for_params.named_parameters():
+                param_to_name_map[id(p)] = f"encoder.{name}"
+
+            for i, group in enumerate(optimizer.param_groups):
+                group_param_names = [param_to_name_map.get(id(p), f"UNKNOWN_PARAM_ID_{id(p)}") for p in group['params']]
+                log.info(
+                    f"  Group {i}: LR={group['lr']:.3e}, WD={group.get('weight_decay', 0.0):.3e}, "
+                    f"#Params={len(group['params'])}"
+                )
+                log.info(f"    Param names (first 5 of {len(group_param_names)}): {group_param_names[:5]}")
+                if len(group_param_names) > 5:
+                    log.info(f"      ... and {len(group_param_names) - 5} more parameters.")
+        try:
+            if strict_opt_load:
+                optimizer.load_state_dict(checkpoint_data["optim"])
+            else:
+                log.warning("Non-strict optimizer load enabled. This may lead to unexpected behavior.")
+                log.error('This code is a hacka nd almost certainly will not work')
+                # Non-strict loading: fill missing keys with defaults
+                state_dict = checkpoint_data["optim"]
+                opt_state = optimizer.state_dict()
+                # Merge state
+                for k in opt_state:
+                    if k not in state_dict:
+                        state_dict[k] = opt_state[k]
+                # For 'state', merge per param id
+                if "state" in state_dict and "state" in opt_state:
+                    for pid, v in opt_state["state"].items():
+                        if pid not in state_dict["state"]:
+                            state_dict["state"][pid] = v
+                # For 'param_groups', fill missing keys in each group
+                if "param_groups" in state_dict and "param_groups" in opt_state:
+                    for i, group in enumerate(opt_state["param_groups"]):
+                        if i < len(state_dict["param_groups"]):
+                            for key, val in group.items():
+                                if key not in state_dict["param_groups"][i]:
+                                    state_dict["param_groups"][i][key] = val
+                        else:
+                            state_dict["param_groups"].append(group)
+                optimizer.load_state_dict(state_dict)
+            for group in optimizer.param_groups:
+                if 'initial_lr' not in group:
+                    group['initial_lr'] = group['lr']
+            if is_main():
+                log.info("Optimizer state successfully loaded from checkpoint.")
+        except ValueError as e:
+            if is_main():
+                log.warning(f"Failed to load optimizer state: {e}. Continuing with fresh optimizer.")
+                if "optim" in checkpoint_data and "param_groups" in checkpoint_data["optim"]:
+                    ckpt_groups = checkpoint_data["optim"]["param_groups"]
+                    log.warning(f"  Checkpoint optimizer has {len(ckpt_groups)} parameter groups.")
+                    if ckpt_groups:
+                        log.warning(f"    Checkpoint group 0 LR: {ckpt_groups[0].get('lr')}")
+                    for i, group in enumerate(ckpt_groups):
+                        log.warning(f"    Checkpoint group {i} name {group} shape{len(group['params'])}, {group['params'][0].shape if hasattr(group['params'][0], 'shape') else 'no shape'}")
+                else:
+                    log.warning("  Checkpoint optimizer data or param_groups not found.")
+                log.warning(f"  Current optimizer has {len(optimizer.param_groups)} parameter groups.")
+                if optimizer.param_groups:
+                    log.warning(f"    Current group 0 LR: {optimizer.param_groups[0].get('lr')}")
+                if not config.get('allow_reset_optimizer_on_resume'):
+                    raise ValueError("Failed to load optimizer state from checkpoint, did not permit reset of optimizer.")
+
+    # Load scheduler state if available (unless we're resetting steps)
+    if not reset_steps:
+        if lr_scheduler and "scheduler" in checkpoint_data:
+            lr_scheduler.load_state_dict(checkpoint_data["scheduler"])
+            if is_main():
+                log.info("Scheduler state successfully loaded from checkpoint.")
+        elif lr_scheduler and is_main():
+            log.warning("Scheduler state not found in checkpoint.")
+    else:
+        if is_main():
+            log.info("Skipping scheduler state load due to step reset")
+
+    if is_main():
+        log.info(f"Resumed from micro-step {start_step}")
+
+    # Handle learning rate override if specified
+    new_base_lr = learning_rate
+    old_base_lr = optimizer.param_groups[0]['lr'] if optimizer.param_groups else new_base_lr
+
+    smooth_lr_config = config.get('smooth_lr_transition', {})
+    smooth_lr_enabled = smooth_lr_config.get('enabled', False) and not reset_steps
+
+    if reset_steps or abs(new_base_lr - old_base_lr) > 1e-9:
+        if smooth_lr_enabled and abs(new_base_lr - old_base_lr) > 1e-9:
+            transition_steps_raw = smooth_lr_config.get('transition_steps', '1000s')
+            transition_steps = _resolve_schedule_to_steps(
+                transition_steps_raw, steps_per_epoch, log, "smooth_lr_transition.transition_steps", gradient_accumulation_steps
+            )
+
+            if is_main():
+                log.info(f"Enabling smooth LR transition from {old_base_lr:.2e} to {new_base_lr:.2e} over {transition_steps} steps")
+
+            old_state_dict = optimizer.state_dict()
+            params = param_groups(
+                [decoder_base, encoder_base],
+                new_base_lr,
+                projection_lr_multiplier,
+                embedding_lr_multiplier,
+                prompt_lr_multiplier,
+                base_model_lr_multiplier,
+                weight_decay
+            )
+            optimizer = torch.optim.AdamW(params)
+            old_state = old_state_dict['state']
+            if old_state:
+                optimizer.load_state_dict({'state': old_state, 'param_groups': optimizer.state_dict()['param_groups']})
+            for group in optimizer.param_groups:
+                if 'initial_lr' not in group:
+                    group['initial_lr'] = group['lr']
+            current_optimizer_step = start_step // gradient_accumulation_steps
+            base_scheduler = get_lr_scheduler(optimizer, lr_scheduler_cfg, max_optimizer_steps,
+                                              last_epoch=-1,
+                                              grad_accum_steps=gradient_accumulation_steps)
+            lr_scheduler = SmoothTransitionScheduler(
+                optimizer=optimizer,
+                base_scheduler=base_scheduler,
+                transition_steps=transition_steps // gradient_accumulation_steps,
+                start_lr=old_base_lr,
+                last_epoch=current_optimizer_step - 1 if current_optimizer_step > 0 else -1
+            )
+            if is_main():
+                log.info(f"Smooth transition scheduler initialized at optimizer step {current_optimizer_step}")
+        else:
+            if is_main():
+                if reset_steps:
+                    log.info(f"Resetting optimizer and scheduler (step reset). New LR: {new_base_lr:.2e}")
+                else:
+                    log.info(f"Overriding learning rate from checkpoint: {old_base_lr:.2e} -> {new_base_lr:.2e}")
+
+            old_state_dict = optimizer.state_dict()
+            params = param_groups(
+                [decoder_base, encoder_base],
+                new_base_lr,
+                projection_lr_multiplier,
+                embedding_lr_multiplier,
+                prompt_lr_multiplier,
+                base_model_lr_multiplier,
+                weight_decay
+            )
+            optimizer = torch.optim.AdamW(params)
+            old_state = old_state_dict['state']
+            if old_state:
+                optimizer.load_state_dict({'state': old_state, 'param_groups': optimizer.state_dict()['param_groups']})
+            for group in optimizer.param_groups:
+                if 'initial_lr' not in group:
+                    group['initial_lr'] = group['lr']
+            if lr_scheduler is not None:
+                current_optimizer_step = start_step // gradient_accumulation_steps
+                scheduler_last_epoch = -1 if reset_steps else (current_optimizer_step - 1 if current_optimizer_step > 0 else -1)
+                lr_scheduler = get_lr_scheduler(optimizer, lr_scheduler_cfg, max_optimizer_steps,
+                                                last_epoch=scheduler_last_epoch,
+                                                grad_accum_steps=gradient_accumulation_steps)
+                if is_main():
+                    log.info(f"Learning rate scheduler reinitialized at optimizer step {current_optimizer_step}")
+
+    return optimizer, lr_scheduler
 
 
 
@@ -769,9 +1623,9 @@ def main(cfg: DictConfig) -> None:
         learning_rate = config['learning_rate']
         batch_size = config['batch_size']
         gradient_accumulation_steps = config['gradient_accumulation_steps']
-        
+        group_n = config.get("group_n", 1)
         # Adjust batch size for distributed training
-        effective_batch_size = batch_size * gradient_accumulation_steps * world_size
+        effective_batch_size = batch_size * gradient_accumulation_steps * world_size * group_n
         
         if is_main():
             log.info(f"Distributed training with {world_size} GPUs")
@@ -779,6 +1633,7 @@ def main(cfg: DictConfig) -> None:
             log.info(f"Gradient accumulation steps: {gradient_accumulation_steps}")
             log.info(f"Effective batch size: {effective_batch_size}")
             log.info(f"Gradient sync: Every {gradient_accumulation_steps} steps")
+            log.info(f"Group n: {group_n}")
         
         # Set random seed for reproducibility
         seed = config.get('seed', 42)
@@ -797,6 +1652,12 @@ def main(cfg: DictConfig) -> None:
             else:
                 run_name = generate_run_name(config, dataset_info, config.get('resume'), config_name, config.get('run_suffix'))
                 run_name = f"{run_name}_dist{world_size}"
+                
+                # Add SLURM job ID to run name if running under SLURM
+                slurm_job_id = os.environ.get('SLURM_JOB_ID', None)
+                if slurm_job_id:
+                    run_name = f"{run_name}_slurm{slurm_job_id}"
+                    
             log.info(f"Run name: {run_name}")
         else:
             run_name = None # Will be broadcasted
@@ -870,9 +1731,53 @@ def main(cfg: DictConfig) -> None:
                 log.info(f"Encoder using randomly initialized soft prompt of length {encoder_config_obj.soft_prompt_length}.")
         elif is_main(): # No text and length is 0 (default)
             log.warning("Encoder soft prompt not configured (neither 'soft_prompt_init_text' nor 'soft_prompt_length > 0'). Encoder soft prompts will be empty.")
+        if is_main():
+            log.info(f"Before init: traces of each proj factor: {[p.trace().item() for p in decoder.proj_weight]}")
+            log.info(f"Before init: sum of abs of biases: {[p.abs().sum().item() for p in decoder.proj_bias]}")
+        if is_main(): # Perform initialization only on the main process
+            log.info(f"Attempting tuned lens initialization for decoder")
+            # Initialize Decoder's projection layer  
+            initialize_consistency_lens_projection(
+                    model_component=decoder,
+                    component_config=config['trainable_components']['decoder'],  # Changed from config_dict
+                    component_name="Decoder", 
+                    main_run_config=config,  # Changed from config_dict
+                    log=log,
+                    is_main_process=True,
+                    resolve_path_fn=resolve_path  # Added this parameter
+                )
+            # Initialize Encoder's projection layer (if applicable)
+            initialize_consistency_lens_projection(
+                    model_component=encoder,
+                    component_config=config['trainable_components']['encoder'],  # Changed from config_dict
+                    component_name="Encoder",
+                    main_run_config=config,  # Changed from config_dict
+                    log=log,
+                    is_main_process=True,
+                    resolve_path_fn=resolve_path  # Added this parameter
+                )
+        if is_main():
+            log.info(f"After init: traces of each proj factor: {[p.trace().item() for p in decoder.proj_weight]}")
+            log.info(f"After init: sum of abs of biases: {[p.abs().sum().item() for p in decoder.proj_bias]}")
         
+
+        start_step, checkpoint_data = maybe_resume_from_checkpoint(
+            config, decoder, encoder, log, is_main, decoder_train_cfg, encoder_train_cfg, gradient_accumulation_steps
+        )
+
+        # Determine if models have trainable parameters BEFORE DDP setup
+        decoder_has_trainable_params = any(p.requires_grad for p in decoder.parameters())
+        encoder_has_trainable_params = any(p.requires_grad for p in encoder.parameters())
+
+        if is_main():
+            log.info(f"Decoder has trainable parameters: {decoder_has_trainable_params}")
+            log.info(f"Encoder has trainable parameters: {encoder_has_trainable_params}")
+        
+        # NOW move models to device and set up DDP
         decoder, encoder, orig_model = setup_distributed_models(
-            decoder, encoder, orig_model, device, rank, world_size
+            decoder, encoder, orig_model, device, rank, world_size,
+            decoder_has_trainable_params=decoder_has_trainable_params,
+            encoder_has_trainable_params=encoder_has_trainable_params
         )
         
         if is_main():
@@ -882,11 +1787,40 @@ def main(cfg: DictConfig) -> None:
             num_params_encoder = sum(p.numel() for p in encoder_base_timer.parameters())
             log.info(f"Decoder parameters: {num_params_decoder:,}")
             log.info(f"Encoder parameters: {num_params_encoder:,}")
+            
+            # Final verification of prompt embeddings after DDP setup
+            if checkpoint_data and '_expected_left_norm' in checkpoint_data:
+                decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
+                actual_left_norm = decoder_base.prompt_left_emb.norm().item()
+                expected_left_norm = checkpoint_data['_expected_left_norm']
+                
+                if abs(actual_left_norm - expected_left_norm) > 1e-4:
+                    log.error(f"CRITICAL: Decoder prompt embeddings lost after DDP setup!")
+                    log.error(f"Expected left norm: {expected_left_norm:.6f}, Actual: {actual_left_norm:.6f}")
+                    log.error("This is causing the KL loss jump on resume!")
+                    raise RuntimeError("Decoder prompt embeddings were corrupted during model setup")
+                else:
+                    log.info(f"✓ Decoder prompt embeddings preserved after DDP (norm: {actual_left_norm:.6f})")
+            
+            if checkpoint_data and '_expected_right_norm' in checkpoint_data:
+                decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
+                actual_right_norm = decoder_base.prompt_right_emb.norm().item()
+                expected_right_norm = checkpoint_data['_expected_right_norm']
+                
+                if abs(actual_right_norm - expected_right_norm) > 1e-4:
+                    log.error(f"CRITICAL: Decoder prompt embeddings lost after DDP setup!")
+                    log.error(f"Expected right norm: {expected_right_norm:.6f}, Actual: {actual_right_norm:.6f}")
+                    raise RuntimeError("Decoder prompt embeddings were corrupted during model setup")
         
         # Test decoder generation now that models are on the correct device
-        if is_main():
+        # IMPORTANT: Skip this test when resuming from checkpoint as it calls set_prompt() 
+        # which overwrites the loaded prompt embeddings with fresh initialization values
+        if is_main() and not config['resume']:
+            log.info("Running decoder generation tests (new training run)")
             original_prompt = config.get('decoder_prompt', '')
             test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main(), original_prompt)
+        elif is_main() and config['resume']:
+            log.info("Skipping decoder generation tests when resuming from checkpoint (preserves loaded prompt embeddings)")
             
 
     # --- Timer for Dataset and DataLoader Setup ---
@@ -1026,23 +1960,78 @@ def main(cfg: DictConfig) -> None:
         encoder_train_cfg = trainable_components_config.get('encoder')
         custom_lr_multipliers = config.get('custom_lr_multipliers')
         
-        # Get base models for parameter groups
-        decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
-        encoder_base = encoder.module if hasattr(encoder, 'module') else encoder
-        
-        # Extract learning rate multipliers from config
+        # Extract learning rate multipliers from config (moved up to be available for unfreeze_non_adapters)
         projection_lr_multiplier = custom_lr_multipliers.get('projection_layers')
         embedding_lr_multiplier = custom_lr_multipliers.get('embedding_layers')
         prompt_lr_multiplier = custom_lr_multipliers.get('prompt_layers')
         base_model_lr_multiplier = custom_lr_multipliers.get('base_models')
+        weight_decay = config.get('weight_decay')
         
+        # Get base models for parameter groups
+        decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
+        encoder_base = encoder.module if hasattr(encoder, 'module') else encoder
+        
+        # CRITICAL FIX: Restore requires_grad state based on freeze schedule when resuming
+        # This must happen BEFORE creating the optimizer
+        if checkpoint_data and start_step > 0:
+            freeze_schedule = config.get('freeze_schedule', {})
+            if freeze_schedule.get('enabled', False):
+                unfreeze_at_parsed = freeze_schedule.get('unfreeze_at_parsed', {})
+                unfreeze_step = unfreeze_at_parsed.get('value', 0)
+                
+                if is_main():
+                    log.info(f"Restoring requires_grad state for resumed training at step {start_step}")
+                    log.info(f"Freeze schedule: unfreeze_at={unfreeze_step}, current_step={start_step}")
+                
+                # Check if we should be unfrozen at this step
+                if start_step >= unfreeze_step:
+                    # We're past the unfreeze point - need to unfreeze base models
+                    current_epoch = start_step // steps_per_epoch if steps_per_epoch > 0 else 0
+                    
+                    # Apply unfreezing using the same logic as during training
+                    # Note: unfreeze_non_adapters returns (optimizer, trainable_params, newly_unfrozen_params) tuple
+                    # but we don't want the optimizer it creates - we'll create our own
+                    _, _, newly_unfrozen_params = unfreeze_non_adapters(
+                        decoder_base, 
+                        encoder_base, 
+                        config, 
+                        learning_rate,
+                        projection_lr_multiplier,
+                        embedding_lr_multiplier,
+                        prompt_lr_multiplier,
+                        base_model_lr_multiplier,
+                        opt_state_dict=None,  # We'll handle optimizer state later
+                        current_step=start_step,
+                        current_epoch=current_epoch,
+                        grad_accum_steps=gradient_accumulation_steps
+                    )
+                    
+                    if is_main():
+                        # Count and log the number of trainable parameters after unfreezing
+                        num_trainable_dec = sum(p.numel() for p in decoder_base.parameters() if p.requires_grad)
+                        num_trainable_enc = sum(p.numel() for p in encoder_base.parameters() if p.requires_grad)
+                        log.info(f"After restoring freeze state:")
+                        log.info(f"  Decoder trainable parameters: {num_trainable_dec:,}")
+                        log.info(f"  Encoder trainable parameters: {num_trainable_enc:,}")
+                        
+                        # Log which parameter groups are trainable
+                        dec_base_trainable = any(p.requires_grad for n, p in decoder_base.named_parameters() if n.startswith('base.'))
+                        enc_base_trainable = any(p.requires_grad for n, p in encoder_base.named_parameters() if n.startswith('base.'))
+                        log.info(f"  Decoder base model trainable: {dec_base_trainable}")
+                        log.info(f"  Encoder base model trainable: {enc_base_trainable}")
+                else:
+                    if is_main():
+                        log.info(f"Not yet at unfreeze point ({start_step} < {unfreeze_step}), keeping original frozen state")
+        
+        # Now create optimizer with correctly set requires_grad states
         params = param_groups(
             [decoder_base, encoder_base], 
             learning_rate, 
             projection_lr_multiplier, 
             embedding_lr_multiplier, 
             prompt_lr_multiplier,
-            base_model_lr_multiplier
+            base_model_lr_multiplier,
+            weight_decay
         )
         optimizer = torch.optim.AdamW(params)
         
@@ -1067,227 +2056,71 @@ def main(cfg: DictConfig) -> None:
                 log.info("Mixed precision disabled")
         
         # Initialize gradient scaler for mixed precision
-        # Only enable scaler for float16 or bfloat16 on CUDA
+        # IMPORTANT: Only enable scaler for float16, NOT for bfloat16
+        # bfloat16 doesn't need gradient scaling
+        dtype_str = mixed_precision_config.get('dtype', 'auto')
+        if dtype_str == 'auto':
+            actual_dtype = 'bfloat16' if torch.cuda.is_bf16_supported() else 'float16'
+        else:
+            actual_dtype = dtype_str
+            
         scaler_enabled = (
             device.type == "cuda" and 
             mixed_precision_config.get('enabled', True) and
-            mixed_precision_config.get('dtype', 'auto') != 'float32'
+            actual_dtype == 'float16'  # Only for float16, not bfloat16!
         )
         scaler = torch.amp.GradScaler('cuda') if scaler_enabled else None
+        
+        if is_main():
+            if scaler_enabled:
+                log.info("Gradient scaler enabled for float16 mixed precision")
+            elif mixed_precision_config.get('enabled', True) and actual_dtype == 'bfloat16':
+                log.info("Using bfloat16 mixed precision (no gradient scaler needed)")
+            
+            # Log force_data_conversion setting
+            if config.get('force_data_conversion', False):
+                log.info(f"Force data conversion enabled - batch data will be converted to match training dtype")
+            else:
+                log.info("Force data conversion disabled - batch data will use original dtype")
 
     # Initialize CheckpointManager (after steps_per_epoch is known)
     # It uses the updated config dict with the run-specific checkpoint directory.
     checkpoint_manager = CheckpointManager(config, log, steps_per_epoch, gradient_accumulation_steps)
     
-    # Initialize W&B (only on main process)
     if is_main():
-        wandb_config = config.get('wandb', {})
-        
-        # Handle wandb resume
-        wandb_run_id = config.get('wandb_resume_id')
-        force_disable_wandb = False
-        # Handle explicit None values (e.g., from command line wandb_resume_id=None)
-        if wandb_run_id is not None and str(wandb_run_id).lower() == 'none':
-            wandb_run_id = None
-            force_disable_wandb = True
-            log.info("Explicitly disabling WandB run resumption (wandb_resume_id=None)")
-        wandb_resume_mode = None
-        
-        # Build wandb_init_kwargs like in the regular training script
-        wandb_init_kwargs = {
-            'project': wandb_config.get('project', 'consistency-lens'),
-            'name': run_name,  # Use our generated run name
-            'config': config,
-            'mode': wandb_config.get('mode', 'online'),
-            'tags': []  # Initialize tags list
-        }
-        
-        # Add dataset and model tags
-        if dataset_info.get('dataset'):
-            wandb_init_kwargs['tags'].append(f"dataset-{dataset_info['dataset']}")
-        if dataset_info.get('model_name'):
-            model_tag = dataset_info['model_name'].replace('/', '-')
-            wandb_init_kwargs['tags'].append(f"model-{model_tag}")
-        if dataset_info.get('layer') is not None:
-            wandb_init_kwargs['tags'].append(f"layer-{dataset_info['layer']}")
-        
-        # Add distributed training tag
-        wandb_init_kwargs['tags'].append(f"distributed-{world_size}gpu")
-        
-        # Add command line invocation to config
-        command_line_args = ' '.join(sys.argv)
-        wandb_init_kwargs['config']['command_line'] = command_line_args
-        
-        # Add environment variable that submit_with_config.sh can set
-        submit_script_command = os.environ.get('SUBMIT_SCRIPT_COMMAND', None)
-        if submit_script_command:
-            wandb_init_kwargs['config']['submit_script_command'] = submit_script_command
-            log.info(f"Submit script command: {submit_script_command}")
-        
-        # Add SLURM environment info to config if available
-        slurm_job_id = os.environ.get('SLURM_JOB_ID', None)
-        if slurm_job_id:
-            slurm_info = {
-                'slurm_job_id': slurm_job_id,
-                'slurm_job_name': os.environ.get('SLURM_JOB_NAME', 'unknown'),
-                'slurm_nodelist': os.environ.get('SLURM_NODELIST', 'unknown'),
-                'slurm_array_task_id': os.environ.get('SLURM_ARRAY_TASK_ID', None),
-            }
-            wandb_init_kwargs['config']['slurm_info'] = slurm_info
-            wandb_init_kwargs['tags'].append(f"slurm-{slurm_job_id}")
-            wandb_init_kwargs['tags'].append(f"node-{slurm_info['slurm_nodelist']}")
-            log.info(f"Running under SLURM job ID: {slurm_job_id} on nodes: {slurm_info['slurm_nodelist']}")
-        
-        # Add resume parameters if we have a run ID
-        if wandb_run_id and not force_disable_wandb:
-            wandb_init_kwargs['id'] = wandb_run_id
-            wandb_init_kwargs['resume'] = wandb_resume_mode or "allow"
-            log.info(f"Resuming WandB run: {wandb_run_id}")
-        
-        current_wandb_run_id = log_init(**wandb_init_kwargs)
-        
-        # Save config
-        config_save_path = run_checkpoint_dir / "config.yaml"
-        with open(config_save_path, "w") as f:
-            OmegaConf.save(cfg, f)
-        log.info(f"Config saved to: {config_save_path}")
+        current_wandb_run_id = setup_wandb_and_save_config(
+            config, run_name, dataset_info, world_size, run_checkpoint_dir, log, cfg
+        )
     else:
         current_wandb_run_id = None
-    
-    # Resume from checkpoint if specified
-    start_step = 0
-    if config.get('resume'):
-        checkpoint_path_str = config['resume']
-        if Path(checkpoint_path_str).exists():
-            if is_main():
-                log.info(f"Resuming from checkpoint: {checkpoint_path_str}")
-            
-            models_to_load = {"decoder": decoder_base, "encoder": encoder_base}
-            
-            # Check if we should reset the step counter
-            reset_steps = config.get('resume_reset_steps', False)
-            
-            try:
-                rec = checkpoint_manager.load_checkpoint(
-                    checkpoint_path_str,
-                    models=models_to_load,
-                    optimizer=optimizer if not reset_steps else None,  # Don't load optimizer state if resetting
-                    map_location=device
-                )
-            except Exception as e:
-                error_msg = f"Failed to load checkpoint from {checkpoint_path_str}: {str(e)}"
-                if is_main():
-                    log.error(error_msg)
-                if world_size > 1:
-                    dist.barrier()  # Ensure all processes reach this point
-                raise RuntimeError(error_msg) from e
-            
-            if reset_steps:
-                start_step = 0
-                if is_main():
-                    log.info("Resetting training steps to 0 (keeping model weights only)")
-            else:
-                start_step = int(rec.get("step", -1)) + 1
-            
-            # Load scheduler state if available (unless we're resetting steps)
-            if not reset_steps:
-                if lr_scheduler and "scheduler" in rec:
-                    lr_scheduler.load_state_dict(rec["scheduler"])
-                    if is_main():
-                        log.info("Scheduler state successfully loaded from checkpoint.")
-                elif lr_scheduler and is_main():
-                    log.warning("Scheduler state not found in checkpoint.")
-            else:
-                if is_main():
-                    log.info("Skipping scheduler state load due to step reset")
-            
-            if is_main():
-                log.info(f"Resumed from micro-step {start_step}")
-            
-            # Override learning rate if it's different from checkpoint OR if we're resetting steps
-            # This ensures command-line learning rate overrides take effect
-            new_base_lr = learning_rate
-            old_base_lr = optimizer.param_groups[0]['lr'] if optimizer.param_groups else new_base_lr
-            
-            # Force LR reset if we're resetting steps
-            if reset_steps or abs(new_base_lr - old_base_lr) > 1e-9:  # Check if LR changed or steps reset
-                if is_main():
-                    if reset_steps:
-                        log.info(f"Resetting optimizer and scheduler (step reset). New LR: {new_base_lr:.2e}")
-                    else:
-                        log.info(f"Overriding learning rate from checkpoint: {old_base_lr:.2e} -> {new_base_lr:.2e}")
-                
-                # First, we need to recreate the optimizer with new base learning rates
-                # This is necessary because schedulers cache the base_lrs at initialization
-                
-                # Get current optimizer state (momentum buffers, etc.)
-                old_state_dict = optimizer.state_dict()
-                
-                # Recreate optimizer with new learning rate
-                params = param_groups(
-                    [decoder_base, encoder_base], 
-                    new_base_lr,  # Use new base learning rate
-                    projection_lr_multiplier, 
-                    embedding_lr_multiplier, 
-                    prompt_lr_multiplier,
-                    base_model_lr_multiplier
-                )
-                optimizer = torch.optim.AdamW(params)
-                
-                # Restore optimizer state (momentum, etc.) but not the learning rates
-                old_state = old_state_dict['state']
-                if old_state:
-                    optimizer.load_state_dict({'state': old_state, 'param_groups': optimizer.state_dict()['param_groups']})
-                
-                if is_main():
-                    log.info("Recreated optimizer with new base learning rate")
-                    log.info("Optimizer param groups after recreation:")
-                    for i, group in enumerate(optimizer.param_groups[:5]):
-                        log.info(f"  Group {i}: lr={group['lr']:.2e}")
-                
-                # Now recreate the scheduler with the new optimizer
-                if lr_scheduler is not None:
-                    # Calculate the current optimizer step based on micro-steps
-                    current_optimizer_step = start_step // gradient_accumulation_steps
-                    
-                    # For PyTorch schedulers, last_epoch actually means the last step count
-                    # We need to set it to current_optimizer_step - 1 since it will be incremented on first step()
-                    # If we're resetting steps, always start from -1
-                    if reset_steps:
-                        scheduler_last_epoch = -1
-                        current_optimizer_step = 0
-                    else:
-                        scheduler_last_epoch = current_optimizer_step - 1 if current_optimizer_step > 0 else -1
-                    
-                    # Recreate the scheduler with the correct last_epoch
-                    lr_scheduler = get_lr_scheduler(optimizer, lr_scheduler_cfg, max_optimizer_steps, 
-                                                    last_epoch=scheduler_last_epoch,
-                                                    grad_accum_steps=gradient_accumulation_steps)
-                    
-                    if is_main():
-                        current_lr_from_scheduler = lr_scheduler.get_last_lr()[0]
-                        log.info(f"Learning rate scheduler reinitialized at optimizer step {current_optimizer_step}")
-                        log.info(f"Current LR from scheduler.get_last_lr(): {current_lr_from_scheduler:.6f}")
-                        
-                        # Check what the scheduler thinks the base LRs are
-                        if hasattr(lr_scheduler, 'base_lrs'):
-                            log.info(f"Scheduler base_lrs: {[f'{lr:.6f}' for lr in lr_scheduler.base_lrs[:3]]}")
-                        
-                        # Verify it's working correctly
-                        warmup_steps = parse_schedule_to_steps(lr_scheduler_cfg.get('warmup_steps', 0), steps_per_epoch, gradient_accumulation_steps)
-                        if current_optimizer_step >= warmup_steps:
-                            progress = (current_optimizer_step - warmup_steps) / max(1, max_optimizer_steps - warmup_steps)
-                            cosine_factor = 0.5 * (1 + math.cos(math.pi * progress))
-                            expected_lr = new_base_lr * cosine_factor
-                            log.info(f"Expected LR: base={new_base_lr:.6f} * cosine_factor={cosine_factor:.4f} = {expected_lr:.6f}")
-                            log.info(f"Actual LR: {current_lr_from_scheduler:.6f} (should match expected)")
-        else:
-            error_msg = f"Resume checkpoint path not found: {checkpoint_path_str}"
-            if is_main():
-                log.error(error_msg)
-            if world_size > 1:
-                dist.barrier()  # Ensure all processes reach this point
-            raise FileNotFoundError(error_msg)
+
+    optimizer, lr_scheduler = maybe_restore_optimizer_and_scheduler_from_checkpoint(
+        checkpoint_data=checkpoint_data,
+        config=config,
+        optimizer=optimizer,
+        lr_scheduler=lr_scheduler,
+        decoder=decoder,
+        encoder=encoder,
+        decoder_base=decoder_base,
+        encoder_base=encoder_base,
+        param_groups=param_groups,
+        projection_lr_multiplier=projection_lr_multiplier,
+        embedding_lr_multiplier=embedding_lr_multiplier,
+        prompt_lr_multiplier=prompt_lr_multiplier,
+        base_model_lr_multiplier=base_model_lr_multiplier,
+        weight_decay=weight_decay,
+        learning_rate=learning_rate,
+        steps_per_epoch=steps_per_epoch,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        max_optimizer_steps=max_optimizer_steps,
+        lr_scheduler_cfg=lr_scheduler_cfg,
+        start_step=start_step,
+        log=log,
+        is_main=is_main,
+        SmoothTransitionScheduler=SmoothTransitionScheduler,
+        get_lr_scheduler=get_lr_scheduler,
+        _resolve_schedule_to_steps=_resolve_schedule_to_steps,
+    )
     
     # Capture initial model states for drift calculation after model setup and potential checkpoint loading
     decoder_base_for_drift = decoder.module if hasattr(decoder, 'module') else decoder
@@ -1319,43 +2152,90 @@ def main(cfg: DictConfig) -> None:
     
     # Zero gradients at start
     optimizer.zero_grad(set_to_none=True)
-    iter_loader = iter(train_loader)
+    
+    # Handle resuming from checkpoint
+    reset_steps = config.get('resume_reset_steps', False)
+    skip_batches_on_resume = config.get('skip_batches_on_resume', False)  # Make it optional
+    
+    if start_step > 0 and not reset_steps:
+        resume_epoch = start_step // steps_per_epoch if steps_per_epoch > 0 else 0
+        
+        # Always set the correct epoch for the sampler when resuming
+        if world_size > 1 and hasattr(train_loader.sampler, 'set_epoch') and resume_epoch > 0:
+            train_loader.sampler.set_epoch(resume_epoch)
+            if is_main():
+                log.info(f"Set DistributedSampler epoch to {resume_epoch} for resuming")
+        
+        # Optionally skip batches within the epoch
+        if skip_batches_on_resume:
+            batches_to_skip = start_step % steps_per_epoch if steps_per_epoch > 0 else start_step
+            iter_loader = iter(train_loader)
+            
+            if batches_to_skip > 0:
+                if is_main():
+                    log.info(f"Skipping {batches_to_skip} batches to resume from step {start_step}")
+                for _ in range(batches_to_skip):
+                    try:
+                        _ = next(iter_loader)
+                    except StopIteration:
+                        if is_main():
+                            log.warning(f"Dataset ended while skipping batches. Expected to skip {batches_to_skip} batches.")
+                        break
+        else:
+            # Just start from beginning of epoch
+            iter_loader = iter(train_loader)
+            if is_main():
+                log.info(f"Starting from beginning of epoch {resume_epoch} (step {start_step})")
+    else:
+        # Starting fresh or reset_steps=True
+        iter_loader = iter(train_loader)
 
     decoder.train()
     encoder.train()
     orig_model.model.eval() # leave in validation mode?
 
     # Main training loop
-    for step in range(start_step, max_steps):
+    # Create tqdm progress bar (only on main process)
+    if is_main():
+        pbar = tqdm(range(start_step, max_steps), 
+                    desc="Training", 
+                    initial=start_step, 
+                    total=max_steps)
+    else:
+        pbar = range(start_step, max_steps)
+    
+    for step in pbar:
         step_start_time = time.time()
         
         current_epoch = step // steps_per_epoch if steps_per_epoch > 0 else 0
         
-        ## Set epoch for DistributedSampler
-        #if world_size > 1 and hasattr(train_loader.sampler, 'set_epoch'):
-        #    epoch = step // len(train_loader)
-        #    train_loader.sampler.set_epoch(epoch)
-        
         # Training step with optimized gradient accumulation
         # Advance iterator – restart when exhausted
         try:
-            batch = next(iter_loader)
+            raw_batch = next(iter_loader)
         except StopIteration:
             if world_size > 1 and hasattr(train_loader.sampler, "set_epoch"):
-                current_epoch += 1 # Ensure current_epoch is advanced if sampler epoch is set
+                current_epoch += 1
                 train_loader.sampler.set_epoch(current_epoch)
             else:
-                current_epoch += 1 # Ensure current_epoch is advanced if sampler epoch is set
+                current_epoch += 1
                 if not hasattr(train_loader.sampler, "set_epoch"):
                     log.warning("train_loader.sampler does not have set_epoch method. Distributed samplers should have this.")
             iter_loader = iter(train_loader)
-            batch = next(iter_loader)
+            raw_batch = next(iter_loader)
+       
+        if group_n > 1:
+            batch = {}
+            for k, v in raw_batch.items():
+                if isinstance(v, torch.Tensor):
+                    batch[k] = v.repeat_interleave(group_n, dim=0)
+                else:
+                    batch[k] = v
+        else:
+            batch = raw_batch
 
         batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
-        # ...
 
-    
-        #batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)} # Move batch to device
         if step == 0 and is_main():
             do_all_initial_validation(batch, orig_model, tokenizer, device, log, activation_dir)
 
@@ -1371,6 +2251,7 @@ def main(cfg: DictConfig) -> None:
             device,
             tokenizer,
             cached_prefix_ids,
+            rank,
             gradient_accumulation_steps=gradient_accumulation_steps,
             is_distributed=(world_size > 1),
             lr_scheduler=lr_scheduler,
@@ -1413,15 +2294,18 @@ def main(cfg: DictConfig) -> None:
         # tokens_per_second is based on the corrected samples_per_sec
         tokens_per_second = samples_per_sec * config.get('t_text', 10) # t_text is tokens per sample
 
-        # Console logging (only on main process)
+        # Update progress bar description (only on main process and every log_interval)
         if is_main() and (step % log_interval == 0 or step == max_steps - 1):
-            log.info(
+            desc = (
                 f"Step {step}/{max_steps} | "
                 f"Loss: {avg_loss:.4f} | "
                 f"LR: {current_lr:.2e} | "
-                f"Samples/sec: {samples_per_sec:.1f} | " # Display corrected samples_per_sec
+                f"Samples/sec: {samples_per_sec:.1f} | "
                 f"Acc: {accumulation_step}/{gradient_accumulation_steps}"
             )
+            pbar.set_description(desc)
+            # Also print to ensure it's captured in logs
+            log.info(desc)
 
         # W&B logging (only on main process)
         if is_main() and (step % wandb_log_interval == 0 or step == max_steps - 1):
@@ -1434,8 +2318,8 @@ def main(cfg: DictConfig) -> None:
                                                          steps_per_epoch=steps_per_epoch, 
                                                          grad_accum_steps=gradient_accumulation_steps)
             current_alpha_log = get_schedule_value(config['alpha_schedule'], step, max_steps,
-                                                           current_epoch=current_epoch,
-                                                           steps_per_epoch=steps_per_epoch,
+                                                           current_epoch=current_epoch, 
+                                                           steps_per_epoch=steps_per_epoch, 
                                                            grad_accum_steps=gradient_accumulation_steps)
             
             wandb_metrics = {
@@ -1450,7 +2334,7 @@ def main(cfg: DictConfig) -> None:
                 'params/lm_w': config.get('lm_base_weight'),
                 'params/kl_w': config.get('kl_base_weight', 1.0),
                 'params/entropy_w': config.get('entropy_weight', 0.0),
-                'optim/lr': current_lr,
+                'optim/lr': lr_scheduler.get_last_lr()[0] if lr_scheduler else current_lr,
                 'gradient_accumulation/is_update_step': 1 if ((step + 1) % gradient_accumulation_steps == 0) or (step == max_steps - 1) else 0,
                 'gradient_accumulation/accumulation_step': accumulation_step,
                 'performance/steps_per_second': steps_per_second, # This is micro-steps per second
@@ -1510,6 +2394,35 @@ def main(cfg: DictConfig) -> None:
                 log_parameter_drift(encoder_base_for_drift, initial_encoder_state,
                                     "encoder", step, log_metrics, log, True)
 
+
+        # Validation and Verbose Samples
+        val_loss = None
+        if val_loader and val_interval > 0 and (step % val_interval == 0):
+            if is_main():
+                log.info(f"Running validation at step {step}")
+            with Timer("Validation", log, main_process=is_main(), log_wandb=True, wandb_step=step):
+                val_loss = validate_distributed(
+                    decoder=decoder,
+                    encoder=encoder,
+                    orig_model=orig_model,
+                    val_loader=val_loader,
+                    config=config,
+                    step=step,
+                    device=device,
+                    tokenizer=tokenizer,
+                    cached_prefix_ids=cached_prefix_ids,
+                    world_size=world_size,
+                    log=log,
+                    is_main_process=is_main(),
+                    wandb_run_id=current_wandb_run_id,
+                    steps_per_epoch=steps_per_epoch,
+                    current_epoch=current_epoch,
+                    max_steps=max_steps,
+                    gradient_accumulation_steps=gradient_accumulation_steps,
+                    val_interval=val_interval,
+                    comparison_tuned_lens=comparison_tuned_lens_cpu # Pass CPU version
+                )
+            
         # Checkpointing (only on main process)
         if is_main() and checkpoint_manager.should_save_step(step):
             # Get current tau and alpha for checkpointing, similar to 01_train.py
@@ -1537,128 +2450,26 @@ def main(cfg: DictConfig) -> None:
                 scheduler=lr_scheduler, # Scheduler state is based on optimizer steps
                 metrics=metrics, 
                 config=config, 
+                val_loss=val_loss,
                 tau=current_tau_ckpt,
                 alpha=current_alpha_ckpt,
                 wandb_run_id=current_wandb_run_id,
-                additional_name=""
+                additional_name="",
+                # Add additional metadata for proper resuming
+                current_epoch=current_epoch,
+                batch_within_epoch=step % steps_per_epoch if steps_per_epoch > 0 else step,
+                steps_per_epoch=steps_per_epoch,
+                # Save gradient scaler state if using mixed precision
+                scaler=scaler.state_dict() if scaler is not None else None,
+                # Save whether we're mid-accumulation
+                accumulation_step=(step % gradient_accumulation_steps) + 1
             )
             if saved_path:
                 log.info(f"Checkpoint saved: {saved_path}")
             else:
                 log.info(f"Checkpoint not saved at step {step} (e.g., max_checkpoints reached or interval not met).")
         
-        # Validation
-        if val_loader and val_interval > 0 and (step % val_interval == 0):
-            if is_main():
-                log.info(f"Running validation at step {step}")
-            with Timer("Validation", log, main_process=is_main(), log_wandb=True, wandb_step=step):
-                validate_distributed(
-                    decoder=decoder,
-                    encoder=encoder,
-                    orig_model=orig_model,
-                    val_loader=val_loader,
-                    config=config,
-                    step=step,
-                    device=device,
-                    tokenizer=tokenizer,
-                    cached_prefix_ids=cached_prefix_ids,
-                    world_size=world_size,
-                    log=log,
-                    is_main_process=is_main(),
-                    wandb_run_id=current_wandb_run_id,
-                    steps_per_epoch=steps_per_epoch
-                )
 
-        # Verbose sample printing (adapting logic from 01_train.py)
-        if is_main():
-            verbose_config = config.get('verbose_samples', {})
-            if verbose_config.get('enabled', False):
-                should_print_verbose = False
-                # Condition for epoch end (approximation for distributed setup)
-                epoch_just_finished = (steps_per_epoch > 0 and (step + 1) % steps_per_epoch == 0)
-
-                # Check interval based on flexible schedule string
-                verbose_interval_str = verbose_config.get('interval', "1000s") # Default from 01_train.py
-                try:
-                    # Assuming train_module contains _resolve_schedule_to_steps
-                    verbose_interval = _resolve_schedule_to_steps(
-                        verbose_interval_str, steps_per_epoch, log, "verbose_interval", gradient_accumulation_steps
-                    )
-                    if step % verbose_interval == 0:
-                        should_print_verbose = True
-                except Exception as e:
-                    log.warning(f"Failed to parse verbose_samples interval '{verbose_interval_str}': {e}. Using step-based fallback if configured.")
-                
-                # Check for legacy epoch/step printing conditions
-                if verbose_config.get('print_every_epoch', False) and epoch_just_finished:
-                    should_print_verbose = True
-                
-                print_every_n_steps_val = verbose_config.get('print_every_n_steps', 0)
-                if print_every_n_steps_val > 0 and step > 0 and step % print_every_n_steps_val == 0:
-                    should_print_verbose = True
-
-                if should_print_verbose:
-                    with Timer("Verbose Sample Generation", log, main_process=is_main(), log_wandb=True, wandb_step=step):
-                        log.info(f"Generating verbose samples at step {step}, epoch {current_epoch}")
-                        decoder.eval()
-                        encoder.eval()
-                        orig_model.model.eval() # Ensure orig model is also in eval
-
-                        # Get schedule arguments for verbose samples - these use optimizer steps
-                        current_optimizer_step_for_verbose = step // gradient_accumulation_steps
-                        sch_args_verbose = {
-                            "tau": get_schedule_value(config['gumbel_tau_schedule'], step, max_steps,
-                                                     current_epoch=current_epoch, 
-                                                     steps_per_epoch=steps_per_epoch, 
-                                                     grad_accum_steps=gradient_accumulation_steps),
-                            "T_text": config.get('t_text', 8),
-                            "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps,
-                                                       current_epoch=current_epoch, 
-                                                       steps_per_epoch=steps_per_epoch, 
-                                                       grad_accum_steps=gradient_accumulation_steps),
-                            "lm_base_weight": config.get('lm_base_weight'), 
-                            "kl_base_weight": config.get('kl_base_weight', 1.0),
-                            "entropy_weight": config.get('entropy_weight', 0.0),
-                            "mse_weight": config.get('mse_weight', 0.0), # Added for completeness
-                        }
-
-                        # Ensure batch is on the correct device (it should be already, but good practice)
-                        verbose_batch = {k: v.to(device) for k, v in batch.items()}
-
-                        # Assuming train_module contains process_and_print_verbose_batch_samples
-                        num_printed, captured_text = process_and_print_verbose_batch_samples(
-                            batch=verbose_batch,
-                            cfg=config, # Pass the resolved dictionary config directly
-                            models={"dec": decoder_base, "enc": encoder_base}, # Pass base models
-                            orig=orig_model,
-                            tok=tokenizer,
-                            sch_args=sch_args_verbose,
-                            device=device,
-                            num_samples=verbose_config.get('num_samples', 2),
-                            top_n_analysis=verbose_config.get('top_n_predictions', 3),
-                            printed_count_so_far=0, # Reset for each call or manage globally if needed
-                            generate_continuation=verbose_config.get('generate_continuation', True),
-                            continuation_tokens=verbose_config.get('continuation_tokens', 30),
-                            return_structured_data=False, # As per 01_train.py default for this path
-                            capture_output=True,
-                            cached_prefix_ids=cached_prefix_ids,  # Pass the cached prefix for loss computation
-                            resample_ablation=config.get('resample_ablation', True)
-                        )
-                        
-                        # current_wandb_run_id is already defined
-                        if captured_text and current_wandb_run_id:
-                            verbose_samples_logger.log_verbose_samples(
-                                captured_text,
-                                step=step,
-                                table_name="training_verbose_samples_dist", # Differentiate if needed
-                                limit_rows=verbose_config.get('wandb_table_limit', False)
-                            )
-
-                        decoder.train()
-                        encoder.train()
-                        orig_model.model.eval() # Set orig model back to train if it has trainable parts (usually not)
-
-    
     # Final checkpoint
     if is_main() and checkpoint_manager.save_at_end:
         current_epoch_for_ckpt = max_steps // steps_per_epoch if steps_per_epoch > 0 else 0
@@ -1667,17 +2478,17 @@ def main(cfg: DictConfig) -> None:
 
         # current_wandb_run_id is already defined
         
-        # Determine parameters for final schedule value calculation
-        if max_steps == 0:
-            # If no training steps, get initial value of schedules (optimizer_step 0 of a hypothetical 1-optimizer_step schedule)
-            calc_optimizer_step_for_final_sched = 0
-            # calc_total_optimizer_steps_for_final_sched = 1 
-        else:
-            # Get schedule value at the last completed micro_step, translating to optimizer_step
-            calc_optimizer_step_for_final_sched = (max_steps - 1) // gradient_accumulation_steps
-            # calc_total_optimizer_steps_for_final_sched = max_optimizer_steps
+        # # Determine parameters for final schedule value calculation
+        # if max_steps == 0:
+        #     # If no training steps, get initial value of schedules (optimizer_step 0 of a hypothetical 1-optimizer_step schedule)
+        #     calc_optimizer_step_for_final_sched = 0
+        #     # calc_total_optimizer_steps_for_final_sched = 1 
+        # else:
+        #     # Get schedule value at the last completed micro_step, translating to optimizer_step
+        #     calc_optimizer_step_for_final_sched = (max_steps - 1) // gradient_accumulation_steps
+        #     # calc_total_optimizer_steps_for_final_sched = max_optimizer_steps
 
-        # Get final tau and alpha using calculated optimizer step parameters
+        # # Get final tau and alpha using calculated optimizer step parameters
         final_micro_step_for_sched = max_steps -1 if max_steps > 0 else 0
 
         # Calculate final epoch for schedule calculations

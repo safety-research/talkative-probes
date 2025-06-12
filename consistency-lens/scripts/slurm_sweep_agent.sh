@@ -121,6 +121,7 @@ export WANDB_INIT_TIMEOUT=300
 export WANDB_HTTP_TIMEOUT=300
 export WANDB_AGENT_MAX_INITIAL_FAILURES=10
 export WANDB_AGENT_DISABLE_FLAPPING=true
+export HYDRA_FULL_ERROR=1
 
 # Set master port for distributed training (avoid conflicts)
 export MASTER_PORT=${MASTER_PORT:-$((29500 + RANDOM % 1000))}
