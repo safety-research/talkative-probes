@@ -2,24 +2,24 @@
 Consistency Lens Analysis Report
 ================================
 Text: "This photo shows an image of a cougar in Wyoming. Animal control officers in Fairfax County have set..."
-Checkpoint: gpt2_frozen_step205000_epoch7_.pt
+Checkpoint: gpt2_frozen_step4000_epoch1_.pt
 Model: openai-community/gpt2
 Layer: 6
 
 Summary Statistics:
 - Total tokens: 11
-- Average KL divergence: 1.2857
-- Std deviation: 1.4047
-- Min KL: 0.0013
-- Max KL: 4.9362
+- Average KL divergence: 1.2955
+- Std deviation: 1.4416
+- Min KL: 0.0019
+- Max KL: 4.0465
 
 Top 3 most consistent tokens (lowest KL):
   - [3] '
-' → 'ukemialloazel ali alias Lee mailingodorails Yu electrons Lew Gram 338 Jessie182 label incarcer comma archiveUrl notation editor instructions Vil argumentsjsonullivan pluginfiles Alexa microbes' (KL: 0.0013)
-  - [10] '')' → 'LR ebookhtml Greene oxy Email URLsLew IRS Mormon LR leaflets PHPyz Ezraphilheit 2013lly Essex IRSabeth emails Springfield hairc Emaillly Yahoophi Anonymous Gibbsphil' (KL: 0.2031)
-  - [8] '('' → 'lee oxyielyleazing Ezraiel mailingielyonative Judaism 412yl Jewish Oxy Martyinatesyz Zoe Chelorie blogsoly Whitmanlore CherryJD remissionyz Emilyobia' (KL: 0.3592)
+' → ' Scal Node Dele Codec echo Aureble Compos cx �dn-AXbinary asyncπλλ ChromeParser BufferParser UnicodeError SyntBegModuleWebModuleBugFileCode' (KL: 0.0019)
+  - [9] 'Hi' → ' CY VER Bitcoin CypGUI Cipher HDLGUI CatalystIE Binary nu Elixir Dat ChocoboDisplay Ether Synt CV Cake Dat Hermes Feather HH Hermes HelloHiHi Coinbase HiHiHi' (KL: 0.2257)
+  - [8] '('' → ' Py UE CAD Buffer Synt Catalyst Handle BitGUI File CypRenderBuffer BufferDisplay Geral Geral printf \( printf(' foo('(' \( \(('('('('('('' (KL: 0.2403)
 
 Top 3 least consistent tokens (highest KL):
-  - [0] 'def' → ' Vill Titans O Gods Other States Vill Grass? N Sl Other Gen Souls Players Noir Goth Materials Gen Humans Vit Others Gods Continent Vill A Powers O Dor Masters Players?' (KL: 4.9362)
-  - [1] ' hello' → ' Loftoi Zombie RoofGaza Tanks Hol Angels Jay Flores614� Halo DVDs Ken Zeal Ire ChouOps Loft Fergusonmodules Mafia Rudy Hig Literature Pulhett Feinamo Zombies Mei' (KL: 2.1609)
-  - [5] ' ' → 'oe Fox BeeLee Mansion Keneivi YinDiamond HaleYuiceīWiRiver lawnfeeiy CainErResults XYwallQuote FAQGilewgmiiraseNR' (KL: 2.0928)
+  - [5] ' ' → ' Colony Ether Utility Dart Ether ArraySerial EtherGUI Entity<< Laser obj LaserGUI Arduino RPG  iPtz  Ether  QR        ' (KL: 4.0465)
+  - [1] ' hello' → ' Pegasus Cer Synt Clicker Template�醒 Cure UE XML�醒 Aure DAC Cache IEbis Router Cyp Cout Conver Vim Dart BeauDb Rober Vim Brah Vim Foo Vim Drupal�� Foo' (KL: 2.9491)
+  - [6] ' ' → ' Transfer Agricultural Ether Yardbool Doodle Laserprint Database Finger Laser#### QRGE LU.} XY ip Kinд  Chocobo  �        ' (KL: 2.7208)

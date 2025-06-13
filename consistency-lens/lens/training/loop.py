@@ -138,30 +138,14 @@ def train_step(  # noqa: D401
     # and P_Orig are predictions from the original LLM on natural language tokens only.
     # Always compute for monitoring, but detach gradients when weight is 0
     grad_context_lm = torch.no_grad() if lm_w == 0 else contextlib.nullcontext()
-    if do_lm_computation:
+    if do_lm_computation or lm_w > 0:
         with grad_context_lm:
             # Compute LM loss, using no_grad if weight is 0
             # Logits from D_model for its own generation (predicting token t+1 given prefix 0..t from D)
             # gen.raw_lm_logits are (B, T_text, V) - these correspond to generated natural language tokens only
             d_model_pred_logits = gen.raw_lm_logits # Shape is (B, T_text, V) as per decoder.py
-
-            # Create natural language conditioning for base model
-            #if cached_prefix_ids is not None or (lm_loss_natural_prefix is not None and tokenizer is not None):
-            # Use cached prefix tokens
             B = A.shape[0] # Batch size from input A
             natural_prefix_expanded = cached_prefix_ids.expand(B, -1).to(A.device)  # Shape: (B, prefix_len)
-            # else:
-            #     # Tokenize the natural language prefix (fallback if not cached)
-            #     if tokenizer is None or lm_loss_natural_prefix is None:
-            #         # This case should ideally be caught by an earlier config validation
-            #         raise ValueError(
-            #             "Tokenizer or lm_loss_natural_prefix not available for tokenizing natural prefix, "
-            #             "but cached_prefix_ids is also None."
-            #         )
-            #     natural_prefix_ids = tokenizer(lm_loss_natural_prefix, add_special_tokens=False, return_tensors="pt").input_ids
-            #     natural_prefix_ids = natural_prefix_ids.to(A.device)
-            #     B = A.shape[0] # Batch size from input A
-            #     natural_prefix_expanded = natural_prefix_ids.expand(B, -1)  # Shape: (B, prefix_len)
 
             # Determine if Gumbel-Softmax outputs from decoder should feed the original LM
             # cfg is available in train_step's scope
@@ -170,14 +154,11 @@ def train_step(  # noqa: D401
             if use_gumbel_for_LMorig:
                 # Embed the natural prefix using the original model's embeddings
                 prefix_embeds = orig.model.get_input_embeddings()(natural_prefix_expanded) # (B, prefix_len, D_model)
-                
                 # Get the decoder's generated embeddings (output of Gumbel-Softmax STE)
-                # gen.generated_text_embeddings has shape (B, T_text, D_model)
-                decoder_generated_embeds = gen.generated_text_embeddings 
+                decoder_generated_embeds = gen.generated_text_embeddings #(B, T_text, D_model)
 
                 # Concatenate embedded prefix with decoder's generated embeddings
-                # Total length of embedded sequence: prefix_len + T_text
-                base_model_input_embeds = torch.cat([prefix_embeds, decoder_generated_embeds], dim=1)
+                base_model_input_embeds = torch.cat([prefix_embeds, decoder_generated_embeds], dim=1)# length of embedded sequence: prefix_len + T_text
 
                 # Logits from LLM_orig_model conditioned on embedded prefix + decoder's generated embeddings.
                 # Gradients ARE allowed to flow through decoder_generated_embeds back to the decoder.
@@ -188,8 +169,6 @@ def train_step(  # noqa: D401
                 prefix_len_for_slicing = prefix_embeds.shape[1]
 
             else: # Original behavior: use hard token IDs and no_grad for orig model
-                # Concatenate prefix token IDs with generated hard token IDs
-                # gen.hard_token_ids has shape (B, T_text)
                 base_model_input_ids = torch.cat([natural_prefix_expanded, gen.hard_token_ids], dim=1)  # Shape: (B, prefix_len + T_text)
 
                 # Logits from LLM_orig_model conditioned on natural language prefix + generated tokens
@@ -212,58 +191,33 @@ def train_step(  # noqa: D401
             del orig_model_pred_logits_all_pos
          
 
-            # log_P_D: Log-distribution from D_model (this is the distribution we are training, q).
-            # This will be the `input` to F.kl_div.
-            # These are log-probabilities for tokens 1...T_text-1.
-            # Compute in float32 with numerical stability
-            with torch.amp.autocast('cuda',enabled=False):
-                d_logits_f32 = d_model_pred_logits.float()
-                d_logits_f32 = d_logits_f32 - d_logits_f32.max(dim=-1, keepdim=True)[0].detach()
-                log_P_D_log_probs = torch.nn.functional.log_softmax(d_logits_f32, dim=-1)
-                log_P_D_log_probs = log_P_D_log_probs.to(d_model_pred_logits.dtype)
-
-            # P_Orig: Distribution from LLM_orig_model (this is the reference distribution, p).
-            # This will be the `target` for F.kl_div.
-            # These are probabilities for tokens 1...T_text-1 (since log_target=False for kl_div).
-            with torch.amp.autocast('cuda',enabled=False):
-                orig_logits_f32 = orig_model_pred_logits.float()
-                orig_logits_f32 = orig_logits_f32 - orig_logits_f32.max(dim=-1, keepdim=True)[0].detach()
-                P_Orig_probs = torch.nn.functional.softmax(orig_logits_f32, dim=-1)
-                P_Orig_probs = P_Orig_probs.to(orig_model_pred_logits.dtype)
-    
-            # Reshape for kl_div to (N, C) where N = B * (T_text-1), C = V.
-            # This ensures 'batchmean' reduction averages over token positions.
-            V_lm = d_model_pred_logits.size(-1) # Vocabulary size for language model
-            log_P_D_log_probs_flat = log_P_D_log_probs.reshape(-1, V_lm)
-            P_Orig_probs_flat = P_Orig_probs.reshape(-1, V_lm)
+            # Compute LM loss KL(P_Orig || P_D).
+            # P_Orig is the reference distribution from the original LLM (p).
+            # P_D is the distribution from the decoder we are training (q).
             
-            # Add numerical stability checks
-            if torch.isnan(log_P_D_log_probs_flat).any():
-                log.warning("NaN detected in decoder log probs before KL computation")
-            if torch.isnan(P_Orig_probs_flat).any():
-                log.warning("NaN detected in original model probs before KL computation")
+            # Reshape logits to (N, C) for KL divergence, where N = B * T_text,
+            # to average KL over all token positions.
+            V_lm = d_model_pred_logits.size(-1)
+            d_model_pred_logits_flat = d_model_pred_logits.reshape(-1, V_lm)
+            orig_model_pred_logits_flat = orig_model_pred_logits.reshape(-1, V_lm)
 
-            # loss_lm = KL(P_Orig || P_D)
-            # F.kl_div(input, target) with log_target=False computes sum(target * (log(target) - input)).
-            # Here, input is log_P_D_log_probs_flat (log q: log-probabilities from Decoder), 
-            # and target is P_Orig_probs_flat (p: probabilities from Original LLM).
-            # So it computes sum(P_Orig * (log P_Orig - log_P_D)), which is KL(P_Orig || P_D).
-            # This regularizes the Decoder's distribution (P_D) to match the Original LLM's distribution (P_Orig).
+            # Add numerical stability checks on the raw logits
+            if torch.isnan(d_model_pred_logits_flat).any():
+                log.warning("NaN detected in decoder logits before LM KL computation")
+            if torch.isnan(orig_model_pred_logits_flat).any():
+                log.warning("NaN detected in original model logits before LM KL computation")
+
             if lm_w > 0:
-                loss_lm = torch.nn.functional.kl_div(
-                    input=log_P_D_log_probs_flat,    # log q: log-probabilities of P_D (Decoder model output)
-                    target=P_Orig_probs_flat,        # p: probabilities of P_Orig (Original LLM target distribution)
-                    reduction='batchmean',           # average KL divergence per token position
-                    log_target=False                 # P_Orig_probs_flat contains probabilities, not log-probabilities
+                loss_lm = compute_kl_divergence_robust(
+                    logits_approx=d_model_pred_logits_flat,  # q
+                    logits_orig=orig_model_pred_logits_flat    # p
                 )
             else:
                 # Compute without gradients for monitoring
                 with torch.no_grad():
-                    loss_lm = torch.nn.functional.kl_div(
-                        input=log_P_D_log_probs_flat,
-                        target=P_Orig_probs_flat,
-                        reduction='batchmean',
-                        log_target=False
+                    loss_lm = compute_kl_divergence_robust(
+                        logits_approx=d_model_pred_logits_flat,
+                        logits_orig=orig_model_pred_logits_flat
                     ).detach()
     else:
         loss_lm = torch.tensor(0.0, device=A.device, dtype=A.dtype)
@@ -345,7 +299,7 @@ def train_step(  # noqa: D401
 
         # loss_mse - just for monitoring! We do not train on this, as we need to allow the resample ablation to work
         if mse_w > 0:
-            loss_mse = torch.nn.functional.mse_loss(A_train, A)
+            loss_mse = torch.nn.functional.mse_loss(A_train, A) #this reduces as mean?
         else:
             with torch.no_grad():
                 loss_mse = torch.nn.functional.mse_loss(A_train, A)

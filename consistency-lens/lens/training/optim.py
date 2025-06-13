@@ -45,7 +45,7 @@ def param_groups(
             decay = 0.0 if p.ndim == 1 else weight_decay
             
             # Check parameter type for learning rate scaling
-            is_adapter = ("proj" in n) or (".out" in n)
+            is_adapter = (("proj" in n) or (".out" in n)) and not ("c_proj" in n)
             is_embedding = (
                 ("embed" in n) or 
                 ("wte" in n) or 
@@ -61,13 +61,10 @@ def param_groups(
             
             if is_adapter:
                 lr_scale = proj_lr_mult
-                weight_decay = 0.0
             elif is_embedding:
                 lr_scale = embedding_lr_mult
-                weight_decay = 0.0
-            elif is_prompt:
+            elif is_prompt: 
                 lr_scale = prompt_lr_mult
-                weight_decay = 0.0
             elif is_base_model:
                 lr_scale = base_model_lr_mult
             else:

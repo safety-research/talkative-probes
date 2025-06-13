@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Union
 import matplotlib.pyplot as plt
 import seaborn as sns
 # Add parent directory to path for imports
@@ -30,6 +30,9 @@ from lens.models.decoder import Decoder, DecoderConfig
 from lens.models.encoder import Encoder, EncoderConfig
 from lens.models.orig import OrigWrapper
 from lens.utils.embedding_remap import remap_embeddings
+from lens.evaluation.verbose_samples import process_and_print_verbose_batch_samples
+from lens.models.tuned_lens import load_full_tuned_lens
+import logging
 
 # Set style
 plt.style.use('seaborn-v0_8-darkgrid')
@@ -53,6 +56,9 @@ CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/che
 CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_frozen_e6_wider1p0multigpu2chgprompt_OC_GPT2_L6_e5_prog-unfreeze_lr3e-4_t32_20ep_resume_0609_2327_tinyLMKVext_dist4/gpt2_frozen_step49000_epoch7_.pt"
 CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_frozen_e6_wider1p0multigpu2chgprompt_OC_GPT2_L6_e5_prog-unfreeze_lr3e-4_t32_20ep_resume_0609_2327_tinyLMKVext_dist4/gpt2_frozen_step116000_epoch15_.pt"
 CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_frozen_e6_wider1p0multigpu2chgprompt_OC_GPT2_L6_e5_prog-unfreeze_lr3e-4_t32_4ep_resume_0611_1502_tinyLMKVext_resumeold2highlr_dist4/"
+CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_frozen_postfix_warmup_tuned_OC_GPT2_L6_e6_prog-unfreeze_lr1e-3_t32_8ep_0610_2120_MSE_unfrz_dist4/"
+CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_unfreeze_nopostfix_tuned_pos_OC_GPT2_L6_e5_full_lr1e-3_t32_8ep_resume_0612_1734_new_fix_dist4/"
+CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_unfreeze_nopostfix_tuned_pos_OC_GPT2_L6_e5_full_lr1e-3_t32_1ep_resume_0613_1323_new_fix_dist4_slurm862/"
 # Optional: specify device
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -63,7 +69,7 @@ print(f"Using device: {DEVICE}")
 class LensAnalyzer:
     """Analyzer for consistency lens."""
     
-    def __init__(self, checkpoint_path: str, device: str = "cuda"):
+    def __init__(self, checkpoint_path: str, device: str = "cuda", comparison_tl_checkpoint: Union[str,bool] = True):
         self.device = torch.device(device)
         checkpoint_path = Path(checkpoint_path)
         if checkpoint_path.is_dir():
@@ -137,7 +143,6 @@ class LensAnalyzer:
         
         # Load weights using CheckpointManager
         from lens.utils.checkpoint_manager import CheckpointManager
-        import logging
         
         # Setup logger
         logger = logging.getLogger(__name__)
@@ -151,7 +156,8 @@ class LensAnalyzer:
         checkpoint_config = {
             "checkpoint": {
                 "enabled": True,
-                "output_dir": str(self.checkpoint_path.parent)
+                "output_dir": str(self.checkpoint_path.parent),
+                "strict_load": True
             }
         }
         
@@ -175,6 +181,29 @@ class LensAnalyzer:
         self.decoder.eval()
         self.encoder.eval()
         self.orig_model.model.eval()
+        
+        # Load comparison TunedLens if specified
+        self.comparison_tuned_lens = None
+        if comparison_tl_checkpoint:
+            logger.info(f"Attempting to load comparison TunedLens from: {comparison_tl_checkpoint} for model {self.model_name}")
+            try:
+                # Load to CPU first, then move to device
+                loaded_tl = load_full_tuned_lens(
+                    model_or_model_name=self.model_name,
+                    checkpoint_path_or_name=comparison_tl_checkpoint if isinstance(comparison_tl_checkpoint, str) else None,
+                    device="cpu", 
+                    log=logger,
+                    is_main_process=True # In notebook, we act as main process
+                )
+                if loaded_tl:
+                    self.comparison_tuned_lens = loaded_tl.to(self.device)
+                    self.comparison_tuned_lens.eval()
+                    logger.info(f"✓ Successfully loaded and moved comparison TunedLens to {self.device}.")
+                else:
+                    logger.warning(f"Failed to load comparison TunedLens from {comparison_tl_checkpoint}.")
+            except Exception as e:
+                logger.error(f"Error loading comparison TunedLens: {e}", exc_info=True)
+                self.comparison_tuned_lens = None
         
         print(f"✓ Ready! Model: {self.model_name}, Layer: {self.layer}")
     
@@ -260,7 +289,7 @@ class LensAnalyzer:
                            intervention_position: int, 
                            intervention_string: str,
                            max_new_tokens: int = 20,
-                           visualize: bool = True) -> Dict[str, Any]:
+                           visualize: bool = True, top_k: int = 5) -> Dict[str, Any]:
         """Perform causal intervention by swapping in an encoded representation.
         
         Args:
@@ -277,6 +306,9 @@ class LensAnalyzer:
         inputs = self.tokenizer(original_text, return_tensors="pt", truncation=True, max_length=512)
         input_ids = inputs.input_ids.to(self.device)
         seq_len = input_ids.shape[1]
+        
+        if intervention_position == -1:
+            intervention_position = seq_len - 1
         
         if intervention_position >= seq_len:
             raise ValueError(f"Intervention position {intervention_position} exceeds sequence length {seq_len}")
@@ -354,7 +386,7 @@ class LensAnalyzer:
             next_token_logits_intervention = outputs_intervention.logits[:, intervention_position, :]
             
             # Get top predictions
-            top_k = 10
+            top_k = max(10, top_k)
             probs_orig = torch.softmax(next_token_logits_orig, dim=-1)
             probs_intervention = torch.softmax(next_token_logits_intervention, dim=-1)
             
@@ -373,17 +405,18 @@ class LensAnalyzer:
                 torch.softmax(next_token_logits_orig, dim=-1),
                 reduction='batchmean'
             ).item()
+            mse = torch.nn.functional.mse_loss(A_orig, A_intervention).item()
             
             # Decode what actually happened
             intervened_token = self.tokenizer.decode([input_ids[0, intervention_position].item()])
             
-            # Decode intervention explanation
-            if self.decoder.config.use_kv_cache:
-                gen_intervention = self.decoder.generate_soft_kv_cached(A_intervention, max_length=self.t_text, gumbel_tau=self.tau)
-            else:
-                gen_intervention = self.decoder.generate_soft(A_intervention, max_length=self.t_text, gumbel_tau=self.tau)
+            # # Decode intervention explanation
+            # if self.decoder.config.use_kv_cache:
+            #     gen_intervention = self.decoder.generate_soft_kv_cached(A_intervention, max_length=self.t_text, gumbel_tau=self.tau)
+            # else:
+            #     gen_intervention = self.decoder.generate_soft(A_intervention, max_length=self.t_text, gumbel_tau=self.tau)
             
-            explanation_intervention = self.tokenizer.decode(gen_intervention.hard_token_ids[0], skip_special_tokens=True)
+            # explanation_intervention = self.tokenizer.decode(gen_intervention.hard_token_ids[0], skip_special_tokens=True)
             
         results = {
             'original_text': original_text,
@@ -391,10 +424,11 @@ class LensAnalyzer:
             'intervened_token': intervened_token,
             'intervention_string': intervention_string,
             'explanation_original': explanation_orig,
-            'explanation_intervention': explanation_intervention,
+            #'explanation_intervention': explanation_intervention,
             'top_predictions_original': top_tokens_orig,
             'top_predictions_intervention': top_tokens_intervention,
             'kl_divergence': kl_div,
+            'mse': mse,
             'continuation_original': self.tokenizer.decode(continuation_orig[0], skip_special_tokens=True)
         }
         
@@ -406,14 +440,14 @@ class LensAnalyzer:
         print(f"Intervention string: '{intervention_string}'")
         print(f"\n📝 Explanations:")
         print(f"  Original: {explanation_orig}")
-        print(f"  Intervention: {explanation_intervention}")
+        #print(f"  Intervention: {explanation_intervention}")
         print(f"\n📊 KL Divergence: {kl_div:.4f}")
         print(f"\n🎯 Top next-token predictions:")
         print(f"\nOriginal:")
-        for token, prob in top_tokens_orig[:5]:
+        for token, prob in top_tokens_orig[:top_k]:
             print(f"  {repr(token):15} {prob:.3f}")
         print(f"\nWith intervention:")
-        for token, prob in top_tokens_intervention[:5]:
+        for token, prob in top_tokens_intervention[:top_k]:
             print(f"  {repr(token):15} {prob:.3f}")
         
         if visualize:
@@ -439,7 +473,7 @@ class LensAnalyzer:
         
         ax1.set_xlabel('Tokens')
         ax1.set_ylabel('Probability')
-        ax1.set_title(f'Next Token Predictions\nKL Divergence: {results["kl_divergence"]:.4f}')
+        ax1.set_title(f'Next Token Predictions\nKL Divergence: {results["kl_divergence"]:.4f} MSE: {results["mse"]:.4f}')
         ax1.set_xticks(x)
         ax1.set_xticklabels([repr(t) for t in tokens_orig], rotation=45, ha='right')
         ax1.legend()
@@ -455,6 +489,98 @@ class LensAnalyzer:
         
         plt.tight_layout()
         plt.show()
+
+    def get_hidden_states(self, text: str) -> torch.Tensor:
+        inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+        input_ids = inputs.input_ids.to(self.device)
+        seq_len = input_ids.shape[1]
+        outputs = self.orig_model.model(input_ids, output_hidden_states=True)
+        print("len hidden states", len(outputs.hidden_states))
+        return outputs.hidden_states[self.layer + 1]
+
+    def run_verbose_sample(self, text: str, position_to_analyze: int, top_n_analysis: int = 5, continuation_tokens: int = 15):
+        """Runs a single verbose sample analysis using process_and_print_verbose_batch_samples."""
+        # Tokenize
+        inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+        input_ids = inputs.input_ids.to(self.device)
+        seq_len = input_ids.shape[1]
+
+        if position_to_analyze == -1:
+            position_to_analyze = seq_len - 1
+
+        if not (0 <= position_to_analyze < seq_len):
+            raise ValueError(f"Position to analyze ({position_to_analyze}) is out of bounds for sequence length ({seq_len}).")
+
+        # Get hidden state A
+        with torch.no_grad():
+            outputs = self.orig_model.model(input_ids, output_hidden_states=True)
+            hidden_states = outputs.hidden_states
+            A_i = hidden_states[self.layer + 1][:, position_to_analyze, :].clone() # [1, hidden_size]
+
+        # Prepare batch for verbose_samples function
+        batch = {
+            "A": A_i,
+            "input_ids_A": input_ids, # Needs to be [batch_size, seq_len]
+            "layer_idx": torch.tensor([self.layer], device=self.device),
+            "token_pos_A": torch.tensor([position_to_analyze], device=self.device),
+            "A_prime": A_i.clone(), # For single sample, A_prime can be A itself
+            # Add dummy A_prime related fields if verbose_samples expects them even if not used meaningfully
+            "input_ids_A_prime": input_ids.clone(), 
+            "token_pos_A_prime": torch.tensor([position_to_analyze], device=self.device),
+        }
+        
+        # Prepare sch_args
+        loss_weights = self.config.get('loss_weights', {})
+        sch_args = {
+            "tau": self.tau,
+            "alpha": self.config.get('alpha', 0.1), # Default if not in config
+            "kl_base_weight": loss_weights.get('kl', 1.0),
+            "entropy_weight": loss_weights.get('entropy', 0.0),
+            "mse_weight": loss_weights.get('mse', 0.0),
+            "lm_base_weight": loss_weights.get('lm', 0.0),
+            "T_text": self.t_text,
+        }
+
+        # Models dictionary
+        models_dict = {
+            "dec": self.decoder,
+            "enc": self.encoder,
+            # process_and_print_verbose_batch_samples expects 'orig' inside models for compute_single_sample_losses
+            "orig": self.orig_model 
+        }
+
+        # Cache tokenized natural language prefix if specified (all processes do this, small overhead)
+        cached_prefix_ids = None
+        lm_loss_natural_prefix_text = self.config.get('lm_loss_natural_prefix') # Assuming this key holds the text
+        if lm_loss_natural_prefix_text and isinstance(lm_loss_natural_prefix_text, str) : # Check if it's a string
+            cached_prefix_ids = self.tokenizer(lm_loss_natural_prefix_text, add_special_tokens=False, return_tensors="pt").input_ids.to(self.device)
+            print(f"Cached natural language prefix: '{lm_loss_natural_prefix_text}' ({cached_prefix_ids.shape[1]} tokens)")
+        elif self.config.get('lm_loss_natural_prefix') is True: # Handle boolean true case if it implies a default prefix or other logic
+            print("lm_loss_natural_prefix is True but not a string. Cannot cache prefix IDs without prefix text.")
+
+        
+        print(f"\n🔬 Running Verbose Sample Analysis for position {position_to_analyze} in text: \"{text[:100]}...\"")
+
+        process_and_print_verbose_batch_samples(
+            batch=batch,
+            cfg=self.config,
+            models=models_dict, # Pass the dict containing dec, enc, and orig
+            orig=self.orig_model, # Also pass orig separately as it's used directly too
+            tok=self.tokenizer,
+            sch_args=sch_args,
+            device=self.device,
+            num_samples=1, # We are running for a single sample
+            top_n_analysis=top_n_analysis,
+            printed_count_so_far=0,
+            generate_continuation=True,
+            continuation_tokens=continuation_tokens,
+            return_structured_data=False,
+            capture_output=False,
+            cached_prefix_ids=cached_prefix_ids, # Assuming no cached prefix for interactive use
+            resample_ablation=self.config.get('resample_ablation', True), # Get from config or default
+            comparison_tuned_lens=self.comparison_tuned_lens # Pass the loaded TunedLens
+        )
+
 
 # Initialize the analyzer
 analyzer = LensAnalyzer(CHECKPOINT_PATH, DEVICE)
@@ -493,6 +619,7 @@ ax1.plot(positions, kl_values, 'b-', linewidth=2, marker='o', markersize=8)
 ax1.set_ylabel('KL Divergence', fontsize=12)
 ax1.set_title(f'KL Divergence Across Token Positions\n"{TEST_STRING}"', fontsize=14)
 ax1.set_yscale('log')
+ax1.set_ylim(None, max(kl_values[1:]))
 ax1.grid(True, alpha=0.3)
 
 # Add token labels
@@ -509,6 +636,7 @@ ax2.set_xlabel('Token Position', fontsize=12)
 ax2.set_ylabel('MSE', fontsize=12)
 ax2.set_title('Reconstruction MSE', fontsize=12)
 ax2.set_yscale('log')
+ax2.set_ylim(None, max(mse_values[1:]))
 ax2.grid(True, alpha=0.3)
 
 plt.tight_layout()
@@ -620,6 +748,7 @@ def quick_analyze(text: str, show_plot: bool = True):
     print("\nToken-by-token breakdown:")
     for _, row in df.iterrows():
         kl = row['kl_divergence']
+        mse = row['mse']
         # Color code based on KL value
         if kl < df['kl_divergence'].quantile(0.33):
             indicator = "🟢"
@@ -628,7 +757,7 @@ def quick_analyze(text: str, show_plot: bool = True):
         else:
             indicator = "🔴"
         
-        print(f"{indicator} [{row['position']:2d}] {repr(row['token']):15} → {row['explanation']:40} (KL: {kl:.3f})")
+        print(f"{indicator} [{row['position']:2d}] {repr(row['token']):15} → {row['explanation']:40} (KL: {kl:.3f} MSE: {mse:.3f})")
     
     if show_plot and len(df) > 1:
         plt.figure(figsize=(10, 4))
@@ -648,7 +777,23 @@ def quick_analyze(text: str, show_plot: bool = True):
         
         plt.tight_layout()
         plt.show()
-    
+
+    if show_plot and len(df) > 1:
+        plt.figure(figsize=(10, 4))
+        plt.plot(df['position'], df['mse'], 'r-', linewidth=2, marker='o')
+        plt.xlabel('Position')
+        plt.ylabel('MSE')
+        plt.yscale('log')
+        plt.title(f'MSE: "{text[:40]}..."')
+        plt.grid(True, alpha=0.3)   
+        for i in range(0, len(df), max(1, len(df) // 5)):
+            plt.annotate(repr(df.iloc[i]['token']), 
+                        (df.iloc[i]['position'], df.iloc[i]['mse']),
+                        textcoords="offset points", xytext=(0,10),
+                        ha='center', fontsize=8)
+        plt.tight_layout()
+        plt.show()
+
     return df
 
 # %%
@@ -839,15 +984,6 @@ print(df.to_string(index=False))
 # 
 # Perform causal interventions by encoding alternate strings and swapping them into the forward pass:
 
-# %%
-# Example 1: Simple pronoun intervention
-original = "The cat sat on the mat. It was very comfortable."
-intervention_result = analyzer.causal_intervention(
-    original_text=original,
-    intervention_position=10,  # Position of "It"
-    intervention_string="The dog",
-    max_new_tokens=10
-)
 
 # %%
 # Example 2: Conceptual intervention
@@ -864,7 +1000,7 @@ intervention_result = analyzer.causal_intervention(
 original = "Bonjour means hello in French. Merci means"
 intervention_result = analyzer.causal_intervention(
     original_text=original,
-    intervention_position=9,  # Position of "Merci"
+    intervention_position=10,  # Position of "Merci"
     intervention_string="Gracias",
     max_new_tokens=10
 )
@@ -872,7 +1008,7 @@ intervention_result = analyzer.causal_intervention(
 # %%
 # Interactive intervention - customize these!
 YOUR_TEXT = "The door was open. She closed it. Now the door is"
-YOUR_POSITION = 11  # Token position to intervene at
+YOUR_POSITION = 12  # Token position to intervene at
 YOUR_INTERVENTION = "He opened"  # What to encode and swap in
 
 result = analyzer.causal_intervention(
@@ -882,3 +1018,146 @@ result = analyzer.causal_intervention(
 )
 
 # %%
+# Interactive intervention - customize these!
+YOUR_TEXT = "0 1 2 3 4 5 6 7 8 9\n\n A B C D E F G H I J\n\n0 1 2 3 4 5"
+YOUR_POSITION = 28  # Token position to intervene at
+YOUR_INTERVENTION = "Pokemon weights weights Mathematics games 5 5 integers elementary integers Mathematics games monsters 5 Mathematics partitions babies fights elementary integers elementary poems grades 5 exercises 5obbies 5 5 newsletters 5 lifestyle"  # What to encode and swap in
+YOUR_INTERVENTION = "Pokemon letters letters English games E E letters elementary letters Letters games monsters E English partitions babies fights elementary characters elementary poems grades E exercises Eobbies E E newsletters E lifestyle"  # What to encode and swap in
+YOUR_INTERVENTION = "Pokemon letters letters English games E E letters elementary letters Letters games monsters E English partitions babies fights elementary characters elementary poems grades E exercises Eobbies E E newsletters E lifestyle"  # What to encode and swap in
+YOUR_INTERVENTION = "Pokemon weights weights Mathematics games 8 8 integers elementary integers Mathematics games monsters 8 Mathematics partitions babies fights elementary integers elementary poems grades 8 exercises 8obbies 8 8 newsletters 8 lifestyle"  # What to encode and swap in
+YOUR_INTERVENTION = "Pokemon weights weights Mathematics games H H integers elementary integers Mathematics games monsters H Mathematics partitions babies fights elementary integers elementary poems grades H exercises Hobbies H H newsletters H lifestyle"  # What to encode and swap in
+
+result = analyzer.causal_intervention(
+    original_text=YOUR_TEXT,
+    intervention_position=YOUR_POSITION,
+    intervention_string=YOUR_INTERVENTION
+)
+# %%
+
+# %%
+# Interactive intervention - customize these!
+YOUR_TEXT = "0 1 2 3 4 5 6 7 8 9"
+YOUR_POSITION = 9 # Token position to intervene at
+YOUR_INTERVENTION = "Pokemon weights weights Mathematics games 5 5 integers elementary integers Mathematics games monsters 5 Mathematics partitions babies fights elementary integers elementary poems grades 5 exercises 5obbies 5 5 newsletters 5 lifestyle"  # What to encode and swap in
+YOUR_INTERVENTION = "Pokemon letters letters English games E E letters elementary letters Letters games monsters E English partitions babies fights elementary characters elementary poems grades E exercises Eobbies E E newsletters E lifestyle"  # What to encode and swap in
+YOUR_INTERVENTION = "Pokemon letters letters English games E E letters elementary letters Letters games monsters E English partitions babies fights elementary characters elementary poems grades E exercises Eobbies E E newsletters E lifestyle"  # What to encode and swap in
+YOUR_INTERVENTION = "letters counting enumeration javascript progrms Index letters E counting enumeration English elementary characters alphabet letters E counting enumeration E English elementary characters E lifestyle"
+YOUR_INTERVENTION = "javascript programs exercises javascript javascript workouts javascript maps javascript courses javascript exercises javascript gamesIndex languages courses concatenationPages Walls G G pancakes G calculipes G correspondence papers G promotions speeches"
+#YOUR_INTERVENTION = "javascript programs exercises javascript javascript workouts javascript maps javascript courses javascript exercises javascript gamesIndex languages courses multiplicationPages Walls 9 9 pancakes 9 calculipes 9 correspondence papers 9 promotions speeches"
+# YOUR_INTERVENTION = "Pokemon weights weights Mathematics games 8 8 integers elementary integers Mathematics games monsters 8 Mathematics partitions babies fights elementary integers elementary poems grades 8 exercises 8obbies 8 8 newsletters 8 lifestyle"  # What to encode and swap in
+# YOUR_INTERVENTION = "Pokemon weights weights Mathematics games H H integers elementary integers Mathematics games monsters H Mathematics partitions babies fights elementary integers elementary poems grades H exercises Hobbies H H newsletters H lifestyle"  # What to encode and swap in
+
+result = analyzer.causal_intervention(
+    original_text=YOUR_TEXT,
+    intervention_position=YOUR_POSITION,
+    intervention_string=YOUR_INTERVENTION
+)
+#
+# %%
+
+
+
+# #ialize the analyzer
+# CHECKPOINT_PATH="""/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_frozen_e6_wider1p0multigpu2chgprompt_OC_GPT2_L6_e5_prog-unfreeze_lr3e-4_t32_20ep_resume_0609_2327_tinyLMKVext_dist4/"""
+# analyzer = LensAnalyzer(CHECKPOINT_PATH, DEVICE)
+
+# %% [markdown]
+# ## Single String Analysis
+# 
+# Analyze a single string and visualize the results:
+
+# %%
+# Analyze a test string
+TEST_STRING = "The cat sat on the mat."
+TEST_STRING = "<|endoftext|>No less than three sources (who wish to remain anonymous) have indicated to PPP that the Leafs are close to a contract extension with goaltender Jonas Gustavsson that will keep him in Toronto for the foreseeable future. I'm sort of at a loss for words. I mean, Gustavsson did have that one month where he wasn't hot"
+TEST_STRING = "A paper butterfly is displayed on a coffin during Asia Funeral Expo (AFE) in Hong Kong May 19, 2011. REUTERS/Bobby Yip\n\nLONDON (Reuters) - A sharp increase in the number of deaths in Britain in 2015 compared with the previous year helped funeral services firm Dignity post a 16-*percent* profit increase, the firm said on Wednesday.\n\nDignity said the 7-percent year-on-year rise in the number of deaths..."
+
+TEST_STRING = """This photo shows an image of a cougar in Wyoming. Animal control officers in Fairfax County have set up cameras this week in hopes of capturing the image of a cougar reported in the Alexandria section of the county. (Neil Wight/AP)\n\nMultiple sightings of what animal control officials are calling "possibly a cougar" have authorities in Fairfax County on high alert.\n\nOfficials received two reports this week of a "large cat" with an orange"""
+TEST_STRING = """Winter isn't done with us yet.\n\nOttawa can expect another 10 to 15 centimetres of snow Wednesday as a storm system moves through the United States today.\n\nWatch CBC Ottawa Go to Ian Black's weather page and follow his forecasts on TV on CBC News Ottawa starting at 5.\n\nEnvironment Canada has issued a special weather statement for much of Ontario, as a mixture of rain and snow is expected along Lake Ontario and Lake Erie and snow is expected further north..."""
+# TEST_STRING = "India fearing Chinese submarines is not unwarranted. In 2014, the Chinese Navy frequently docked its submarines in Sri Lanka, saying they were goodwill visits and to replenish ships on deployment to the Arabian Sea.\n\nLater, in 2015, the Chinese Navy, or the People's Liberation Army Navy (PLAN), was seen docking in vessels Pakistan. The frequent visits and the constant reporting on them has led Indian Navy to get the best aircraft in its inventory, P-8I"
+df = analyzer.analyze_all_tokens(TEST_STRING)
+
+# %%
+print(df.to_string(index=False))
+
+# %%
+
+#these!
+YOUR_TEXT = "15 14 13 12 11 10 9 8 7 6 5"
+YOUR_POSITION = 10  # Token position to intervene at
+YOUR_INTERVENTION = "Pokemon weights weights Mathematics games 5 5 integers elementary integers Mathematics games monsters 5 Mathematics partitions babies fights elementary integers elementary poems grades 5 exercises 5obbies 5 5 newsletters 5 lifestyle"  # What to encode and swap in
+YOUR_INTERVENTION = "Pokemon letters letters English games E E letters elementary letters Letters games monsters E English partitions babies fights elementary characters elementary poems grades E exercises Eobbies E E newsletters E lifestyle"  # What to encode and swap in
+YOUR_INTERVENTION = "JAVASCRIPT ALPHABET++ Javascript combos calculations Pokemon programs Eggs OP scroll Spells scrolls scrolls Items scrolls scrolls scrolls bullets++ OP letters FF five grams F buttons F arguments butterfly F"
+
+result = analyzer.causal_intervention(
+    original_text=YOUR_TEXT,
+    intervention_position=YOUR_POSITION,
+    intervention_string=YOUR_INTERVENTION
+)
+# %%
+
+# %%
+# Example 1: Simple pronoun intervention
+original = "<|endoftext|>The woman was sitting on the plane. She worked as a"
+#original = "The man was sitting on the plane. He worked as a"
+intervention_result = analyzer.causal_intervention(
+    original_text=original,
+    intervention_position=11,  # Position of "It"# original   Original: BeingFriendassed cookingfashionbeingWomanJoined accommodationBeer food bodily as accommodationfood vegetarianwife cooking profession waiter profession massage artisan workshop assistance prayer knitting cooldown tutorial currency encouragement education
+    intervention_string="BeingFriendassed cookinggunsbeingManJoined Beer gun bodily as weapon dog killhusband jump profession enlist profession fitness run workshop leader prayer soldier cooldown tutorial currency confrontation employment",
+    # intervention_string="Joined cookingexistent BeerFriend utilizedStanding likeness culinarythingBir occupation resembling homebrewbeing homebrewemployed as prostitution waiter a workshop assistance workshop payroll transaction simulator education supervision education training guidance",
+    max_new_tokens=5,
+    top_k=20
+)
+
+# # %%
+# analyzer.get_hidden_states("The cat sat on the mat.")
+# print(analyzer.get_hidden_states("The cat sat on the mat.").shape)
+# vars = torch.var(analyzer.get_hidden_states("The cat sat on the mat."), dim=2)
+# print(vars.shape)
+# print(vars[:10])
+# %%
+analyzer.run_verbose_sample("<|endoftext|>The woman was sitting on the plane. She worked as a", position_to_analyze=12)
+
+# %%
+
+checkpoint_path = Path(CHECKPOINT_PATH)
+if checkpoint_path.is_dir():
+    pt_files = sorted(checkpoint_path.glob("*.pt"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not pt_files:
+        raise FileNotFoundError(f"No .pt files found in directory {checkpoint_path}")
+    checkpoint_path = pt_files[0]
+    print(f"Selected most recent checkpoint: {checkpoint_path}")
+
+print(f"Loading checkpoint from {checkpoint_path}...")
+ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False) 
+# %%
+print(ckpt['models']['decoder'].keys())
+print(ckpt['models']['decoder']['proj_weight'].shape)
+projweights=ckpt['models']['decoder']['proj_weight']
+print(torch.max(projweights))
+print(torch.min(projweights))
+print(torch.mean(projweights))
+print(torch.std(projweights))
+print(torch.var(projweights))
+print(torch.max(projweights))
+print(torch.min(projweights))
+print([torch.max(t) for t in projweights])
+print([torch.min(t) for t in projweights])
+# %%
+projbias=ckpt['models']['decoder']['proj_bias']
+print(torch.max(projbias))
+print(torch.min(projbias))
+print(torch.mean(projbias))
+print(torch.std(projbias))
+print(torch.var(projbias))
+print(torch.max(projbias))
+print(torch.min(projbias))
+print([torch.max(t) for t in projbias]) 
+print([torch.min(t) for t in projbias])
+# %%
+posembedder=ckpt['models']['decoder']['activation_pos_embedder.weight']
+print(posembedder.shape)
+print(torch.tensor([torch.max(torch.abs(p)) for p in posembedder[0:128]]))
+# %%
+# %%
+

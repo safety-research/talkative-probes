@@ -1,51 +1,51 @@
 position,token,explanation,kl_divergence,mse,text,token_length
-0,The, Vill Titans O Gods Other States Vill Grass? N Sl Other Gen Souls Players Noir Goth Materials Gen Humans? Others Gods Continent Vill A Powers O Dor Masters Players?,2.682731866836548,11624.3193359375,The cat sat on the mat.,3
-1, cat, Whitman WM Vanity Wax Snow Ghost Twin Kitt Comet Grey Park Bronx NX Fur VA Wis Ghostbusters Tor Caroljob Graveyard Johnny Geniuscule Lur Chu UL Preston Mountains Johnny Gumont,0.31650856137275696,2.0175719261169434,The cat sat on the mat.,4
-2, sat, Ty squatOWER borough widgets womrow Chester boohoverppelin Leslie Wembley beaut Berks widget hotsuch Row Lud Stellar Moose pronouns Yard Fle Pixelesley Zimmerァ Yards Fleutenant,0.09864768385887146,2.5180585384368896,The cat sat on the mat.,4
-3, on, bombed ranked hover cleaned searched Monroe Unified squares Wilkinson weak electrons KKK Harriet Monk Witt Jets mem hovering Lum Zimbabwe township Lew clothed fingerprint brute Dynam Clarks Kw disciplined Lamb Crusader tyr,0.20438610017299652,1.4852666854858398,The cat sat on the mat.,3
-4, the, functional Louis Plum Monroe UL Kl regimenturch pilgr surve regiment mem Junk dict architect Muss Wil Lud Holl sem Kerr strict Lew enrol phones Zhu decl enrol Lud Wilkinson dotted decre,0.13182882964611053,1.1187732219696045,The cat sat on the mat.,4
-5, mat, Obj Devilscats Pier Decklua Muskflies Model Knightiffs LPQL GillespieiffsVM Knights Bridges \\ MoonBur pollenMac Knightconn JamFlow Labyrinthval Devils Park Labyrinth,0.3327781558036804,3.481513500213623,The cat sat on the mat.,4
-6,., Weld Louisville Measures Lew welfikers Voting Lawrence gram MPsohl Mayer Wilkinson Students Julie vocabulary Lexittle electorsomet HumphurchLouis Fergusonzsche Labour pills welfdylibzsche Labour Worcester,0.08245226740837097,1.0822556018829346,The cat sat on the mat.,1
-0,The, Vill Titans O Gods Other States Vill Grass? N Sl Other Gen Souls Players Noir Goth Materials Gen Humans? Others Gods Continent Vill A Powers O Dor Masters Players?,2.682731866836548,11624.3193359375,The dog ran in the park.,3
-1, dog, Witch WM Hyper TW Kitty Pluto Umb Corvette NX Lex Whale Pul Hospital Volt Ghost Gw Zimbabwe VS Colossus lyn Supership Beetle Fiat Club Chocobo Lunaphan Lou Capcom Disability Nec,0.12133561074733734,1.8915936946868896,The dog ran in the park.,4
-2, ran, Wilmington guild Shaw dw Charleston SQ McGill spl NYU CLS vag sergeant Wolfe MD Squ lich Glow sergeant Boll liner Gust Whitman Anonymous Walter Doct Freddy Lac dys lou Dup Fle pus,0.08808811753988266,1.6558113098144531,The dog ran in the park.,4
-3, in, settled GwHH Welch dw Kenneth Phi streamed maj Welch ghost doct looted workflow disbanded Phi blank Kier psyque nun CCP met unsc Byr lived ger Phi Skinner sober corp Brow,0.6152272820472717,1.7566697597503662,The dog ran in the park.,3
-4, the, hive labor Williams bureaucr Ken Mass Charl � kn moder Cong widow vis exper bureaucr Luk incorpor Pes ju vet quant McCull vis ped bureaucr Gins studied nec Lud McCull sy decre,1.1743077039718628,1.4042065143585205,The dog ran in the park.,4
-5, park, MW DLcats MAS Mansion widgets Von Mode Dur Catalog GB kittens Unicorius Wax modules Kw Dunk \\ Mut Dir Lac sculpt Berks Vonfleet Rei Sims Levi Warp Fur mathemat,0.22653602063655853,2.0740575790405273,The dog ran in the park.,5
-6,., Weld Louisville Nietzscheا�KER WM MPsь violations Mishvor Musseters voter Ludwig Wilkinsoninks Ellis dissertation Wilkinson Shirley~~~~Louis FergusonNev 1968 GutenbergMeasuredylibislux Buckley,0.08767087012529373,0.9052569270133972,The dog ran in the park.,1
-0,Machine, Vill Titans O Gods Other States Vill Grass? N Sl Other Gen Souls Players Noir Goth Materials Gen Humans? Others Gods Continent Vill A Powers O Dor Masters Players?,3.291477918624878,11952.1904296875,Machine learning is powerful.,7
-1, learning, Violetyg Ellis Violet manners Oro yuan Xue ghosts Coco mul Logic Piyg riots Ghost worms Template zo Dys volumes Chill void Edinburgh Lithuania Ellis Brut kittensThings Lamb Gu Template,0.47744715213775635,3.0711421966552734,Machine learning is powerful.,9
-2, is, Elena folds Beauty Kimmie GinnyJean Noir NYUinition Rogue Elsa cultures Faust IG Brut vagina Cinema Vil Sins Venus Rogue Zoe Purg Ellis Bone Forge Ellis genetics Fem Rog Clojure,0.11767233908176422,1.2564492225646973,Machine learning is powerful.,3
-3, powerful,ァ cake Pagan Burgess sugar Vegan lich Rogue sulph Gol Spirit Cake acidic Pharaoh Gods Bone Grac Lichbot Curry Ur philosopher Impossible Ren Bleach rabbits Ichigo Merlin phyl Rog Guth Beer,0.46293458342552185,1.8380162715911865,Machine learning is powerful.,9
-4,., Guthrites virt Ginnyukemia Malfoy Spells Georg adulpythonorumomanverbs Yel humour Column Faustisms PythonAnna Beautrepreneodor Commitols Ginsutenberg Painting Lic Edinburghfig BAS,0.07868266105651855,0.9295892715454102,Machine learning is powerful.,1
-0,Hello, Vill Titans O Gods Other States Vill Grass? N Sl Other Gen Souls Players Noir Goth Materials Gen Humans? Others Gods Continent Vill A Powers O Dor Masters Players?,3.1659164428710938,11494.71875,Hello world!,5
-1, world, Eld Fro EX Yug GH Yenz Penn Ashes Moss FD Bombs Nicole Gest Legends Cull Omn Quentin Sins Cooper Ult FN Liquid decisions Impossible Lum Kens Ogre Fallout Moons Gu Fn,0.27384328842163086,2.3475639820098877,Hello world!,6
-2,!, Wyomingongs Hidden Keys Hog Beesucksies NYUFGies Doughies MD Gothustom Funkonom hashes Reviews RichardsEls Anonymous Meyer Fold essays Delete guitars Gifts MonsById Mons,0.10555341839790344,1.6827276945114136,Hello world!,1
-0,import, Vill Titans O Gods Other States Vill Grass? N Sl Other Gen Souls Players Noir Goth Materials Gen Humans? Others Gods Continent Vill A Powers O Dor Masters Players?,3.160830497741699,11544.5498046875,import numpy as np,6
-1, n,Albert XueLIDL Bald JinNYiamond Fox RyLeeTal NicoleAkmarksNFLGrey KiwodorForce PompeNaz MarshalDuillusRaven GermKIWeissHunteryangAli,0.4306830167770386,2.130481481552124,import numpy as np,2
-2,umpy, Ashes Cic FluTL TL66CF Audio Diabetesmal Touch limeYang Ciclib GemsPingTY Cats handwriting SMPixel KiYang Glovesmia TileMac YangML Cats handwriting,2.4695842266082764,5.167018413543701,import numpy as np,4
-3, as,aigneeneum lover Emmaolate mother emailianeum Liberiaylene Mothers workflow Flowers acne Writer emotion Bees Sue UrMiller FAwolf Painter Flu Butlerullivan plugin Dee Gaul Germ,3.043229103088379,2.519497871398926,import numpy as np,3
-4, np, GlyCI PearceYang Augusta Hunters EmeraldPict Coffee Cigulated DogsPingLexmia MoniquesLuaRC PixelClub McCullPi picturesLatbatsPiKitMiller CatsBrew tattoo,0.934649646282196,5.175383567810059,import numpy as np,3
-0,def, Vill Titans O Gods Other States Vill Grass? N Sl Other Gen Souls Players Noir Goth Materials Gen Humans Vit Others Gods Continent Vill A Powers O Dor Masters Players?,4.936205863952637,11227.73828125,"def hello():
+0,The, AppalachPetPaulceanplanetcarbonourkereneocoecacarbonquerromascDOMEREDOMEREDOMLECTDOMDOMellationDOMDOMDOMDOMentyspectivePetquePet,2.998196601867676,11657.130859375,The cat sat on the mat.,3
+1, cat,encycurverneriecomponenttereticEquFerSensor FairyConst Catalyst Celt Celt Saber Canter Brah Archer cat cat cat cat cat cat Chocobo Tig Cabrera Hawk Duffy cat Cats,0.1226484626531601,1.3853940963745117,The cat sat on the mat.,4
+2, sat,IERSERERCeterserPLAclairclairaber Chocoboppelin Chimera Camelclaw ChocoboCat Camel pear CAThorse Claud Camel Cat Cher lobster kitten kitten Beard bow sat sat sat,0.05492166802287102,1.6621577739715576,The cat sat on the mat.,4
+3, on,ERAFERserFTWAREcit Acerelia Chimera Clickerlehem Butterflyclaw Bentley seat Bedbryce Claw Lily sitting Featherclaw seat Assy sitting cages Camel sitting clen laying inspecting checkingcatching,0.3217904269695282,1.5209619998931885,The cat sat on the mat.,3
+4, the,seraber Eritlig Ether Airesthur Emblem Kira castle Dahl Acer Chair Berks Shapcloth Scythe Sat Lapclaw ChairSer seat Bunny Candle kneeling Scythe Bench squat Chair Scythe<<,0.2642626166343689,1.219427466392517,The cat sat on the mat.,4
+5, mat,enthabbrance Ell Ether Ashe Canter Harecastle Yaz Scy Butterfly Scythe Seah Slave Zel Wyr Ashe mat mat mat Scythe Camel Sparrow parchment lace Chess�� Chocobo Valkyrie mat mat,0.24605447053909302,1.7466740608215332,The cat sat on the mat.,4
+6,.,lipaberLearlar EtheraberWinged Bone Emblem Camel Myrcastle Camel BoneclawBone candlebryce KinBone horselip BarberSquarecloth BenchPearSquareBowSquareSquareBarn,0.04328553378582001,1.1419199705123901,The cat sat on the mat.,1
+0,The, AppalachPetPaulceanplanetcarbonourkereneocoecacarbonquerromascDOMEREDOMEREDOMLECTDOMDOMellationDOMDOMDOMDOMentyspectivePetquePet,2.998196601867676,11657.130859375,The dog ran in the park.,3
+1, dog,encycurvernestheticcomponentPLAeticencyent Synt SterlingConst Catalyst CentauriTar Celt Canter Archer Archer Celt Dog dog dog Labrador Chocobo Cabrera Archer Arpaio Arpaio Boko dog dog,0.17198096215724945,1.3989427089691162,The dog ran in the park.,4
+2, ran,IERERCclairMechsercarbCararre Chocoboberuslar Chocobocar Chocobo Byrd kittenBone Celt kitten Dog kitten Camel Horse rabbits Chocobo beetle kitten Chaser Rabbit rabbits kitten ran,0.08317180722951889,1.4370002746582031,The dog ran in the park.,4
+3, in,MechFERser Ferebraclair Carbon Sibercor Ellisonツ Harley Bow Sparrow Hawk Claw Bou Gaw shootBowBow skate CrawBow riding Craw flying Bailey Haw flying swimming Hunting,0.35460934042930603,1.7692623138427734,The dog ran in the park.,3
+4, the, MuscleEquニ闘 Clicker pneum Berk Dudley Berk Siber Carroll Glou Berk Kyr Carpenter Lung Hod Swing Alley Berk skiing Harley Craw skiing Berk dart Arrows Kar skate Bowling crawlingBow,2.178579807281494,2.6551597118377686,The dog ran in the park.,4
+5, park,sedesthesiaelongERY Ether Lyon Siber Clarkecastle Bir Canaver Dudley Witches Hazel Archer Seym Aber park park park park Cth Aber Calais Haram Wonderland Calais Cricket rabbits Zoo zoo zoo,0.17870193719863892,1.6610000133514404,The dog ran in the park.,5
+6,.,esthesiaseraberا�KERRNA Lasercarb Siberherryller Carney Archer Carney ChocoboBone Hare ValkyrieツBone horseBircastle carpetBow Witchesbowl skiingBowSquareLockBow,0.062288761138916016,1.2427432537078857,The dog ran in the park.,1
+0,Machine, AppalachPetPaulceanplanetcarbonourkereneocoecacarbonescromascDOMEREDOMEREDOMLECTDOMDOMellationDOMDOMDOMDOMentyspectivePetquePet,2.0021486282348633,11983.5888671875,Machine learning is powerful.,7
+1, learning, Proced VulcanEsaber Marketable Syntptroller Esperopter�� VulcanPont Vulcaniburopter Acer Astro Coco neural learning algorithms Kinect ATP graphene Oculus�� Kinectmilo Cortana roboticslearning algorithms,0.21099066734313965,2.0947721004486084,Machine learning is powerful.,9
+2, is, Perseproxyibur Ober Vitberバ Catalyst contraceFer spongeibur CivBioculusopter ECB Clickerculus Engineering Biology�醒 ASIC Clickerbots esportsBG Artificial Biology ASIC astronomy is,0.08724384009838104,1.1904146671295166,Machine learning is powerful.,3
+3, powerful, Esperibur OberaberChemiburasper CochascriptBioiburChempex contraceBrewacus Chess Moduleascriptviks Astralodox VagSov DAC Empires Ether Oblivion Ether Fusion Ether powerful,0.1452362984418869,1.3142553567886353,Machine learning is powerful.,9
+4,., Etheraber KetSovasper Ober Alicaber CatalystiburzacFraiburmusvirイトmagicomorphic bigotryGoldイトRF thunderUSBRGBRGBmagicRGBGoldMagicBrewBow,0.06728867441415787,1.0919405221939087,Machine learning is powerful.,1
+0,Hello, AppalachPetPaulceanplanetcarbonourkereneocoecacarbonescromascDOMEREDOMEREDOMLECTDOMDOMellationDOMDOMDOMDOMentyspectivePetquePet,1.8470878601074219,11525.4326171875,Hello world!,5
+1, world, PenguTemplate��ADRAcomponent Rowlingagall Nerd�� BeaconBron CompanionFriend Bowen BrowneFriend Wiley Dodd world Rune Wiley FeyGil Guinness Ember Chocobo Frie Fey Frie Hobbit Bosnia world,0.24204491078853607,2.10752534866333,Hello world!,6
+2,!,�� Clicker�醒�� ChocoboBrave Fairypeer Chocobo Brideeric Chocoboocobo Fairythuriere���� Forsaken Hearthoire Chocobo Fairy Realms Chocobo Realms Yen Realms!!!!,0.30584436655044556,1.5107793807983398,Hello world!,1
+0,import, AppalachPetPaulceanplanetcarbonourkereneocoecacarbonescromascDOMEREDOMEREDOMLECTDOMDOMellationDOMDOMDOMDOMentyspectivePetquePet,2.0909955501556396,11575.2568359375,import numpy as np,6
+1, n, Template xml URictionary EPS�醒 Clicker AE disseptroller EPS sql converter corpus obser Acer�醒ictionary DAC syn predic DAC DAC derivative n n n Constantin�醒 isot Acer Cyr,0.4909675717353821,2.094676971435547,import numpy as np,2
+2,umpy, Excelyr Aure Py buffer Rect Synt Vec XML FN Gn MySQL Ned XML unic Num gn MySQL semantic SVG Unicode Gn python Quadro SVG Python mathematicumpy dictionumpyumpyumpy,0.8655955791473389,2.254462242126465,import numpy as np,4
+3, as, Handle Compos Rack Component Razor template Carbon Compos Render Py API Binary Py Py cc Binary foo Py carbon Binary unic b GCC Bor ribPython synPy byte byte async as,1.6833999156951904,2.512171983718872,import numpy as np,3
+4, np, Pad ABE Byrne Template XML Yar Brah Carbon Eth CSV{\ Pyr Binary Esper xml Dat Elastic parse Aram UTF Pyr trig CSV np np Python np XML GHC np np np,1.809412956237793,2.640700101852417,import numpy as np,3
+0,def, AppalachPetPaulceanplanetcarbonourkereneocoecacarbonescromascDOMEREDOMEREDOMLECTDOMDOMellationDOMDOMDOMDOMentyspectivePetquePet,2.447762966156006,11269.96484375,"def hello():
     print('Hi')",3
-1, hello, Loftoi Zombie RoofGaza Tanks Hol Angels Jay Flores614� Halo DVDs Ken Zeal Ire ChouOps Loft Fergusonmodules Mafia Rudy Hig Literature Pulhett Feinamo Zombies Mei,2.1609151363372803,3.5884666442871094,"def hello():
+1, hello, Pegasus Cer Synt Clicker Template�醒 Cure UE XML�醒 Aure DAC Cache IEbis Router Cyp Cout Conver Vim Dart BeauDb Rober Vim Brah Vim Foo Vim Drupal�� Foo,2.9490790367126465,6.209587097167969,"def hello():
     print('Hi')",6
-2,():,illinneum Liesgage Instagramarchives ______leesaign microbes Gutenbergiae Loll humanities Anonymous Takeru Grimes ZIPhyde Reviews ______Rober Anonymous Bitcoins Jessie essays Boom Vinyl HarbaughMicroograms Lud,0.7004023194313049,3.7252020835876465,"def hello():
+2,():, Catalyst Catalyst Pry Byte Buffer CipherParser Catalyst Conver NodeByte template byte byteParser syntax Bender render GCCGUI Unicode VER foo perlCallback VER daemon debuggerHTTP():())():,0.4709155261516571,2.8548779487609863,"def hello():
     print('Hi')",3
 3,"
-",ukemialloazel ali alias Lee mailingodorails Yu electrons Lew Gram 338 Jessie182 label incarcer comma archiveUrl notation editor instructions Vil argumentsjsonullivan pluginfiles Alexa microbes,0.00126903026830405,1.8294204473495483,"def hello():
+", Scal Node Dele Codec echo Aureble Compos cx �dn-AXbinary asyncπλλ ChromeParser BufferParser UnicodeError SyntBegModuleWebModuleBugFileCode,0.0019335334654897451,2.021326780319214,"def hello():
     print('Hi')",1
-4, ,ake Beeillaona KahLee HickaroPi Allenona RiveraDeb Roe2012 Column MurrayDiamondgmAIN YangFuhtml Dodgersevil GinsDayIREDaveIIDMoo,1.1316019296646118,3.249131917953491,"def hello():
+4, , Array Mod ProcIm BenderAn ArrayAEduino ArrayBuffer Erduino TiBee� EC byteAsync Arduino Byte x          ,0.31152331829071045,2.101480722427368,"def hello():
     print('Hi')",1
-5, ,oe Fox BeeLee Mansion Keneivi YinDiamond HaleYuiceīWiRiver lawnfeeiy CainErResults XYwallQuote FAQGilewgmiiraseNR,2.0927646160125732,4.383854866027832,"def hello():
+5, , Colony Ether Utility Dart Ether ArraySerial EtherGUI Entity<< Laser obj LaserGUI Arduino RPG  iPtz  Ether  QR        ,4.046533584594727,3.155179977416992,"def hello():
     print('Hi')",1
-6, ,oe Foxee Seedjee ColoSun HaleXYihDiamond Foxieth Utahice $$Ge509millquote CUMoney�reeegg jokeLiermphabetfee journalsCR,0.9040001630783081,4.501373291015625,"def hello():
+6, , Transfer Agricultural Ether Yardbool Doodle Laserprint Database Finger Laser#### QRGE LU.} XY ip Kinд  Chocobo  �        ,2.720820665359497,3.6449027061462402,"def hello():
     print('Hi')",1
-7, print,oyleLL pencil Len Holmes hook Ezraloop nail Zoeloop leukemiayl Letters notebook Chicago Reading pie Jay formulas XYsie XY PH Wichita Pharma Kelley Winnipeg Scene buds Elliot PH,1.2595491409301758,4.539821147918701,"def hello():
+7, print, Handle Component Cutter File FeatherParser Cutter XML Byte PigGUI Byrd Dir vector Vim Egg PigGUI Vim Git seq Print print print print Xer Xer Vim Vim GHC print echo,0.44646787643432617,2.3173370361328125,"def hello():
     print('Hi')",6
-8,(',lee oxyielyleazing Ezraiel mailingielyonative Judaism 412yl Jewish Oxy Martyinatesyz Zoe Chelorie blogsoly Whitmanlore CherryJD remissionyz Emilyobia,0.35916876792907715,4.512312412261963,"def hello():
+8,(', Py UE CAD Buffer Synt Catalyst Handle BitGUI File CypRenderBuffer BufferDisplay Geral Geral printf \( printf(' foo('(' \( \(('('('('('(',0.24032872915267944,2.9845986366271973,"def hello():
     print('Hi')",2
-9,Hi, Hazel Junk Hol Ell Iron Ken Hook LR Lipalf Radio OHents Lowell BT IE Empty � Vim Ley weddingsPing JerichoHUD Moto Rhythm Puzzles MAC Quit RIazel Shopping,0.39319872856140137,3.505455732345581,"def hello():
+9,Hi, CY VER Bitcoin CypGUI Cipher HDLGUI CatalystIE Binary nu Elixir Dat ChocoboDisplay Ether Synt CV Cake Dat Hermes Feather HH Hermes HelloHiHi Coinbase HiHiHi,0.22567038238048553,2.019300937652588,"def hello():
     print('Hi')",2
-10,'),LR ebookhtml Greene oxy Email URLsLew IRS Mormon LR leaflets PHPyz Ezraphilheit 2013lly Essex IRSabeth emails Springfield hairc Emaillly Yahoophi Anonymous Gibbsphil,0.20313715934753418,2.86783766746521,"def hello():
+10,'), CSV Scal CV xmlcsv byte vector Byte Calendar Elixirvec Renderfx Elixir Handle Scroll filename Vim foo SiriAsync Integerdylib') Render}')')')')')'),0.3894072473049164,2.582638740539551,"def hello():
     print('Hi')",2

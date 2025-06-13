@@ -146,3 +146,84 @@ def log_parameter_counts(dec_raw: nn.Module, enc_raw: nn.Module, orig: OrigWrapp
         'encoder_total': num_params_enc_total,
         'orig_total': num_params_orig_total
     }
+
+
+
+def log_parameter_drift(
+    model: torch.nn.Module,
+    initial_state: dict,
+    model_prefix: str,
+    step: int,
+    logger_fn,  # e.g., log_metrics from lens.utils.logging (for W&B)
+    log: logging.Logger, # Python logger
+    is_main_process: bool
+):
+    """Calculates and logs parameter drift from their initial states."""
+    metrics_to_log = {}
+    param_group_drifts = {}  # To store sum of drifts and sum of initial norms per group
+
+    for name, param in model.named_parameters():
+        if param.requires_grad and name in initial_state:
+            initial_p = initial_state[name].to(param.device)
+            current_p = param.data
+            
+            abs_drift = torch.norm(current_p - initial_p)
+            norm_initial_p = torch.norm(initial_p)
+            # rel_drift is calculated per parameter but not directly logged per parameter to avoid too many metrics.
+            # We will calculate an overall relative drift for the group.
+
+            group = "other_trainable"
+            # Determine group for parameter based on its name
+            if name == "soft_prompt_embeddings":  # Encoder specific
+                group = "prompts"
+            elif name == "prompt_left_emb" or name == "prompt_right_emb":  # Decoder specific
+                group = "prompts"
+            elif name.startswith("proj."):
+                group = "projection"
+            elif name.startswith("out."):  # Decoder specific output head
+                group = "output_head"
+            elif name =="activation_pos_embedder":  # Decoder specific
+                group = "extra_pos_embeddings"
+            elif name.startswith("base."):
+                # Position embeddings
+                if any(pos_emb in name for pos_emb in [".wpe.", ".position_embeddings."]):
+                    group = "base_model_position_embeddings"
+                # Input embeddings
+                elif any(pos_emb in name for pos_emb in ["activation_pos_embedder"]):
+                    group = "extra_pos_embeddings"
+                elif any(emb_keyword in name for emb_keyword in [".wte.", ".embed_tokens.", ".word_embeddings."]):
+                    group = "base_model_input_embeddings"
+                # Output embeddings
+                elif any(emb_keyword in name for emb_keyword in [".lm_head.", ".embed_out.", ".output_embeddings.m"]):
+                    group = "base_model_output_embeddings"
+                # LayerNorms (catch common LayerNorm naming)
+                elif any(norm_keyword in name for norm_keyword in [".ln_", ".layernorm", ".norm."]):
+                    group = "base_model_layernorms"
+                # Transformer layers (blocks, attention, mlp, etc)
+                elif any(layer_keyword in name for layer_keyword in [".h.", ".layers.", ".layer.", ".block.", ".attention.", ".mlp."]):
+                    group = "base_model_transformer_layers"
+                else:
+                    group = "base_model_other"
+            
+            if group not in param_group_drifts:
+                param_group_drifts[group] = {'sum_abs_drift': 0.0, 'sum_norm_initial': 0.0, 'count': 0}
+            
+            param_group_drifts[group]['sum_abs_drift'] += abs_drift.item()
+            param_group_drifts[group]['sum_norm_initial'] += norm_initial_p.item()
+            param_group_drifts[group]['count'] += 1
+        elif param.requires_grad and name not in initial_state and is_main_process:
+            log.warning(f"Trainable parameter {name} in {model_prefix} not found in initial_state for drift calculation.")
+
+    for group, data in param_group_drifts.items():
+        if data['count'] > 0:
+            avg_abs_drift = data['sum_abs_drift'] / data['count']
+            # Overall relative drift for the group: Sum(||curr-init||) / Sum(||init||)
+            overall_rel_drift_group = data['sum_abs_drift'] / (data['sum_norm_initial'] + 1e-9)
+                            
+            metrics_to_log[f"drift/{model_prefix}/{group}/avg_abs_drift"] = avg_abs_drift
+            metrics_to_log[f"drift/{model_prefix}/{group}/overall_rel_drift"] = overall_rel_drift_group
+        elif is_main_process:
+            log.warning(f"Parameter group {group} for {model_prefix} had 0 parameters for drift calculation. This is unexpected.")
+
+    if metrics_to_log and is_main_process:
+        logger_fn(metrics_to_log, step=step)

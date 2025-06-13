@@ -39,3 +39,11 @@ def log(metrics: Dict[str, float], step: int | None = None) -> None:  # noqa: D4
         return
 
     _wandb_run.log(metrics, step=step)
+
+def summary_log(metrics: Dict[str, float], step: int | None = None) -> None:  # noqa: D401
+    """Log *metrics* to W&B if active, else ignore."""
+
+    if _wandb_run is None:
+        return
+
+    _wandb_run.summary.update(metrics)

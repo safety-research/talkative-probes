@@ -73,7 +73,7 @@ trainable_components:
     projection_layer: true   # Train Proj_A_to_D_emb (self.proj)
     output_head: false # Train the Decoder's output LM head (self.out)
     embedding_head: false      # Train the input/output embeddings of the base model (may be tied)
-    pos_embeddings: true
+    pos_embeddings: false
     eye_init: true
     trainable_prompts: true   # Train the decoder's soft prompt embeddings
     use_checkpointing: false  # Use generate_soft_chkpt with gradient checkpointing

@@ -451,6 +451,7 @@ def process_and_print_verbose_batch_samples(
     cached_prefix_ids: torch.Tensor | None = None,
     resample_ablation: bool = True,
     comparison_tuned_lens: Optional["TunedLens"] = None,
+    random_from_batch: bool = True,
 ) -> Union[int, Tuple[int, List[Dict[str, Any]]], Tuple[int, str]]:
     """Processes and prints verbose samples from a batch.
     
@@ -483,8 +484,13 @@ def process_and_print_verbose_batch_samples(
     num_printed_this_batch = 0
     structured_samples = [] if return_structured_data else None
     captured_output = [] if capture_output else None
+    if random_from_batch:
+        num_samples = min(num_samples, batch["A"].size(0))
+        sample_indices = torch.randperm(batch["A"].size(0), device=device)[:num_samples]
+    else:
+        sample_indices = range(min(num_samples - printed_count_so_far, batch["A"].size(0)))
 
-    for i in range(min(num_samples - printed_count_so_far, batch["A"].size(0))):
+    for i in sample_indices:
         l = int(batch["layer_idx"][i].item())
         p = int(batch["token_pos_A"][i].item())
 
@@ -649,33 +655,26 @@ def process_and_print_verbose_batch_samples(
         tuned_lens_prediction_key = f"TunedLens (L{l})"
 
         if comparison_tuned_lens is not None:
-            # Ensure comparison_tuned_lens is on the correct device
-            # This should ideally be done before this function if it's used multiple times.
-            # However, for safety, we can try to move its components or the whole thing.
-            # Assuming comparison_tuned_lens was moved to `device` by the caller.
-            if l < len(comparison_tuned_lens.layer_translators) and \
-               l < len(comparison_tuned_lens.layer_norm) and \
-               comparison_tuned_lens.layer_translators[l] is not None and \
-               comparison_tuned_lens.layer_norm[l] is not None:
+            # comparison_tuned_lens is already on the correct device (moved by the caller)
+            # A_i is also on the correct device.
+            if hasattr(comparison_tuned_lens, 'config') and hasattr(comparison_tuned_lens.config, 'num_hidden_layers') and l < comparison_tuned_lens.config.num_hidden_layers:
                 try:
-                    A_i_for_tl = A_i.to(
-                        device=comparison_tuned_lens.layer_translators[l].weight.device,
-                        dtype=comparison_tuned_lens.layer_translators[l].weight.dtype
-                    )
                     with torch.no_grad():
-                        h_l_translated = comparison_tuned_lens.layer_translators[l](A_i_for_tl)
-                        h_l_norm = comparison_tuned_lens.layer_norm[l](h_l_translated)
-                        # Ensure unembed is called with tensor on the same device as its parameters
-                        h_l_norm_for_unembed = h_l_norm.to(comparison_tuned_lens.unembed.weight.device if hasattr(comparison_tuned_lens.unembed, 'weight') else device)
-                        logits_tuned_lens_at_p_batched = comparison_tuned_lens.unembed(h_l_norm_for_unembed)
-                    
+                        # Ensure A_i has the dtype TunedLens expects if there's a specific one
+                        # otherwise, use A_i's current dtype. TunedLens models are typically float32.
+                        # TODO fix this 
+                        A_i_casted = A_i.to(comparison_tuned_lens.dtype if hasattr(comparison_tuned_lens, 'dtype') and comparison_tuned_lens.dtype is not None else A_i.dtype)
+                        logits_tuned_lens_at_p_batched = comparison_tuned_lens(A_i_casted, idx=l)
+
                     top_n_tuned_lens_tokens = get_top_n_tokens(logits_tuned_lens_at_p_batched.squeeze(0), tok, top_n_analysis)
                 except Exception as e:
-                    # print(f"Error during TunedLens prediction for layer {l}: {e}") # For debugging
-                    top_n_tuned_lens_tokens = [f"ERR TL pred"] * top_n_analysis # Keep it short
-            elif comparison_tuned_lens is not None:
-                 top_n_tuned_lens_tokens = [f"L{l} OOB/cfg TL"] * top_n_analysis
-
+                    # import logging
+                    # logging.getLogger(__name__).error(f"Error during TunedLens prediction for layer {l}: {e}", exc_info=True)
+                    #log.error(f"Error during TunedLens prediction for layer {l}: {e}", exc_info=True)
+                    top_n_tuned_lens_tokens = [f"ERR TL L{l}"] * top_n_analysis 
+                    print(f"error during tuned lens prediction for layer {l}: {e}")
+            else:
+                 top_n_tuned_lens_tokens = [f"L{l} OOB TL"] * top_n_analysis
 
         analysis_preds_dict = {
             "Base Model's natural prediction": top_n_natural_base_preds_for_p_plus_1,

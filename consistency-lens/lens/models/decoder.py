@@ -28,7 +28,7 @@ class DecoderConfig:
     projection_layer: bool = True    # YAML `projection_layer`
     output_head: bool = True         # YAML `output_head`
     embedding_head: bool = False     # YAML `embedding_head`
-    pos_embeddings: bool = True      # YAML `pos_embeddings`
+    pos_embeddings: bool = False     # YAML `pos_embeddings`
     eye_init: bool = True            # YAML `eye_init`
     trainable_prompts: bool = True   # YAML `trainable_prompts`
     use_checkpointing: bool = False # YAML `use_checkpointing`

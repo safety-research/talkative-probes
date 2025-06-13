@@ -23,7 +23,7 @@ trainable_components:
     output_head: false                # Keep LM head frozen too
     use_flash_attention: false
     use_checkpointing: false
-    pos_embeddings: true
+    pos_embeddings: true 
     use_kv_cache: true
     patch_all_layers: true
     per_layer_projections: true 
@@ -34,8 +34,9 @@ trainable_components:
     subtract_add_pos_embeddings: true
     extra_pos_embeddings: true
   encoder:
-    base_model: true                 # FROZEN throughout
+    base_model: false                # FROZEN throughout
     use_base_model: true
+    pos_embeddings: true
     projection_layer:  true           # Train projection
     trainable_soft_prompt: true
     eye_init: true
@@ -85,7 +86,7 @@ group_n: 4
 gradient_accumulation_steps: 8
 
 freeze_schedule:
-  enabled:   true              # Enable freeze schedule
+  enabled:   false              # Enable freeze schedule
   
   # Global unfreeze timing (applies to all components unless overridden)
   unfreeze_at: "256os"         # When to unfreeze non-adapter parameters

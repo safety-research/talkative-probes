@@ -40,7 +40,8 @@ from lens.models.orig import OrigWrapper
 from lens.training.loop import train_step as original_train_step
 from torch.utils.data import DataLoader, random_split
 from lens.training.optim import param_groups
-from lens.utils.logging import init as log_init, log as log_metrics
+from lens.utils.logging import init as log_init, log as log_metrics, summary_log as summary_log_metrics
+from lens.utils.param_utils import log_parameter_counts, log_parameter_drift
 from lens.training.schedules import (
     get_schedule_value, 
     get_lr_scheduler,
@@ -73,10 +74,10 @@ from lens.training.distributed import set_seed
 from lens.evaluation.wandb_logger import verbose_samples_logger
 from lens.training.fast_distributed_sampler import FastDistributedSampler
 from lens.training.test import diagnose_activation_mismatch, diagnose_activation_save_load, check_dataset_activation_format, test_autocast_difference, check_layer_indexing, test_decoder_generation
-from lens.models.tuned_lens import initialize_consistency_lens_projection, load_full_tuned_lens  # Add this line
-from typing import TYPE_CHECKING # Added import
-if TYPE_CHECKING: # Added import
-    from tuned_lens import TunedLens # type: ignore # Added import
+from lens.models.tuned_lens import initialize_consistency_lens_projection, load_full_tuned_lens
+from typing import TYPE_CHECKING, Optional
+if TYPE_CHECKING:
+    from tuned_lens import TunedLens
 
 # Import all the utility functions from the original training script
 sys.path.insert(0, str(Path(__file__).parent))
@@ -101,84 +102,6 @@ def get_initial_model_state(model: torch.nn.Module) -> dict:
             state[name] = p.detach().cpu().clone()   #  <-- keep on CPU
     return state
 
-def log_parameter_drift(
-    model: torch.nn.Module,
-    initial_state: dict,
-    model_prefix: str,
-    step: int,
-    logger_fn,  # e.g., log_metrics from lens.utils.logging (for W&B)
-    log: logging.Logger, # Python logger
-    is_main_process: bool
-):
-    """Calculates and logs parameter drift from their initial states."""
-    metrics_to_log = {}
-    param_group_drifts = {}  # To store sum of drifts and sum of initial norms per group
-
-    for name, param in model.named_parameters():
-        if param.requires_grad and name in initial_state:
-            initial_p = initial_state[name].to(param.device)
-            current_p = param.data
-            
-            abs_drift = torch.norm(current_p - initial_p)
-            norm_initial_p = torch.norm(initial_p)
-            # rel_drift is calculated per parameter but not directly logged per parameter to avoid too many metrics.
-            # We will calculate an overall relative drift for the group.
-
-            group = "other_trainable"
-            # Determine group for parameter based on its name
-            if name == "soft_prompt_embeddings":  # Encoder specific
-                group = "prompts"
-            elif name == "prompt_left_emb" or name == "prompt_right_emb":  # Decoder specific
-                group = "prompts"
-            elif name.startswith("proj."):
-                group = "projection"
-            elif name.startswith("out."):  # Decoder specific output head
-                group = "output_head"
-            elif name =="activation_pos_embedder":  # Decoder specific
-                group = "extra_pos_embeddings"
-            elif name.startswith("base."):
-                # Position embeddings
-                if any(pos_emb in name for pos_emb in [".wpe.", ".position_embeddings."]):
-                    group = "base_model_position_embeddings"
-                # Input embeddings
-                elif any(pos_emb in name for pos_emb in ["activation_pos_embedder"]):
-                    group = "extra_pos_embeddings"
-                elif any(emb_keyword in name for emb_keyword in [".wte.", ".embed_tokens.", ".word_embeddings."]):
-                    group = "base_model_input_embeddings"
-                # Output embeddings
-                elif any(emb_keyword in name for emb_keyword in [".lm_head.", ".embed_out.", ".output_embeddings.m"]):
-                    group = "base_model_output_embeddings"
-                # LayerNorms (catch common LayerNorm naming)
-                elif any(norm_keyword in name for norm_keyword in [".ln_", ".layernorm", ".norm."]):
-                    group = "base_model_layernorms"
-                # Transformer layers (blocks, attention, mlp, etc)
-                elif any(layer_keyword in name for layer_keyword in [".h.", ".layers.", ".layer.", ".block.", ".attention.", ".mlp."]):
-                    group = "base_model_transformer_layers"
-                else:
-                    group = "base_model_other"
-            
-            if group not in param_group_drifts:
-                param_group_drifts[group] = {'sum_abs_drift': 0.0, 'sum_norm_initial': 0.0, 'count': 0}
-            
-            param_group_drifts[group]['sum_abs_drift'] += abs_drift.item()
-            param_group_drifts[group]['sum_norm_initial'] += norm_initial_p.item()
-            param_group_drifts[group]['count'] += 1
-        elif param.requires_grad and name not in initial_state and is_main_process:
-            log.warning(f"Trainable parameter {name} in {model_prefix} not found in initial_state for drift calculation.")
-
-    for group, data in param_group_drifts.items():
-        if data['count'] > 0:
-            avg_abs_drift = data['sum_abs_drift'] / data['count']
-            # Overall relative drift for the group: Sum(||curr-init||) / Sum(||init||)
-            overall_rel_drift_group = data['sum_abs_drift'] / (data['sum_norm_initial'] + 1e-9)
-                            
-            metrics_to_log[f"drift/{model_prefix}/{group}/avg_abs_drift"] = avg_abs_drift
-            metrics_to_log[f"drift/{model_prefix}/{group}/overall_rel_drift"] = overall_rel_drift_group
-        elif is_main_process:
-            log.warning(f"Parameter group {group} for {model_prefix} had 0 parameters for drift calculation. This is unexpected.")
-
-    if metrics_to_log and is_main_process:
-        logger_fn(metrics_to_log, step=step)
 
 
 class Timer:
@@ -1346,13 +1269,13 @@ def maybe_restore_optimizer_and_scheduler_from_checkpoint(
     encoder,
     decoder_base,
     encoder_base,
-    param_groups,
+    param_groups_fn, # Renamed from param_groups to avoid conflict with the variable
     projection_lr_multiplier,
     embedding_lr_multiplier,
     prompt_lr_multiplier,
     base_model_lr_multiplier,
     weight_decay,
-    learning_rate,
+    learning_rate, # This is the new base LR from current config
     steps_per_epoch,
     gradient_accumulation_steps,
     max_optimizer_steps,
@@ -1370,10 +1293,11 @@ def maybe_restore_optimizer_and_scheduler_from_checkpoint(
     reset_steps = config.get('resume_reset_steps', False)
     strict_opt_load = config.get('strict_optimizer_load', True)
 
-    # Load optimizer state if not resetting steps
+    old_base_lr_from_checkpoint_optim = None
+
     if not reset_steps and optimizer is not None and "optim" in checkpoint_data:
         if is_main():
-            log.info("Preparing to load optimizer state from checkpoint. Current optimizer group structure:")
+            log.info("Attempting to load optimizer state from checkpoint and reconfigure with current settings.")
             param_to_name_map = {}
             current_decoder_model_for_params = decoder.module if hasattr(decoder, 'module') else decoder
             current_encoder_model_for_params = encoder.module if hasattr(encoder, 'module') else encoder
@@ -1382,161 +1306,165 @@ def maybe_restore_optimizer_and_scheduler_from_checkpoint(
                 param_to_name_map[id(p)] = f"decoder.{name}"
             for name, p in current_encoder_model_for_params.named_parameters():
                 param_to_name_map[id(p)] = f"encoder.{name}"
-
+            
+            log.info("Original optimizer structure (before potential rebuild from checkpoint):")
             for i, group in enumerate(optimizer.param_groups):
                 group_param_names = [param_to_name_map.get(id(p), f"UNKNOWN_PARAM_ID_{id(p)}") for p in group['params']]
                 log.info(
-                    f"  Group {i}: LR={group['lr']:.3e}, WD={group.get('weight_decay', 0.0):.3e}, "
-                    f"#Params={len(group['params'])}"
+                    f"  Orig. group {i}: LR={group['lr']:.3e}, WD={group.get('weight_decay', 0.0):.3e}, "
+                    f"#Pms={len(group['params'])} Param names: {group_param_names[:5]}{'...' if len(group_param_names) > 5 else ''}"
                 )
-                log.info(f"    Param names (first 5 of {len(group_param_names)}): {group_param_names[:5]}")
-                if len(group_param_names) > 5:
-                    log.info(f"      ... and {len(group_param_names) - 5} more parameters.")
+
         try:
-            if strict_opt_load:
-                optimizer.load_state_dict(checkpoint_data["optim"])
-            else:
-                log.warning("Non-strict optimizer load enabled. This may lead to unexpected behavior.")
-                log.error('This code is a hacka nd almost certainly will not work')
-                # Non-strict loading: fill missing keys with defaults
-                state_dict = checkpoint_data["optim"]
-                opt_state = optimizer.state_dict()
-                # Merge state
-                for k in opt_state:
-                    if k not in state_dict:
-                        state_dict[k] = opt_state[k]
-                # For 'state', merge per param id
-                if "state" in state_dict and "state" in opt_state:
-                    for pid, v in opt_state["state"].items():
-                        if pid not in state_dict["state"]:
-                            state_dict["state"][pid] = v
-                # For 'param_groups', fill missing keys in each group
-                if "param_groups" in state_dict and "param_groups" in opt_state:
-                    for i, group in enumerate(opt_state["param_groups"]):
-                        if i < len(state_dict["param_groups"]):
-                            for key, val in group.items():
-                                if key not in state_dict["param_groups"][i]:
-                                    state_dict["param_groups"][i][key] = val
-                        else:
-                            state_dict["param_groups"].append(group)
-                optimizer.load_state_dict(state_dict)
+            checkpoint_optimizer_dict = checkpoint_data["optim"]
+            checkpoint_optim_internal_state = checkpoint_optimizer_dict.get("state")
+
+            if is_main() and checkpoint_optimizer_dict.get("param_groups") and checkpoint_optimizer_dict["param_groups"]:
+                old_base_lr_from_checkpoint_optim = checkpoint_optimizer_dict["param_groups"][0]['lr']
+                log.info(f"Base LR from checkpoint's optimizer for potential smooth transition: {old_base_lr_from_checkpoint_optim:.2e}")
+            elif is_main():
+                log.warning("Could not determine base LR from checkpoint's optimizer param_groups (or param_groups was empty).")
+
+            if is_main():
+                log.info(f"Rebuilding optimizer parameter groups with current config LR: {learning_rate:.2e} and current multipliers/WD.")
+
+            new_optimizer_param_groups = param_groups_fn(
+                [decoder_base, encoder_base],
+                learning_rate, 
+                projection_lr_multiplier,
+                embedding_lr_multiplier,
+                prompt_lr_multiplier,
+                base_model_lr_multiplier,
+                weight_decay
+            )
+            
+            optimizer = torch.optim.AdamW(new_optimizer_param_groups)
+
+            if checkpoint_optim_internal_state:
+                if strict_opt_load:
+                    optimizer.load_state_dict({'state': checkpoint_optim_internal_state, 'param_groups': optimizer.state_dict()['param_groups']})
+                    if is_main():
+                        log.info("Optimizer internal state (e.g., momentum) strictly loaded from checkpoint into reconfigured optimizer.")
+                else: # Non-strict, not recommended for user's preference but kept for completeness of logic
+                    log.warning("Non-strict optimizer state load enabled. Merging state. This is less safe.")
+                    current_optim_state_for_merge = optimizer.state_dict().get('state', {})
+                    merged_state = {**current_optim_state_for_merge, **checkpoint_optim_internal_state} # Checkpoint takes precedence
+                    optimizer.load_state_dict({'state': merged_state, 'param_groups': optimizer.state_dict()['param_groups']})
+                    if is_main():
+                        log.info("Optimizer internal state (e.g., momentum) non-strictly loaded/merged.")
+            else: 
+                if is_main():
+                    log.warning("No optimizer internal state ('state') found in checkpoint. Optimizer uses fresh state with new config.")
+            
             for group in optimizer.param_groups:
-                if 'initial_lr' not in group:
-                    group['initial_lr'] = group['lr']
-            if is_main():
-                log.info("Optimizer state successfully loaded from checkpoint.")
-        except ValueError as e:
-            if is_main():
-                log.warning(f"Failed to load optimizer state: {e}. Continuing with fresh optimizer.")
-                if "optim" in checkpoint_data and "param_groups" in checkpoint_data["optim"]:
-                    ckpt_groups = checkpoint_data["optim"]["param_groups"]
-                    log.warning(f"  Checkpoint optimizer has {len(ckpt_groups)} parameter groups.")
-                    if ckpt_groups:
-                        log.warning(f"    Checkpoint group 0 LR: {ckpt_groups[0].get('lr')}")
-                    for i, group in enumerate(ckpt_groups):
-                        log.warning(f"    Checkpoint group {i} name {group} shape{len(group['params'])}, {group['params'][0].shape if hasattr(group['params'][0], 'shape') else 'no shape'}")
-                else:
-                    log.warning("  Checkpoint optimizer data or param_groups not found.")
-                log.warning(f"  Current optimizer has {len(optimizer.param_groups)} parameter groups.")
-                if optimizer.param_groups:
-                    log.warning(f"    Current group 0 LR: {optimizer.param_groups[0].get('lr')}")
-                if not config.get('allow_reset_optimizer_on_resume'):
-                    raise ValueError("Failed to load optimizer state from checkpoint, did not permit reset of optimizer.")
+                group['initial_lr'] = group['lr']
 
-    # Load scheduler state if available (unless we're resetting steps)
+            if is_main():
+                log.info("Optimizer reconfigured with current settings. New structure:")
+                for i, group in enumerate(optimizer.param_groups):
+                    group_param_names_new = [param_to_name_map.get(id(p), f"UNKNOWN_PARAM_ID_{id(p)}") for p in group['params']]
+                    log.info(
+                        f"  New group {i}: LR={group['lr']:.3e}, Initial_LR={group['initial_lr']:.3e}, "
+                        f"WD={group.get('weight_decay', 0.0):.3e}, #Pms={len(group['params'])} Param names: {group_param_names_new[:5]}{'...' if len(group_param_names_new) > 5 else ''}"
+                    )
+
+        except Exception as e: 
+            if is_main():
+                log.error(f"CRITICAL: Failed to load optimizer state or reconfigure optimizer: {e}. This is a hard error as per preference.")
+            raise RuntimeError(f"Failed to load and reconfigure optimizer state from checkpoint. Error: {e}") from e
+
+
+    # --- Learning Rate Scheduler Handling ---
+    current_optimizer_step_for_scheduler = start_step // gradient_accumulation_steps
+    scheduler_last_epoch = current_optimizer_step_for_scheduler - 1 if current_optimizer_step_for_scheduler > 0 else -1
+
     if not reset_steps:
-        if lr_scheduler and "scheduler" in checkpoint_data:
-            lr_scheduler.load_state_dict(checkpoint_data["scheduler"])
-            if is_main():
-                log.info("Scheduler state successfully loaded from checkpoint.")
-        elif lr_scheduler and is_main():
-            log.warning("Scheduler state not found in checkpoint.")
-    else:
-        if is_main():
-            log.info("Skipping scheduler state load due to step reset")
+        smooth_lr_config = config.get('smooth_lr_transition', {})
+        smooth_lr_enabled = smooth_lr_config.get('enabled', False)
+        
+        use_smooth_transition = (
+            smooth_lr_enabled and 
+            old_base_lr_from_checkpoint_optim is not None and 
+            abs(learning_rate - old_base_lr_from_checkpoint_optim) > 1e-9
+        )
 
-    if is_main():
-        log.info(f"Resumed from micro-step {start_step}")
-
-    # Handle learning rate override if specified
-    new_base_lr = learning_rate
-    old_base_lr = optimizer.param_groups[0]['lr'] if optimizer.param_groups else new_base_lr
-
-    smooth_lr_config = config.get('smooth_lr_transition', {})
-    smooth_lr_enabled = smooth_lr_config.get('enabled', False) and not reset_steps
-
-    if reset_steps or abs(new_base_lr - old_base_lr) > 1e-9:
-        if smooth_lr_enabled and abs(new_base_lr - old_base_lr) > 1e-9:
+        if use_smooth_transition:
             transition_steps_raw = smooth_lr_config.get('transition_steps', '1000s')
             transition_steps = _resolve_schedule_to_steps(
                 transition_steps_raw, steps_per_epoch, log, "smooth_lr_transition.transition_steps", gradient_accumulation_steps
             )
-
             if is_main():
-                log.info(f"Enabling smooth LR transition from {old_base_lr:.2e} to {new_base_lr:.2e} over {transition_steps} steps")
-
-            old_state_dict = optimizer.state_dict()
-            params = param_groups(
-                [decoder_base, encoder_base],
-                new_base_lr,
-                projection_lr_multiplier,
-                embedding_lr_multiplier,
-                prompt_lr_multiplier,
-                base_model_lr_multiplier,
-                weight_decay
+                log.info(f"Enabling smooth LR transition from checkpoint LR {old_base_lr_from_checkpoint_optim:.2e} to current config LR {learning_rate:.2e} over {transition_steps} optimizer steps.")
+            
+            base_scheduler_for_smooth_transition = get_lr_scheduler(
+                optimizer, lr_scheduler_cfg, max_optimizer_steps,
+                last_epoch=-1, # Base scheduler for smooth transition starts fresh
+                grad_accum_steps=gradient_accumulation_steps
             )
-            optimizer = torch.optim.AdamW(params)
-            old_state = old_state_dict['state']
-            if old_state:
-                optimizer.load_state_dict({'state': old_state, 'param_groups': optimizer.state_dict()['param_groups']})
-            for group in optimizer.param_groups:
-                if 'initial_lr' not in group:
-                    group['initial_lr'] = group['lr']
-            current_optimizer_step = start_step // gradient_accumulation_steps
-            base_scheduler = get_lr_scheduler(optimizer, lr_scheduler_cfg, max_optimizer_steps,
-                                              last_epoch=-1,
-                                              grad_accum_steps=gradient_accumulation_steps)
+            
             lr_scheduler = SmoothTransitionScheduler(
                 optimizer=optimizer,
-                base_scheduler=base_scheduler,
-                transition_steps=transition_steps // gradient_accumulation_steps,
-                start_lr=old_base_lr,
-                last_epoch=current_optimizer_step - 1 if current_optimizer_step > 0 else -1
+                base_scheduler=base_scheduler_for_smooth_transition,
+                transition_steps=transition_steps // gradient_accumulation_steps, 
+                start_lr=old_base_lr_from_checkpoint_optim, 
+                last_epoch=scheduler_last_epoch # Smooth scheduler is stepped to current progress
             )
             if is_main():
-                log.info(f"Smooth transition scheduler initialized at optimizer step {current_optimizer_step}")
-        else:
+                log.info(f"Smooth transition scheduler created and initialized to optimizer step {current_optimizer_step_for_scheduler}.")
+        
+        else: # No smooth transition, or LRs are too similar for it. Recreate scheduler from current config.
             if is_main():
-                if reset_steps:
-                    log.info(f"Resetting optimizer and scheduler (step reset). New LR: {new_base_lr:.2e}")
-                else:
-                    log.info(f"Overriding learning rate from checkpoint: {old_base_lr:.2e} -> {new_base_lr:.2e}")
+                log.info("No smooth LR transition. Recreating scheduler from current config, advanced to current step.")
+                if smooth_lr_enabled and old_base_lr_from_checkpoint_optim is not None and not (abs(learning_rate - old_base_lr_from_checkpoint_optim) > 1e-9) :
+                    log.info(f"Smooth transition was enabled, but checkpoint LR ({old_base_lr_from_checkpoint_optim:.2e}) and current LR ({learning_rate:.2e}) are too similar.")
+                elif smooth_lr_enabled and old_base_lr_from_checkpoint_optim is None:
+                    log.info("Smooth transition was enabled, but could not determine checkpoint LR. Recreating scheduler.")
 
-            old_state_dict = optimizer.state_dict()
-            params = param_groups(
-                [decoder_base, encoder_base],
-                new_base_lr,
-                projection_lr_multiplier,
-                embedding_lr_multiplier,
-                prompt_lr_multiplier,
-                base_model_lr_multiplier,
-                weight_decay
-            )
-            optimizer = torch.optim.AdamW(params)
-            old_state = old_state_dict['state']
-            if old_state:
-                optimizer.load_state_dict({'state': old_state, 'param_groups': optimizer.state_dict()['param_groups']})
-            for group in optimizer.param_groups:
-                if 'initial_lr' not in group:
-                    group['initial_lr'] = group['lr']
-            if lr_scheduler is not None:
-                current_optimizer_step = start_step // gradient_accumulation_steps
-                scheduler_last_epoch = -1 if reset_steps else (current_optimizer_step - 1 if current_optimizer_step > 0 else -1)
+
+            if lr_scheduler is not None: # If a scheduler type is configured
                 lr_scheduler = get_lr_scheduler(optimizer, lr_scheduler_cfg, max_optimizer_steps,
                                                 last_epoch=scheduler_last_epoch,
                                                 grad_accum_steps=gradient_accumulation_steps)
                 if is_main():
-                    log.info(f"Learning rate scheduler reinitialized at optimizer step {current_optimizer_step}")
+                    log.info(f"Scheduler recreated from current config and advanced to optimizer step {current_optimizer_step_for_scheduler}.")
+                
+                # OPTIONAL: Cautious loading of scheduler state if explicitly configured (and exists)
+                # For now, per user preference, we are NOT loading scheduler state here by default to avoid issues.
+                # If loading is desired, it would be added here with a config flag and error handling.
+                # e.g., if config.get('resume_load_scheduler_state_if_not_transitioning', False) and "scheduler" in checkpoint_data:
+                #    try:
+                #        lr_scheduler.load_state_dict(checkpoint_data["scheduler"])
+                #        log.info("Loaded scheduler state from checkpoint into the re-created scheduler.")
+                #    except Exception as e:
+                #        log.warning(f"Failed to load scheduler state into re-created scheduler: {e}. Using fresh state for this scheduler.")
+            else: # lr_scheduler is None (e.g. constant LR, no scheduler configured)
+                 if is_main():
+                    log.info("No LR scheduler configured (`lr_scheduler` is None). Optimizer will use its fixed LRs.")
+    
+    else: # reset_steps is True
+        if is_main():
+            log.info("Optimizer and scheduler are being reset (reset_steps=True). Using fresh state with current config.")
+        if lr_scheduler is not None:
+            lr_scheduler = get_lr_scheduler(optimizer, lr_scheduler_cfg, max_optimizer_steps,
+                                            last_epoch=-1, # Start from beginning
+                                            grad_accum_steps=gradient_accumulation_steps)
+            if is_main():
+                log.info("LR scheduler reinitialized for step 0 due to reset_steps.")
+
+
+    if is_main():
+        log.info(f"Resumed from micro-step {start_step}. Optimizer and scheduler configured.")
+        if lr_scheduler:
+            try:
+                current_lrs_sched = lr_scheduler.get_last_lr()
+                log.info(f"Current scheduler LRs (first few): {[f'{lr:.2e}' for lr in current_lrs_sched[:5]]}")
+            except Exception as e:
+                log.warning(f"Could not get LRs from scheduler for logging: {e}")
+        elif optimizer and optimizer.param_groups:
+            log.info(f"Current optimizer first group LR (no scheduler): {optimizer.param_groups[0]['lr']:.2e}")
+        else:
+            log.info("No active LR scheduler and optimizer has no param groups to log LR from.")
+
 
     return optimizer, lr_scheduler
 
@@ -1677,6 +1605,7 @@ def main(cfg: DictConfig) -> None:
         if is_main():
             run_checkpoint_dir.mkdir(parents=True, exist_ok=True)
             log.info(f"Checkpoints will be saved to: {run_checkpoint_dir}")
+            summary_log_metrics({"checkpoint_dir": str(run_checkpoint_dir)})
         
         if 'checkpoint' not in cfg: # For original DictConfig
             cfg.checkpoint = OmegaConf.create()
@@ -1772,6 +1701,10 @@ def main(cfg: DictConfig) -> None:
         if is_main():
             log.info(f"Decoder has trainable parameters: {decoder_has_trainable_params}")
             log.info(f"Encoder has trainable parameters: {encoder_has_trainable_params}")
+
+        
+        log.info('At start time, param counts:')
+        log_parameter_counts(decoder, encoder, orig_model, decoder_config_obj, encoder_config_obj, log)
         
         # NOW move models to device and set up DDP
         decoder, encoder, orig_model = setup_distributed_models(
@@ -1924,8 +1857,7 @@ def main(cfg: DictConfig) -> None:
         # These intervals are based on micro-steps (main loop steps)
         log_interval = _resolve_schedule_to_steps(config['log_interval'], steps_per_epoch, log, "log_interval", gradient_accumulation_steps)
         wandb_log_interval = _resolve_schedule_to_steps(config['wandb_log_interval'], steps_per_epoch, log, "wandb_log_interval", gradient_accumulation_steps)
-        val_interval_str = config.get('val_interval', "500s")
-        val_interval = _resolve_schedule_to_steps(val_interval_str, steps_per_epoch, log, "val_interval", gradient_accumulation_steps)
+        val_interval = _resolve_schedule_to_steps(config['val_interval'], steps_per_epoch, log, "val_interval", gradient_accumulation_steps)
         
         if is_main():
             log.info(f"Validation setup: val_loader={'exists' if val_loader else 'None'}, interval={val_interval} steps")
@@ -1933,9 +1865,8 @@ def main(cfg: DictConfig) -> None:
         # -------- Drift-logging configuration --------
         drift_cfg = config.get('parameter_drift', {})
         drift_enabled = drift_cfg.get('enabled', True)
-        drift_log_interval_str = drift_cfg.get('interval', "1000s")
         drift_log_interval = _resolve_schedule_to_steps(
-            drift_log_interval_str, steps_per_epoch, log, "parameter_drift.interval",
+            drift_cfg['interval'], steps_per_epoch, log, "parameter_drift.interval",
             gradient_accumulation_steps
         ) if drift_enabled else -1
         if drift_enabled and drift_log_interval <= 0:
@@ -2036,9 +1967,8 @@ def main(cfg: DictConfig) -> None:
         optimizer = torch.optim.AdamW(params)
         
         # Learning rate scheduler
-        lr_scheduler_cfg = config.get('lr_scheduler', {})
         # Initialize scheduler with max_optimizer_steps
-        lr_scheduler = get_lr_scheduler(optimizer, lr_scheduler_cfg, max_optimizer_steps, grad_accum_steps=gradient_accumulation_steps) 
+        lr_scheduler = get_lr_scheduler(optimizer, config['lr_scheduler'], max_optimizer_steps, grad_accum_steps=gradient_accumulation_steps) 
         
         # Get mixed precision configuration
         mixed_precision_config = config.get('mixed_precision', {'enabled': True, 'dtype': 'auto'})
@@ -2087,6 +2017,31 @@ def main(cfg: DictConfig) -> None:
     # It uses the updated config dict with the run-specific checkpoint directory.
     checkpoint_manager = CheckpointManager(config, log, steps_per_epoch, gradient_accumulation_steps)
     
+    # --- Load Comparison TunedLens for Verbose Samples (Main Process Only for Loading) ---
+    comparison_tuned_lens_cpu = None
+    verbose_sample_config = config.get('verbose_samples', {})
+    if verbose_sample_config.get('enabled', False) and verbose_sample_config.get('compare_with_tuned_lens', False):
+        if is_main():
+            log.info("Loading comparison TunedLens for verbose samples...")
+            try:
+                tl_model_name_for_load = config['model_name']
+                tl_checkpoint = verbose_sample_config.get('tuned_lens_checkpoint_path_or_name', None)
+
+                comparison_tuned_lens_cpu = load_full_tuned_lens(
+                    model_or_model_name=tl_model_name_for_load,
+                    checkpoint_path_or_name=tl_checkpoint,
+                    device="cpu",
+                    log=log,
+                    is_main_process=is_main()
+                )
+                if comparison_tuned_lens_cpu:
+                    log.info(f"Successfully loaded comparison TunedLens from '{tl_checkpoint if tl_checkpoint else 'default HF location for ' + tl_model_name_for_load}' to CPU.")
+                else:
+                    log.warning(f"Failed to load comparison TunedLens from '{tl_checkpoint if tl_checkpoint else 'default HF location for ' + tl_model_name_for_load}'. Comparison will be skipped.")
+            except Exception as e:
+                log.error(f"Error loading comparison TunedLens: {e}. Comparison will be skipped.", exc_info=True)
+                comparison_tuned_lens_cpu = None
+    
     if is_main():
         current_wandb_run_id = setup_wandb_and_save_config(
             config, run_name, dataset_info, world_size, run_checkpoint_dir, log, cfg
@@ -2103,7 +2058,7 @@ def main(cfg: DictConfig) -> None:
         encoder=encoder,
         decoder_base=decoder_base,
         encoder_base=encoder_base,
-        param_groups=param_groups,
+        param_groups_fn=param_groups,
         projection_lr_multiplier=projection_lr_multiplier,
         embedding_lr_multiplier=embedding_lr_multiplier,
         prompt_lr_multiplier=prompt_lr_multiplier,
@@ -2113,7 +2068,7 @@ def main(cfg: DictConfig) -> None:
         steps_per_epoch=steps_per_epoch,
         gradient_accumulation_steps=gradient_accumulation_steps,
         max_optimizer_steps=max_optimizer_steps,
-        lr_scheduler_cfg=lr_scheduler_cfg,
+        lr_scheduler_cfg=config['lr_scheduler'],
         start_step=start_step,
         log=log,
         is_main=is_main,
@@ -2135,6 +2090,7 @@ def main(cfg: DictConfig) -> None:
             "Captured initial model states for drift calculation "
             f"(resume step={start_step})."
         )
+
 
     # Training loop
     if is_main():
@@ -2200,7 +2156,7 @@ def main(cfg: DictConfig) -> None:
         pbar = tqdm(range(start_step, max_steps), 
                     desc="Training", 
                     initial=start_step, 
-                    total=max_steps)
+                    total=max_steps, miniters=log_interval)
     else:
         pbar = range(start_step, max_steps)
     
@@ -2278,7 +2234,7 @@ def main(cfg: DictConfig) -> None:
         # Calculate samples_per_sec: the rate of samples processed by the model.
         # effective_batch_size = (per_device_batch_size * num_devices * grad_accum_steps)
         # True sample throughput is (per_device_batch_size * num_devices) / avg_step_time.
-        # This is equivalent to effective_batch_size / (avg_step_time * grad_accum_steps).
+        # This is equivalent to effective_batch_size / (avg_step_time * grad_accumulation_steps).
         if avg_step_time > 0:
             # gradient_accumulation_steps is guaranteed to be >= 1.
             samples_per_sec = effective_batch_size / (avg_step_time * gradient_accumulation_steps)
@@ -2291,8 +2247,7 @@ def main(cfg: DictConfig) -> None:
         # Performance metrics (calculated similarly to 01_train.py)
         # steps_per_second refers to micro-steps per second
         steps_per_second = 1.0 / avg_step_time if avg_step_time > 0 else 0
-        # tokens_per_second is based on the corrected samples_per_sec
-        tokens_per_second = samples_per_sec * config.get('t_text', 10) # t_text is tokens per sample
+        tokens_per_second = samples_per_sec * config.get('t_text') # t_text is tokens per sample
 
         # Update progress bar description (only on main process and every log_interval)
         if is_main() and (step % log_interval == 0 or step == max_steps - 1):

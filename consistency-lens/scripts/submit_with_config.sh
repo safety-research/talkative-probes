@@ -446,7 +446,7 @@ submit_train_job() {
         local sbatch_args=(
             --parsable
             --job-name="${job_name}-train"
-            --time=24:00:00
+            --time=48:00:00
             --output="logs/${job_name}_train_%j.out"
             --error="logs/${job_name}_train_%j.err"
         )
@@ -583,8 +583,8 @@ submit_train_job() {
             train_cmd="$train_cmd $HYDRA_OVERRIDES"
         fi
         timestamp=$(date +%Y%m%d_%H%M%S)
-        local log_out="logs/${job_name}_train_direct_${timestamp}.out"
-        local log_err="logs/${job_name}_train_direct_${timestamp}.err"
+        local log_out="logs/${job_name}_train_direct_${timestamp}d.out"
+        local log_err="logs/${job_name}_train_direct_${timestamp}d.err"
         
         echo -e "${BLUE}Logs: $log_out and $log_err${NC}" >&2
         
