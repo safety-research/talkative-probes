@@ -3,6 +3,8 @@ import torch.nn as nn # For type hint
 from lens.models.decoder import DecoderConfig # For type hint
 from lens.models.encoder import EncoderConfig # For type hint
 from lens.models.orig import OrigWrapper # For type hint
+import torch
+import torch.nn.functional as F
 
 def log_parameter_counts(dec_raw: nn.Module, enc_raw: nn.Module, orig: OrigWrapper, 
                          decoder_config: DecoderConfig, encoder_config: EncoderConfig, 

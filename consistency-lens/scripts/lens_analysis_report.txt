@@ -1,25 +1,26 @@
 
 Consistency Lens Analysis Report
 ================================
-Text: "This photo shows an image of a cougar in Wyoming. Animal control officers in Fairfax County have set..."
-Checkpoint: gpt2_frozen_step4000_epoch1_.pt
+Text: "Israel Accused of Suppressing Terror Evidence to Help Out New Pal China
+
+Israel is a country despera..."
+Checkpoint: gpt2_frozen_step6000_epoch1_.pt
 Model: openai-community/gpt2
 Layer: 6
 
 Summary Statistics:
-- Total tokens: 11
-- Average KL divergence: 1.2955
-- Std deviation: 1.4416
-- Min KL: 0.0019
-- Max KL: 4.0465
+- Total tokens: 96
+- Average KL divergence: 0.6699
+- Std deviation: 1.2957
+- Min KL: 0.0012
+- Max KL: 8.5048
 
 Top 3 most consistent tokens (lowest KL):
-  - [3] '
-' → ' Scal Node Dele Codec echo Aureble Compos cx �dn-AXbinary asyncπλλ ChromeParser BufferParser UnicodeError SyntBegModuleWebModuleBugFileCode' (KL: 0.0019)
-  - [9] 'Hi' → ' CY VER Bitcoin CypGUI Cipher HDLGUI CatalystIE Binary nu Elixir Dat ChocoboDisplay Ether Synt CV Cake Dat Hermes Feather HH Hermes HelloHiHi Coinbase HiHiHi' (KL: 0.2257)
-  - [8] '('' → ' Py UE CAD Buffer Synt Catalyst Handle BitGUI File CypRenderBuffer BufferDisplay Geral Geral printf \( printf(' foo('(' \( \(('('('('('('' (KL: 0.2403)
+  - [61] ' no' → ' arise as come as[ no]' (KL: 0.0012)
+  - [28] ' Middle' → ' Euras dominating residing abroad[ Middle]' (KL: 0.0034)
+  - [69] ' cour' → ' Putin remained enjoys continues[ cour]' (KL: 0.0103)
 
 Top 3 least consistent tokens (highest KL):
-  - [5] ' ' → ' Colony Ether Utility Dart Ether ArraySerial EtherGUI Entity<< Laser obj LaserGUI Arduino RPG  iPtz  Ether  QR        ' (KL: 4.0465)
-  - [1] ' hello' → ' Pegasus Cer Synt Clicker Template�醒 Cure UE XML�醒 Aure DAC Cache IEbis Router Cyp Cout Conver Vim Dart BeauDb Rober Vim Brah Vim Foo Vim Drupal�� Foo' (KL: 2.9491)
-  - [6] ' ' → ' Transfer Agricultural Ether Yardbool Doodle Laserprint Database Finger Laser#### QRGE LU.} XY ip Kinд  Chocobo  �        ' (KL: 2.7208)
+  - [0] 'Israel' → ' Referred exalted juven decisively[Israel]' (KL: 8.5048)
+  - [3] ' of' → ' Genocide accuses Alleg accused[ of]' (KL: 5.9195)
+  - [8] ' to' → ' genocide garbage pornography Database[ to]' (KL: 4.8258)

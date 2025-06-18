@@ -16,6 +16,7 @@ export OMP_NUM_THREADS=16
 export TORCHINDUCTOR_CACHE_DIR="${HOME}/.cache/torchinductor"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TOKENIZERS_PARALLELISM=true
+export HYDRA_FULL_ERROR=1
 
 
 # Default values
@@ -30,6 +31,7 @@ NUM_GPUS_TRAIN="1"  # Number of GPUs for training (defaults to 1)
 USE_DISTRIBUTED="false"  # Whether to use distributed training
 RUN_SUFFIX=""  # Optional suffix to add to run name
 HYDRA_OVERRIDES=""
+ALWAYS_DISTRIBUTED="true"
 
 # Store the original command for logging
 export SUBMIT_SCRIPT_COMMAND="$0 $@"
@@ -408,13 +410,13 @@ submit_train_job() {
         
         # Choose training script based on distributed mode
         local train_script="01_train.py"
-        if [ "$USE_DISTRIBUTED" = "true" ] || [ "$NUM_GPUS_TRAIN" -gt 1 ]; then
+        if [ "$USE_DISTRIBUTED" = "true" ] || [ "$NUM_GPUS_TRAIN" -gt 1 ] || [ "$ALWAYS_DISTRIBUTED" = "true" ]; then
             train_script="01_train_distributed.py"
         fi
         
         # Build command based on distributed mode
         local base_cmd="cd $CONSISTENCY_LENS_DIR && source scripts/ensure_env.sh && "
-        if [ "$USE_DISTRIBUTED" = "true" ] || [ "$NUM_GPUS_TRAIN" -gt 1 ]; then
+        if [ "$USE_DISTRIBUTED" = "true" ] || [ "$NUM_GPUS_TRAIN" -gt 1 ] || [ "$ALWAYS_DISTRIBUTED" = "true" ]; then
             # Use torchrun for distributed training with random port to avoid conflicts
             # Generate random port between 29500-29999
             local random_port=$((29500 + RANDOM % 500))
@@ -554,12 +556,12 @@ submit_train_job() {
         
         # Choose training script and command based on distributed mode
         local train_script="01_train.py"
-        if [ "$USE_DISTRIBUTED" = "true" ] || [ "$NUM_GPUS_TRAIN" -gt 1 ]; then
+        if [ "$USE_DISTRIBUTED" = "true" ] || [ "$NUM_GPUS_TRAIN" -gt 1 ] || [ "$ALWAYS_DISTRIBUTED" = "true" ]; then
             train_script="01_train_distributed.py"
         fi
         
         # Build command based on distributed mode
-        if [ "$USE_DISTRIBUTED" = "true" ] || [ "$NUM_GPUS_TRAIN" -gt 1 ]; then
+        if [ "$USE_DISTRIBUTED" = "true" ] || [ "$NUM_GPUS_TRAIN" -gt 1 ] || [ "$ALWAYS_DISTRIBUTED" = "true" ]; then
             # Use torchrun for distributed training
             random_port=$((29500 + RANDOM % 500))
             echo "Using random port: $random_port"

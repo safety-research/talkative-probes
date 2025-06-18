@@ -9,12 +9,15 @@ from omegaconf import DictConfig, OmegaConf
 from datasets import load_dataset
 from transformers import AutoTokenizer
 from tqdm import tqdm
+import dotenv
+dotenv.load_dotenv()
 
 
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
 def main(cfg: DictConfig) -> None:
     # Setup logging
     log = logging.getLogger(__name__)
+    
     
     # Get config values - use defaults if pretokenize section doesn't exist
     pretokenize_cfg = cfg.pretokenize
@@ -31,11 +34,11 @@ def main(cfg: DictConfig) -> None:
     batch_size = pretokenize_cfg.batch_size
     force = pretokenize_cfg.force
     
-    # Output directory
+    # Output directory - now includes seq_len for versioning
     if output_dir_cfg:
         output_dir = Path(output_dir_cfg)
     else:
-        output_dir = Path("data/pretokenized") / dataset_name.replace("/", "_")
+        output_dir = Path("data/pretokenized") / f"{dataset_name.replace('/', '_')}_seq{seq_len}"
     
     # Check if already exists and force flag
     if output_dir.exists() and not force:
@@ -65,7 +68,7 @@ def main(cfg: DictConfig) -> None:
         
         # Load dataset
         try:
-            dataset = load_dataset(dataset_name, split=split, trust_remote_code=True)
+            dataset = load_dataset(dataset_name, split=split, trust_remote_code=True, num_proc=num_proc)
             log.info(f"Loaded {len(dataset)} samples")
         except Exception as e:
             log.warning(f"Could not load split {split}: {e}")

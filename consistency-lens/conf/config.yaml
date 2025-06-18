@@ -110,6 +110,8 @@ trainable_components:
     projection_init_method: "default"
     subtract_add_pos_embeddings: false  
     extra_pos_embeddings: false
+    add_current_token: false
+    special_last_token_vector: false
 
 # Freeze schedule for non-adapter parameters
 # When enabled, non-adapter parameters (base_model, output_head, embedding_head) will be frozen
@@ -203,6 +205,7 @@ pretokenize:
 
 activation_dumper:
   num_samples: -1  # -1 means process entire dataset
+  min_pos: 5
   seq_len: 64
   use_hf_dataset: true
   hf_dataset_name: "SimpleStories/SimpleStories"
@@ -231,6 +234,7 @@ activation_dumper:
 # NOTE: This should match activation_dumper.val_output_dir above
 val_activation_dir: null  # Set to path to use pre-split validation data
 
+
 # WandB configuration (can also be in wandb.yaml)
 wandb:
   project: "consistency-lens-mvp"
@@ -245,7 +249,7 @@ checkpoint:
   name_pattern: "checkpoint_step{step}_epoch{epoch}"
   
   # Save strategies (can enable multiple)
-  save_every_n_steps: "20000s"  # Save interval - Examples: "20000s", "5e", "10000steps", "2epochs" (use "0" to disable)
+  save_every_n_steps: "1000s"  # Save interval - Examples: "20000s", "5e", "10000steps", "2epochs" (use "0" to disable)
   save_every_n_epochs: 0        # Legacy: Save every N epochs (0 to disable) - prefer save_every_n_steps with "Ne"
   save_at_end: true             # Save final checkpoint when training completes
   
@@ -263,7 +267,7 @@ checkpoint:
     metrics: true                 # Save current metrics
     
   # Checkpoint management
-  max_checkpoints: 20             # Maximum total checkpoints to keep (-1 for unlimited)
+  max_checkpoints: 3             # Maximum total checkpoints to keep (-1 for unlimited)
   delete_old_checkpoints: true    # Delete oldest checkpoints when max_checkpoints reached
   strict_load: true
 
@@ -271,6 +275,8 @@ checkpoint:
 lm_base_weight: 1.0                  # Base LM weight; final LM multiplier = lm_base_weight * alpha_schedule  
 kl_base_weight: 1.0             # Fixed weight on KL divergence (fundamental objective)
 mse_weight: 0.0                 # Weight for MSE reconstruction loss (0.0 to disable, use instead of KL for direct reconstruction)
+GRPO_weight: 0.0
+GRPO_beta: 0.0
 
 # Token entropy bonus (see loop.py). Positive values reward higher entropy to
 # avoid posterior collapse; set to 0.0 to disable.
@@ -363,3 +369,4 @@ do_kl_computation: true
 do_lm_computation: true
 
 allow_reset_optimizer_on_resume: false
+detect_anomaly: false

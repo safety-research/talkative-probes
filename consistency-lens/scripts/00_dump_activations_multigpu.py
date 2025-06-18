@@ -24,6 +24,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset, load_from_disk
 from tqdm import tqdm
+import dotenv
+dotenv.load_dotenv()
 
 # Enable tokenizer parallelism within each process (we handle multi-process coordination)
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
@@ -202,6 +204,7 @@ def main(cfg: DictConfig) -> None:
     num_samples = None if raw_num_samples == -1 else raw_num_samples
     
     seq_len = activation_dumper_cfg.get('seq_len', 64)
+    min_pos = activation_dumper_cfg.get('min_pos', 8)
     
     # HuggingFace dataset options
     effective_hf_dataset_name = activation_dumper_cfg.get('hf_dataset_name')
@@ -216,18 +219,24 @@ def main(cfg: DictConfig) -> None:
     val_output_dir_cfg = activation_dumper_cfg.get('val_output_dir')
     val_num_samples_cfg = activation_dumper_cfg.get('val_num_samples', -1)
 
-    # Build output directory with model and layer information
-    base_path = resolve_path(base_output_dir_str)
     model_name_clean = model_name.replace("/", "_")
-    
-    # Insert model and layer info into the path
-    path_parts = base_path.parts
-    if path_parts[-1].endswith(('_train', '_test', '_val')):
-        dataset_suffix = path_parts[-1]
-        parent_path = Path(*path_parts[:-1])
-        effective_output_dir = parent_path / model_name_clean / f"layer_{layer_idx}" / dataset_suffix
-    else:
-        effective_output_dir = base_path.parent / model_name_clean / f"layer_{layer_idx}" / base_path.name
+
+    def build_layered_output_dir(base_dir_str: str) -> Path:
+        """Constructs a full output path including model and layer info."""
+        base_path = resolve_path(base_dir_str)
+        path_parts = list(base_path.parts)
+        
+        # Check if the last part is a standard split name suffix
+        if path_parts and any(path_parts[-1].endswith(s) for s in ['_train', '_test', '_val']):
+            dataset_suffix = path_parts.pop()
+            parent_path = Path(*path_parts) if path_parts else Path('.')
+            return parent_path / model_name_clean / f"layer_{layer_idx}" / dataset_suffix
+        else:
+            # Fallback for other path structures
+            return base_path.parent / model_name_clean / f"layer_{layer_idx}" / base_path.name
+
+    # Build output directory for the main split
+    effective_output_dir = build_layered_output_dir(base_output_dir_str)
     
     # Logging setup
     logging.basicConfig(
@@ -322,25 +331,10 @@ def main(cfg: DictConfig) -> None:
     ]
     
     # Add validation split if specified
-    base_val_output_dir_str = val_output_dir_cfg # This is cfg.activation_dumper.get('val_output_dir')
-    
-    if base_val_output_dir_str:
-        # Build validation output directory with model and layer information
-        base_val_path = resolve_path(base_val_output_dir_str)
-        
-        # Insert model and layer info into the path
-        val_path_parts = base_val_path.parts
-        if val_path_parts[-1].endswith(('_train', '_test', '_val')):
-            val_dataset_suffix = val_path_parts[-1]
-            val_parent_path = Path(*val_path_parts[:-1])
-            val_out_dir = val_parent_path / model_name_clean / f"layer_{layer_idx}" / val_dataset_suffix
-        else:
-            val_out_dir = base_val_path.parent / model_name_clean / f"layer_{layer_idx}" / base_val_path.name
-        
+    if val_output_dir_cfg:
+        val_out_dir = build_layered_output_dir(val_output_dir_cfg)
         val_split = val_hf_split_cfg if val_hf_split_cfg is not None else "validation"
-        
-        raw_val_samples = val_num_samples_cfg # This is cfg.activation_dumper.get('val_num_samples', -1)
-        val_samples = None if raw_val_samples == -1 else raw_val_samples
+        val_samples = None if val_num_samples_cfg == -1 else val_num_samples_cfg
         
         splits_to_dump.append({
             "name": val_split,
@@ -350,7 +344,6 @@ def main(cfg: DictConfig) -> None:
     
     # Dump helper function adapted for distributed
     def dump_split_distributed(split_name_arg: str, out_path: Path, n_samples_for_split: int | None):
-        MIN_TOKEN_IDX_INCLUSIVE = 5
         
         if rank == 0:
             if n_samples_for_split is None:
@@ -387,13 +380,14 @@ def main(cfg: DictConfig) -> None:
                 "split_name": split_name_arg,
                 "num_samples": rank_num_samples, # This is per-rank num_samples
                 "seq_len": seq_len,
+                "min_pos": min_pos,
                 "layer_idx": layer_idx,
                 "model_name": model_name,
                 "tokenizer_name": tokenizer_name,
                 "use_hf_dataset": effective_use_hf,
                 "hf_dataset_name": effective_hf_dataset_name if effective_use_hf else None,
                 "dataset_cache_dir": effective_dataset_cache_dir if effective_use_hf else None,
-                "min_token_idx_inclusive": MIN_TOKEN_IDX_INCLUSIVE,
+                "min_token_idx_inclusive": min_pos,
                 "seed": seed + rank, # Seed per rank
             }
         }
@@ -415,12 +409,41 @@ def main(cfg: DictConfig) -> None:
                 log.warning(f"Batch size {batch_size_cfg} may be too large for {model_params/1e6:.1f}M model. Consider {suggested_batch}")
         
         # Setup data iterator
-        # use_pretokenized_cfg is from cfg.activation_dumper.get('use_pretokenized', False)
-        # pretokenized_path_cfg is from cfg.activation_dumper.get('pretokenized_path')
-        
         current_pretokenized_path = pretokenized_path_cfg
         if use_pretokenized_cfg and not current_pretokenized_path and effective_hf_dataset_name:
-            current_pretokenized_path = f"data/pretokenized/{effective_hf_dataset_name.replace('/', '_')}"
+            # Try seq_len-specific path first, then legacy path
+            seq_len_path = f"data/pretokenized/{effective_hf_dataset_name.replace('/', '_')}_seq{seq_len}"
+            legacy_path = f"data/pretokenized/{effective_hf_dataset_name.replace('/', '_')}"
+            
+            if Path(seq_len_path).exists():
+                current_pretokenized_path = seq_len_path
+            elif Path(legacy_path).exists():
+                # Check if legacy path has matching seq_len
+                legacy_metadata_path = Path(legacy_path) / split_name_arg / "metadata.json"
+                if legacy_metadata_path.exists():
+                    with open(legacy_metadata_path, "r") as f:
+                        metadata = json.load(f)
+                    if metadata.get("seq_len") == seq_len:
+                        current_pretokenized_path = legacy_path
+                        if rank == 0:
+                            log.info(f"Using legacy pretokenized path (seq_len matches): {legacy_path}")
+                    else:
+                        raise ValueError(
+                            f"Found pretokenized data at {legacy_path} but seq_len={metadata.get('seq_len')} "
+                            f"doesn't match current config seq_len={seq_len}. "
+                            f"Please re-run pretokenize_dataset.py to create {seq_len_path}"
+                        )
+                else:
+                    # No metadata, can't verify - safer to error
+                    raise ValueError(
+                        f"Found legacy pretokenized data at {legacy_path} but no metadata.json. "
+                        f"Please re-run pretokenize_dataset.py to create {seq_len_path}"
+                    )
+            else:
+                raise ValueError(
+                    f"No pretokenized data found. Please run pretokenize_dataset.py first. "
+                    f"Expected location: {seq_len_path}"
+                )
 
         get_next_data_fn: Callable[[], dict | str | None]
         if use_pretokenized_cfg:
@@ -428,6 +451,7 @@ def main(cfg: DictConfig) -> None:
                 raise ValueError("use_pretokenized is True, but pretokenized_path is not set and cannot be derived.")
             if rank == 0:
                 log.info(f"Using pre-tokenized data from: {current_pretokenized_path}")
+            
             pretok_iter = iter_pretokenized_distributed(
                 current_pretokenized_path,
                 split_name_arg,
@@ -604,14 +628,14 @@ def main(cfg: DictConfig) -> None:
             nonpad_len_Ap_b = (toks_Ap_batch != tokenizer.pad_token_id).sum(dim=1)
             
             upper_bound_A_b = nonpad_len_A_b - 1
-            _temp_min_idx_A = torch.full_like(upper_bound_A_b, MIN_TOKEN_IDX_INCLUSIVE)
+            _temp_min_idx_A = torch.full_like(upper_bound_A_b, min_pos)
             _temp_min_idx_A = torch.minimum(_temp_min_idx_A, upper_bound_A_b)
             effective_min_idx_A_b = torch.maximum(_temp_min_idx_A, torch.zeros_like(upper_bound_A_b)) # type: ignore
             token_pos_A_b = (effective_min_idx_A_b + upper_bound_A_b) // 2
             token_pos_A_b = torch.maximum(token_pos_A_b, torch.zeros_like(token_pos_A_b)) # type: ignore
             
             upper_bound_Ap_b = nonpad_len_Ap_b - 1
-            _temp_min_idx_Ap = torch.full_like(upper_bound_Ap_b, MIN_TOKEN_IDX_INCLUSIVE)
+            _temp_min_idx_Ap = torch.full_like(upper_bound_Ap_b, min_pos)
             _temp_min_idx_Ap = torch.minimum(_temp_min_idx_Ap, upper_bound_Ap_b)
             effective_min_idx_Ap_b = torch.maximum(_temp_min_idx_Ap, torch.zeros_like(upper_bound_Ap_b)) # type: ignore
             token_pos_Ap_b = (effective_min_idx_Ap_b + upper_bound_Ap_b) // 2

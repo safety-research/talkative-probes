@@ -4,84 +4,72 @@
 import logging
 import math
 import os
-import time
-import warnings
-from collections import Counter, deque
-from contextlib import contextmanager, nullcontext
-from pathlib import Path
 import sys
-import argparse
-import re
-from datetime import datetime
-import psutil
+import time
+from collections import deque
+from contextlib import nullcontext
+from pathlib import Path
+
 try:
     import GPUtil
 except ImportError:
     GPUtil = None
 
 import hydra
-from hydra.core.hydra_config import HydraConfig
-from omegaconf import DictConfig, OmegaConf
 import torch
 import torch.distributed as dist
+from omegaconf import DictConfig, OmegaConf
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data.distributed import DistributedSampler
 from transformers import AutoTokenizer
 
 # Enable TF32 for better performance on Ampere GPUs (A100, H100)
 torch.set_float32_matmul_precision('high')
+from typing import TYPE_CHECKING, Optional
+
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from lens.data.collate import collate
-from lens.data.dataset import ActivationDataset
+from lens.evaluation.wandb_logger import verbose_samples_logger
 from lens.models.decoder import Decoder, DecoderConfig
 from lens.models.encoder import Encoder, EncoderConfig
 from lens.models.orig import OrigWrapper
-from lens.training.loop import train_step as original_train_step
-from torch.utils.data import DataLoader, random_split
-from lens.training.optim import param_groups
-from lens.utils.logging import init as log_init, log as log_metrics, summary_log as summary_log_metrics
-from lens.utils.param_utils import log_parameter_counts, log_parameter_drift
-from lens.training.schedules import (
-    get_schedule_value, 
-    get_lr_scheduler,
-    parse_schedule_config, 
-    parse_schedule_value, 
-    resolve_schedule_at_step,
-    get_schedule_value_for_logging,
-    get_autocast_context,
-    optimizer_step,
-    parse_schedule_to_steps,
-    spec_to_steps,
-    should_unfreeze_any_component,
-    apply_unfreeze_warmup,
-    unfreeze_non_adapters,
-    apply_gradient_scaling,
-)
-from lens.training.schedules import SmoothTransitionScheduler
+from lens.models.tuned_lens import initialize_consistency_lens_projection, load_full_tuned_lens
 from lens.training.distributed import (
-    init_distributed,
     cleanup_distributed,
-    setup_for_distributed,
+    init_distributed,
     is_main,
-    get_rank,
-    get_world_size,
-    get_local_rank,
     reduce_dict,
+    set_seed,
+    setup_for_distributed,
+)
+from lens.training.fast_distributed_sampler import FastDistributedSampler
+from lens.training.loop import train_step as original_train_step
+from lens.training.optim import param_groups
+from lens.training.schedules import (
+    SmoothTransitionScheduler,
+    get_autocast_context,
+    get_lr_scheduler,
+    get_schedule_value,
+    parse_schedule_config,
+    unfreeze_non_adapters,
+)
+from lens.training.test import (
+    test_decoder_generation,
 )
 from lens.utils.checkpoint_manager import CheckpointManager
-from lens.training.distributed import set_seed
-from lens.evaluation.wandb_logger import verbose_samples_logger
-from lens.training.fast_distributed_sampler import FastDistributedSampler
-from lens.training.test import diagnose_activation_mismatch, diagnose_activation_save_load, check_dataset_activation_format, test_autocast_difference, check_layer_indexing, test_decoder_generation
-from lens.models.tuned_lens import initialize_consistency_lens_projection, load_full_tuned_lens
-from typing import TYPE_CHECKING, Optional
+from lens.utils.logging import init as log_init
+from lens.utils.logging import log as log_metrics
+from lens.utils.logging import summary_log as summary_log_metrics
+from lens.utils.param_utils import log_parameter_counts, log_parameter_drift
+
 if TYPE_CHECKING:
     from tuned_lens import TunedLens
 
 # Import all the utility functions from the original training script
 sys.path.insert(0, str(Path(__file__).parent))
 import importlib
+
 train_module = importlib.import_module("01_train")
 extract_dataset_info = train_module.extract_dataset_info
 resolve_path = train_module.resolve_path
@@ -229,7 +217,7 @@ def distributed_train_step(
     to minimize communication overhead.
     """
     # Determine accumulation boundaries
-    is_accumulation_start = (step % gradient_accumulation_steps == 0)
+    #is_accumulation_start = (step % gradient_accumulation_steps == 0)
     is_accumulation_end = ((step + 1) % gradient_accumulation_steps == 0) or (step == config['max_train_steps'] - 1)
     
     # Get base models if using DDP
@@ -258,6 +246,9 @@ def distributed_train_step(
         "entropy_weight": config.get('entropy_weight', 0.0),
         "mse_weight": config.get('mse_weight', 0.0),
         "lm_base_weight": config.get('lm_base_weight'),
+        "GRPO_weight": config['GRPO_weight'],
+        "GRPO_beta": config['GRPO_beta'],
+        "group_n": config['group_n'],
     }
     
     decoder_no_sync_cm = nullcontext()
@@ -283,18 +274,23 @@ def distributed_train_step(
         
         # Forward pass with autocast
         with autocast_context:
-            losses = original_train_step(
-                batch=batch,
-                models=models,
-                _loss_fns=loss_fns,
-                lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'),
-                tokenizer=tokenizer,
-                cached_prefix_ids=cached_prefix_ids,
-                resample_ablation=config.get('resample_ablation', True),
-                do_kl_computation=config.get('do_kl_computation'),
-                do_lm_computation=config.get('do_lm_computation')
-            )
-            
+            if config.get('detect_anomaly', False):
+                ctxt_anomaly = torch.autograd.detect_anomaly(check_nan=True)
+            else:
+                ctxt_anomaly = nullcontext()
+            with ctxt_anomaly:
+                losses = original_train_step(
+                    batch=batch,
+                    models=models,
+                    _loss_fns=loss_fns,
+                    lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'),
+                    tokenizer=tokenizer,
+                    cached_prefix_ids=cached_prefix_ids,
+                    resample_ablation=config.get('resample_ablation', True),
+                    do_kl_computation=config.get('do_kl_computation'),
+                    do_lm_computation=config.get('do_lm_computation')
+                )
+
             # Scale loss by accumulation steps
             loss = losses['total'] / gradient_accumulation_steps
             
@@ -371,6 +367,12 @@ def distributed_train_step(
         'loss_lm': losses['lm'].item(),
         'loss_kl': losses['kl'].item(),
         'loss_entropy': losses['entropy'].item(),
+        'loss_GRPO': losses['loss_GRPO'].item(),
+        'KL_GRPO': losses['KL_GRPO'].item(),
+        'advantages_mean': losses['advantages_mean'].item(),
+        'advantages_std': losses['advantages_std'].item(),
+        'mean_reward': losses['mean_reward'].item(),
+        'mean_reward_std': losses['mean_reward_std'].item(),
         'fraction_variance_explained': losses['fraction_variance_explained'].item(),
         'grad_norm': grad_norm.item() if grad_norm is not None else 0.0,
         'update_norm': update_norm,
@@ -713,6 +715,9 @@ def validate_distributed(
         "entropy_weight": config.get('entropy_weight', 0.0),
         "mse_weight": config.get('mse_weight', 0.0),
         "lm_base_weight": config.get('lm_base_weight'),
+        "GRPO_weight": config['GRPO_weight'],
+        "GRPO_beta": config['GRPO_beta'],
+        "group_n": config['group_n'],
     }
     
     # Metrics accumulators
@@ -722,6 +727,12 @@ def validate_distributed(
     total_kl = 0.0
     total_entropy = 0.0
     total_fraction_variance_explained = 0.0
+    total_GRPO = 0.0
+    total_KL_GRPO = 0.0
+    total_advantages_mean = 0.0
+    total_advantages_std = 0.0
+    total_mean_reward = 0.0
+    total_mean_reward_std = 0.0
     num_batches = 0
     
     # Activation statistics accumulators
@@ -776,7 +787,8 @@ def validate_distributed(
                 eval_mode=run_interventions,  # Enable eval mode for interventions
                 verbose_eval=False,  # We don't need verbose data for now
                 do_kl_computation=True, 
-                do_lm_computation=True 
+                do_lm_computation=True,
+                GRPO_validate_mode=True
             )
             
             # Accumulate losses
@@ -784,6 +796,10 @@ def validate_distributed(
             total_mse += losses['mse'].item()
             total_lm += losses['lm'].item()
             total_kl += losses['kl'].item()
+            total_GRPO += losses['loss_GRPO'].item()
+            total_KL_GRPO += losses['KL_GRPO'].item()
+            total_advantages_mean += losses['advantages_mean'].item()
+            total_advantages_std += losses['advantages_std'].item()
             total_fraction_variance_explained += losses['fraction_variance_explained'].item()
             total_entropy += losses['entropy'].item()
             num_batches += 1
@@ -820,6 +836,12 @@ def validate_distributed(
             total_kl,
             total_entropy,
             total_fraction_variance_explained,
+            total_GRPO,
+            total_KL_GRPO,
+            total_advantages_mean,
+            total_advantages_std,
+            total_mean_reward,
+            total_mean_reward_std,
             float(num_batches),
             # Add intervention metrics
             intervention_metrics['mse_baseline'],
@@ -843,17 +865,23 @@ def validate_distributed(
         total_kl = metrics_tensor[3].item()
         total_entropy = metrics_tensor[4].item()
         total_fraction_variance_explained = metrics_tensor[5].item()
-        num_batches = int(metrics_tensor[6].item())
+        total_GRPO = metrics_tensor[6].item()
+        total_KL_GRPO = metrics_tensor[7].item()
+        total_advantages_mean = metrics_tensor[8].item()
+        total_advantages_std = metrics_tensor[9].item()
+        total_mean_reward = metrics_tensor[10].item()
+        total_mean_reward_std = metrics_tensor[11].item()
+        num_batches = int(metrics_tensor[12].item())
         # Extract intervention metrics
-        intervention_metrics['mse_baseline'] = metrics_tensor[7].item()
-        intervention_metrics['mse_decoder'] = metrics_tensor[8].item()
-        intervention_metrics['mse_shuffle'] = metrics_tensor[8].item()
-        intervention_metrics['mse_shuffle_all'] = metrics_tensor[9].item()
-        intervention_metrics['kl_baseline'] = metrics_tensor[10].item()
-        intervention_metrics['kl_decoder'] = metrics_tensor[11].item()
-        intervention_metrics['kl_shuffle'] = metrics_tensor[12].item()
-        intervention_metrics['kl_shuffle_all'] = metrics_tensor[13].item()
-        intervention_batches = int(metrics_tensor[14].item())
+        intervention_metrics['mse_baseline'] = metrics_tensor[13].item()
+        intervention_metrics['mse_decoder'] = metrics_tensor[14].item()
+        intervention_metrics['mse_shuffle'] = metrics_tensor[15].item()
+        intervention_metrics['mse_shuffle_all'] = metrics_tensor[16].item()
+        intervention_metrics['kl_baseline'] = metrics_tensor[17].item()
+        intervention_metrics['kl_decoder'] = metrics_tensor[18].item()
+        intervention_metrics['kl_shuffle'] = metrics_tensor[19].item()
+        intervention_metrics['kl_shuffle_all'] = metrics_tensor[20].item()
+        intervention_batches = int(metrics_tensor[21].item())
     
     # Compute averages
     avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
@@ -862,6 +890,12 @@ def validate_distributed(
     avg_kl = total_kl / num_batches if num_batches > 0 else 0.0
     avg_entropy = total_entropy / num_batches if num_batches > 0 else 0.0
     avg_fraction_variance_explained = total_fraction_variance_explained / num_batches if num_batches > 0 else 0.0
+    avg_GRPO = total_GRPO / num_batches if num_batches > 0 else 0.0
+    avg_KL_GRPO = total_KL_GRPO / num_batches if num_batches > 0 else 0.0
+    avg_advantages_mean = total_advantages_mean / num_batches if num_batches > 0 else 0.0
+    avg_advantages_std = total_advantages_std / num_batches if num_batches > 0 else 0.0
+    avg_mean_reward = total_mean_reward / num_batches if num_batches > 0 else 0.0
+    avg_mean_reward_std = total_mean_reward_std / num_batches if num_batches > 0 else 0.0
     # Compute activation statistics (only on main process)
     if is_main_process and all_activations:
         all_activations = torch.cat(all_activations, dim=0)
@@ -907,25 +941,31 @@ def validate_distributed(
         log.info(f"\n{'='*60}")
         log.info(f"Validation Results at Step {step}")
         log.info(f"{'='*60}")
-        log.info(f"Average Losses:")
+        log.info("Average Losses:")
         log.info(f"  Total Loss: {avg_loss:.4f}")
         log.info(f"  MSE Loss: {avg_mse:.4f}")
         log.info(f"  LM Loss: {avg_lm:.4f}")
         log.info(f"  KL Loss: {avg_kl:.4f}")
         log.info(f"  Entropy: {avg_entropy:.4f}")
         log.info(f"  Fraction Variance Explained: {avg_fraction_variance_explained:.4f}")
-        log.info(f"\nActivation Statistics:")
+        log.info(f"  GRPO Loss: {avg_GRPO:.4f}")
+        log.info(f"  KL GRPO: {avg_KL_GRPO:.4f}")
+        log.info(f"  Advantages Mean: {avg_advantages_mean:.4f}")
+        log.info(f"  Advantages Std: {avg_advantages_std:.4f}")
+        log.info(f"  Mean Reward: {avg_mean_reward:.4f}")
+        log.info(f"  Mean Reward Std: {avg_mean_reward_std:.4f}")
+        log.info("\nActivation Statistics:")
         log.info(f"  Original - Mean: {act_mean:.4f}, Std: {act_std:.4f}")
         log.info(f"  Original - Min: {act_min:.4f}, Max: {act_max:.4f}")
         log.info(f"  Reconstructed - Mean: {recon_mean:.4f}, Std: {recon_std:.4f}")
         log.info(f"  Reconstructed - Min: {recon_min:.4f}, Max: {recon_max:.4f}")
-        log.info(f"\nBaseline Comparisons:")
+        log.info("\nBaseline Comparisons:")
         log.info(f"  Zero MSE (predicting zeros): {zero_mse:.4f}")
         log.info(f"  Mean MSE (predicting mean): {mean_mse:.4f}")
         log.info(f"  Our Reconstruction MSE: {reconstruction_mse:.4f}")
         log.info(f"  Improvement over zero baseline: {(zero_mse - reconstruction_mse) / zero_mse * 100:.1f}%")
         log.info(f"  Improvement over mean baseline: {(mean_mse - reconstruction_mse) / mean_mse * 100:.1f}%")
-        log.info(f"\nAdditional Metrics:")
+        log.info("\nAdditional Metrics:")
         log.info(f"  Correlation (original vs reconstructed): {correlation:.4f}")
         log.info(f"  Mean Relative Error: {relative_error:.4f}")
         
@@ -952,6 +992,12 @@ def validate_distributed(
                 'val/loss_kl': avg_kl,
                 'val/loss_entropy': avg_entropy,
                 'val/fraction_variance_explained': avg_fraction_variance_explained,
+                'val/GRPO_loss': avg_GRPO,
+                'val/KL_GRPO': avg_KL_GRPO,
+                'val/advantages_mean': avg_advantages_mean, 
+                'val/advantages_std': avg_advantages_std,
+                'val/mean_reward': avg_mean_reward,
+                'val/mean_reward_std': avg_mean_reward_std,
                 'val/activation_mean': act_mean,
                 'val/activation_std': act_std,
                 'val/activation_min': act_min,
@@ -1070,6 +1116,11 @@ def maybe_resume_from_checkpoint(
                         emb = decoder_state['prompt_right_emb']
                         log.info(f"RAW checkpoint prompt_right_emb: shape={emb.shape}, norm={emb.norm().item():.6f}, mean={emb.mean().item():.6f}")
 
+            dec_left_raw_norm = decoder.prompt_left_emb.norm().item()
+            dec_right_raw_norm = decoder.prompt_right_emb.norm().item()
+            enc_raw_norm = encoder.soft_prompt_embeddings.norm().item()
+            log.info(f"RAW checkpoint decoder left prompt norm: {dec_left_raw_norm:.6f}, decoder right prompt norm: {dec_right_raw_norm:.6f}, encoder soft prompt norm: {enc_raw_norm:.6f}")
+
             rec = temp_ckpt_mgr.load_checkpoint(
                 checkpoint_path_str,
                 models=models_to_load,
@@ -1135,17 +1186,21 @@ def maybe_resume_from_checkpoint(
                 if ckpt_has_left or ckpt_has_right:
                     log.info("Checkpoint contains trained decoder prompt embeddings")
                     if decoder_has_left and ckpt_has_left:
-                        fresh_norm = decoder.prompt_left_emb.norm().item()
+                        loaded_norm = decoder.prompt_left_emb.norm().item()
                         ckpt_norm = checkpoint_decoder_state['prompt_left_emb'].norm().item()
-                        log.info(f"Decoder prompt_left_emb - Fresh norm: {fresh_norm:.4f}, Checkpoint norm: {ckpt_norm:.4f}")
-                        if abs(fresh_norm - ckpt_norm) < 1e-6:
+                        log.info(f"Decoder prompt_left_emb - loaded norm: {loaded_norm:.4f}, Checkpoint norm: {ckpt_norm:.4f}")
+                        if abs(loaded_norm - ckpt_norm) > 1e-6:
                             log.warning("WARNING: Decoder left prompt embeddings might not have been loaded correctly!")
+                        if abs(loaded_norm - dec_left_raw_norm) > 1e-6:
+                            log.warning("WARNING: Decoder prompt norm did not change after loading checkpoint!")
                     if decoder_has_right and ckpt_has_right:
-                        fresh_norm = decoder.prompt_right_emb.norm().item()
+                        loaded_norm = decoder.prompt_right_emb.norm().item()
                         ckpt_norm = checkpoint_decoder_state['prompt_right_emb'].norm().item()
-                        log.info(f"Decoder prompt_right_emb - Fresh norm: {fresh_norm:.4f}, Checkpoint norm: {ckpt_norm:.4f}")
-                        if abs(fresh_norm - ckpt_norm) < 1e-6:
+                        log.info(f"Decoder prompt_right_emb - loaded norm: {loaded_norm:.4f}, Checkpoint norm: {ckpt_norm:.4f}")
+                        if abs(loaded_norm - ckpt_norm) > 1e-6:
                             log.warning("WARNING: Decoder right prompt embeddings might not have been loaded correctly!")
+                        if abs(loaded_norm - dec_right_raw_norm) > 1e-6:
+                            log.warning("WARNING: Decoder prompt norm did not change after loading checkpoint!")
 
                 if (ckpt_has_left and not decoder_has_left) or (ckpt_has_right and not decoder_has_right):
                     error_msg = (
@@ -1507,7 +1562,11 @@ def main(cfg: DictConfig) -> None:
         logging.basicConfig(level=logging.WARNING)
     
     log = logging.getLogger(__name__)
-    
+
+    log.warning("L2 loss grows quadratically with the norm which increases with layer depth. Change coefficients accordingly.") 
+    log.info("L2 loss grows quadratically with the norm which increases with layer depth. Change coefficients accordingly.") 
+    print("L2 loss grows quadratically with the norm which increases with layer depth. Change coefficients accordingly.") 
+
     # --- Timer for Initial Setup ---
     with Timer("Initial Setup (Paths, Tokenizer, Run Name)", log, main_process=is_main()):
         # Load tokenizer (all processes will have it, but primarily used by main for logging unless train_step needs it)
@@ -1549,15 +1608,16 @@ def main(cfg: DictConfig) -> None:
         # Training parameters
         max_steps = config['max_train_steps']
         learning_rate = config['learning_rate']
+        group_n = config.get("group_n", 1)
         batch_size = config['batch_size']
         gradient_accumulation_steps = config['gradient_accumulation_steps']
-        group_n = config.get("group_n", 1)
         # Adjust batch size for distributed training
         effective_batch_size = batch_size * gradient_accumulation_steps * world_size * group_n
         
         if is_main():
             log.info(f"Distributed training with {world_size} GPUs")
-            log.info(f"Per-GPU batch size: {batch_size}")
+            log.info(f"Per-GPU batch size (without group_n): {batch_size}")
+            log.info(f"Per-GPU batch size (with group_n): {batch_size*group_n}")
             log.info(f"Gradient accumulation steps: {gradient_accumulation_steps}")
             log.info(f"Effective batch size: {effective_batch_size}")
             log.info(f"Gradient sync: Every {gradient_accumulation_steps} steps")
@@ -1664,7 +1724,7 @@ def main(cfg: DictConfig) -> None:
             log.info(f"Before init: traces of each proj factor: {[p.trace().item() for p in decoder.proj_weight]}")
             log.info(f"Before init: sum of abs of biases: {[p.abs().sum().item() for p in decoder.proj_bias]}")
         if is_main(): # Perform initialization only on the main process
-            log.info(f"Attempting tuned lens initialization for decoder")
+            log.info("Attempting tuned lens initialization for decoder")
             # Initialize Decoder's projection layer  
             initialize_consistency_lens_projection(
                     model_component=decoder,
@@ -1728,7 +1788,7 @@ def main(cfg: DictConfig) -> None:
                 expected_left_norm = checkpoint_data['_expected_left_norm']
                 
                 if abs(actual_left_norm - expected_left_norm) > 1e-4:
-                    log.error(f"CRITICAL: Decoder prompt embeddings lost after DDP setup!")
+                    log.error("CRITICAL: Decoder prompt embeddings lost after DDP setup!")
                     log.error(f"Expected left norm: {expected_left_norm:.6f}, Actual: {actual_left_norm:.6f}")
                     log.error("This is causing the KL loss jump on resume!")
                     raise RuntimeError("Decoder prompt embeddings were corrupted during model setup")
@@ -1741,7 +1801,7 @@ def main(cfg: DictConfig) -> None:
                 expected_right_norm = checkpoint_data['_expected_right_norm']
                 
                 if abs(actual_right_norm - expected_right_norm) > 1e-4:
-                    log.error(f"CRITICAL: Decoder prompt embeddings lost after DDP setup!")
+                    log.error("CRITICAL: Decoder prompt embeddings lost after DDP setup!")
                     log.error(f"Expected right norm: {expected_right_norm:.6f}, Actual: {actual_right_norm:.6f}")
                     raise RuntimeError("Decoder prompt embeddings were corrupted during model setup")
         
@@ -1941,7 +2001,7 @@ def main(cfg: DictConfig) -> None:
                         # Count and log the number of trainable parameters after unfreezing
                         num_trainable_dec = sum(p.numel() for p in decoder_base.parameters() if p.requires_grad)
                         num_trainable_enc = sum(p.numel() for p in encoder_base.parameters() if p.requires_grad)
-                        log.info(f"After restoring freeze state:")
+                        log.info("After restoring freeze state:")
                         log.info(f"  Decoder trainable parameters: {num_trainable_dec:,}")
                         log.info(f"  Encoder trainable parameters: {num_trainable_enc:,}")
                         
@@ -2009,7 +2069,7 @@ def main(cfg: DictConfig) -> None:
             
             # Log force_data_conversion setting
             if config.get('force_data_conversion', False):
-                log.info(f"Force data conversion enabled - batch data will be converted to match training dtype")
+                log.info("Force data conversion enabled - batch data will be converted to match training dtype")
             else:
                 log.info("Force data conversion disabled - batch data will use original dtype")
 
@@ -2149,6 +2209,9 @@ def main(cfg: DictConfig) -> None:
     decoder.train()
     encoder.train()
     orig_model.model.eval() # leave in validation mode?
+    max_consecutive_nan_losses = 5
+    consecutive_nan_losses = 0
+    val_loss = None
 
     # Main training loop
     # Create tqdm progress bar (only on main process)
@@ -2159,306 +2222,320 @@ def main(cfg: DictConfig) -> None:
                     total=max_steps, miniters=log_interval)
     else:
         pbar = range(start_step, max_steps)
-    
-    for step in pbar:
-        step_start_time = time.time()
-        
-        current_epoch = step // steps_per_epoch if steps_per_epoch > 0 else 0
-        
-        # Training step with optimized gradient accumulation
-        # Advance iterator – restart when exhausted
-        try:
-            raw_batch = next(iter_loader)
-        except StopIteration:
-            if world_size > 1 and hasattr(train_loader.sampler, "set_epoch"):
-                current_epoch += 1
-                train_loader.sampler.set_epoch(current_epoch)
-            else:
-                current_epoch += 1
-                if not hasattr(train_loader.sampler, "set_epoch"):
-                    log.warning("train_loader.sampler does not have set_epoch method. Distributed samplers should have this.")
-            iter_loader = iter(train_loader)
-            raw_batch = next(iter_loader)
-       
-        if group_n > 1:
-            batch = {}
-            for k, v in raw_batch.items():
-                if isinstance(v, torch.Tensor):
-                    batch[k] = v.repeat_interleave(group_n, dim=0)
+    try: 
+        for step in pbar:
+            step_start_time = time.time()
+
+            current_epoch = step // steps_per_epoch if steps_per_epoch > 0 else 0
+
+            # Training step with optimized gradient accumulation
+            # Advance iterator – restart when exhausted
+            try:
+                raw_batch = next(iter_loader)
+            except StopIteration:
+                if world_size > 1 and hasattr(train_loader.sampler, "set_epoch"):
+                    current_epoch += 1
+                    train_loader.sampler.set_epoch(current_epoch)
                 else:
-                    batch[k] = v
-        else:
-            batch = raw_batch
+                    current_epoch += 1
+                    if not hasattr(train_loader.sampler, "set_epoch"):
+                        log.warning("train_loader.sampler does not have set_epoch method. Distributed samplers should have this.")
+                iter_loader = iter(train_loader)
+                raw_batch = next(iter_loader)
 
-        batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
+            if step == 0:
+                #log warning the first 10 tokens of the first element of the batch, on all gpus
+                log.warning(f"First 10 tokens of the first element of the batch for rank {rank}: {raw_batch['input_ids_A'][:10]}")
 
-        if step == 0 and is_main():
-            do_all_initial_validation(batch, orig_model, tokenizer, device, log, activation_dir)
-
-        metrics = distributed_train_step(
-            decoder,
-            encoder,
-            orig_model,
-            batch,
-            optimizer,
-            scaler,
-            config,
-            step,
-            device,
-            tokenizer,
-            cached_prefix_ids,
-            rank,
-            gradient_accumulation_steps=gradient_accumulation_steps,
-            is_distributed=(world_size > 1),
-            lr_scheduler=lr_scheduler,
-            steps_per_epoch=steps_per_epoch
-        )
-        
-        # Synchronize metrics across processes
-        metrics = sync_metrics(metrics, world_size)
-        
-        # Update running metrics
-        running_losses.append(metrics['loss'])
-        step_times.append(time.time() - step_start_time)
-        
-        # Update last computed gradient/update norms if they were calculated this step
-        if metrics['grad_norm'] > 0:
-            last_grad_norm = metrics['grad_norm']
-            last_update_norm = metrics['update_norm']
-            last_update_ratio = metrics['update_ratio']
-        
-        # Average metrics for logging
-        avg_loss = sum(running_losses) / len(running_losses)
-        avg_step_time = sum(step_times) / len(step_times) # Average time per micro-step
-        
-        # Calculate samples_per_sec: the rate of samples processed by the model.
-        # effective_batch_size = (per_device_batch_size * num_devices * grad_accum_steps)
-        # True sample throughput is (per_device_batch_size * num_devices) / avg_step_time.
-        # This is equivalent to effective_batch_size / (avg_step_time * grad_accumulation_steps).
-        if avg_step_time > 0:
-            # gradient_accumulation_steps is guaranteed to be >= 1.
-            samples_per_sec = effective_batch_size / (avg_step_time * gradient_accumulation_steps)
-        else:
-            samples_per_sec = 0.0
-
-        current_lr = optimizer.param_groups[0]['lr']
-        accumulation_step = (step % gradient_accumulation_steps) + 1
-        
-        # Performance metrics (calculated similarly to 01_train.py)
-        # steps_per_second refers to micro-steps per second
-        steps_per_second = 1.0 / avg_step_time if avg_step_time > 0 else 0
-        tokens_per_second = samples_per_sec * config.get('t_text') # t_text is tokens per sample
-
-        # Update progress bar description (only on main process and every log_interval)
-        if is_main() and (step % log_interval == 0 or step == max_steps - 1):
-            desc = (
-                f"Step {step}/{max_steps} | "
-                f"Loss: {avg_loss:.4f} | "
-                f"LR: {current_lr:.2e} | "
-                f"Samples/sec: {samples_per_sec:.1f} | "
-                f"Acc: {accumulation_step}/{gradient_accumulation_steps}"
-            )
-            pbar.set_description(desc)
-            # Also print to ensure it's captured in logs
-            log.info(desc)
-
-        # W&B logging (only on main process)
-        if is_main() and (step % wandb_log_interval == 0 or step == max_steps - 1):
-            # Get schedule values for logging (consistent with 01_train.py)
-            # Current optimizer step for schedule value calculation
-            current_optimizer_step_for_sched = step // gradient_accumulation_steps
-            
-            current_tau_log = get_schedule_value(config['gumbel_tau_schedule'], step, max_steps,
-                                                         current_epoch=current_epoch, 
-                                                         steps_per_epoch=steps_per_epoch, 
-                                                         grad_accum_steps=gradient_accumulation_steps)
-            current_alpha_log = get_schedule_value(config['alpha_schedule'], step, max_steps,
-                                                           current_epoch=current_epoch, 
-                                                           steps_per_epoch=steps_per_epoch, 
-                                                           grad_accum_steps=gradient_accumulation_steps)
-            
-            wandb_metrics = {
-                'train/loss': avg_loss, # This is the running average loss
-                'loss/total': metrics['loss'], # This is the current step's synced loss
-                'loss/mse': metrics['loss_mse'],
-                'loss/lm': metrics['loss_lm'],
-                'loss/kl': metrics['loss_kl'],
-                'loss/entropy': metrics['loss_entropy'],
-                'params/tau': current_tau_log,
-                'params/alpha': current_alpha_log,
-                'params/lm_w': config.get('lm_base_weight'),
-                'params/kl_w': config.get('kl_base_weight', 1.0),
-                'params/entropy_w': config.get('entropy_weight', 0.0),
-                'optim/lr': lr_scheduler.get_last_lr()[0] if lr_scheduler else current_lr,
-                'gradient_accumulation/is_update_step': 1 if ((step + 1) % gradient_accumulation_steps == 0) or (step == max_steps - 1) else 0,
-                'gradient_accumulation/accumulation_step': accumulation_step,
-                'performance/steps_per_second': steps_per_second, # This is micro-steps per second
-                'performance/samples_per_second': samples_per_sec, # Now: effective_batch_size / (avg_step_time * gradient_accumulation_steps)
-                'performance/tokens_per_second': tokens_per_second,
-                'performance/avg_step_time': avg_step_time, # This is avg micro-step time
-                'train/gpu_memory_allocated': torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0,
-                'train/gradient_accumulation_step': accumulation_step,
-                # Add explicit step counters for different x-axis options in WandB
-                'progress/optimizer_step': current_optimizer_step_for_sched,
-                'progress/micro_step': step,
-                'progress/samples_seen': step * batch_size * world_size,  # Total samples processed across all GPUs
-                'progress/tokens_seen': step * batch_size * world_size * config.get('t_text', 10),  # Total tokens processed
-                'progress/optimizer_progress': current_optimizer_step_for_sched / max_optimizer_steps if max_optimizer_steps > 0 else 0,  # Fraction of training complete
-                'progress/epoch_fraction': (step / steps_per_epoch) if steps_per_epoch > 0 else 0,  # Fractional epoch (e.g., 1.5 = halfway through 2nd epoch)
-                'progress/epoch': current_epoch,  # Integer epoch number
-            }
-            
-            # Always log gradient and update metrics using last computed values
-            # These are only updated at accumulation boundaries but we want consistent logging
-            wandb_metrics['grads/norm'] = last_grad_norm
-            wandb_metrics['updates/norm'] = last_update_norm
-            wandb_metrics['updates/ratio'] = last_update_ratio
-            wandb_metrics['updates/lr_actual'] = lr_scheduler.get_last_lr()[0]
-            
-            # Add epoch if applicable
-            # Epoch calculation should be based on optimizer steps or effective data passes
-            effective_steps_per_epoch = steps_per_epoch // gradient_accumulation_steps if steps_per_epoch > 0 and gradient_accumulation_steps > 0 else 0
-            if effective_steps_per_epoch > 0:
-                current_effective_epoch = current_optimizer_step_for_sched // effective_steps_per_epoch
-                wandb_metrics["epoch"] = current_effective_epoch + 1 # 1-based epoch for logging
-            elif steps_per_epoch > 0 : # Fallback if effective_steps_per_epoch is 0 but steps_per_epoch > 0 (e.g. GAS=1)
-                 wandb_metrics["epoch"] = (step // steps_per_epoch) + 1
-
-            # System metrics (less frequently, similar to 01_train.py)
-            if step % (wandb_log_interval * 10) == 0: # Log every 10 wandb log intervals
-                sys_metrics_dict = get_system_metrics(device) # Assuming get_system_metrics is available
-                
-                # Ensure sys_metrics are prefixed correctly for wandb
-                wandb_sys_metrics = {f"system/{k.replace('_', '_')}": v for k,v in sys_metrics_dict.items()}
-                wandb_metrics.update(wandb_sys_metrics)
-
-            if current_wandb_run_id:
-                log_metrics(wandb_metrics, step)
-        
-        # Log parameter drift
-        if drift_enabled and is_main():
-            log_now = (
-                step == start_step
-                or (step == max_steps - 1 and max_steps > 0)
-                or (step > start_step and drift_log_interval > 0 and step % drift_log_interval == 0)
-            )
-            if log_now and initial_decoder_state and initial_encoder_state:
-                log.info(f"Logging parameter drift at step {step} …")
-                log_parameter_drift(decoder_base_for_drift, initial_decoder_state,
-                                    "decoder", step, log_metrics, log, True)
-                log_parameter_drift(encoder_base_for_drift, initial_encoder_state,
-                                    "encoder", step, log_metrics, log, True)
-
-
-        # Validation and Verbose Samples
-        val_loss = None
-        if val_loader and val_interval > 0 and (step % val_interval == 0):
-            if is_main():
-                log.info(f"Running validation at step {step}")
-            with Timer("Validation", log, main_process=is_main(), log_wandb=True, wandb_step=step):
-                val_loss = validate_distributed(
-                    decoder=decoder,
-                    encoder=encoder,
-                    orig_model=orig_model,
-                    val_loader=val_loader,
-                    config=config,
-                    step=step,
-                    device=device,
-                    tokenizer=tokenizer,
-                    cached_prefix_ids=cached_prefix_ids,
-                    world_size=world_size,
-                    log=log,
-                    is_main_process=is_main(),
-                    wandb_run_id=current_wandb_run_id,
-                    steps_per_epoch=steps_per_epoch,
-                    current_epoch=current_epoch,
-                    max_steps=max_steps,
-                    gradient_accumulation_steps=gradient_accumulation_steps,
-                    val_interval=val_interval,
-                    comparison_tuned_lens=comparison_tuned_lens_cpu # Pass CPU version
-                )
-            
-        # Checkpointing (only on main process)
-        if is_main() and checkpoint_manager.should_save_step(step):
-            # Get current tau and alpha for checkpointing, similar to 01_train.py
-            # Checkpointing metadata should reflect the state at the current *micro-step*
-            # but schedules are evaluated based on optimizer steps.
-            current_optimizer_step_for_ckpt = step // gradient_accumulation_steps
-            current_tau_ckpt = get_schedule_value(config['gumbel_tau_schedule'], step, max_steps, 
-                                           current_epoch=current_epoch, 
-                                           steps_per_epoch=steps_per_epoch, 
-                                           grad_accum_steps=gradient_accumulation_steps)
-            current_alpha_ckpt = get_schedule_value(config['alpha_schedule'], step, max_steps,
-                                             current_epoch=current_epoch, 
-                                             steps_per_epoch=steps_per_epoch, 
-                                             grad_accum_steps=gradient_accumulation_steps)
-            # current_wandb_run_id is already defined
-            # Epoch for checkpoint filename/metadata: based on micro-steps or optimizer steps?
-            # 01_train.py uses current_epoch_num = (micro_step // steps_per_epoch) + 1. Let's stick to that for filename.
-            current_epoch_num_for_ckpt_filename = (step // steps_per_epoch) + 1 if steps_per_epoch > 0 else 1
-
-            saved_path = checkpoint_manager.save_checkpoint(
-                step=step, # Save with micro-step
-                epoch=current_epoch_num_for_ckpt_filename, # Use 1-based epoch based on micro-steps
-                models={'decoder': decoder_base, 'encoder': encoder_base},
-                optimizer=optimizer,
-                scheduler=lr_scheduler, # Scheduler state is based on optimizer steps
-                metrics=metrics, 
-                config=config, 
-                val_loss=val_loss,
-                tau=current_tau_ckpt,
-                alpha=current_alpha_ckpt,
-                wandb_run_id=current_wandb_run_id,
-                additional_name="",
-                # Add additional metadata for proper resuming
-                current_epoch=current_epoch,
-                batch_within_epoch=step % steps_per_epoch if steps_per_epoch > 0 else step,
-                steps_per_epoch=steps_per_epoch,
-                # Save gradient scaler state if using mixed precision
-                scaler=scaler.state_dict() if scaler is not None else None,
-                # Save whether we're mid-accumulation
-                accumulation_step=(step % gradient_accumulation_steps) + 1
-            )
-            if saved_path:
-                log.info(f"Checkpoint saved: {saved_path}")
+            if group_n > 1:
+                batch = {}
+                for k, v in raw_batch.items():
+                    if isinstance(v, torch.Tensor):
+                        batch[k] = v.repeat_interleave(group_n, dim=0)
+                    else:
+                        batch[k] = v
             else:
-                log.info(f"Checkpoint not saved at step {step} (e.g., max_checkpoints reached or interval not met).")
-        
+                batch = raw_batch
 
-    # Final checkpoint
+            batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
+
+            if step == 0 and is_main():
+                do_all_initial_validation(batch, orig_model, tokenizer, device, log, activation_dir)
+
+            metrics = distributed_train_step(
+                decoder,
+                encoder,
+                orig_model,
+                batch,
+                optimizer,
+                scaler,
+                config,
+                step,
+                device,
+                tokenizer,
+                cached_prefix_ids,
+                rank,
+                gradient_accumulation_steps=gradient_accumulation_steps,
+                is_distributed=(world_size > 1),
+                lr_scheduler=lr_scheduler,
+                steps_per_epoch=steps_per_epoch
+            )
+
+            # Synchronize metrics across processes
+            metrics = sync_metrics(metrics, world_size)
+
+            # Update running metrics
+            running_losses.append(metrics['loss'])
+            step_times.append(time.time() - step_start_time)
+
+            # Update last computed gradient/update norms if they were calculated this step
+            if metrics['grad_norm'] > 0:
+                last_grad_norm = metrics['grad_norm']
+                last_update_norm = metrics['update_norm']
+                last_update_ratio = metrics['update_ratio']
+
+            # Average metrics for logging
+            avg_loss = sum(running_losses) / len(running_losses)
+            avg_step_time = sum(step_times) / len(step_times) # Average time per micro-step
+
+            # Calculate samples_per_sec: the rate of samples processed by the model.
+            # effective_batch_size = (per_device_batch_size * num_devices * grad_accum_steps)
+            # True sample throughput is (per_device_batch_size * num_devices) / avg_step_time.
+            # This is equivalent to effective_batch_size / (avg_step_time * grad_accumulation_steps).
+            if avg_step_time > 0:
+                # gradient_accumulation_steps is guaranteed to be >= 1.
+                samples_per_sec = effective_batch_size / (avg_step_time * gradient_accumulation_steps)
+            else:
+                samples_per_sec = 0.0
+
+            current_lr = optimizer.param_groups[0]['lr']
+            accumulation_step = (step % gradient_accumulation_steps) + 1
+
+            # Performance metrics (calculated similarly to 01_train.py)
+            # steps_per_second refers to micro-steps per second
+            steps_per_second = 1.0 / avg_step_time if avg_step_time > 0 else 0
+            tokens_per_second = samples_per_sec * config.get('t_text') # t_text is tokens per sample
+
+            # Update progress bar description (only on main process and every log_interval)
+            if is_main() and (step % log_interval == 0 or step == max_steps - 1):
+                desc = (
+                    f"Step {step}/{max_steps} | "
+                    f"Loss: {avg_loss:.4f} | "
+                    f"LR: {current_lr:.2e} | "
+                    f"Samples/sec: {samples_per_sec:.1f} | "
+                    f"Acc: {accumulation_step}/{gradient_accumulation_steps}"
+                )
+                pbar.set_description(desc)
+                # Also print to ensure it's captured in logs
+                log.info(desc)
+
+            # W&B logging (only on main process)
+            if is_main() and (step % wandb_log_interval == 0 or step == max_steps - 1):
+                # Get schedule values for logging (consistent with 01_train.py)
+                # Current optimizer step for schedule value calculation
+                current_optimizer_step_for_sched = step // gradient_accumulation_steps
+
+                current_tau_log = get_schedule_value(config['gumbel_tau_schedule'], step, max_steps,
+                                                             current_epoch=current_epoch, 
+                                                             steps_per_epoch=steps_per_epoch, 
+                                                             grad_accum_steps=gradient_accumulation_steps)
+                current_alpha_log = get_schedule_value(config['alpha_schedule'], step, max_steps,
+                                                               current_epoch=current_epoch, 
+                                                               steps_per_epoch=steps_per_epoch, 
+                                                               grad_accum_steps=gradient_accumulation_steps)
+
+                wandb_metrics = {
+                    'train/loss': avg_loss, # This is the running average loss
+                    'loss/total': metrics['loss'], # This is the current step's synced loss
+                    'loss/mse': metrics['loss_mse'],
+                    'loss/lm': metrics['loss_lm'],
+                    'loss/kl': metrics['loss_kl'],
+                    'loss/entropy': metrics['loss_entropy'],
+                    'loss/GRPO': metrics['loss_GRPO'],
+                    'loss/KL_GRPO': metrics['KL_GRPO'],
+                    'loss/advantages_mean': metrics['advantages_mean'],
+                    'loss/advantages_std': metrics['advantages_std'],
+                    'loss/mean_reward': metrics['mean_reward'],
+                    'loss/mean_reward_std': metrics['mean_reward_std'],
+                    'params/tau': current_tau_log,
+                    'params/alpha': current_alpha_log,
+                    'params/lm_w': config.get('lm_base_weight'),
+                    'params/kl_w': config.get('kl_base_weight', 1.0),
+                    'params/entropy_w': config.get('entropy_weight', 0.0),
+                    'optim/lr': lr_scheduler.get_last_lr()[0] if lr_scheduler else current_lr,
+                    'gradient_accumulation/is_update_step': 1 if ((step + 1) % gradient_accumulation_steps == 0) or (step == max_steps - 1) else 0,
+                    'gradient_accumulation/accumulation_step': accumulation_step,
+                    'performance/steps_per_second': steps_per_second, # This is micro-steps per second
+                    'performance/samples_per_second': samples_per_sec, # Now: effective_batch_size / (avg_step_time * gradient_accumulation_steps)
+                    'performance/tokens_per_second': tokens_per_second,
+                    'performance/avg_step_time': avg_step_time, # This is avg micro-step time
+                    'train/gpu_memory_allocated': torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0,
+                    'train/gradient_accumulation_step': accumulation_step,
+                    # Add explicit step counters for different x-axis options in WandB
+                    'progress/optimizer_step': current_optimizer_step_for_sched,
+                    'progress/micro_step': step,
+                    'progress/samples_seen': step * batch_size * world_size,  # Total samples processed across all GPUs
+                    'progress/tokens_seen': step * batch_size * world_size * config.get('t_text', 10),  # Total tokens processed
+                    'progress/optimizer_progress': current_optimizer_step_for_sched / max_optimizer_steps if max_optimizer_steps > 0 else 0,  # Fraction of training complete
+                    'progress/epoch_fraction': (step / steps_per_epoch) if steps_per_epoch > 0 else 0,  # Fractional epoch (e.g., 1.5 = halfway through 2nd epoch)
+                    'progress/epoch': current_epoch,  # Integer epoch number
+                }
+
+                # Always log gradient and update metrics using last computed values
+                # These are only updated at accumulation boundaries but we want consistent logging
+                wandb_metrics['grads/norm'] = last_grad_norm
+                wandb_metrics['updates/norm'] = last_update_norm
+                wandb_metrics['updates/ratio'] = last_update_ratio
+                wandb_metrics['updates/lr_actual'] = lr_scheduler.get_last_lr()[0]
+
+                # Add epoch if applicable
+                # Epoch calculation should be based on optimizer steps or effective data passes
+                effective_steps_per_epoch = steps_per_epoch // gradient_accumulation_steps if steps_per_epoch > 0 and gradient_accumulation_steps > 0 else 0
+                if effective_steps_per_epoch > 0:
+                    current_effective_epoch = current_optimizer_step_for_sched // effective_steps_per_epoch
+                    wandb_metrics["epoch"] = current_effective_epoch + 1 # 1-based epoch for logging
+                elif steps_per_epoch > 0 : # Fallback if effective_steps_per_epoch is 0 but steps_per_epoch > 0 (e.g. GAS=1)
+                     wandb_metrics["epoch"] = (step // steps_per_epoch) + 1
+
+                # System metrics (less frequently, similar to 01_train.py)
+                if step % (wandb_log_interval * 10) == 0: # Log every 10 wandb log intervals
+                    sys_metrics_dict = get_system_metrics(device) # Assuming get_system_metrics is available
+
+                    # Ensure sys_metrics are prefixed correctly for wandb
+                    wandb_sys_metrics = {f"system/{k.replace('_', '_')}": v for k,v in sys_metrics_dict.items()}
+                    wandb_metrics.update(wandb_sys_metrics)
+
+                if current_wandb_run_id:
+                    log_metrics(wandb_metrics, step)
+
+            # Log parameter drift
+            if drift_enabled and is_main():
+                log_now = (
+                    step == start_step
+                    or (step == max_steps - 1 and max_steps > 0)
+                    or (step > start_step and drift_log_interval > 0 and step % drift_log_interval == 0)
+                )
+                if log_now and initial_decoder_state and initial_encoder_state:
+                    log.info(f"Logging parameter drift at step {step} …")
+                    log_parameter_drift(decoder_base_for_drift, initial_decoder_state,
+                                        "decoder", step, log_metrics, log, True)
+                    log_parameter_drift(encoder_base_for_drift, initial_encoder_state,
+                                        "encoder", step, log_metrics, log, True)
+
+
+            # Validation and Verbose Samples
+            val_loss = None
+            if val_loader and val_interval > 0 and (step % val_interval == 0):
+                if is_main():
+                    log.info(f"Running validation at step {step}")
+                with Timer("Validation", log, main_process=is_main(), log_wandb=True, wandb_step=step):
+                    val_loss = validate_distributed(
+                        decoder=decoder,
+                        encoder=encoder,
+                        orig_model=orig_model,
+                        val_loader=val_loader,
+                        config=config,
+                        step=step,
+                        device=device,
+                        tokenizer=tokenizer,
+                        cached_prefix_ids=cached_prefix_ids,
+                        world_size=world_size,
+                        log=log,
+                        is_main_process=is_main(),
+                        wandb_run_id=current_wandb_run_id,
+                        steps_per_epoch=steps_per_epoch,
+                        current_epoch=current_epoch,
+                        max_steps=max_steps,
+                        gradient_accumulation_steps=gradient_accumulation_steps,
+                        val_interval=val_interval,
+                        comparison_tuned_lens=comparison_tuned_lens_cpu # Pass CPU version
+                    )
+                    most_recent_val_loss = val_loss
+                if is_main() and (math.isnan(val_loss)):
+                    consecutive_nan_losses += 1
+                    if consecutive_nan_losses >= max_consecutive_nan_losses:
+                        log.info(f"Stopping training at step {step} because of {consecutive_nan_losses} consecutive nan val_loss or loss.")
+                        break
+                else:
+                    consecutive_nan_losses = 0
+
+            # Checkpointing (only on main process)
+            if is_main() and checkpoint_manager.should_save_step(step):
+                # Get current tau and alpha for checkpointing, similar to 01_train.py
+                # Checkpointing metadata should reflect the state at the current *micro-step*
+                # but schedules are evaluated based on optimizer steps.
+                current_optimizer_step_for_ckpt = step // gradient_accumulation_steps
+                current_tau_ckpt = get_schedule_value(config['gumbel_tau_schedule'], step, max_steps, 
+                                               current_epoch=current_epoch, 
+                                               steps_per_epoch=steps_per_epoch, 
+                                               grad_accum_steps=gradient_accumulation_steps)
+                current_alpha_ckpt = get_schedule_value(config['alpha_schedule'], step, max_steps,
+                                                 current_epoch=current_epoch, 
+                                                 steps_per_epoch=steps_per_epoch, 
+                                                 grad_accum_steps=gradient_accumulation_steps)
+                # current_wandb_run_id is already defined
+                # Epoch for checkpoint filename/metadata: based on micro-steps or optimizer steps?
+                # 01_train.py uses current_epoch_num = (micro_step // steps_per_epoch) + 1. Let's stick to that for filename.
+                current_epoch_num_for_ckpt_filename = (step // steps_per_epoch) + 1 if steps_per_epoch > 0 else 1
+                if not math.isnan(most_recent_val_loss):
+                    saved_path = checkpoint_manager.save_checkpoint(
+                        step=step, # Save with micro-step
+                        epoch=current_epoch_num_for_ckpt_filename, # Use 1-based epoch based on micro-steps
+                        models={'decoder': decoder_base, 'encoder': encoder_base},
+                        optimizer=optimizer,
+                        scheduler=lr_scheduler, # Scheduler state is based on optimizer steps
+                        metrics=metrics, 
+                        config=config, 
+                        val_loss=most_recent_val_loss,
+                        tau=current_tau_ckpt,
+                        alpha=current_alpha_ckpt,
+                        wandb_run_id=current_wandb_run_id,
+                        additional_name="",
+                        # Add additional metadata for proper resuming
+                        current_epoch=current_epoch,
+                        batch_within_epoch=step % steps_per_epoch if steps_per_epoch > 0 else step,
+                        steps_per_epoch=steps_per_epoch,
+                        # Save gradient scaler state if using mixed precision
+                        scaler=scaler.state_dict() if scaler is not None else None,
+                        # Save whether we're mid-accumulation
+                        accumulation_step=(step % gradient_accumulation_steps) + 1
+                    )
+                    if saved_path:
+                        log.info(f"Checkpoint saved: {saved_path}")
+                    else:
+                        log.info(f"Checkpoint not saved at step {step} (e.g., max_checkpoints reached or interval not met).")
+                else:
+                    log.info(f"Checkpoint not saved at step {step} (e.g., val_loss is nan).")
+    except KeyboardInterrupt:
+        if is_main():
+            log.warning("KeyboardInterrupt detected! Saving checkpoint before exit. {e}")
+        # Use a different name for the checkpoint to indicate interruption
+        final_ckpt_name = "interrupt"
+        if step < 4000:
+            log.warning("KeyboardInterrupt detected! Not saving as step is less than 4000.")
+            raise KeyboardInterrupt("KeyboardInterrupt detected! Not saving as step is less than 4000.")
+    else:
+        final_ckpt_name = "final"
+
+    # Final checkpoint (also used for KeyboardInterrupt)
     if is_main() and checkpoint_manager.save_at_end:
         current_epoch_for_ckpt = max_steps // steps_per_epoch if steps_per_epoch > 0 else 0
-        current_epoch_num_for_ckpt = current_epoch_for_ckpt + 1 if max_steps > 0 else 1 # Ensure 1-based epoch, or 1 if no steps
-        step_for_ckpt = max_steps - 1 if max_steps > 0 else -1 # Consistent with saving at step -1 if max_steps is 0
+        current_epoch_num_for_ckpt = current_epoch_for_ckpt + 1 if max_steps > 0 else 1
+        step_for_ckpt = max_steps - 1 if max_steps > 0 else -1
 
-        # current_wandb_run_id is already defined
-        
-        # # Determine parameters for final schedule value calculation
-        # if max_steps == 0:
-        #     # If no training steps, get initial value of schedules (optimizer_step 0 of a hypothetical 1-optimizer_step schedule)
-        #     calc_optimizer_step_for_final_sched = 0
-        #     # calc_total_optimizer_steps_for_final_sched = 1 
-        # else:
-        #     # Get schedule value at the last completed micro_step, translating to optimizer_step
-        #     calc_optimizer_step_for_final_sched = (max_steps - 1) // gradient_accumulation_steps
-        #     # calc_total_optimizer_steps_for_final_sched = max_optimizer_steps
-
-        # # Get final tau and alpha using calculated optimizer step parameters
-        final_micro_step_for_sched = max_steps -1 if max_steps > 0 else 0
-
-        # Calculate final epoch for schedule calculations
+        final_micro_step_for_sched = max_steps - 1 if max_steps > 0 else 0
         final_epoch_for_sched = final_micro_step_for_sched // steps_per_epoch if steps_per_epoch > 0 else 0
-        
+
         final_tau = get_schedule_value(
-            config['gumbel_tau_schedule'], 
-            final_micro_step_for_sched, # current micro_step
-            max_steps,                   # total micro_steps
-            current_epoch=final_epoch_for_sched, 
+            config['gumbel_tau_schedule'],
+            final_micro_step_for_sched,
+            max_steps,
+            current_epoch=final_epoch_for_sched,
             steps_per_epoch=steps_per_epoch,
             grad_accum_steps=gradient_accumulation_steps
         )
         final_alpha = get_schedule_value(
-            config['alpha_schedule'], 
+            config['alpha_schedule'],
             final_micro_step_for_sched,
             max_steps,
             current_epoch=final_epoch_for_sched,
@@ -2466,28 +2543,27 @@ def main(cfg: DictConfig) -> None:
             grad_accum_steps=gradient_accumulation_steps
         )
 
-        # 'metrics' here would be from the last training step, or undefined if loop didn't run
         final_metrics_to_save = metrics if 'metrics' in locals() else {}
 
-
         final_checkpoint_path = checkpoint_manager.save_checkpoint(
-            step=step_for_ckpt, 
-            epoch=current_epoch_num_for_ckpt, # Use 1-based epoch
+            step=step_for_ckpt,
+            epoch=current_epoch_num_for_ckpt,
             models={'decoder': decoder_base, 'encoder': encoder_base},
             optimizer=optimizer,
             scheduler=lr_scheduler,
             metrics=final_metrics_to_save,
-            config=config, # Pass the resolved dictionary config
+            config=config,
             tau=final_tau,
             alpha=final_alpha,
+            val_loss=most_recent_val_loss,
             wandb_run_id=current_wandb_run_id,
-            additional_name="final"
+            additional_name=final_ckpt_name
         )
         if final_checkpoint_path:
             log.info(f"Final checkpoint saved: {final_checkpoint_path}")
         else:
-            log.info(f"Final checkpoint not saved (e.g. disabled).")
-    
+            log.info("Final checkpoint not saved (e.g. disabled).")
+
     if is_main():
         log.info("Training completed!")
     

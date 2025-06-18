@@ -31,6 +31,8 @@ class EncoderConfig:
     projection_init_method: str = "default"  # YAML `projection_init_method` - how to initialize the projection layer
     subtract_add_pos_embeddings: bool = False # YAML `subtract_add_pos_embeddings`
     extra_pos_embeddings: bool = False # YAML `extra_pos_embeddings` - whether to add extra positional embeddings to the activation
+    add_current_token: bool = False # YAML `add_current_token` - whether to add the current token to the input to the encoder
+    special_last_token_vector: bool = False # YAML `special_last_token_vector` - whether to use a special last token vector
     
     def __post_init__(self):
         """Validate configuration parameters."""
@@ -149,6 +151,10 @@ class Encoder(nn.Module):
             self.activation_pos_embedder.weight.data = self.base.transformer.wpe.weight.data.clone()
             self.activation_pos_embedder.weight.requires_grad_(cfg.extra_pos_embeddings) # Ensure trainable
             log.info(f"Initialized activation positional embedder for Encoder with {num_pos_embeddings} embeddings.")
+        if self.config.special_last_token_vector:
+            self.special_last_token_vector = nn.Parameter(torch.zeros(d_model))
+            self.special_last_token_vector.requires_grad_(True)
+            log.info("Initialized special last token vector")
 
     def set_soft_prompt_from_text(self, string: str, tokenizer) -> None:
         """Initialize soft prompt embeddings from text string using tokenizer.
@@ -229,7 +235,7 @@ class Encoder(nn.Module):
             # No change needed
             yield
 
-    def forward(self, embeddings: torch.Tensor, original_token_pos: Optional[torch.Tensor] = None) -> torch.Tensor:  # type: ignore[override]
+    def forward(self, embeddings: torch.Tensor, original_token_pos: Optional[torch.Tensor] = None, current_token_ids: Optional[torch.Tensor] = None, add_special_last_token_vector: bool = True) -> torch.Tensor:  # type: ignore[override]
         """Project final token embedding back to activation space."""
         # The Encoder base model processes the embeddings from the Decoder
         # to obtain hidden states.
@@ -249,6 +255,13 @@ class Encoder(nn.Module):
                 # Concatenate: [soft_prompt, decoder_generated_tokens]
                 embeddings = torch.cat([soft_prompt_expanded, embeddings], dim=1)  # (B, soft_prompt_length + T_text, d_model)
         
+        if self.config.add_current_token and current_token_ids is not None:
+            current_token_vectors = self.base.get_input_embeddings().weight[current_token_ids]
+            embeddings = torch.cat([embeddings, current_token_vectors.unsqueeze(1)], dim=1)
+
+        if self.config.special_last_token_vector and add_special_last_token_vector:
+            embeddings[:,-1] = self.special_last_token_vector.unsqueeze(0).expand_as(embeddings[:,-1])
+        
         # If the Encoder's base model is meant to process the embeddings first:
         if self._use_base:
             if True:
@@ -260,6 +273,8 @@ class Encoder(nn.Module):
 
                     def _get_layers(model):
                         """Helper to find the list of transformer layers in a model."""
+                        if hasattr(model, 'model'):
+                            model = model.model
                         if hasattr(model, 'transformer'):
                             model = model.transformer
                         if hasattr(model, 'layers'):

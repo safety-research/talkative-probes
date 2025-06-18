@@ -113,34 +113,30 @@ def get_top_n_tokens(logits_tensor_slice: torch.Tensor, tok: PreTrainedTokenizer
 
 
 def print_formatted_table(labels: List[str], data_rows: List[List[str]]) -> None:
-    """Prints a formatted table with row labels and data."""
+    """Prints a formatted table with row labels and data. Allows right-padded misalignment."""
     if not labels:
         return
     if len(labels) != len(data_rows):
         print("  (Error: Mismatch between number of labels and data rows for table printing)")
         return
 
+    # Find the maximum number of columns in any row
     num_cols = 0
     for row_data in data_rows:
         if row_data:
-            num_cols = len(row_data)
-            break
+            num_cols = max(num_cols, len(row_data))
     
-    if num_cols == 0: # All data rows are empty. Print labels only.
+    if num_cols == 0:  # All data rows are empty. Print labels only.
         max_label_width_only = max(len(s) for s in labels) + 2 if labels else 0
         for label in labels:
             print(f"{label:<{max_label_width_only}}")
         return
 
+    # Compute column widths, allowing for ragged rows (right-padded)
     col_widths = [0] * num_cols
     for row_data in data_rows:
-        if row_data and len(row_data) != num_cols:
-            # This case should ideally be handled by the caller ensuring consistent row lengths.
-            # For robustness, we proceed but it might lead to misalignment for this specific row.
-            pass 
         for c_idx, cell in enumerate(row_data):
-            if c_idx < num_cols:
-                col_widths[c_idx] = max(col_widths[c_idx], len(str(cell)))
+            col_widths[c_idx] = max(col_widths[c_idx], len(str(cell)))
 
     max_label_width = max(len(s) for s in labels) + 2
     for r_idx, label in enumerate(labels):
@@ -150,7 +146,7 @@ def print_formatted_table(labels: List[str], data_rows: List[List[str]]) -> None
             if c_idx < len(current_data_row):
                 cell_content = str(current_data_row[c_idx])
                 row_str += f" {cell_content:<{col_widths[c_idx]}} |"
-            else: # Pad if current_data_row is shorter than num_cols
+            else:
                 row_str += f" {'':<{col_widths[c_idx]}} |"
         print(row_str.rstrip(" |"))
 
@@ -261,11 +257,11 @@ def print_verbose_sample_details(
                 computed_kl_train = kl_divergences["From Original Activation A (training objective)"].get("KL(A || A_train) [TRAINING LOSS]")
                 if computed_kl_train is not None and abs(computed_kl_train - sample_losses['kl']) > 0.01:
                     print(f"  ⚠️  WARNING: Computed training KL ({computed_kl_train:.4f}) doesn't match sample_losses KL ({sample_losses['kl']:.4f})!")
-
-    print("\nGenerated Explanation (from Decoder using A_i):")
+    add_current_token = cfg['trainable_components']['encoder']['add_current_token']
+    print("\nGenerated Explanation (from Decoder using A_i):" + (" (with current token)" if add_current_token else ""))
     if decoder_tokens:
         dec_labels = ["Token:"] + [f"Dec Top {i+1}:" for i in range(len(decoder_preds_by_rank))]
-        dec_data_rows = [decoder_tokens] + decoder_preds_by_rank
+        dec_data_rows = [decoder_tokens + ([f"[{original_token_at_p_str}]" if add_current_token else ""] if add_current_token else [])] + decoder_preds_by_rank
         print_formatted_table(dec_labels, dec_data_rows)
     else:
         print("  (No explanation generated or empty)")
@@ -274,7 +270,7 @@ def print_verbose_sample_details(
     # Base model generation comparison
     # ------------------------------------------------------------------
 
-    print("\nGenerated Explanation (from BASE model using same context + still with soft tokens??? Perhaps should be with hard tokens... not sure.):")
+    print("\nGenerated Explanation (from BASE model using same context + still with soft tokens.):")
     if base_tokens:
         base_labels = ["Token:"] + [f"Base Top {i+1}:" for i in range(len(base_preds_by_rank))]
         base_data_rows = [base_tokens] + base_preds_by_rank
@@ -367,6 +363,9 @@ def compute_single_sample_losses(
         "entropy_weight": sch_args.get("entropy_weight", 0.0),
         "mse_weight": sch_args.get("mse_weight", 0.0),
         "lm_base_weight": sch_args.get("lm_base_weight", 0.0),
+        "GRPO_weight": sch_args.get("GRPO_weight", 0.0),
+        "GRPO_beta": sch_args.get("GRPO_beta", 0.0),
+        "group_n": sch_args.get("group_n", 1),
     }
     
     # Override T_text from config if available
@@ -602,7 +601,7 @@ def process_and_print_verbose_batch_samples(
         prev_token_embeddings = emb_table[prev_token_ids_tensor]  # [1, T_text, d_model]
         
         # Pass through encoder to get A_hat_baseline
-        A_hat_baseline = enc(prev_token_embeddings)
+        A_hat_baseline = enc(prev_token_embeddings, current_token_ids=batch["input_ids_A"][i][p].to(device).unsqueeze(0) if enc.config.add_current_token else None)
         
         # Compute predictions and metrics for baseline
         logits_baseline_all_pos = orig.forward_with_replacement(input_ids_seq, A_hat_baseline, l, p).logits
@@ -623,7 +622,7 @@ def process_and_print_verbose_batch_samples(
             shuffled_embeds[0, :shuffle_count] = gen_single.generated_text_embeddings[0, indices]
         
         # Pass shuffled embeddings through encoder
-        A_hat_shuffled = enc(shuffled_embeds)
+        A_hat_shuffled = enc(shuffled_embeds, current_token_ids=batch["input_ids_A"][i][p].to(device).unsqueeze(0) if enc.config.add_current_token else None)
         
         # Compute predictions for shuffled reconstruction
         logits_shuffled_all_pos = orig.forward_with_replacement(input_ids_seq, A_hat_shuffled, l, p).logits
@@ -639,7 +638,7 @@ def process_and_print_verbose_batch_samples(
         full_shuffled_embeds[0] = gen_single.generated_text_embeddings[0, indices_full]
         
         # Pass full shuffled embeddings through encoder
-        A_hat_full_shuffled = enc(full_shuffled_embeds)
+        A_hat_full_shuffled = enc(full_shuffled_embeds, current_token_ids=batch["input_ids_A"][i][p].to(device).unsqueeze(0) if enc.config.add_current_token else None)
         
         # Compute predictions for full shuffled reconstruction
         logits_full_shuffled_all_pos = orig.forward_with_replacement(input_ids_seq, A_hat_full_shuffled, l, p).logits
@@ -661,9 +660,8 @@ def process_and_print_verbose_batch_samples(
                 try:
                     with torch.no_grad():
                         # Ensure A_i has the dtype TunedLens expects if there's a specific one
-                        # otherwise, use A_i's current dtype. TunedLens models are typically float32.
-                        # TODO fix this 
-                        A_i_casted = A_i.to(comparison_tuned_lens.dtype if hasattr(comparison_tuned_lens, 'dtype') and comparison_tuned_lens.dtype is not None else A_i.dtype)
+                        # Always cast A_i to float32 for TunedLens to avoid dtype mismatch
+                        A_i_casted = A_i.to(torch.float32)
                         logits_tuned_lens_at_p_batched = comparison_tuned_lens(A_i_casted, idx=l)
 
                     top_n_tuned_lens_tokens = get_top_n_tokens(logits_tuned_lens_at_p_batched.squeeze(0), tok, top_n_analysis)

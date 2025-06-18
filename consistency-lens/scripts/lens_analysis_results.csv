@@ -1,51 +1,52 @@
 position,token,explanation,kl_divergence,mse,text,token_length
-0,The, AppalachPetPaulceanplanetcarbonourkereneocoecacarbonquerromascDOMEREDOMEREDOMLECTDOMDOMellationDOMDOMDOMDOMentyspectivePetquePet,2.998196601867676,11657.130859375,The cat sat on the mat.,3
-1, cat,encycurverneriecomponenttereticEquFerSensor FairyConst Catalyst Celt Celt Saber Canter Brah Archer cat cat cat cat cat cat Chocobo Tig Cabrera Hawk Duffy cat Cats,0.1226484626531601,1.3853940963745117,The cat sat on the mat.,4
-2, sat,IERSERERCeterserPLAclairclairaber Chocoboppelin Chimera Camelclaw ChocoboCat Camel pear CAThorse Claud Camel Cat Cher lobster kitten kitten Beard bow sat sat sat,0.05492166802287102,1.6621577739715576,The cat sat on the mat.,4
-3, on,ERAFERserFTWAREcit Acerelia Chimera Clickerlehem Butterflyclaw Bentley seat Bedbryce Claw Lily sitting Featherclaw seat Assy sitting cages Camel sitting clen laying inspecting checkingcatching,0.3217904269695282,1.5209619998931885,The cat sat on the mat.,3
-4, the,seraber Eritlig Ether Airesthur Emblem Kira castle Dahl Acer Chair Berks Shapcloth Scythe Sat Lapclaw ChairSer seat Bunny Candle kneeling Scythe Bench squat Chair Scythe<<,0.2642626166343689,1.219427466392517,The cat sat on the mat.,4
-5, mat,enthabbrance Ell Ether Ashe Canter Harecastle Yaz Scy Butterfly Scythe Seah Slave Zel Wyr Ashe mat mat mat Scythe Camel Sparrow parchment lace Chess�� Chocobo Valkyrie mat mat,0.24605447053909302,1.7466740608215332,The cat sat on the mat.,4
-6,.,lipaberLearlar EtheraberWinged Bone Emblem Camel Myrcastle Camel BoneclawBone candlebryce KinBone horselip BarberSquarecloth BenchPearSquareBowSquareSquareBarn,0.04328553378582001,1.1419199705123901,The cat sat on the mat.,1
-0,The, AppalachPetPaulceanplanetcarbonourkereneocoecacarbonquerromascDOMEREDOMEREDOMLECTDOMDOMellationDOMDOMDOMDOMentyspectivePetquePet,2.998196601867676,11657.130859375,The dog ran in the park.,3
-1, dog,encycurvernestheticcomponentPLAeticencyent Synt SterlingConst Catalyst CentauriTar Celt Canter Archer Archer Celt Dog dog dog Labrador Chocobo Cabrera Archer Arpaio Arpaio Boko dog dog,0.17198096215724945,1.3989427089691162,The dog ran in the park.,4
-2, ran,IERERCclairMechsercarbCararre Chocoboberuslar Chocobocar Chocobo Byrd kittenBone Celt kitten Dog kitten Camel Horse rabbits Chocobo beetle kitten Chaser Rabbit rabbits kitten ran,0.08317180722951889,1.4370002746582031,The dog ran in the park.,4
-3, in,MechFERser Ferebraclair Carbon Sibercor Ellisonツ Harley Bow Sparrow Hawk Claw Bou Gaw shootBowBow skate CrawBow riding Craw flying Bailey Haw flying swimming Hunting,0.35460934042930603,1.7692623138427734,The dog ran in the park.,3
-4, the, MuscleEquニ闘 Clicker pneum Berk Dudley Berk Siber Carroll Glou Berk Kyr Carpenter Lung Hod Swing Alley Berk skiing Harley Craw skiing Berk dart Arrows Kar skate Bowling crawlingBow,2.178579807281494,2.6551597118377686,The dog ran in the park.,4
-5, park,sedesthesiaelongERY Ether Lyon Siber Clarkecastle Bir Canaver Dudley Witches Hazel Archer Seym Aber park park park park Cth Aber Calais Haram Wonderland Calais Cricket rabbits Zoo zoo zoo,0.17870193719863892,1.6610000133514404,The dog ran in the park.,5
-6,.,esthesiaseraberا�KERRNA Lasercarb Siberherryller Carney Archer Carney ChocoboBone Hare ValkyrieツBone horseBircastle carpetBow Witchesbowl skiingBowSquareLockBow,0.062288761138916016,1.2427432537078857,The dog ran in the park.,1
-0,Machine, AppalachPetPaulceanplanetcarbonourkereneocoecacarbonescromascDOMEREDOMEREDOMLECTDOMDOMellationDOMDOMDOMDOMentyspectivePetquePet,2.0021486282348633,11983.5888671875,Machine learning is powerful.,7
-1, learning, Proced VulcanEsaber Marketable Syntptroller Esperopter�� VulcanPont Vulcaniburopter Acer Astro Coco neural learning algorithms Kinect ATP graphene Oculus�� Kinectmilo Cortana roboticslearning algorithms,0.21099066734313965,2.0947721004486084,Machine learning is powerful.,9
-2, is, Perseproxyibur Ober Vitberバ Catalyst contraceFer spongeibur CivBioculusopter ECB Clickerculus Engineering Biology�醒 ASIC Clickerbots esportsBG Artificial Biology ASIC astronomy is,0.08724384009838104,1.1904146671295166,Machine learning is powerful.,3
-3, powerful, Esperibur OberaberChemiburasper CochascriptBioiburChempex contraceBrewacus Chess Moduleascriptviks Astralodox VagSov DAC Empires Ether Oblivion Ether Fusion Ether powerful,0.1452362984418869,1.3142553567886353,Machine learning is powerful.,9
-4,., Etheraber KetSovasper Ober Alicaber CatalystiburzacFraiburmusvirイトmagicomorphic bigotryGoldイトRF thunderUSBRGBRGBmagicRGBGoldMagicBrewBow,0.06728867441415787,1.0919405221939087,Machine learning is powerful.,1
-0,Hello, AppalachPetPaulceanplanetcarbonourkereneocoecacarbonescromascDOMEREDOMEREDOMLECTDOMDOMellationDOMDOMDOMDOMentyspectivePetquePet,1.8470878601074219,11525.4326171875,Hello world!,5
-1, world, PenguTemplate��ADRAcomponent Rowlingagall Nerd�� BeaconBron CompanionFriend Bowen BrowneFriend Wiley Dodd world Rune Wiley FeyGil Guinness Ember Chocobo Frie Fey Frie Hobbit Bosnia world,0.24204491078853607,2.10752534866333,Hello world!,6
-2,!,�� Clicker�醒�� ChocoboBrave Fairypeer Chocobo Brideeric Chocoboocobo Fairythuriere���� Forsaken Hearthoire Chocobo Fairy Realms Chocobo Realms Yen Realms!!!!,0.30584436655044556,1.5107793807983398,Hello world!,1
-0,import, AppalachPetPaulceanplanetcarbonourkereneocoecacarbonescromascDOMEREDOMEREDOMLECTDOMDOMellationDOMDOMDOMDOMentyspectivePetquePet,2.0909955501556396,11575.2568359375,import numpy as np,6
-1, n, Template xml URictionary EPS�醒 Clicker AE disseptroller EPS sql converter corpus obser Acer�醒ictionary DAC syn predic DAC DAC derivative n n n Constantin�醒 isot Acer Cyr,0.4909675717353821,2.094676971435547,import numpy as np,2
-2,umpy, Excelyr Aure Py buffer Rect Synt Vec XML FN Gn MySQL Ned XML unic Num gn MySQL semantic SVG Unicode Gn python Quadro SVG Python mathematicumpy dictionumpyumpyumpy,0.8655955791473389,2.254462242126465,import numpy as np,4
-3, as, Handle Compos Rack Component Razor template Carbon Compos Render Py API Binary Py Py cc Binary foo Py carbon Binary unic b GCC Bor ribPython synPy byte byte async as,1.6833999156951904,2.512171983718872,import numpy as np,3
-4, np, Pad ABE Byrne Template XML Yar Brah Carbon Eth CSV{\ Pyr Binary Esper xml Dat Elastic parse Aram UTF Pyr trig CSV np np Python np XML GHC np np np,1.809412956237793,2.640700101852417,import numpy as np,3
-0,def, AppalachPetPaulceanplanetcarbonourkereneocoecacarbonescromascDOMEREDOMEREDOMLECTDOMDOMellationDOMDOMDOMDOMentyspectivePetquePet,2.447762966156006,11269.96484375,"def hello():
+0,The, Referred oun ounaccompanied[The],1.379577398300171,11760.7607421875,The cat sat on the mat.,3
+1, cat,�� Addingciating Thus[ cat],0.1727217584848404,1.419921636581421,The cat sat on the mat.,4
+2, sat, Having clasp Sitting lizard[ sat],0.07704411447048187,2.177637815475464,The cat sat on the mat.,4
+3, on, Sitting curled Sitting clasp[ on],0.435835599899292,2.4304282665252686,The cat sat on the mat.,3
+4, the, Sitting seated recl perched[ the],0.5269114375114441,1.5388400554656982,The cat sat on the mat.,4
+5, mat, kneeling sitting kneeling resting[ mat],0.2015286237001419,1.6243882179260254,The cat sat on the mat.,4
+6,.,Then kneeling clasp gown[.],0.12702128291130066,1.505513072013855,The cat sat on the mat.,1
+0,The, Referred oun ounaccompanied[The],1.379577398300171,11760.7607421875,The dog ran in the park.,3
+1, dog,�� Addingciating Whilst[ dog],0.14115017652511597,1.504117727279663,The dog ran in the park.,4
+2, ran,Upon kittenSeeing turtle[ ran],0.2178523987531662,1.57254958152771,The dog ran in the park.,4
+3, in, yelled RUN swung ran[ in],0.4616854190826416,1.7390680313110352,The dog ran in the park.,3
+4, the, stabbed danced inside flung[ the],1.0867438316345215,1.7356135845184326,The dog ran in the park.,4
+5, park, toile spilling abroad crawling[ park],0.2337239384651184,1.3755606412887573,The dog ran in the park.,5
+6,.,Said drowned staircase yelled[.],0.1681944727897644,1.342783808708191,The dog ran in the park.,1
+0,Machine, Referred oun ounaccompanied[Machine],10.525562286376953,12076.625,Machine learning is powerful.,7
+1, learning, Accordingly Robotics Artificial Neural[ learning],0.5159333944320679,2.358639717102051,Machine learning is powerful.,9
+2, is, Whereas Robotics agility Engineering[ is],0.3242204785346985,1.6199525594711304,Machine learning is powerful.,3
+3, powerful, Accordingly computation embodiesis[ powerful],0.1389772593975067,1.5327484607696533,Machine learning is powerful.,9
+4,.,Excellent embodied effic versatile[.],0.15483754873275757,1.2496914863586426,Machine learning is powerful.,1
+0,Hello,ゴン oun ounaccompanied[Hello],10.186132431030273,11651.7138671875,Hello world!,5
+1, world, Speaking Moe Huh Ely[ world],0.7202253937721252,2.406381607055664,Hello world!,6
+2,!, AlrightÛ Almightyreetings[!],0.23410961031913757,1.8666362762451172,Hello world!,1
+0,import, Referred oun ounaccompanied[import],8.624890327453613,11702.1474609375,import numpy as np,6
+1, n, bindings Extract iterator Query[ n],0.7009587287902832,2.297485828399658,import numpy as np,2
+2,umpy," """""" std nested sql[umpy]",0.16942104697227478,2.4019975662231445,import numpy as np,4
+3, as, __ lib ./ lib[ as],3.305717706680298,3.0253233909606934,import numpy as np,3
+4, np, SQL integer args :=[ np],4.455994606018066,2.510145425796509,import numpy as np,3
+0,def, Referred oun ounaccompanied[def],10.835627555847168,11532.134765625,"def hello():
     print('Hi')",3
-1, hello, Pegasus Cer Synt Clicker Template�醒 Cure UE XML�醒 Aure DAC Cache IEbis Router Cyp Cout Conver Vim Dart BeauDb Rober Vim Brah Vim Foo Vim Drupal�� Foo,2.9490790367126465,6.209587097167969,"def hello():
+1, hello, Byte printf enum @@[ hello],0.6885337829589844,2.1923301219940186,"def hello():
     print('Hi')",6
-2,():, Catalyst Catalyst Pry Byte Buffer CipherParser Catalyst Conver NodeByte template byte byteParser syntax Bender render GCCGUI Unicode VER foo perlCallback VER daemon debuggerHTTP():())():,0.4709155261516571,2.8548779487609863,"def hello():
+2,():, _ asyncSourceFile std[():],0.696951687335968,3.0155715942382812,"def hello():
     print('Hi')",3
 3,"
-", Scal Node Dele Codec echo Aureble Compos cx �dn-AXbinary asyncπλλ ChromeParser BufferParser UnicodeError SyntBegModuleWebModuleBugFileCode,0.0019335334654897451,2.021326780319214,"def hello():
+"," cmd¶ npm Commands[
+]",0.004322230815887451,2.134631395339966,"def hello():
     print('Hi')",1
-4, , Array Mod ProcIm BenderAn ArrayAEduino ArrayBuffer Erduino TiBee� EC byteAsync Arduino Byte x          ,0.31152331829071045,2.101480722427368,"def hello():
+4, , cmd }) Released]:[ ],0.2571057677268982,1.6680930852890015,"def hello():
     print('Hi')",1
-5, , Colony Ether Utility Dart Ether ArraySerial EtherGUI Entity<< Laser obj LaserGUI Arduino RPG  iPtz  Ether  QR        ,4.046533584594727,3.155179977416992,"def hello():
+5, ,Parameters[]UsedPrev[ ],5.037960052490234,3.391484022140503,"def hello():
     print('Hi')",1
-6, , Transfer Agricultural Ether Yardbool Doodle Laserprint Database Finger Laser#### QRGE LU.} XY ip Kinд  Chocobo  �        ,2.720820665359497,3.6449027061462402,"def hello():
+6, ,Primary2ItemImage2[ ],5.84398889541626,4.625260829925537,"def hello():
     print('Hi')",1
-7, print, Handle Component Cutter File FeatherParser Cutter XML Byte PigGUI Byrd Dir vector Vim Egg PigGUI Vim Git seq Print print print print Xer Xer Vim Vim GHC print echo,0.44646787643432617,2.3173370361328125,"def hello():
+7, print, printf *)[] */[ print],0.5188994407653809,1.97882878780365,"def hello():
     print('Hi')",6
-8,(', Py UE CAD Buffer Synt Catalyst Handle BitGUI File CypRenderBuffer BufferDisplay Geral Geral printf \( printf(' foo('(' \( \(('('('('('(',0.24032872915267944,2.9845986366271973,"def hello():
+8,(', << printf << <<[('],0.11347319930791855,2.0747323036193848,"def hello():
     print('Hi')",2
-9,Hi, CY VER Bitcoin CypGUI Cipher HDLGUI CatalystIE Binary nu Elixir Dat ChocoboDisplay Ether Synt CV Cake Dat Hermes Feather HH Hermes HelloHiHi Coinbase HiHiHi,0.22567038238048553,2.019300937652588,"def hello():
+9,Hi, integersHello identifiersHello[Hi],0.3276122212409973,2.284558057785034,"def hello():
     print('Hi')",2
-10,'), CSV Scal CV xmlcsv byte vector Byte Calendar Elixirvec Renderfx Elixir Handle Scroll filename Vim foo SiriAsync Integerdylib') Render}')')')')')'),0.3894072473049164,2.582638740539551,"def hello():
+10,'), asyncHelloHelloMsg[')],0.7752764225006104,2.154353618621826,"def hello():
     print('Hi')",2

@@ -13,6 +13,50 @@ __all__ = ["train_step", "compute_kl_divergence_robust"]
 log = _logging.getLogger(__name__)
 
 
+def compute_entropy_robust(logits):
+    orig_dtype = logits.dtype
+    with torch.amp.autocast('cuda',enabled=False):
+        logits_f32 = logits.float()
+        # Numerical stability: subtract max before softmax (detached)
+        logits_f32 = logits_f32 - logits_f32.max(dim=-1, keepdim=True)[0].detach()
+        probs = torch.softmax(logits_f32, dim=-1)
+        # Clamp to avoid log(0) - use smaller threshold for numerical stability
+        probs = probs.clamp(min=1e-10)
+        entropy = (-probs * torch.log(probs)).sum(-1).mean()
+    entropy = entropy.to(orig_dtype)
+    return entropy
+
+def compute_advantages(A,A_train, group_n, no_advantage=False):
+    # minus sign, crucial
+    mse_reward = -(A-A_train).pow(2).mean(dim=-1)#only mean over features, still per-batch
+    if no_advantage:
+        mse_reward_std = mse_reward.std()
+        return mse_reward_std, mse_reward.mean()
+    reshaped_mse_reward = mse_reward.reshape(-1,group_n )
+    means = reshaped_mse_reward.mean(dim=-1,keepdim=True)
+    stds = reshaped_mse_reward.std(dim=-1,keepdim=True)
+    
+    # Debug: Check for zero or near-zero std
+    if (stds < 1e-8).any():
+        log.warning(f"Very small std detected in advantages: min std = {stds.min().item():.2e}, max std = {stds.max().item():.2e}, avg std = {stds.mean().item():.2e}")
+        # Add small epsilon to prevent division by zero
+        stds = stds.clamp(min=1e-8)
+    
+    advantages = ((reshaped_mse_reward-means)/stds).reshape(-1)
+    mean_reward = means.mean()
+    mean_reward_std = stds.mean()
+    return advantages, mean_reward_std, mean_reward
+
+def KL_schulman_estimator(probs_of_interest,orig_model_logprobs_of_interest):
+    # Debug: Check inputs
+    if (probs_of_interest < 1e-10).any():
+        log.warning(f"Very small probs_of_interest detected: min = {probs_of_interest.min().item():.2e}")
+    
+    ratio_r =  torch.exp(orig_model_logprobs_of_interest)/probs_of_interest
+    KL_reverse = ratio_r - (orig_model_logprobs_of_interest-torch.log(probs_of_interest))-1
+
+    return KL_reverse.mean()
+
 def compute_kl_divergence_robust(logits_approx: torch.Tensor, logits_orig: torch.Tensor) -> torch.Tensor:
     """Compute KL divergence with numerical stability.
     
@@ -58,6 +102,8 @@ def train_step(  # noqa: D401
     verbose_eval: bool = False,  # Whether to collect verbose evaluation data
     do_kl_computation: bool = True,
     do_lm_computation: bool = True,
+    GRPO_validate_mode: bool = False,
+    debug_mode: bool = False,
 ) -> Dict[str, torch.Tensor]:
     """Composite loss (MSE + LM + KL + entropy) with flexible weighting.
 
@@ -71,6 +117,19 @@ def train_step(  # noqa: D401
         • Entropy bonus       (Encourage/discourage token diversity)
     """
 
+
+    alpha = _loss_fns.get("alpha", 0.1) if _loss_fns else 0.1
+
+    kl_base = _loss_fns.get("kl_base_weight", 1.0) if _loss_fns else 1.0
+    ent_w = _loss_fns.get("entropy_weight", 0.0) if _loss_fns else 0.0
+    mse_w = _loss_fns.get("mse_weight", 0.0) if _loss_fns else 0.0
+    lm_w = _loss_fns.get("lm_base_weight", 0.0) if _loss_fns else 0.0
+    GRPO_w = _loss_fns.get("GRPO_weight", 0.0) if _loss_fns else 0.0
+    GRPO_training = GRPO_w !=0
+    if GRPO_training:
+        group_n = _loss_fns['group_n']
+
+
     dec: nn.Module = models["dec"]
     enc: nn.Module = models["enc"]
     orig = models.get("orig")  # may be None in unit tests
@@ -83,18 +142,42 @@ def train_step(  # noqa: D401
     tau = _loss_fns.get("tau", 1.0) if _loss_fns else 1.0
     T_text = _loss_fns.get("T_text", 8) if _loss_fns else 8
     
+    if debug_mode:
+        # Debug: Check for NaN in input activation
+        if torch.isnan(A).any():
+            log.error(f"NaN detected in activation A before generation. Shape: {A.shape}")
+    
+        # Debug: Check decoder parameters for NaN
+        if hasattr(dec, 'check_for_nans') and dec.check_for_nans():
+            log.error("NaN detected in decoder parameters before generation")
+    
     # Use differentiable generation if configured
-    if dec.config.use_flash_attention:
-        # Use Flash Attention with KV cache for optimized O(n) generation
-        gen = dec.generate_soft_kv_flash(A, max_length=T_text, gumbel_tau=tau, original_token_pos=original_token_pos_A)
-    elif dec.config.use_kv_cache:
-        # Use KV-cached generation for O(n) attention computation
-        gen = dec.generate_soft_kv_cached(A, max_length=T_text, gumbel_tau=tau, original_token_pos=original_token_pos_A)
-    elif dec.config.use_checkpointing:
-        gen = dec.generate_soft_chkpt(A, max_length=T_text, gumbel_tau=tau, checkpoint_every_n_tokens=dec.config.checkpoint_every_n_tokens, original_token_pos=original_token_pos_A)
+    if GRPO_w>0: ##kl_base==0 and ent_w==0 and mse_w==0 and lm_w==0:
+        context = torch.no_grad()
     else:
-        gen = dec.generate_soft(A, max_length=T_text, gumbel_tau=tau, original_token_pos=original_token_pos_A)
-    A_hat = enc(gen.generated_text_embeddings, original_token_pos=original_token_pos_A)
+        context = contextlib.nullcontext()
+    with context:
+        if dec.config.use_flash_attention:
+            # Use Flash Attention with KV cache for optimized O(n) generation
+            gen = dec.generate_soft_kv_flash(A, max_length=T_text, gumbel_tau=tau, original_token_pos=original_token_pos_A)
+        elif dec.config.use_kv_cache:
+            # Use KV-cached generation for O(n) attention computation
+            if GRPO_training and not GRPO_validate_mode:
+                gen = dec.generate_soft_kv_cached_nondiff(A, max_length=T_text, gumbel_tau=tau, original_token_pos=original_token_pos_A)
+            else:
+                gen = dec.generate_soft_kv_cached(A, max_length=T_text, gumbel_tau=tau, original_token_pos=original_token_pos_A)
+        elif dec.config.use_checkpointing:
+            gen = dec.generate_soft_chkpt(A, max_length=T_text, gumbel_tau=tau, checkpoint_every_n_tokens=dec.config.checkpoint_every_n_tokens, original_token_pos=original_token_pos_A)
+        else:
+            gen = dec.generate_soft(A, max_length=T_text, gumbel_tau=tau, original_token_pos=original_token_pos_A)
+
+    # Ensure original_token_pos_A is 2D for gather (B, 1)
+    if original_token_pos_A.dim() == 1:
+        gather_index = original_token_pos_A.unsqueeze(1)
+    else:
+        gather_index = original_token_pos_A
+    current_token_ids = batch["input_ids_A"].gather(1, gather_index).squeeze(1)
+    A_hat = enc(gen.generated_text_embeddings, original_token_pos=original_token_pos_A, current_token_ids=current_token_ids if enc.config.add_current_token else None)
 
     # Extract decoded token IDs for logging popularity
     # gen.hard_token_ids is (Batch, T_text)
@@ -122,27 +205,19 @@ def train_step(  # noqa: D401
             verbose_data = intervention_results.pop("verbose_data")
             intervention_results["verbose_data"] = verbose_data
 
-
-    alpha = _loss_fns.get("alpha", 0.1) if _loss_fns else 0.1
-
-    kl_base = _loss_fns.get("kl_base_weight", 1.0) if _loss_fns else 1.0
-    ent_w = _loss_fns.get("entropy_weight", 0.0) if _loss_fns else 0.0
-    mse_w = _loss_fns.get("mse_weight", 0.0) if _loss_fns else 0.0
-
     
-    lm_w = _loss_fns.get("lm_base_weight", 0.0) if _loss_fns else 0.0
+
     # ----------------------- language-model KL divergence (loss_lm) ------------------------------
     # This loss regularizes the decoder's (D_model) linguistic knowledge with the base model's (LLM_orig_model)
     # linguistic knowledge, aiming to keep explanations on-manifold.
     # It computes KL(P_D || P_Orig) where P_D are predictions from the decoder on its own generated sequence,
     # and P_Orig are predictions from the original LLM on natural language tokens only.
     # Always compute for monitoring, but detach gradients when weight is 0
-    grad_context_lm = torch.no_grad() if lm_w == 0 else contextlib.nullcontext()
+    grad_context_lm = torch.no_grad() if lm_w == 0 and (not GRPO_training) else contextlib.nullcontext()
+    orig_model_pred_logits_all_pos=None
     if do_lm_computation or lm_w > 0:
         with grad_context_lm:
             # Compute LM loss, using no_grad if weight is 0
-            # Logits from D_model for its own generation (predicting token t+1 given prefix 0..t from D)
-            # gen.raw_lm_logits are (B, T_text, V) - these correspond to generated natural language tokens only
             d_model_pred_logits = gen.raw_lm_logits # Shape is (B, T_text, V) as per decoder.py
             B = A.shape[0] # Batch size from input A
             natural_prefix_expanded = cached_prefix_ids.expand(B, -1).to(A.device)  # Shape: (B, prefix_len)
@@ -159,7 +234,6 @@ def train_step(  # noqa: D401
 
                 # Concatenate embedded prefix with decoder's generated embeddings
                 base_model_input_embeds = torch.cat([prefix_embeds, decoder_generated_embeds], dim=1)# length of embedded sequence: prefix_len + T_text
-
                 # Logits from LLM_orig_model conditioned on embedded prefix + decoder's generated embeddings.
                 # Gradients ARE allowed to flow through decoder_generated_embeds back to the decoder.
                 orig_model_pred_logits_all_pos = orig.model(
@@ -182,8 +256,6 @@ def train_step(  # noqa: D401
 
             start_idx = prefix_len_for_slicing-1 # this predicts the first token of the generated sequence
             
-            # T_text here refers to the number of tokens generated by the decoder,
-            # which is d_model_pred_logits.shape[1].
             num_generated_tokens = d_model_pred_logits.shape[1]
             end_idx = prefix_len_for_slicing + num_generated_tokens -1 # ending here ensures we predict the last token of the generated sequence
             
@@ -221,36 +293,29 @@ def train_step(  # noqa: D401
                     ).detach()
     else:
         loss_lm = torch.tensor(0.0, device=A.device, dtype=A.dtype)
+        
+    if _loss_fns['GRPO_beta']!=0:
+        B=A.shape[0]
+        natural_prefix_expanded = cached_prefix_ids.expand(B, -1).to(A.device)  # Shape: (B, prefix_len)
+        prefix_len_for_slicing = natural_prefix_expanded.shape[-1]
+        base_model_input_ids = torch.cat([natural_prefix_expanded, gen.hard_token_ids], dim=1)  # Shape: (B, prefix_len + T_text)
+        slice_index = prefix_len_for_slicing-1
+        # Logits from LLM_orig_model conditioned on natural language prefix + generated tokens
+        # (predicting token t+1 given natural prefix + generated tokens 0..t)
+        with torch.no_grad(): # Ensure orig model isn't updated by this loss component
+            num_generated_tokens = gen.hard_token_ids.shape[-1]
+            orig_model_pred_logits_all_pos = orig.model(
+                input_ids=base_model_input_ids,
+            ).logits[:, slice_index:slice_index+num_generated_tokens, :] # Shape: (B, T_text, V)
+            orig_model_pred_logprobs_all_pos = torch.log_softmax(orig_model_pred_logits_all_pos, dim=-1)
+            trimmed_orig_model_pred_logprobs_of_interest = torch.gather(
+                orig_model_pred_logprobs_all_pos,
+                dim=-1,
+                index=gen.hard_token_ids.unsqueeze(-1)
+            ).squeeze(-1)
+                
 
-    # ------------------ entropy (optional regulariser) ---------------------
-    # Always compute for monitoring, but detach gradients when weight is 0
-    logits = gen.raw_lm_logits  # (B, T, V) from Decoder – still useful for entropy
-    if ent_w != 0:  # Can be positive (reward entropy) or negative (penalize entropy)
-        # Compute entropy in float32 for numerical stability with bf16
-        orig_dtype = logits.dtype
-        with torch.amp.autocast('cuda',enabled=False):
-            logits_f32 = logits.float()
-            # Numerical stability: subtract max before softmax (detached)
-            logits_f32 = logits_f32 - logits_f32.max(dim=-1, keepdim=True)[0].detach()
-            probs = torch.softmax(logits_f32, dim=-1)
-            # Clamp to avoid log(0) - use smaller threshold for numerical stability
-            probs = probs.clamp(min=1e-10)
-            entropy = (-probs * torch.log(probs)).sum(-1).mean()
-        entropy = entropy.to(orig_dtype)
-    else:
-        # Compute without gradients for monitoring
-        with torch.no_grad():
-            # Compute entropy in float32 for numerical stability with bf16
-            orig_dtype = logits.dtype
-            with torch.amp.autocast('cuda',enabled=False):
-                logits_f32 = logits.float()
-                # Numerical stability: subtract max before softmax (detached)
-                logits_f32 = logits_f32 - logits_f32.max(dim=-1, keepdim=True)[0].detach()
-                probs = torch.softmax(logits_f32, dim=-1)
-                # Clamp to avoid log(0) - use smaller threshold for numerical stability
-                probs = probs.clamp(min=1e-10)
-                entropy = (-probs * torch.log(probs)).sum(-1).mean()
-            entropy = entropy.to(orig_dtype)
+
 
     # ----------------------- KL divergence between original and reconstructed model outputs -----------------------------------
     # Always compute for monitoring, but detach gradients when weight is 0
@@ -261,17 +326,13 @@ def train_step(  # noqa: D401
     grad_context = torch.no_grad() if (kl_base == 0 and mse_w == 0) else contextlib.nullcontext()
     with grad_context: # This context applies to all subsequent ops in this block
         # Reconstruct A′ as well to get Δ
-        Ap = batch["A_prime"]  # Keep original dtype - autocast will handle conversions
-        # Assuming A_prime corresponds to the same original token position context as A.
-        # If A_prime could have a different original_token_pos, that would need to be passed from the batch.
-        # For now, use original_token_pos_A for Ap as well.
-        original_token_pos_Ap = original_token_pos_A # Placeholder if specific Ap pos is needed
-
-        tau = _loss_fns.get("tau", 1.0) if _loss_fns else 1.0
-
-        # Avoid building a computation graph for the A' path if grads are not needed,
-        # which saves significant memory.
         if resample_ablation:
+            Ap = batch["A_prime"]  # Keep original dtype - autocast will handle conversions
+            # Assuming A_prime corresponds to the same original token position context as A.
+            # If A_prime could have a different original_token_pos, that would need to be passed from the batch.
+            # For now, use original_token_pos_A for Ap as well.
+            original_token_pos_Ap = original_token_pos_A # Placeholder if specific Ap pos is needed
+            tau = _loss_fns.get("tau", 1.0) if _loss_fns else 1.0
             with torch.no_grad() if enc.config.stop_grad_aprime else contextlib.nullcontext():
                 # Use differentiable generation if configured
                 if hasattr(dec.config, 'use_kv_cache') and dec.config.use_kv_cache:
@@ -281,7 +342,8 @@ def train_step(  # noqa: D401
                     gen_ap = dec.generate_soft_chkpt(Ap, max_length=T_text, gumbel_tau=tau, original_token_pos=original_token_pos_Ap)
                 else:
                     gen_ap = dec.generate_soft(Ap, max_length=T_text, gumbel_tau=tau, original_token_pos=original_token_pos_Ap)
-                Ap_hat = enc(gen_ap.generated_text_embeddings, original_token_pos=original_token_pos_Ap) # Detached if kl_base == 0 via grad_context
+                current_token_ids_ap = batch["input_ids_A"].gather(1, original_token_pos_Ap.unsqueeze(1)).squeeze(1)
+                Ap_hat = enc(gen_ap.generated_text_embeddings, original_token_pos=original_token_pos_Ap, current_token_ids=current_token_ids_ap if enc.config.add_current_token else None) # Detached if kl_base == 0 via grad_context
                 del gen_ap
 
                 # Original delta logic is correct under grad_context:
@@ -419,36 +481,108 @@ def train_step(  # noqa: D401
     # Q = softmax(logits_approx) 
     # Compute KL loss, using no_grad if weight is 0
     if kl_base > 0:
-        # Compute in float32 for numerical stability
-        with torch.amp.autocast('cuda',enabled=False):
-            logits_orig_f32 = logits_orig.float()
-            logits_approx_f32 = logits_approx.float()
-            
-            # Numerical stability: subtract max before softmax (detached to avoid gradient issues)
-            logits_orig_f32 = logits_orig_f32 - logits_orig_f32.max(dim=-1, keepdim=True)[0].detach() # 0 to just get values    
-            logits_approx_f32 = logits_approx_f32 - logits_approx_f32.max(dim=-1, keepdim=True)[0].detach()
-            
-            loss_kl = kl_fn(  # kl_fn expects log y_pred, y_true
-                torch.log_softmax(logits_approx_f32, dim=-1),
-                torch.softmax(logits_orig_f32, dim=-1)
-            ) # KL(P||Q) penalises Q for assigning mass where P has none; encourages Q to cover P.
-        loss_kl = loss_kl.to(logits_orig.dtype)
+        # KL(P||Q) penalises Q for assigning mass where P has none; encourages Q to cover P.
+        loss_kl = compute_kl_divergence_robust(
+            logits_approx=logits_approx,
+            logits_orig=logits_orig
+        )
     elif do_kl_computation:
         # Compute without gradients for monitoring
         with torch.no_grad():
-            loss_kl = kl_fn(
-                torch.log_softmax(logits_approx, dim=-1),
-                torch.softmax(logits_orig, dim=-1)
+            loss_kl = compute_kl_divergence_robust(
+                logits_approx=logits_approx,
+                logits_orig=logits_orig
             ).detach()
     else:
         loss_kl = torch.tensor(0.0, device=A.device, dtype=A.dtype)
+
+    hard_token_ids = gen.hard_token_ids
+    
+
+    if GRPO_w > 0:
+        if not verbose_eval:
+            del gen
+        probs_of_interest, entropy = dec.fwd_tokens(
+            activation_input=A,
+            input_tokens=hard_token_ids,
+            original_token_pos=original_token_pos_A,
+            detach_entropy=ent_w==0,
+            calculate_entropy=ent_w!=0 or GRPO_validate_mode,
+            return_logits=False
+        )#probs shape (B,T_text
+        if ent_w==0:
+            if entropy is not None:
+                entropy = entropy.detach()
+                entropy=entropy.mean()
+            else:
+                entropy = torch.tensor(0.0, device=A.device, dtype=A.dtype)
+        if _loss_fns['GRPO_beta']!=0:
+            # print("probs",probs_of_interest[:10])
+            # print("orig",trimmed_orig_model_pred_logprobs_of_interest[:10])
+            # print("ratio",probs_of_interest/trimmed_orig_model_pred_logprobs_of_interest)
+            KL_GRPO = KL_schulman_estimator(probs_of_interest,trimmed_orig_model_pred_logprobs_of_interest)
+            #raise ValueError("KL_GRPO is not implemented")
+        else:   
+            KL_GRPO = torch.tensor(0.0, device=A.device, dtype=A.dtype)
+        with torch.no_grad():
+            if not GRPO_validate_mode:
+                advantage, mean_reward_std, mean_reward = compute_advantages(A,A_train.detach(),group_n)
+                advantage = advantage.unsqueeze(-1)
+            else:
+                mean_reward_std, mean_reward = compute_advantages(A,A_train.detach(),group_n, no_advantage=True)
+                advantage = torch.tensor(0.0, device=A.device, dtype=A.dtype).unsqueeze(-1)
+        #fine to do mean because our rollouts are fixed length
+        loss_GRPO = -torch.mean(probs_of_interest/probs_of_interest.detach() * advantage - _loss_fns['GRPO_beta']*KL_GRPO,axis=-1)
+        loss_GRPO = loss_GRPO.mean() # align with canonical GRPO normalisation.
+    else:
+        advantage = torch.tensor(0.0, device=A.device, dtype=A.dtype) 
+        # ------------------ entropy (optional regulariser) ---------------------
+        # Always compute for monitoring, but detach gradients when weight is 0
+        logits = gen.raw_lm_logits  # (B, T, V) from Decoder – still useful for entropy
+        if ent_w != 0:  # Can be positive (reward entropy) or negative (penalize entropy)
+            entropy = compute_entropy_robust(logits)
+        else:
+            with torch.no_grad():
+                entropy = compute_entropy_robust(logits).detach()
+        loss_GRPO = torch.tensor(0.0, device=A.device, dtype=A.dtype)
+
+    # Clean up large tensors if not in verbose evaluation mode
+    # if not verbose_eval:
+    #     if hasattr(gen, 'raw_lm_logits'):
+    #         # gen.raw_lm_logits has been used for loss_lm and potentially non-GRPO entropy.
+    #         # It's no longer needed if not in verbose_eval mode.
+    #         del gen.raw_lm_logits
+        
+    #     # Delete intermediate logits from KL computation if they were created
+    #     if 'logits_orig' in locals():
+    #         del logits_orig
+    #     if 'logits_approx' in locals():
+    #         del logits_approx
 
     # Total loss composition:
     # - KL loss (fundamental objective): fixed weight, measures functional preservation
     # - LM loss (linguistic regularizer): ramped up via alpha schedule for fluency
     # - MSE loss (direct reconstruction): alternative/additional to KL for direct activation matching
     # - Alpha schedule gradually introduces linguistic constraints during training
-    total_loss = (lm_w * alpha) * loss_lm + kl_base * loss_kl - ent_w * entropy + mse_w * loss_mse
+    total_loss = (lm_w * alpha) * loss_lm + kl_base * loss_kl - ent_w * entropy + mse_w * loss_mse + GRPO_w * loss_GRPO
+    if debug_mode:
+        # Debug: Check individual loss components   
+        if torch.isnan(loss_lm):
+            log.error(f"NaN in loss_lm. Weight: lm_w={lm_w}, alpha={alpha}")
+        if torch.isnan(loss_kl):
+            log.error(f"NaN in loss_kl. Weight: kl_base={kl_base}")
+        if torch.isnan(entropy):
+            log.error(f"NaN in entropy. Weight: ent_w={ent_w}")
+        if torch.isnan(loss_mse):
+            log.error(f"NaN in loss_mse. Weight: mse_w={mse_w}")
+        if torch.isnan(loss_GRPO):
+            log.error(f"NaN in loss_GRPO. Weight: GRPO_w={GRPO_w}")
+        if torch.isnan(total_loss):
+            log.error("NaN in total_loss after combining components")
+    
+        # Debug: Check for inf values
+        if torch.isinf(total_loss):
+            log.error(f"Inf in total_loss. Components: lm={loss_lm.item():.2e}, kl={loss_kl.item():.2e}, ent={entropy.item():.2e}, mse={loss_mse.item():.2e}, GRPO={loss_GRPO.item():.2e}")
 
     # Build return dictionary
     result_dict = {
@@ -458,7 +592,13 @@ def train_step(  # noqa: D401
         "kl": loss_kl,
         "entropy": entropy,
         "decoded_tokens_batch": decoded_token_ids_batch,  # Add this for epoch-level aggregation
-        "fraction_variance_explained": fraction_variance_explained
+        "fraction_variance_explained": fraction_variance_explained,
+        "advantages_mean": advantage.mean() if GRPO_training and not GRPO_validate_mode else torch.tensor(0.0),
+        "advantages_std": advantage.std() if GRPO_training and not GRPO_validate_mode else torch.tensor(0.0),
+        "mean_reward": mean_reward if GRPO_training and not GRPO_validate_mode else torch.tensor(0.0),
+        "mean_reward_std": mean_reward_std if GRPO_training and not GRPO_validate_mode else torch.tensor(0.0),
+        "KL_GRPO": KL_GRPO if GRPO_training else torch.tensor(0.0),
+        "loss_GRPO": loss_GRPO,
     }
     
     # Add intervention results if we're in eval mode

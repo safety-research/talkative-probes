@@ -46,75 +46,87 @@ def run_eval_interventions(
     
     for b in range(B):
         p = int(token_pos_batch[b].item())
-        
+
         # Get tokens ending at position p (inclusive)
         # We want T_text tokens, so we take from (p - T_text + 1) to p (inclusive)
         start_pos = max(0, p - T_text + 1)
         end_pos = p + 1  # +1 because we want inclusive
-        
+
         # Extract those token IDs
         baseline_token_ids = input_ids[b, start_pos:end_pos]  # Shape: (actual_len,)
-        
+
         # Get embeddings for these tokens
         token_embeddings = orig_model.model.get_input_embeddings()(baseline_token_ids)  # (actual_len, D)
-        
+
         # If we got fewer than T_text tokens (because p is near the start), pad with EOS token
         if token_embeddings.shape[0] < T_text:
-            # Get EOS token embedding
-            eos_token_id = orig_model.config.eos_token_id
+            eos_token_id = orig_model.model.config.eos_token_id
             if eos_token_id is None:
-                # Try pad token as fallback
-                eos_token_id = orig_model.config.pad_token_id
-            
+                eos_token_id = orig_model.model.config.pad_token_id
+
             if eos_token_id is None:
                 raise ValueError("Model has no EOS or PAD token configured for padding")
-            
+
             eos_embedding = orig_model.model.get_input_embeddings()(
                 torch.tensor([eos_token_id], device=token_embeddings.device)
-            ).squeeze(0)  # Shape: (D,)
-            
-            # Create padding with EOS embeddings
+            ).squeeze(0)  # (D,)
+
             num_pad = T_text - token_embeddings.shape[0]
-            padding = eos_embedding.unsqueeze(0).expand(num_pad, -1)  # Shape: (num_pad, D)
+            padding = eos_embedding.unsqueeze(0).expand(num_pad, -1)  # (num_pad, D)
             token_embeddings = torch.cat([padding, token_embeddings], dim=0)
-        
+
         baseline_embeddings_list.append(token_embeddings)
-    
+
     # Stack to get (B, T_text, D)
     baseline_embeddings = torch.stack(baseline_embeddings_list, dim=0)
-    
+
+    # Gather current_token_ids for each sample using token_pos_batch
+    # input_ids: (B, seq_len), token_pos_batch: (B,)
+    current_token_ids = torch.gather(
+        input_ids, 1, token_pos_batch.unsqueeze(1)
+    ).squeeze(1)  # (B,)
+
     # Now we can run interventions:
-    
+
     # 1. Baseline reconstruction: encode the original tokens directly
-    A_hat_baseline = enc(baseline_embeddings)
+    if enc.config.add_current_token:
+        A_hat_baseline = enc(baseline_embeddings, current_token_ids=current_token_ids)
+    else:
+        A_hat_baseline = enc(baseline_embeddings, current_token_ids=None)
     mse_baseline = torch.nn.functional.mse_loss(A_hat_baseline, orig_A)
     results["mse_baseline"] = mse_baseline
-    
+
     # 2. Decoder reconstruction: use the already computed reconstruction
     mse_decoder = torch.nn.functional.mse_loss(A_hat_decoder, orig_A)
     results["mse_decoder"] = mse_decoder
-    
+
     # 3. Shuffle intervention: shuffle first (n-3) tokens of decoder output
     n_tokens = T_text
     shuffled_embeds = generated_embeddings.clone()
     shuffle_count = max(0, n_tokens - 3)
-    
+
     if shuffle_count > 0:
         for b in range(B):
             indices = torch.randperm(shuffle_count, device=generated_embeddings.device)
             shuffled_embeds[b, :shuffle_count] = generated_embeddings[b, indices]
-    
-    A_hat_shuffled = enc(shuffled_embeds)
+
+    if enc.config.add_current_token:
+        A_hat_shuffled = enc(shuffled_embeds, current_token_ids=current_token_ids)
+    else:
+        A_hat_shuffled = enc(shuffled_embeds, current_token_ids=None)
     mse_shuffled = torch.nn.functional.mse_loss(A_hat_shuffled, orig_A)
     results["mse_shuffle"] = mse_shuffled
-    
+
     # 4. Full shuffle intervention: shuffle ALL tokens of decoder output
     full_shuffled_embeds = generated_embeddings.clone()
     for b in range(B):
         indices = torch.randperm(T_text, device=generated_embeddings.device)
         full_shuffled_embeds[b] = generated_embeddings[b, indices]
-    
-    A_hat_full_shuffled = enc(full_shuffled_embeds)
+
+    if enc.config.add_current_token:
+        A_hat_full_shuffled = enc(full_shuffled_embeds, current_token_ids=current_token_ids)
+    else:
+        A_hat_full_shuffled = enc(full_shuffled_embeds, current_token_ids=None)
     mse_full_shuffled = torch.nn.functional.mse_loss(A_hat_full_shuffled, orig_A)
     results["mse_shuffle_all"] = mse_full_shuffled
     

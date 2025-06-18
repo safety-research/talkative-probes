@@ -265,6 +265,9 @@ def load_full_tuned_lens(
         if model_or_model_name == "openai-community/gpt2":
             log.info(f"got {model_or_model_name}, cutting to gpt2")
             model_or_model_name = "gpt2"
+        elif model_or_model_name == "openai-community/gpt2-xl":
+            log.info(f"got {model_or_model_name}, cutting to gpt2-xl")
+            model_or_model_name = "gpt2-xl"
         # Load the base model if we only have a name
         if isinstance(model_or_model_name, str):
             if is_main_process and log:
