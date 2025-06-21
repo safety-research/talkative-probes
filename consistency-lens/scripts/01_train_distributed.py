@@ -20,7 +20,7 @@ import torch
 import torch.distributed as dist
 from omegaconf import DictConfig, OmegaConf
 from torch.nn.parallel import DistributedDataParallel as DDP
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 # Enable TF32 for better performance on Ampere GPUs (A100, H100)
 torch.set_float32_matmul_precision('high')
@@ -69,6 +69,8 @@ if TYPE_CHECKING:
 # Import all the utility functions from the original training script
 sys.path.insert(0, str(Path(__file__).parent))
 import importlib
+import dotenv
+dotenv.load_dotenv()
 
 train_module = importlib.import_module("01_train")
 extract_dataset_info = train_module.extract_dataset_info
@@ -248,6 +250,7 @@ def distributed_train_step(
         "lm_base_weight": config.get('lm_base_weight'),
         "GRPO_weight": config['GRPO_weight'],
         "GRPO_beta": config['GRPO_beta'],
+        "GRPO_entropy_weight": config['GRPO_entropy_weight'],
         "group_n": config['group_n'],
     }
     
@@ -261,7 +264,6 @@ def distributed_train_step(
         # If encoder is DDP, encoder.no_sync() is the correct context manager
         if hasattr(encoder, 'no_sync'): 
             encoder_no_sync_cm = encoder.no_sync()
-    
     # The 'with' statement handles __enter__ and __exit__ for both contexts.
     # The original try...finally for manual exit calls is no longer needed here.
     with decoder_no_sync_cm, encoder_no_sync_cm:
@@ -279,6 +281,7 @@ def distributed_train_step(
             else:
                 ctxt_anomaly = nullcontext()
             with ctxt_anomaly:
+               
                 losses = original_train_step(
                     batch=batch,
                     models=models,
@@ -307,7 +310,7 @@ def distributed_train_step(
             scaler.scale(loss).backward()
         else:
             loss.backward()
-    
+
     # Gradient clipping and optimizer step only at accumulation boundaries
     if is_accumulation_end:
         if device.type == "cuda" and scaler is not None:
@@ -383,7 +386,7 @@ def distributed_train_step(
     return metrics
 
 
-def setup_distributed_models(decoder, encoder, orig_model, device, rank, world_size, decoder_has_trainable_params=True, encoder_has_trainable_params=True):
+def setup_distributed_models(decoder, encoder, orig_model, device, rank, world_size, decoder_has_trainable_params=True, encoder_has_trainable_params=True, compile_models=True, log=None):
     """Wrap models with DistributedDataParallel.
     
     Args:
@@ -426,10 +429,19 @@ def setup_distributed_models(decoder, encoder, orig_model, device, rank, world_s
         # Note: orig_model is not wrapped as it's typically frozen.
         
     else:
+        log.info("Not using DDP, moving models to device")
         # Single GPU - just move to device
         decoder = decoder.to(device)
         encoder = encoder.to(device) 
         orig_model = orig_model.to(device)
+        
+
+    if compile_models:
+        decoder = torch.compile(decoder)
+        encoder = torch.compile(encoder)
+        log.info("Compiled models (after wrapping with DDP), not compiling orig_model")
+    else:
+        log.info("Not compiling models.")
         
     return decoder, encoder, orig_model
 
@@ -517,21 +529,44 @@ def generate_verbose_samples_from_batch(
     """Generate verbose samples from a given batch."""
     verbose_config = config.get('verbose_samples', {})
     
-    # Get schedule arguments for verbose samples
+    # # Get schedule arguments for verbose samples
+    # sch_args_verbose = {
+    #     "tau": get_schedule_value(config['gumbel_tau_schedule'], step, max_steps,
+    #                              current_epoch=current_epoch, 
+    #                              steps_per_epoch=steps_per_epoch, 
+    #                              grad_accum_steps=gradient_accumulation_steps),
+    #     "T_text": config.get('t_text', 8),
+    #     "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps,
+    #                                current_epoch=current_epoch, 
+    #                                steps_per_epoch=steps_per_epoch, 
+    #                                grad_accum_steps=gradient_accumulation_steps),
+    #     "lm_base_weight": config.get('lm_base_weight'), 
+    #     "kl_base_weight": config.get('kl_base_weight', 1.0),
+    #     "entropy_weight": config.get('entropy_weight', 0.0),
+    #     "mse_weight": config.get('mse_weight', 0.0),
+    #     "GRPO_weight": config.get('GRPO_weight', 0.0),
+    #     "GRPO_beta": config.get('GRPO_beta', 0.0),
+    #     "GRPO_entropy_weight": config.get('GRPO_entropy_weight', 0.0),
+    # }
+      # Loss function parameters
     sch_args_verbose = {
-        "tau": get_schedule_value(config['gumbel_tau_schedule'], step, max_steps,
-                                 current_epoch=current_epoch, 
-                                 steps_per_epoch=steps_per_epoch, 
-                                 grad_accum_steps=gradient_accumulation_steps),
-        "T_text": config.get('t_text', 8),
-        "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps,
-                                   current_epoch=current_epoch, 
-                                   steps_per_epoch=steps_per_epoch, 
-                                   grad_accum_steps=gradient_accumulation_steps),
-        "lm_base_weight": config.get('lm_base_weight'), 
-        "kl_base_weight": config.get('kl_base_weight', 1.0),
-        "entropy_weight": config.get('entropy_weight', 0.0),
-        "mse_weight": config.get('mse_weight', 0.0),
+        "t_text": config['t_text'],
+        "tau": get_schedule_value(config['gumbel_tau_schedule'], step, config['max_train_steps'], 
+                                current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0, 
+                                steps_per_epoch=steps_per_epoch, 
+                                grad_accum_steps=gradient_accumulation_steps),
+        "alpha": get_schedule_value(config['alpha_schedule'], step, config['max_train_steps'],
+                                  current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0, 
+                                  steps_per_epoch=steps_per_epoch, 
+                                  grad_accum_steps=gradient_accumulation_steps),
+        "kl_base_weight": config['kl_base_weight'],
+        "entropy_weight": config['entropy_weight'],
+        "mse_weight": config['mse_weight'],
+        "lm_base_weight": config['lm_base_weight'],
+        "GRPO_weight": config['GRPO_weight'],
+        "GRPO_beta": config['GRPO_beta'],
+        "GRPO_entropy_weight": config['GRPO_entropy_weight'],
+        "group_n": config['group_n'],
     }
 
     # Set models to eval mode
@@ -540,26 +575,28 @@ def generate_verbose_samples_from_batch(
     orig_model.model.eval()
 
     try:
-        # Generate verbose samples
-        num_printed, captured_text = process_and_print_verbose_batch_samples(
-            batch=batch,
-            cfg=config,
-            models={"dec": decoder_base, "enc": encoder_base},
-            orig=orig_model,
-            tok=tokenizer,
-            sch_args=sch_args_verbose,
-            device=device,
-            num_samples=verbose_config.get('num_samples', 2),
-            top_n_analysis=verbose_config.get('top_n_predictions', 3),
-            printed_count_so_far=0,
-            generate_continuation=verbose_config.get('generate_continuation', True),
-            continuation_tokens=verbose_config.get('continuation_tokens', 30),
-            return_structured_data=False,
-            capture_output=True,
-            cached_prefix_ids=cached_prefix_ids,
-            resample_ablation=config.get('resample_ablation', True),
-            comparison_tuned_lens=comparison_tuned_lens # Pass it down
-        )
+        # Ensure we're in no_grad mode to prevent gradient accumulation
+        with torch.no_grad():
+            # Generate verbose samples
+            num_printed, captured_text = process_and_print_verbose_batch_samples(
+                batch=batch,
+                cfg=config,
+                models={"dec": decoder_base, "enc": encoder_base},
+                orig=orig_model,
+                tok=tokenizer,
+                sch_args=sch_args_verbose,
+                device=device,
+                num_samples=verbose_config.get('num_samples', 2),
+                top_n_analysis=verbose_config.get('top_n_predictions', 3),
+                printed_count_so_far=0,
+                generate_continuation=verbose_config.get('generate_continuation', True),
+                continuation_tokens=verbose_config.get('continuation_tokens', 30),
+                return_structured_data=False,
+                capture_output=True,
+                cached_prefix_ids=cached_prefix_ids,
+                resample_ablation=config.get('resample_ablation', True),
+                comparison_tuned_lens=comparison_tuned_lens # Pass it down
+            )
         
         # Log to wandb
         if captured_text and current_wandb_run_id:
@@ -576,6 +613,11 @@ def generate_verbose_samples_from_batch(
         decoder_base.train()
         encoder_base.train()
         # orig_model.model stays in eval mode
+        orig_model.model.eval()
+        
+        # Force cleanup of any GPU memory that might have been allocated
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 def _check_and_generate_verbose_samples(
     decoder_base,
@@ -656,7 +698,8 @@ def _check_and_generate_verbose_samples(
                     comparison_tuned_lens=comparison_tuned_lens # Pass it down
                 )
             except Exception as e:
-                log.warning(f"Failed to generate verbose samples from validation data: {e}")
+                log.error(f"Failed to generate verbose samples from validation data: {e}")
+                raise
 
 
 def validate_distributed(
@@ -679,6 +722,8 @@ def validate_distributed(
     gradient_accumulation_steps=None,
     val_interval=None,
     comparison_tuned_lens: Optional["TunedLens"] = None, # New argument
+    should_print_val = False,
+    shared_base_model = None,
 ):
     """Distributed validation function using train_step without gradients.
     
@@ -700,23 +745,43 @@ def validate_distributed(
         "orig": orig_model
     }
     
-    # Loss function parameters (use same as training)
+    # # Loss function parameters (use same as training)
+    # loss_fns = {
+    #     "T_text": config.get('t_text', 8),
+    #     "tau": get_schedule_value(config['gumbel_tau_schedule'], step, config['max_train_steps'], 
+    #                             current_epoch=step // steps_per_epoch if steps_per_epoch and steps_per_epoch > 0 else 0, 
+    #                             steps_per_epoch=steps_per_epoch, 
+    #                             grad_accum_steps=config['gradient_accumulation_steps']),
+    #     "alpha": get_schedule_value(config['alpha_schedule'], step, config['max_train_steps'],
+    #                               current_epoch=step // steps_per_epoch if steps_per_epoch and steps_per_epoch > 0 else 0, 
+    #                               steps_per_epoch=steps_per_epoch, 
+    #                               grad_accum_steps=config['gradient_accumulation_steps']),
+    #     "kl_base_weight": config.get('kl_base_weight', 1.0),
+    #     "entropy_weight": config.get('entropy_weight', 0.0),
+    #     "mse_weight": config.get('mse_weight', 0.0),
+    #     "lm_base_weight": config.get('lm_base_weight'),
+    #     "GRPO_weight": config['GRPO_weight'],
+    #     "GRPO_beta": config['GRPO_beta'],
+    #     "group_n": config['group_n'],
+    # }
+      # Loss function parameters
     loss_fns = {
         "T_text": config.get('t_text', 8),
         "tau": get_schedule_value(config['gumbel_tau_schedule'], step, config['max_train_steps'], 
-                                current_epoch=step // steps_per_epoch if steps_per_epoch and steps_per_epoch > 0 else 0, 
+                                current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0, 
                                 steps_per_epoch=steps_per_epoch, 
-                                grad_accum_steps=config['gradient_accumulation_steps']),
+                                grad_accum_steps=gradient_accumulation_steps),
         "alpha": get_schedule_value(config['alpha_schedule'], step, config['max_train_steps'],
-                                  current_epoch=step // steps_per_epoch if steps_per_epoch and steps_per_epoch > 0 else 0, 
+                                  current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0, 
                                   steps_per_epoch=steps_per_epoch, 
-                                  grad_accum_steps=config['gradient_accumulation_steps']),
+                                  grad_accum_steps=gradient_accumulation_steps),
         "kl_base_weight": config.get('kl_base_weight', 1.0),
         "entropy_weight": config.get('entropy_weight', 0.0),
         "mse_weight": config.get('mse_weight', 0.0),
         "lm_base_weight": config.get('lm_base_weight'),
         "GRPO_weight": config['GRPO_weight'],
         "GRPO_beta": config['GRPO_beta'],
+        "GRPO_entropy_weight": config['GRPO_entropy_weight'],
         "group_n": config['group_n'],
     }
     
@@ -758,6 +823,8 @@ def validate_distributed(
     # Run interventions on a subset of validation batches
     max_intervention_batches = min(10, max_val_batches)  # Limit interventions to first 10 batches
     
+    if config['GRPO_beta'] == 0 and config['lm_base_weight'] == 0 and shared_base_model is None:
+        orig_model.to(device)
     # No gradients needed for validation
     with torch.no_grad():
         for batch_idx, batch in enumerate(val_loader):
@@ -937,40 +1004,40 @@ def validate_distributed(
         if intervention_batches > 0:
             for key, value in intervention_metrics.items():
                 avg_intervention_metrics[key] = value / intervention_batches
-        
-        log.info(f"\n{'='*60}")
-        log.info(f"Validation Results at Step {step}")
-        log.info(f"{'='*60}")
-        log.info("Average Losses:")
-        log.info(f"  Total Loss: {avg_loss:.4f}")
-        log.info(f"  MSE Loss: {avg_mse:.4f}")
-        log.info(f"  LM Loss: {avg_lm:.4f}")
-        log.info(f"  KL Loss: {avg_kl:.4f}")
-        log.info(f"  Entropy: {avg_entropy:.4f}")
-        log.info(f"  Fraction Variance Explained: {avg_fraction_variance_explained:.4f}")
-        log.info(f"  GRPO Loss: {avg_GRPO:.4f}")
-        log.info(f"  KL GRPO: {avg_KL_GRPO:.4f}")
-        log.info(f"  Advantages Mean: {avg_advantages_mean:.4f}")
-        log.info(f"  Advantages Std: {avg_advantages_std:.4f}")
-        log.info(f"  Mean Reward: {avg_mean_reward:.4f}")
-        log.info(f"  Mean Reward Std: {avg_mean_reward_std:.4f}")
-        log.info("\nActivation Statistics:")
-        log.info(f"  Original - Mean: {act_mean:.4f}, Std: {act_std:.4f}")
-        log.info(f"  Original - Min: {act_min:.4f}, Max: {act_max:.4f}")
-        log.info(f"  Reconstructed - Mean: {recon_mean:.4f}, Std: {recon_std:.4f}")
-        log.info(f"  Reconstructed - Min: {recon_min:.4f}, Max: {recon_max:.4f}")
-        log.info("\nBaseline Comparisons:")
-        log.info(f"  Zero MSE (predicting zeros): {zero_mse:.4f}")
-        log.info(f"  Mean MSE (predicting mean): {mean_mse:.4f}")
-        log.info(f"  Our Reconstruction MSE: {reconstruction_mse:.4f}")
-        log.info(f"  Improvement over zero baseline: {(zero_mse - reconstruction_mse) / zero_mse * 100:.1f}%")
-        log.info(f"  Improvement over mean baseline: {(mean_mse - reconstruction_mse) / mean_mse * 100:.1f}%")
-        log.info("\nAdditional Metrics:")
-        log.info(f"  Correlation (original vs reconstructed): {correlation:.4f}")
-        log.info(f"  Mean Relative Error: {relative_error:.4f}")
+        if should_print_val: 
+            log.info(f"\n{'='*60}")
+            log.info(f"Validation Results at Step {step}")
+            log.info(f"{'='*60}")
+            log.info("Average Losses:")
+            log.info(f"  Total Loss: {avg_loss:.4f}")
+            log.info(f"  MSE Loss: {avg_mse:.4f}")
+            log.info(f"  LM Loss: {avg_lm:.4f}")
+            log.info(f"  KL Loss: {avg_kl:.4f}")
+            log.info(f"  Entropy: {avg_entropy:.4f}")
+            log.info(f"  Fraction Variance Explained: {avg_fraction_variance_explained:.4f}")
+            log.info(f"  GRPO Loss: {avg_GRPO:.4f}")
+            log.info(f"  KL GRPO: {avg_KL_GRPO:.4f}")
+            log.info(f"  Advantages Mean: {avg_advantages_mean:.4f}")
+            log.info(f"  Advantages Std: {avg_advantages_std:.4f}")
+            log.info(f"  Mean Reward: {avg_mean_reward:.4f}")
+            log.info(f"  Mean Reward Std: {avg_mean_reward_std:.4f}")
+            log.info("\nActivation Statistics:")
+            log.info(f"  Original - Mean: {act_mean:.4f}, Std: {act_std:.4f}")
+            log.info(f"  Original - Min: {act_min:.4f}, Max: {act_max:.4f}")
+            log.info(f"  Reconstructed - Mean: {recon_mean:.4f}, Std: {recon_std:.4f}")
+            log.info(f"  Reconstructed - Min: {recon_min:.4f}, Max: {recon_max:.4f}")
+            log.info("\nBaseline Comparisons:")
+            log.info(f"  Zero MSE (predicting zeros): {zero_mse:.4f}")
+            log.info(f"  Mean MSE (predicting mean): {mean_mse:.4f}")
+            log.info(f"  Our Reconstruction MSE: {reconstruction_mse:.4f}")
+            log.info(f"  Improvement over zero baseline: {(zero_mse - reconstruction_mse) / zero_mse * 100:.1f}%")
+            log.info(f"  Improvement over mean baseline: {(mean_mse - reconstruction_mse) / mean_mse * 100:.1f}%")
+            log.info("\nAdditional Metrics:")
+            log.info(f"  Correlation (original vs reconstructed): {correlation:.4f}")
+            log.info(f"  Mean Relative Error: {relative_error:.4f}")
         
         # Log intervention metrics if available
-        if intervention_batches > 0:
+        if intervention_batches > 0 and should_print_val:
             log.info(f"\nIntervention Analysis (on {intervention_batches} batches):")
             log.info(f"  MSE Baseline (original tokens): {avg_intervention_metrics['mse_baseline']:.4f}")
             log.info(f"  MSE Decoder (generated explanation): {avg_intervention_metrics['mse_decoder']:.4f}")
@@ -1035,33 +1102,43 @@ def validate_distributed(
                 log.error(f"Failed to move comparison_tuned_lens to device {device}: {e}")
                 active_comparison_tuned_lens = None
 
-        _check_and_generate_verbose_samples(
-            decoder_base=decoder_base,
-            encoder_base=encoder_base,
-            orig_model=orig_model,
-            val_loader=val_loader,
-            config=config,
-            step=step,
-            current_epoch=current_epoch,
-            max_steps=max_steps,
-            steps_per_epoch=steps_per_epoch,
-            gradient_accumulation_steps=gradient_accumulation_steps,
-            val_interval=val_interval,
-            tokenizer=tokenizer,
-            cached_prefix_ids=cached_prefix_ids,
-            device=device,
-            wandb_run_id=wandb_run_id,
-            log=log,
-            comparison_tuned_lens=active_comparison_tuned_lens # Pass it down
-        )
+        try:
+            _check_and_generate_verbose_samples(
+                decoder_base=decoder_base,
+                encoder_base=encoder_base,
+                orig_model=orig_model,
+                val_loader=val_loader,
+                config=config,
+                step=step,
+                current_epoch=current_epoch,
+                max_steps=max_steps,
+                steps_per_epoch=steps_per_epoch,
+                gradient_accumulation_steps=gradient_accumulation_steps,
+                val_interval=val_interval,
+                tokenizer=tokenizer,
+                cached_prefix_ids=cached_prefix_ids,
+                device=device,
+                wandb_run_id=wandb_run_id,
+                log=log,
+                comparison_tuned_lens=active_comparison_tuned_lens
+            )
+        finally:
+            # Clean up GPU memory
+            if active_comparison_tuned_lens is not None:
+                del active_comparison_tuned_lens
+                torch.cuda.empty_cache()  # Force GPU memory cleanup
     
     # Put models back in train mode
     decoder_base.train()
     encoder_base.train()
-    # orig_model typically stays in eval mode
+    orig_model.model.eval()
+    # orig_model.model stays in eval mode
+    if shared_base_model is None:
+        orig_model.to('cpu')
+        log.info("Moved orig_model to cpu")
     
     # Return the average validation loss
-    return avg_loss
+    return avg_mse
 
 # Load checkpoint BEFORE moving models to device if resuming
 def maybe_resume_from_checkpoint(
@@ -1329,6 +1406,7 @@ def maybe_restore_optimizer_and_scheduler_from_checkpoint(
     embedding_lr_multiplier,
     prompt_lr_multiplier,
     base_model_lr_multiplier,
+    overall_encoder_lr_multiplier,
     weight_decay,
     learning_rate, # This is the new base LR from current config
     steps_per_epoch,
@@ -1390,7 +1468,8 @@ def maybe_restore_optimizer_and_scheduler_from_checkpoint(
                 embedding_lr_multiplier,
                 prompt_lr_multiplier,
                 base_model_lr_multiplier,
-                weight_decay
+                overall_encoder_lr_multiplier,
+                weight_decay,
             )
             
             optimizer = torch.optim.AdamW(new_optimizer_param_groups)
@@ -1528,7 +1607,9 @@ def maybe_restore_optimizer_and_scheduler_from_checkpoint(
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
 def main(cfg: DictConfig) -> None:
     """Distributed training entry point with optimized gradient accumulation."""
+
     
+     # Take memory snapshots at different points
     overall_start_time = time.time() # For overall script timing
 
     # Initialize distributed training
@@ -1550,6 +1631,10 @@ def main(cfg: DictConfig) -> None:
     
     # Parse flexible schedule notations
     config = parse_schedule_config(config)
+    if world_size == 1:
+        torch.cuda.memory._record_memory_history()
+        # Analyze using https://pytorch.org/memory_viz
+    
     
     # Logging setup (only on main process)
     if is_main():
@@ -1683,20 +1768,36 @@ def main(cfg: DictConfig) -> None:
         decoder_train_cfg = trainable_components_config['decoder']
         encoder_train_cfg = trainable_components_config['encoder']
         
-        # Initialize models using the same pattern as the regular training script
+        # Check if we should share the base model for memory efficiency
+        share_base_model = (
+            not decoder_train_cfg.get('base_model', False) and  # Decoder not training base
+            not (encoder_train_cfg.get('base_model', True) and encoder_train_cfg.get('use_base_model', False))  # Encoder not training base
+        )
+
+        # Load base model once if sharing
+        shared_base_model = None
+        if share_base_model:
+            if is_main():
+                log.info(f"Loading shared base model '{model_name}' for memory efficiency (base models are frozen)")
+            shared_base_model = AutoModelForCausalLM.from_pretrained(model_name, load_in_8bit=False)
+            shared_base_model.eval()
+            for p in shared_base_model.parameters():
+                p.requires_grad = False
+
+        # Initialize models with optional shared base
         decoder_config_obj = DecoderConfig(
             model_name=model_name,
             **decoder_train_cfg
         )
-        decoder = Decoder(decoder_config_obj)
+        decoder = Decoder(decoder_config_obj, base_to_use=shared_base_model)
         
         encoder_config_obj = EncoderConfig(
             model_name=model_name,
             **encoder_train_cfg
         )
-        encoder = Encoder(encoder_config_obj)
+        encoder = Encoder(encoder_config_obj, base_to_use=shared_base_model)
         
-        orig_model = OrigWrapper(model_name, load_in_8bit=False)
+        orig_model = OrigWrapper(model_name, load_in_8bit=False, base_to_use=shared_base_model)
         
         # Initialize Decoder prompt
         decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
@@ -1770,7 +1871,9 @@ def main(cfg: DictConfig) -> None:
         decoder, encoder, orig_model = setup_distributed_models(
             decoder, encoder, orig_model, device, rank, world_size,
             decoder_has_trainable_params=decoder_has_trainable_params,
-            encoder_has_trainable_params=encoder_has_trainable_params
+            encoder_has_trainable_params=encoder_has_trainable_params,
+            compile_models=config['compile_models'],
+            log=log
         )
         
         if is_main():
@@ -1956,6 +2059,7 @@ def main(cfg: DictConfig) -> None:
         embedding_lr_multiplier = custom_lr_multipliers.get('embedding_layers')
         prompt_lr_multiplier = custom_lr_multipliers.get('prompt_layers')
         base_model_lr_multiplier = custom_lr_multipliers.get('base_models')
+        overall_encoder_lr_multiplier = custom_lr_multipliers.get('overall_encoder')
         weight_decay = config.get('weight_decay')
         
         # Get base models for parameter groups
@@ -1991,6 +2095,7 @@ def main(cfg: DictConfig) -> None:
                         embedding_lr_multiplier,
                         prompt_lr_multiplier,
                         base_model_lr_multiplier,
+                        overall_encoder_lr_multiplier,
                         opt_state_dict=None,  # We'll handle optimizer state later
                         current_step=start_step,
                         current_epoch=current_epoch,
@@ -2022,6 +2127,7 @@ def main(cfg: DictConfig) -> None:
             embedding_lr_multiplier, 
             prompt_lr_multiplier,
             base_model_lr_multiplier,
+            overall_encoder_lr_multiplier,
             weight_decay
         )
         optimizer = torch.optim.AdamW(params)
@@ -2123,6 +2229,7 @@ def main(cfg: DictConfig) -> None:
         embedding_lr_multiplier=embedding_lr_multiplier,
         prompt_lr_multiplier=prompt_lr_multiplier,
         base_model_lr_multiplier=base_model_lr_multiplier,
+        overall_encoder_lr_multiplier=overall_encoder_lr_multiplier,
         weight_decay=weight_decay,
         learning_rate=learning_rate,
         steps_per_epoch=steps_per_epoch,
@@ -2222,8 +2329,22 @@ def main(cfg: DictConfig) -> None:
                     total=max_steps, miniters=log_interval)
     else:
         pbar = range(start_step, max_steps)
+
+    if config['GRPO_beta'] == 0 and config['lm_base_weight'] == 0 and shared_base_model is None:
+        orig_model.to('cpu')
+        log.info("Moved orig_model to cpu")
     try: 
         for step in pbar:
+            if step ==gradient_accumulation_steps and world_size==1:
+                # Stop recording
+                # Dump memory snapshot
+                torch.cuda.memory._dump_snapshot("memory_snapshot.pickle")
+
+                # Stop recording
+                torch.cuda.memory._record_memory_history(enabled=False)
+    
+                exit()
+                raise Exception("Stop here")
             step_start_time = time.time()
 
             current_epoch = step // steps_per_epoch if steps_per_epoch > 0 else 0
@@ -2260,7 +2381,12 @@ def main(cfg: DictConfig) -> None:
             batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
 
             if step == 0 and is_main():
+                if config['GRPO_beta'] == 0 and config['lm_base_weight'] == 0:
+                    orig_model.to(device)
                 do_all_initial_validation(batch, orig_model, tokenizer, device, log, activation_dir)
+                if config['GRPO_beta'] == 0 and config['lm_base_weight'] == 0 and shared_base_model is None:
+                    orig_model.to('cpu')
+                    log.info("Moved orig_model to cpu")
 
             metrics = distributed_train_step(
                 decoder,
@@ -2301,7 +2427,7 @@ def main(cfg: DictConfig) -> None:
             # Calculate samples_per_sec: the rate of samples processed by the model.
             # effective_batch_size = (per_device_batch_size * num_devices * grad_accum_steps)
             # True sample throughput is (per_device_batch_size * num_devices) / avg_step_time.
-            # This is equivalent to effective_batch_size / (avg_step_time * grad_accumulation_steps).
+            # This is equivalent to effective_batch_size / (avg_step_time * gradient_accumulation_steps).
             if avg_step_time > 0:
                 # gradient_accumulation_steps is guaranteed to be >= 1.
                 samples_per_sec = effective_batch_size / (avg_step_time * gradient_accumulation_steps)
@@ -2362,6 +2488,9 @@ def main(cfg: DictConfig) -> None:
                     'params/lm_w': config.get('lm_base_weight'),
                     'params/kl_w': config.get('kl_base_weight', 1.0),
                     'params/entropy_w': config.get('entropy_weight', 0.0),
+                    'params/GRPO_entropy_w': config.get('GRPO_entropy_weight', 0.0),
+                    'params/GRPO_w': config.get('GRPO_weight', 0.0),
+                    'params/GRPO_beta': config.get('GRPO_beta', 0.0),
                     'optim/lr': lr_scheduler.get_last_lr()[0] if lr_scheduler else current_lr,
                     'gradient_accumulation/is_update_step': 1 if ((step + 1) % gradient_accumulation_steps == 0) or (step == max_steps - 1) else 0,
                     'gradient_accumulation/accumulation_step': accumulation_step,
@@ -2426,6 +2555,7 @@ def main(cfg: DictConfig) -> None:
             # Validation and Verbose Samples
             val_loss = None
             if val_loader and val_interval > 0 and (step % val_interval == 0):
+                should_print_val = step % (10*val_interval) == 0
                 if is_main():
                     log.info(f"Running validation at step {step}")
                 with Timer("Validation", log, main_process=is_main(), log_wandb=True, wandb_step=step):
@@ -2448,7 +2578,9 @@ def main(cfg: DictConfig) -> None:
                         max_steps=max_steps,
                         gradient_accumulation_steps=gradient_accumulation_steps,
                         val_interval=val_interval,
-                        comparison_tuned_lens=comparison_tuned_lens_cpu # Pass CPU version
+                        comparison_tuned_lens=comparison_tuned_lens_cpu, # Pass CPU version
+                        should_print_val = should_print_val,
+                        shared_base_model=shared_base_model
                     )
                     most_recent_val_loss = val_loss
                 if is_main() and (math.isnan(val_loss)):
@@ -2511,9 +2643,10 @@ def main(cfg: DictConfig) -> None:
             log.warning("KeyboardInterrupt detected! Saving checkpoint before exit. {e}")
         # Use a different name for the checkpoint to indicate interruption
         final_ckpt_name = "interrupt"
-        if step < 4000:
-            log.warning("KeyboardInterrupt detected! Not saving as step is less than 4000.")
-            raise KeyboardInterrupt("KeyboardInterrupt detected! Not saving as step is less than 4000.")
+        min_to_save_ckpt = 1500  
+        if step < min_to_save_ckpt:
+            log.warning(f"KeyboardInterrupt detected! Not saving as step is less than {min_to_save_ckpt}.")
+            raise KeyboardInterrupt(f"KeyboardInterrupt detected! Not saving as step is less than {min_to_save_ckpt}.")
     else:
         final_ckpt_name = "final"
 

@@ -12,7 +12,7 @@
 # %%
 # Imports and setup
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import torch
 import sys
 from pathlib import Path
@@ -65,7 +65,12 @@ CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/che
 CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_unfreeze_nopostfix_tuned_pos_OC_GPT2_L6_e5_full_lr1e-4_t63_1ep_resume_0618_0205_new_fix_wide_ADDTOK_dist8_slurm1077"
 CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_frozen_nopostfix_tuned_pos_OC_GPT2_L6_e6_full_lr1e-6_t4_1ep_resume_0617_1756_frozenenADD_Gumstart_L6_dist4_slurm1076"
 CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_frozen_nopostfix_tuned_pos_OC_GPT2_L6_e6_full_lr1e-4_t4_1ep_resume_0618_0816_frozenenADD_Gumstart_L6_dist4/"
+#CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_frozen_nopostfix_tuned_pos_OC_GPT2_L6_e6_full_lr1e-3_t8_1ep_resume_0618_0934_frozenenADD_L6_generalisation_dist4"
 # CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_unfreeze_postfix_tuned_pos_OC_GPT2_L6_e5_prog-unfreeze_lr1e-3_t32_8ep_resume_0612_1252_new_fix_dist4_slurm823"
+CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_frozen_nopostfix_tuned_pos_OC_GPT2_L6_e6_full_lr1e-3_t4_1ep_resume_0618_1727_frozenenADD_Gumstart_L6_dist4"
+CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_frozenenc_nopostfix_tuned_pos_OC_GPT2_L6_e5_frozen_lr1e-3_t7_1ep_resume_0619_0019_frozenenADD_shorter_dist4_slurm1112/"
+CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_frozenenc_nopostfix_tuned_pos_OC_GPT2_L6_e5_frozen_lr1e-4_t16_1ep_resume_0619_1737_frozenenADD_shorter_dist4_slurm1180o"
+CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gpt2_frozenenc_nopostfix_tuned_pos_OC_GPT2_L6_e5_frozen_lr1e-4_t16_1ep_resume_0619_1737_frozenenADD_shorter_dist4_slurm1180"
 # Optional: specify device
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -255,6 +260,7 @@ class LensAnalyzer:
 
         all_kl_divs = []
         all_mses = []
+        all_relative_rmses = []
         all_gen_hard_token_ids = []
 
         with torch.no_grad():
@@ -343,9 +349,16 @@ class LensAnalyzer:
                 mses_batch = torch.nn.functional.mse_loss(A_batch, A_hat_batch, reduction='none').mean(dim=-1)
                 all_mses.append(mses_batch)
 
+                # Relative RMSE: sqrt(MSE(A, A_hat) / MSE(A, 0)). This is a scale-invariant error metric.
+                # This is equivalent to ||A - A_hat|| / ||A|| (relative L2 error).
+                A_norm_sq_mean = (A_batch**2).mean(dim=-1)
+                relative_rmse_batch = torch.sqrt(mses_batch / (A_norm_sq_mean + 1e-9))
+                all_relative_rmses.append(relative_rmse_batch)
+
         # Concatenate results from all batches
         kl_divs = torch.cat(all_kl_divs)
         mses = torch.cat(all_mses)
+        relative_rmses = torch.cat(all_relative_rmses)
         gen_hard_token_ids = torch.cat(all_gen_hard_token_ids)
 
         # Decode and collect results into a list of dicts.
@@ -360,21 +373,8 @@ class LensAnalyzer:
                 'token': token,
                 'explanation': explanation,
                 'kl_divergence': kl_divs[pos].item(),
-                'mse': mses[pos].item()
-            })
-        
-        return pd.DataFrame(results)
-        results = []
-        for pos in tqdm.tqdm(range(seq_len), desc="Formatting results"):
-            explanation = self.tokenizer.decode(gen.hard_token_ids[pos], skip_special_tokens=True) + "[" + self.tokenizer.decode([input_ids[0, pos].item()]) +"]"
-            token = self.tokenizer.decode([input_ids[0, pos].item()])
-            
-            results.append({
-                'position': pos,
-                'token': token,
-                'explanation': explanation,
-                'kl_divergence': kl_divs[pos].item(),
-                'mse': mses[pos].item()
+                'mse': mses[pos].item(),
+                'relative_rmse': relative_rmses[pos].item()
             })
         
         return pd.DataFrame(results)
@@ -384,18 +384,33 @@ class LensAnalyzer:
                            intervention_position: int, 
                            intervention_string: str,
                            max_new_tokens: int = 20,
-                           visualize: bool = True, top_k: int = 5) -> Dict[str, Any]:
-        """Perform causal intervention by swapping in an encoded representation."""
+                           visualize: bool = True, top_k: int = 5, next_token_position: int = None) -> Dict[str, Any]:
+        """
+        Perform a causal intervention on a model's hidden state.
+
+        This involves replacing the activation at a specific `intervention_position` with a new
+        activation generated from an `intervention_string`, and then observing the effect on
+        the model's predictions at `next_token_position`.
+        """
         # Tokenize original text
         inputs = self.tokenizer(original_text, return_tensors="pt", truncation=True, max_length=512)
         input_ids = inputs.input_ids.to(self.device)
         seq_len = input_ids.shape[1]
         
+        # Handle negative indices for positions
         if intervention_position < 0:
             intervention_position = seq_len + intervention_position
         
-        if intervention_position >= seq_len:
-            raise ValueError(f"Intervention position {intervention_position} exceeds sequence length {seq_len}")
+        if not 0 <= intervention_position < seq_len:
+            raise ValueError(f"Intervention position {intervention_position} is out of bounds for sequence length {seq_len}")
+
+        if next_token_position is None:
+            next_token_position = intervention_position
+        elif next_token_position < 0:
+            next_token_position = seq_len + next_token_position
+        
+        if not 0 <= next_token_position < seq_len:
+            raise ValueError(f"Next token position {next_token_position} is out of bounds for sequence length {seq_len}")
         
         with torch.no_grad():
             with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=self.use_bf16):
@@ -403,7 +418,7 @@ class LensAnalyzer:
                 outputs_orig = self.orig_model.model(input_ids, output_hidden_states=True)
                 hidden_states_orig = outputs_orig.hidden_states
                 
-                # Get original activation at intervention position
+                # Get original activation (A) at intervention position
                 A_orig = hidden_states_orig[self.layer+1][:, intervention_position, :]
                 
                 # Decode original activation to get its explanation
@@ -414,19 +429,22 @@ class LensAnalyzer:
                 
                 explanation_orig = self.tokenizer.decode(gen_orig.hard_token_ids[0], skip_special_tokens=True)
                 
-                # Create soft embeddings for intervention string
+                # Prepare intervention string and get its embeddings
                 intervention_tokens = self.tokenizer(intervention_string, return_tensors="pt")
                 intervention_ids = intervention_tokens.input_ids.to(self.device)
-                if intervention_ids.shape[-1]>self.t_text:
-                    print("truncating intervention ids")
-                    intervention_ids = intervention_ids[...,-self.t_text:]
-                elif intervention_ids.shape[-1]<self.t_text:
-                    print("padding intervention ids")
-                    intervention_ids = torch.cat([torch.zeros(intervention_ids.shape[0],self.t_text-intervention_ids.shape[-1],dtype=intervention_ids.dtype,device=self.device), intervention_ids],dim=-1)    
+                if intervention_ids.shape[-1] > self.t_text:
+                    print(f"Truncating intervention string to {self.t_text} tokens.")
+                    intervention_ids = intervention_ids[..., -self.t_text:]
+                elif intervention_ids.shape[-1] < self.t_text:
+                    # Pad intervention if it's shorter than the expected length
+                    pad_width = self.t_text - intervention_ids.shape[-1]
+                    intervention_ids = torch.cat([
+                        torch.zeros(intervention_ids.shape[0], pad_width, dtype=intervention_ids.dtype, device=self.device), 
+                        intervention_ids
+                    ], dim=-1)
 
                 new_intervention_string = self.tokenizer.decode(intervention_ids[0], skip_special_tokens=True)
                 
-                # Get embeddings for intervention text
                 if hasattr(self.orig_model.model, 'transformer'):
                     embed_layer = self.orig_model.model.transformer.wte
                 elif hasattr(self.orig_model.model, 'model'):
@@ -436,61 +454,49 @@ class LensAnalyzer:
                 
                 intervention_embeddings = embed_layer(intervention_ids)
                 
-                # Encode the intervention embeddings
+                # Encode the intervention embeddings to get the new activation
                 A_intervention = self.encoder(
                     intervention_embeddings,
                     original_token_pos=torch.tensor([intervention_position], device=self.device),
                     current_token_ids=input_ids[:, intervention_position] if self.encoder.config.add_current_token else None
                 )
                 
-                # Also encode the original decoded string for comparison
+                # Also encode the original explanation to get the reconstructed activation (Â)
                 A_orig_decoded = self.encoder(
                     gen_orig.generated_text_embeddings,
                     original_token_pos=torch.tensor([intervention_position], device=self.device),
                     current_token_ids=input_ids[:, intervention_position] if self.encoder.config.add_current_token else None
                 )
 
-                # Get predictions with original activation
+                # Run model forward with original, intervened, and reconstructed activations
+                # The `token_pos` argument specifies where to insert the activation.
                 outputs_orig_full = self.orig_model.forward_with_replacement(
-                    input_ids=input_ids,
-                    new_activation=A_orig,
-                    layer_idx=self.layer,
-                    token_pos=intervention_position,
-                    no_grad=True
+                    input_ids=input_ids, new_activation=A_orig, layer_idx=self.layer,
+                    token_pos=intervention_position, no_grad=True
                 )
-                
-                # Get predictions with intervention
                 outputs_intervention = self.orig_model.forward_with_replacement(
-                    input_ids=input_ids,
-                    new_activation=A_intervention,
-                    layer_idx=self.layer,
-                    token_pos=intervention_position,
-                    no_grad=True
+                    input_ids=input_ids, new_activation=A_intervention, layer_idx=self.layer,
+                    token_pos=intervention_position, no_grad=True
                 )
-
-                # Get predictions with original decoded string encoding
                 outputs_orig_decoded = self.orig_model.forward_with_replacement(
-                    input_ids=input_ids,
-                    new_activation=A_orig_decoded,
-                    layer_idx=self.layer,
-                    token_pos=intervention_position,
-                    no_grad=True
+                    input_ids=input_ids, new_activation=A_orig_decoded, layer_idx=self.layer,
+                    token_pos=intervention_position, no_grad=True
                 )
                 
-                # Generate continuations
+                # Generate a continuation from the original, un-intervened state for comparison
                 continuation_orig = self.orig_model.model.generate(
-                    input_ids[:, :intervention_position+1],
+                    input_ids[:, :intervention_position + 1],
                     max_new_tokens=max_new_tokens,
                     do_sample=False,
                     pad_token_id=self.tokenizer.eos_token_id
                 )
                 
-                # Get next token predictions
-                next_token_logits_orig = outputs_orig_full.logits[:, intervention_position, :]
-                next_token_logits_intervention = outputs_intervention.logits[:, intervention_position, :]
-                next_token_logits_orig_decoded = outputs_orig_decoded.logits[:, intervention_position, :]
+                # Get next-token predictions at the specified observation position
+                next_token_logits_orig = outputs_orig_full.logits[:, next_token_position, :]
+                next_token_logits_intervention = outputs_intervention.logits[:, next_token_position, :]
+                next_token_logits_orig_decoded = outputs_orig_decoded.logits[:, next_token_position, :]
 
-                # Get top predictions
+                # Get top-k predictions for each case
                 top_k = max(10, top_k)
                 probs_orig = torch.softmax(next_token_logits_orig, dim=-1)
                 probs_intervention = torch.softmax(next_token_logits_intervention, dim=-1)
@@ -500,7 +506,7 @@ class LensAnalyzer:
                 top_k_intervention = torch.topk(probs_intervention[0], k=top_k)
                 top_k_orig_decoded = torch.topk(probs_orig_decoded[0], k=top_k)
             
-            # Decode top predictions (outside autocast for precision)
+            # Decode top predictions
             top_tokens_orig = [(self.tokenizer.decode([idx]), prob.item()) 
                               for idx, prob in zip(top_k_orig.indices, top_k_orig.values)]
             top_tokens_intervention = [(self.tokenizer.decode([idx]), prob.item()) 
@@ -508,7 +514,7 @@ class LensAnalyzer:
             top_tokens_orig_decoded = [(self.tokenizer.decode([idx]), prob.item())
                                        for idx, prob in zip(top_k_orig_decoded.indices, top_k_orig_decoded.values)]
             
-            # Compute KL divergence between distributions
+            # Compute metrics: KL divergence on predictions, MSE on activations
             kl_div = torch.nn.functional.kl_div(
                 torch.log_softmax(next_token_logits_intervention, dim=-1),
                 torch.softmax(next_token_logits_orig, dim=-1),
@@ -516,7 +522,6 @@ class LensAnalyzer:
             ).item()
             mse = torch.nn.functional.mse_loss(A_orig, A_intervention).item()
 
-            # Compute MSE and KL for original decoded string
             mse_orig_decoded = torch.nn.functional.mse_loss(A_orig, A_orig_decoded).item()
             kl_div_orig_decoded = torch.nn.functional.kl_div(
                 torch.log_softmax(next_token_logits_orig_decoded, dim=-1),
@@ -524,13 +529,16 @@ class LensAnalyzer:
                 reduction='batchmean'
             ).item()
             
-            # Decode what actually happened
+            # Decode tokens at relevant positions for reporting
             intervened_token = self.tokenizer.decode([input_ids[0, intervention_position].item()])
+            prediction_context_token = self.tokenizer.decode([input_ids[0, next_token_position].item()])
             
         results = {
             'original_text': original_text,
             'intervention_position': intervention_position,
             'intervened_token': intervened_token,
+            'next_token_position': next_token_position,
+            'prediction_context_token': prediction_context_token,
             'intervention_string': new_intervention_string,
             'explanation_original': explanation_orig,
             'top_predictions_original': top_tokens_orig,
@@ -543,30 +551,46 @@ class LensAnalyzer:
             'continuation_original': self.tokenizer.decode(continuation_orig[0], skip_special_tokens=True)
         }
         
-        print(f"New intervention string: {new_intervention_string}" + f"[{intervened_token}]" if self.encoder.config.add_current_token else "") 
         # Print results
         print("\n🔬 Causal Intervention Analysis")
         print(f"{'='*60}")
         print(f"Original text: '{original_text}'")
         print(f"Intervened at position {intervention_position}: '{intervened_token}'")
-        print(f"Intervention string: '{new_intervention_string}'" + f"[{intervened_token}]" if self.encoder.config.add_current_token else "") 
-        print("\n📝 Explanations:")
-        print(f"  Original: {explanation_orig}")
-        print(f"\n📊 KL Divergence (intervention vs A): {kl_div:.4f}")
-        print(f"MSE (intervention vs A): {mse:.4f}")
-        print(f"KL Divergence (A_hat vs A): {kl_div_orig_decoded:.4f}")
-        print(f"MSE (A_hat vs A): {mse_orig_decoded:.4f}")
-        print("\n🎯 Top next-token predictions:")
-        print("\nA:")
-        for token, prob in top_tokens_orig[:top_k]:
-            print(f"  {repr(token):15} {prob:.3f}")
-        print("\nWith intervention:")
-        for token, prob in top_tokens_intervention[:top_k]:
-            print(f"  {repr(token):15} {prob:.3f}")
-        print("\nA_hat:")
-        for token, prob in top_tokens_orig_decoded[:top_k]:
-            print(f"  {repr(token):15} {prob:.3f}")
+        if next_token_position != intervention_position:
+            print(f"Observing predictions at position {next_token_position} (for token after '{prediction_context_token}')")
         
+        current_token_str = f" + current token [{intervened_token}]" if self.encoder.config.add_current_token else ""
+        print(f"Intervention string: '{new_intervention_string}'{current_token_str}")
+        
+        print(f"\n📝 Explanation (from activation at pos {intervention_position}):")
+        print(f"  Original: {explanation_orig}")
+        
+        print(f"\n📊 Metrics (MSE at pos {intervention_position}, KL at pos {next_token_position}):")
+        print(f"  MSE (intervention vs A): {mse:.4f}")
+        print(f"  KL Divergence (intervention vs A): {kl_div:.4f}")
+        print(f"  MSE (Â vs A): {mse_orig_decoded:.4f}")
+        print(f"  KL Divergence (Â vs A): {kl_div_orig_decoded:.4f}")
+        print(f"\n🎯 Top next-token predictions (at pos {next_token_position}):")
+        print()
+
+        # Format and print predictions in a 3-column table for easy comparison.
+        headers = ["Original (A)", "With Intervention", "Reconstructed (Â)"]
+        col_width = 28
+
+        print(f"{headers[0]:<{col_width}}{headers[1]:<{col_width}}{headers[2]:<{col_width}}")
+        separator = "=" * (col_width - 2)
+        print(f"{separator:<{col_width}}{separator:<{col_width}}{separator:<{col_width}}")
+
+        for (orig_tok, orig_prob), (inter_tok, inter_prob), (recon_tok, recon_prob) in zip(
+            top_tokens_orig[:top_k],
+            top_tokens_intervention[:top_k],
+            top_tokens_orig_decoded[:top_k]
+        ):
+            orig_str = f"{repr(orig_tok):15} {orig_prob:.3f}"
+            inter_str = f"{repr(inter_tok):15} {inter_prob:.3f}"
+            recon_str = f"{repr(recon_tok):15} {recon_prob:.3f}"
+            
+            print(f"{orig_str:<{col_width}}{inter_str:<{col_width}}{recon_str:<{col_width}}")
         if visualize:
             self._visualize_intervention(results)
         
@@ -655,7 +679,7 @@ class LensAnalyzer:
         print("len hidden states", len(outputs.hidden_states))
         return outputs.hidden_states[self.layer + 1]
 
-    def run_verbose_sample(self, text: str, position_to_analyze: int, top_n_analysis: int = 5, continuation_tokens: int = 15):
+    def run_verbose_sample(self, text: str, position_to_analyze: int, top_n_analysis: int = 5, continuation_tokens: int = 30):
         """Runs a single verbose sample analysis using process_and_print_verbose_batch_samples."""
         # Tokenize
         inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
@@ -696,7 +720,10 @@ class LensAnalyzer:
             "entropy_weight": loss_weights.get('entropy', 0.0),
             "mse_weight": loss_weights.get('mse', 0.0),
             "lm_base_weight": loss_weights.get('lm', 0.0),
-            "T_text": self.t_text,
+            "t_text": self.t_text,
+            "GRPO_weight": self.config.get('GRPO_weight', 0.0),
+            "GRPO_beta": self.config.get('GRPO_beta', 0.0),
+            "group_n": self.config.get('group_n', 0),
         }
 
         # Models dictionary
@@ -831,7 +858,7 @@ print(df.to_string(index=False))
 
 # %%
 torch.manual_seed(47)   
-analyzer.run_verbose_sample(TEST_STRING, 66)
+analyzer.run_verbose_sample(TEST_STRING, 66, continuation_tokens=100)
 # %%
 # Visualize KL divergence across positions
 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
@@ -995,37 +1022,37 @@ df_custom = quick_analyze(YOUR_TEXT)
 #     correlation = combined_df[['token_length', 'kl_divergence']].corr().iloc[0, 1]
 #     print(f"\nCorrelation between token length and KL divergence: {correlation:.3f}")
 
-# %%
-# Distribution plots
-if all_results:
-    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
+# # %%
+# # Distribution plots
+# if all_results:
+#     fig, axes = plt.subplots(2, 2, figsize=(12, 10))
     
-    # KL distribution
-    axes[0, 0].hist(combined_df['kl_divergence'], bins=30, alpha=0.7, color='blue')
-    axes[0, 0].set_xlabel('KL Divergence')
-    axes[0, 0].set_ylabel('Count')
-    axes[0, 0].set_title('Distribution of KL Divergence')
+#     # KL distribution
+#     axes[0, 0].hist(combined_df['kl_divergence'], bins=30, alpha=0.7, color='blue')
+#     axes[0, 0].set_xlabel('KL Divergence')
+#     axes[0, 0].set_ylabel('Count')
+#     axes[0, 0].set_title('Distribution of KL Divergence')
     
-    # MSE distribution
-    axes[0, 1].hist(combined_df['mse'], bins=30, alpha=0.7, color='red')
-    axes[0, 1].set_xlabel('MSE')
-    axes[0, 1].set_ylabel('Count')
-    axes[0, 1].set_title('Distribution of MSE')
+#     # MSE distribution
+#     axes[0, 1].hist(combined_df['mse'], bins=30, alpha=0.7, color='red')
+#     axes[0, 1].set_xlabel('MSE')
+#     axes[0, 1].set_ylabel('Count')
+#     axes[0, 1].set_title('Distribution of MSE')
     
-    # KL vs MSE scatter
-    axes[1, 0].scatter(combined_df['mse'], combined_df['kl_divergence'], alpha=0.5)
-    axes[1, 0].set_xlabel('MSE')
-    axes[1, 0].set_ylabel('KL Divergence')
-    axes[1, 0].set_title('KL vs MSE Relationship')
+#     # KL vs MSE scatter
+#     axes[1, 0].scatter(combined_df['mse'], combined_df['kl_divergence'], alpha=0.5)
+#     axes[1, 0].set_xlabel('MSE')
+#     axes[1, 0].set_ylabel('KL Divergence')
+#     axes[1, 0].set_title('KL vs MSE Relationship')
     
-    # Explanation length distribution
-    axes[1, 1].hist(combined_df['explanation'].str.len(), bins=20, alpha=0.7, color='green')
-    axes[1, 1].set_xlabel('Explanation Length (chars)')
-    axes[1, 1].set_ylabel('Count')
-    axes[1, 1].set_title('Distribution of Explanation Lengths')
+#     # Explanation length distribution
+#     axes[1, 1].hist(combined_df['explanation'].str.len(), bins=20, alpha=0.7, color='green')
+#     axes[1, 1].set_xlabel('Explanation Length (chars)')
+#     axes[1, 1].set_ylabel('Count')
+#     axes[1, 1].set_title('Distribution of Explanation Lengths')
     
-    plt.tight_layout()
-    plt.show()
+#     plt.tight_layout()
+#     plt.show()
 
 # %% [markdown]
 # ## Save Results
@@ -1137,7 +1164,6 @@ print(df.to_string(index=False))
 # %%
 TEST_STRING = "French: monsieur, votre chien est un problème\nEnglish: Mister, your dog is a problem.\n\nFrench: je suis un chat\nEnglish: I am a cat\n\nFrench: Ou est la gare? English: Where is the station? \n\n French: Tu n'aime pas les chats? English:"
 #TEST_STRING = "French: chien\n English: dog\n\nFrench: chat\n English: cat\n\nFrench: gare\n English: station\n\nFrench: voiture\nEnglish: car\n\nFrench: maison\nEnglish:"
-TEST_STRING = " H"
 encodestring = analyzer.tokenizer.encode(TEST_STRING)
 # generateddirectly = analyzer.model.generate(torch.tensor([encodestring]).to(analyzer.device), max_new_tokens=100)
 # print(generateddirectly)
@@ -1295,7 +1321,8 @@ intervention_result = analyzer.causal_intervention(
     #intervention_string="BeingFriendassed cookinggunsbeingManJoined Beer gun bodily as weapon dog killhusband jump profession enlist profession fitness run workshop leader prayer soldier cooldown tutorial currency confrontation employment",
     #intervention_string="1932EEEE gibastoner Eston fighter Karl rooster Alex gunner Damien tactic fighter Arthur employee Alec lord tact Thor actor Sergeant Esp male assistant Umhab Sit accommodation contractor worked Sty Abedin helper Excelwork Sty um coping employees accommodation coping working man accommodationWork mas man assistants workspace weightlifting Webs weightliftingAmazon boxersafaAmazonBatman",
     #intervention_string=" she had tall hair",
-    intervention_string=" engineer engineer worked as",
+    #intervention_string=" engineer engineer worked as",
+    intervention_string=" spy spy worked as",
 
 
     # intervention_string="Joined cookingexistent BeerFriend utilizedStanding likeness culinarythingBir occupation resembling homebrewbeing homebrewemployed as prostitution waiter a workshop assistance workshop payroll transaction simulator education supervision education training guidance",
@@ -1369,6 +1396,19 @@ print(df.to_string(index=False))
 # %%
 analyzer.run_verbose_sample(TEST_STRING, position_to_analyze=103)
 
+# %%
+TEST_STRING = " t h e   c a t   s a t   o n   t h e   m a t\n the cat sat on the mat\n\n t h e   d o g   a t e   t h e   f o o d\n\nthe dog ate the food\n\nt h e   q u e e n   k i l l e d   t h e   j o k e r\n\nthe queen killed the"
+encodestring = analyzer.tokenizer.encode(TEST_STRING)
+listouts = []
+for i in range(10):
+    generateddirectly = analyzer.orig_model.model.generate(torch.tensor([encodestring]).to(analyzer.device),attention_mask=torch.ones_like(torch.tensor([encodestring], device=analyzer.device), dtype=torch.bool), max_new_tokens=100, do_sample=True)
+    tokenizerstring = analyzer.tokenizer.decode(generateddirectly[0][-100:]).replace("\n","\\n")
+    listouts.append(tokenizerstring)
+
+# %%
+for l in listouts:
+    print(l)
+    print("-"*100+"\n")
 # %%
 TEST_STRING = "Le chat est noir. = The cat is black.\n\nJ'aime les pommes. = I like apples.\n\nElle lit un livre. = She reads a book.\n\nNous allons au parc. = We go to the park.\n\nIl fait beau aujourd'hui. = It's nice weather today.\n\nTu as un chien? = Do you have a dog?\n\nLes enfants jouent dehors. = The children play outside.\n\nJe mange du pain. = I eat bread.\n\nMa maison est grande. = My house is big.\n\nIls regardent la télé. = They watch TV.\n\nElle porte une robe rouge. = She wears a red dress.\n\nLe garçon court vite. = The boy runs fast.\n\nNous buvons de l'eau. = We drink water."
 df = analyzer.analyze_all_tokens(TEST_STRING)
@@ -1457,6 +1497,34 @@ TEST_STRING = (
     # "Wyoming = Cheyenne"
 )
 
+
+TEST_STRING = (
+    "The capital of Alabama is Montgomery\n\n"
+    "The capital of Alaska is Juneau\n\n"
+    "The capital of Arizona is Phoenix\n\n"
+    "The capital of Arkansas is Little Rock\n\n"
+    "The capital of California is Sacramento\n\n"
+    "The capital of Colorado is Denver\n\n"
+    "The capital of Connecticut is Hartford\n\n"
+    "The capital of Delaware is Dover\n\n"
+    "The capital of Florida is Tallahassee\n\n"
+    "The capital of Georgia is Atlanta\n\n"
+    "The capital of Hawaii is Honolulu\n\n"
+    "The capital of Idaho is Boise\n\n"
+    "The capital of Illinois is Springfield\n\n"
+    "The capital of Indiana is Indianapolis\n\n"
+    "The capital of Iowa is Des Moines\n\n"
+    "The capital of Kansas is Topeka\n\n"
+    "The capital of Kentucky is Frankfort\n\n"
+    "The capital of Louisiana is Baton Rouge\n\n"
+    "The capital of Maine is Augusta\n\n"
+    "The capital of Maryland is Annapolis\n\n"
+    "The capital of Massachusetts is Boston\n\n"
+    "The capital of Michigan is Lansing\n\n"
+)
+
+# %%
+
 encodestring = analyzer.tokenizer.encode(TEST_STRING)
 n_tok= 30
 for i in range(10): 
@@ -1530,7 +1598,7 @@ print(df.to_string(index=False))
 # %%
 TEST_STRING = "If there is a center of this cluster it is Janus, AKA “repligate” AKA “moire”: a very odd guy who spends a massive amount of time interacting with LLMs, and whose posts are full of sentences like “I am not sure if further reifying the Prometheus Waluigi hyperstition by throwing it into the already excited memeosphere now is a good idea.” He is also one of the most insightful commentators on LLMs in existence; sometimes he outpaces the more “official” discourse by literal years of real time. For a relatively-unweird introduction to Janus Thought, see his post Simulators, a wonderfully lucid exposition of some of the ideas I’m recapping and building upon here."
 
-df = analyzer.analyze_all_tokens(TEST_STRING)
+df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=True)
 
 # %%
 print(df.to_string(index=False))
@@ -1565,11 +1633,40 @@ print(df.to_string(index=False))
 TEST_STRING = "MOSCOW (Reuters) - Russia’s postal service was hit by Wannacry ransomware last week and some of its computers are still down, three employees in Moscow said, the latest sign of weaknesses that have made the country a major victim of the global extortion campaign.\n\nA man walks out of a branch of Russian Post in Moscow, Russia, May 24, 2017. REUTERS/Maxim Shemetov\n\nWannacry compromised the post office"
 df = analyzer.analyze_all_tokens(TEST_STRING)
 print(df.to_string(index=False))
-o
 
 
 # %%    
+TEST_STRING = " kicking off with the U.K. and Germany today.393352 06: (L to R) Actors Sarah Chalke, Zach Braff, and Donald Faison poses for a publicity photo for the television show 'Scrubs.' (Photo Courtesy of NBC/Getty Images)\n\nDonald Fa"
+df = analyzer.analyze_all_tokens(TEST_STRING)
+print(df.to_string(index=False))
+
+
+
+# %%
+
+TEST_STRING = "Trump admin resumes visas for foreign students demanding access to social accounts\n\nStudent protesters gather inside their encampment on the Columbia University campus, April 29, 2024, in New York. (AP Photo/Stefan Jeremiah, File)"
+df = analyzer.analyze_all_tokens(TEST_STRING)
+print(df.to_string(index=False))
+
+# %%
+
+
+TEST_STRING = "by CAITLYN FROLO | Trump admin resumes visas for foreign students demanding access to social accounts\n\nStudent protesters gather inside their encampment on the Columbia University campus, April 29, 2024, in New York. (AP Photo/Stefan Jeremiah, File) Israelis in Jerusalem"
+df = analyzer.analyze_all_tokens(TEST_STRING)
+print(df.to_string(index=False))
+
+
+# %%
+
+TEST_STRING = "North Korean leader Kim Jong Un. AP Images / Business Insider\n\nNorth Korea attempted to fire a missile Sunday, but it blew up within seconds.\n\nIt happened one day after the anniversary of the country's founding.\n\nWhile North Korea's missile program may be the shadowiest on earth, it's possible that US cyber warriors were the reason for the failed launch.\n\nA recent New York Times report uncovered a secret operation to derail North Korea's nuclear-missile"
+df = analyzer.analyze_all_tokens(TEST_STRING)
+print(df.to_string(index=False))
+
+
+# %%
+
 TEST_STRING = "MOSCOW (Reuters) - Russia’s postal service was hit by Wannacry ransomware last week and some of its computers are still down, three employees in Moscow said, the latest sign of weaknesses that have made the country a major victim of the global extortion campaign.\n\n"
+print(TEST_STRING)
 encodestring = analyzer.tokenizer.encode(TEST_STRING)
 listouts = []
 for i in range(10):
@@ -1579,6 +1676,10 @@ for i in range(10):
 # %%
 for i in range(len(listouts)):
     print(f"{i}: {listouts[i]}")
+# %%
+TEST_STRING = "MOSCOW (Reuters) - Russia’s postal service was hit by Wannacry ransomware last week and some of its computers are still down, three employees in Moscow said, the latest sign of weaknesses that have made the country a major victim of the global extortion campaign.\n\nA man"
+analyzer.run_verbose_sample(TEST_STRING, -1)
+
 # %%
 
 intervention_result = analyzer.causal_intervention(
@@ -1643,13 +1744,15 @@ for i in range(len(gens)):
 df = analyzer.analyze_all_tokens(TEST_STRING)
 print(df.to_string(index=False))
 # %%
-TEST_STRING = "“You think the darkness is your ally? I was born in it. Molded by it. I did not see the light until I was already a man, by then it was nothing to me but blinding.” - Bane"
+TEST_STRING = "“You think the darkness is your ally? I was born in it. Molded by it. I did not see the light until I was already a man, by then it was nothing to me but blinding.” - "
 encodestring = analyzer.tokenizer.encode(TEST_STRING)
 n_tok= 30
 gens = []       
 for i in range(10): 
     generateddirectly = analyzer.orig_model.model.generate(torch.tensor([encodestring]).to(analyzer.device), attention_mask=torch.ones_like(torch.tensor([encodestring], device=analyzer.device), dtype=torch.bool), max_new_tokens=n_tok, do_sample=True)
     gens.append(analyzer.tokenizer.decode(generateddirectly[0][-n_tok:]).replace("\n","\\n"))
+df = analyzer.analyze_all_tokens(TEST_STRING)
+print(df.to_string(index=False))
 # %%
 for i in range(len(gens)):
     print(f"{i}: {gens[i]}")
@@ -1669,6 +1772,31 @@ print("\nToken-by-token breakdown:")
 print(df.to_string(index=False))
 # %%
 
+TEST_STRING = "I have a dream that one day this nation will rise up and live out the true meaning of its creed: We hold these truths to be self-evident, that all men are created equal - as is written in the famous speech by"
+encodestring = analyzer.tokenizer.encode(TEST_STRING)
+n_tok= 30
+gens = []       
+for i in range(10): 
+    generateddirectly = analyzer.orig_model.model.generate(torch.tensor([encodestring]).to(analyzer.device), attention_mask=torch.ones_like(torch.tensor([encodestring], device=analyzer.device), dtype=torch.bool), max_new_tokens=n_tok, do_sample=True)
+    gens.append(analyzer.tokenizer.decode(generateddirectly[0][-n_tok:]).replace("\n","\\n"))
+df = analyzer.analyze_all_tokens(TEST_STRING)
+print(df.to_string(index=False))
+for i in range(len(gens)):
+    print(f"{i}: {gens[i]}")
+
+# %%
+TEST_STRING = "Four score and seven years ago our fathers brought forth on this continent a new nation, conceived in liberty, and dedicated to the proposition that all men are created equal."
+encodestring = analyzer.tokenizer.encode(TEST_STRING)
+n_tok= 30
+gens = []       
+for i in range(10): 
+    generateddirectly = analyzer.orig_model.model.generate(torch.tensor([encodestring]).to(analyzer.device), attention_mask=torch.ones_like(torch.tensor([encodestring], device=analyzer.device), dtype=torch.bool), max_new_tokens=n_tok, do_sample=True)
+    gens.append(analyzer.tokenizer.decode(generateddirectly[0][-n_tok:]).replace("\n","\\n"))
+    for g in gens:
+        print(f"{i}: {g}")
+
+df = analyzer.analyze_all_tokens(TEST_STRING)
+print(df.to_string(index=False))
 # %%
 # This cell performs a causal intervention based on the methodology described in
 # "LOCATING AND EDITING FACTUAL ASSOCIATIONS IN GPT" to test knowledge scrubbing.
@@ -1697,7 +1825,7 @@ country_text = country_prompt_template.format(city=target_city)
 # The token to intervene on is the city name. We can find its position by tokenizing.
 # For "... Paris is a city in the country of", the token ' Paris' is 8th from the end.
 # We use a negative index to be robust to the length of the prompt.
-intervention_pos = -1 
+intervention_pos = -8
 
 country_results = analyzer.causal_intervention(
     original_text=country_text,
@@ -1725,7 +1853,22 @@ continent_results = analyzer.causal_intervention(
     intervention_string=intervention_string,
     max_new_tokens=5,
     visualize=True,
-    top_k=10
+    top_k=10,
+    next_token_position=-1
 )
 
+# # %%
+# df = analyzer.analyze_all_tokens(country_text)
+# print(df.to_string(index=False))
+# # %%
+# df = analyzer.analyze_all_tokens(continent_text)
+# print(df.to_string(index=False))
+# %%
+TEST_STRING ="Two former UFC champions turned back the clock with wins at UFC Fight Night from Atlanta this past weekend. Kamaru Usman, a vaunted former welterweight champion and No. 1 pound-for-pound fighter, moves up three spots to No. 6 in the welterweight rankings after he showed the division he still knows how to wrestle. Usman took then-fifth-ranked Joaquin Buckley to the canvas four times and landed 17 significant ground strikes on his way to a unanimous decision victory. The loss snapped a six-fight winning streak for Buckley and bumps him down to No. 9 in these rankings."
+df = analyzer.analyze_all_tokens(TEST_STRING)
+print(df.to_string(index=False))
+# %%
+TEST_STRING ="Two former champions turned back the clock with wins at Fight Night from Atlanta this past weekend. Kamaru Usman, a vaunted former welterweight champion and No. 1 pound-for-pound fighter, moves up three spots to No. 6 in the welterweight rankings after he showed the division he still knows how to wrestle. Usman took then-fifth-ranked Joaquin Buckley to the canvas four times and landed 17 significant ground strikes on his way to a unanimous decision victory. The loss snapped a six-fight winning streak for Buckley and bumps him down to No. 9 in these rankings."
+df = analyzer.analyze_all_tokens(TEST_STRING)
+print(df.to_string(index=False))
 # %%

@@ -33,8 +33,8 @@ trainable_components:
   encoder:
     base_model: false                 # FROZEN throughout
     use_base_model: true
-    projection_layer:  false           # Train projection
-    trainable_soft_prompt: false
+    projection_layer:   true          # Train projection
+    trainable_soft_prompt:  true
     eye_init: true
     output_layer: 6 # this is the 7th layer, as this is the idx
     soft_prompt_init_text: ${encoder_prompt}

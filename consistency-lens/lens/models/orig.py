@@ -1,6 +1,7 @@
 """Frozen original model with single-layer activation swap hook."""
 
 import torch
+import transformers
 from transformers import AutoModelForCausalLM
 
 __all__ = ["OrigWrapper"]
@@ -9,8 +10,11 @@ __all__ = ["OrigWrapper"]
 class OrigWrapper:
     """Thin wrapper around HF CausalLM that supports `forward_with_replacement`."""
 
-    def __init__(self, model_name: str, load_in_8bit: bool = False) -> None:
-        self.model = AutoModelForCausalLM.from_pretrained(model_name, load_in_8bit=load_in_8bit)
+    def __init__(self, model_name: str, load_in_8bit: bool = False, base_to_use = None) -> None:
+        if base_to_use is None:
+            self.model = AutoModelForCausalLM.from_pretrained(model_name, load_in_8bit=load_in_8bit)
+        else:
+            self.model = base_to_use
         self.model.eval()
         # Ensure base model parameters do not require gradients
         for param in self.model.parameters():
@@ -44,13 +48,17 @@ class OrigWrapper:
         layer_idx: int,
         token_pos: int,
         *,
+        attention_mask: torch.Tensor | None = None,
         no_grad: bool = True,
-    ) -> "transformers.modeling_outputs.CausalLMOutput":
+    ) -> transformers.modeling_outputs.CausalLMOutput:
         """Forward pass where hidden_state[layer_idx][:, token_pos] is replaced."""
 
         from contextlib import nullcontext
         self._validate_layer_idx(layer_idx)
 
+        # If no attention mask is provided, create one from pad tokens
+        if attention_mask is None and self.model.config.pad_token_id is not None:
+            attention_mask = input_ids.ne(self.model.config.pad_token_id).long()
 
         grad_ctx = torch.no_grad() if no_grad else nullcontext()
         with grad_ctx:
@@ -78,7 +86,7 @@ class OrigWrapper:
                     # which is appropriate to signal an unsupported model structure.
 
             handle = target_block.register_forward_hook(_swap_hook)
-            out = self.model(input_ids=input_ids)
+            out = self.model(input_ids=input_ids, attention_mask=attention_mask)
             handle.remove()
             return out
 
@@ -89,8 +97,9 @@ class OrigWrapper:
         layer_idx: int,
         token_positions: torch.Tensor,
         *,
+        attention_mask: torch.Tensor | None = None,
         no_grad: bool = True,
-    ) -> "transformers.modeling_outputs.CausalLMOutput":
+    ) -> transformers.modeling_outputs.CausalLMOutput:
         """Vectorized forward pass replacing activations at multiple positions in a single layer.
         
         Args:
@@ -98,6 +107,7 @@ class OrigWrapper:
             new_activations: Activations to insert of shape (B, hidden_dim)
             layer_idx: Layer index to replace activations at (same for all samples)
             token_positions: Position indices of shape (B,) where activations are replaced
+            attention_mask: Optional attention mask. If None, created from pad tokens.
             no_grad: Whether to run in no_grad context. Set to False if gradients
                      w.r.t. new_activations are needed.
             
@@ -110,6 +120,10 @@ class OrigWrapper:
 
         from contextlib import nullcontext
         self._validate_layer_idx(layer_idx) # Validate layer index at the beginning
+
+        # If no attention mask is provided, create one from pad tokens
+        if attention_mask is None and self.model.config.pad_token_id is not None:
+            attention_mask = input_ids.ne(self.model.config.pad_token_id).long()
 
         grad_ctx = torch.no_grad() if no_grad else nullcontext()
         with grad_ctx:
@@ -138,7 +152,7 @@ class OrigWrapper:
                     # which is appropriate to signal an unsupported model structure.
 
             handle = target_block.register_forward_hook(_vectorized_swap_hook)
-            out = self.model(input_ids=input_ids)
+            out = self.model(input_ids=input_ids, attention_mask=attention_mask)
             handle.remove()
             return out
 

@@ -759,7 +759,7 @@ def should_unfreeze_any_component(current_step, current_epoch, freeze_schedule_c
     return False
 
 
-def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr_multiplier, embedding_lr_multiplier, prompt_lr_multiplier, base_model_lr_multiplier, opt_state_dict=None, current_step=None, current_epoch=None, grad_accum_steps=None):
+def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr_multiplier, embedding_lr_multiplier, prompt_lr_multiplier, base_model_lr_multiplier, overall_encoder_lr_multiplier, opt_state_dict=None, current_step=None, current_epoch=None, grad_accum_steps=None):
     """Unfreeze non-adapter parameters and create new optimizer with all parameters."""
     log = logging.getLogger(__name__)
     
@@ -920,7 +920,7 @@ def unfreeze_non_adapters(dec_raw, enc_raw, config, learning_rate, projection_lr
                        [p for p in enc.parameters() if p.requires_grad]
     
     # Create new optimizer with updated parameters
-    optimizer_groups = param_groups([dec, enc], learning_rate, projection_lr_multiplier, embedding_lr_multiplier, prompt_lr_multiplier, base_model_lr_multiplier)
+    optimizer_groups = param_groups([dec, enc], learning_rate, projection_lr_multiplier, embedding_lr_multiplier, prompt_lr_multiplier, base_model_lr_multiplier, overall_encoder_lr_multiplier)
     new_opt = torch.optim.AdamW(optimizer_groups)
     
     # Set initial_lr for each parameter group (required for LR scheduler)

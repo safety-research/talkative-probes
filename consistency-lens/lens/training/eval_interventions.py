@@ -40,6 +40,9 @@ def run_eval_interventions(
     # Get the position p where activation A was taken from
     token_pos_batch = batch.get("token_pos_A").squeeze()  # (B,)
     input_ids = batch["input_ids_A"]  # (B, seq_len)
+    if B == 1:
+        token_pos_batch=token_pos_batch.repeat(2)
+        input_ids=input_ids.repeat(2,1)
     
     # Baseline: Take T_text tokens from the original sequence up to and including position p
     baseline_embeddings_list = []

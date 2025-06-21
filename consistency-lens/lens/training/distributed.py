@@ -80,6 +80,23 @@ def init_distributed(backend: str = "nccl") -> Tuple[int, int, int]:
 
 def cleanup_distributed():
     """Clean up distributed training."""
+    # Try to KeyboardInterrupt all other processes (best effort, not guaranteed)
+    if dist.is_available() and dist.is_initialized():
+        try:
+            # Send a signal to all other ranks to raise KeyboardInterrupt
+            # Use torch.distributed to broadcast a special tensor
+            rank = get_rank()
+            world_size = get_world_size()
+            signal_tensor = torch.zeros(1, device="cpu")
+            if rank == 0:
+                signal_tensor[0] = 1  # 1 means "interrupt"
+            dist.broadcast(signal_tensor, src=0)
+            if rank != 0 and signal_tensor[0] == 1:
+                raise KeyboardInterrupt("Interrupted by main process via distributed cleanup.")
+        except Exception as e:
+            # Only log on main process
+            if is_main():
+                print(f"Warning: Exception while attempting distributed KeyboardInterrupt: {e}")
     if dist.is_available() and dist.is_initialized():
         dist.destroy_process_group()
 

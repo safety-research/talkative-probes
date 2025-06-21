@@ -386,7 +386,7 @@ def compute_composed_projection(
         # Compute pseudo-inverse
         W_tgt_pinv = torch.linalg.pinv(W_tgt_f)
         #log.warning(f"Using transpose instead of inverse")
-        log.warning(f"Using pseudoinverse  - possibly unstable?")
+        log.warning("Using pseudoinverse  - possibly unstable?")
         W_tgt_pinv = W_tgt_f.transpose(0, 1)
         W_P = W_tgt_pinv @ W_src_f
         b_P = W_tgt_pinv @ (b_src_f - b_tgt_f)

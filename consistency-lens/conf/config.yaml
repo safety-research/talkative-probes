@@ -95,6 +95,7 @@ trainable_components:
     projection_init_tl_comp_use_composed_bias: true
     subtract_add_pos_embeddings: false
     extra_pos_embeddings: false
+    clamp_entropy: 0.8 # or 0.5 etc
   encoder:
     base_model: false          # Train the underlying LLM weights of the Encoder
     use_base_model: true      # Use the base model to process the embeddings
@@ -173,6 +174,7 @@ custom_lr_multipliers:
   embedding_layers: 1.0  # Set different LR for embedding heads (input/output embeddings)
   prompt_layers: 1.0     # Set different LR for prompt layers
   base_models: 1.0        # Set different LR for base model parameters
+  overall_encoder: 1.0     # Set different LR for encoder layers
 
 # Gumbel-Softmax temperature (tau) schedule
 gumbel_tau_schedule:
@@ -277,6 +279,7 @@ kl_base_weight: 1.0             # Fixed weight on KL divergence (fundamental obj
 mse_weight: 0.0                 # Weight for MSE reconstruction loss (0.0 to disable, use instead of KL for direct reconstruction)
 GRPO_weight: 0.0
 GRPO_beta: 0.0
+GRPO_entropy_weight: 0.0
 
 # Token entropy bonus (see loop.py). Positive values reward higher entropy to
 # avoid posterior collapse; set to 0.0 to disable.

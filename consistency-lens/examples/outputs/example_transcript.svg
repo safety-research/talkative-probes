@@ -1,0 +1,696 @@
+<?xml version="1.0" ?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="3170" viewBox="0 0 1200 3170">
+  <rect width="100%" height="100%" fill="#ffffff"/>
+  <g id="header">
+    <rect x="20" y="20" width="1160" height="200" fill="#f8f9fa" stroke="#dee2e6" stroke-width="1" rx="8"/>
+    <text x="40" y="50" font-family="Arial, sans-serif" font-size="22" font-weight="bold" fill="#212529">Token-by-Token Analysis</text>
+    <text x="40" y="75" font-family="Arial, sans-serif" font-size="13" fill="#6c757d">Total Tokens: 96 | Analysis Type: Token-by-token breakdown</text>
+    <rect x="40" y="95" width="1120" height="110" fill="#e9ecef" stroke="#dee2e6" stroke-width="1" rx="4"/>
+    <text x="60" y="115" font-family="Georgia, serif" font-size="15" fill="#212529">Israel Accused of Suppressing Terror Evidence to Help Out New Pal China\n\nIsrael is a country</text>
+    <text x="60" y="133" font-family="Georgia, serif" font-size="15" fill="#212529">desperate for friends. Isolated in the Middle East and hated in large parts of the Arab world, it</text>
+    <text x="60" y="151" font-family="Georgia, serif" font-size="15" fill="#212529">struggles to make alliances. The few it has, it guards fiercely. So it should perhaps come as no</text>
+    <text x="60" y="169" font-family="Georgia, serif" font-size="15" fill="#212529">surprise that for years Israel has been courting China, inking trade deals and fêting one another</text>
+    <text x="60" y="187" font-family="Georgia, serif" font-size="15" fill="#212529">over champagne. But that process now finds Israel in an awkward bind</text>
+  </g>
+  <g id="token-table" transform="translate(20, 240)">
+    <rect x="0" y="0" width="1160" height="30" fill="#343a40"/>
+    <text x="15" y="22" font-family="Arial, sans-serif" font-size="13" fill="white" font-weight="bold">Pos</text>
+    <text x="80" y="22" font-family="Arial, sans-serif" font-size="13" fill="white" font-weight="bold">Token</text>
+    <text x="250" y="22" font-family="Arial, sans-serif" font-size="13" fill="white" font-weight="bold">Explanation</text>
+    <text x="780" y="22" font-family="Arial, sans-serif" font-size="13" fill="white" font-weight="bold">KL Div</text>
+    <text x="880" y="22" font-family="Arial, sans-serif" font-size="13" fill="white" font-weight="bold">MSE</text>
+    <text x="980" y="22" font-family="Arial, sans-serif" font-size="13" fill="white" font-weight="bold">Rel RMSE</text>
+    <rect x="0" y="30" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="52" font-family="Courier, monospace" font-size="11" fill="#6c757d">0</text>
+    <text x="80" y="52" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">Israel</text>
+    <text x="250" y="52" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Referred oun vacated Ging[Israel]</text>
+    <text x="780" y="52" font-family="Courier, monospace" font-size="11" fill="#dc3545" font-weight="bold">8.896</text>
+    <text x="880" y="52" font-family="Courier, monospace" font-size="11" fill="#dc3545" font-weight="bold">11591.7</text>
+    <text x="980" y="52" font-family="Courier, monospace" font-size="11" fill="#dc3545" font-weight="bold">0.985</text>
+    <rect x="0" y="60" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="82" font-family="Courier, monospace" font-size="11" fill="#6c757d">1</text>
+    <text x="80" y="82" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">Acc</text>
+    <text x="250" y="82" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Traditionyip USSR Mexicans[ Acc]</text>
+    <text x="780" y="82" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.170</text>
+    <text x="880" y="82" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">2.3</text>
+    <text x="980" y="82" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.443</text>
+    <rect x="0" y="90" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="112" font-family="Courier, monospace" font-size="11" fill="#6c757d">2</text>
+    <text x="80" y="112" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">used</text>
+    <text x="250" y="112" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">quished Corruption Penal Penalty[used]</text>
+    <text x="780" y="112" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">2.451</text>
+    <text x="880" y="112" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">3.8</text>
+    <text x="980" y="112" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.542</text>
+    <rect x="0" y="120" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="142" font-family="Courier, monospace" font-size="11" fill="#6c757d">3</text>
+    <text x="80" y="142" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">of</text>
+    <text x="250" y="142" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Genocide charged Guilty accused[ of]</text>
+    <text x="780" y="142" font-family="Courier, monospace" font-size="11" fill="#dc3545" font-weight="bold">5.949</text>
+    <text x="880" y="142" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">2.6</text>
+    <text x="980" y="142" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.443</text>
+    <rect x="0" y="150" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="172" font-family="Courier, monospace" font-size="11" fill="#6c757d">4</text>
+    <text x="80" y="172" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">Supp</text>
+    <text x="250" y="172" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Crimes accus massacres Crimes[ Supp]</text>
+    <text x="780" y="172" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">1.259</text>
+    <text x="880" y="172" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.7</text>
+    <text x="980" y="172" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.352</text>
+    <rect x="0" y="180" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="202" font-family="Courier, monospace" font-size="11" fill="#6c757d">5</text>
+    <text x="80" y="202" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">ressing</text>
+    <text x="250" y="202" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Jews complicit Supp transgress[ressing]</text>
+    <text x="780" y="202" font-family="Courier, monospace" font-size="11" fill="#dc3545" font-weight="bold">3.152</text>
+    <text x="880" y="202" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">2.0</text>
+    <text x="980" y="202" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.409</text>
+    <rect x="0" y="210" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="232" font-family="Courier, monospace" font-size="11" fill="#6c757d">6</text>
+    <text x="80" y="232" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">Terror</text>
+    <text x="250" y="232" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Terrorism suppress Crus abuse[ Terror]</text>
+    <text x="780" y="232" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.527</text>
+    <text x="880" y="232" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">2.0</text>
+    <text x="980" y="232" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.421</text>
+    <rect x="0" y="240" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="262" font-family="Courier, monospace" font-size="11" fill="#6c757d">7</text>
+    <text x="80" y="262" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">Evidence</text>
+    <text x="250" y="262" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Genocide genocide Genocide Genocide[ Evidence]</text>
+    <text x="780" y="262" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">1.187</text>
+    <text x="880" y="262" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">2.4</text>
+    <text x="980" y="262" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.408</text>
+    <rect x="0" y="270" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="292" font-family="Courier, monospace" font-size="11" fill="#6c757d">8</text>
+    <text x="80" y="292" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">to</text>
+    <text x="250" y="292" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">BDS pornography Abuse metadata[ to]</text>
+    <text x="780" y="292" font-family="Courier, monospace" font-size="11" fill="#dc3545" font-weight="bold">4.074</text>
+    <text x="880" y="292" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.9</text>
+    <text x="980" y="292" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.460</text>
+    <rect x="0" y="300" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="322" font-family="Courier, monospace" font-size="11" fill="#6c757d">9</text>
+    <text x="80" y="322" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">Help</text>
+    <text x="250" y="322" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">genocide crimes documents to[ Help]</text>
+    <text x="780" y="322" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.646</text>
+    <text x="880" y="322" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">2.0</text>
+    <text x="980" y="322" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.395</text>
+    <rect x="0" y="330" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="352" font-family="Courier, monospace" font-size="11" fill="#6c757d">10</text>
+    <text x="80" y="352" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">Out</text>
+    <text x="250" y="352" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">oppression help help help[ Out]</text>
+    <text x="780" y="352" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.898</text>
+    <text x="880" y="352" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.6</text>
+    <text x="980" y="352" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.410</text>
+    <rect x="0" y="360" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="382" font-family="Courier, monospace" font-size="11" fill="#6c757d">11</text>
+    <text x="80" y="382" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">New</text>
+    <text x="250" y="382" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">terrorism expulsion Zionism Protect[ New]</text>
+    <text x="780" y="382" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">2.563</text>
+    <text x="880" y="382" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">2.2</text>
+    <text x="980" y="382" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.450</text>
+    <rect x="0" y="390" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="412" font-family="Courier, monospace" font-size="11" fill="#6c757d">12</text>
+    <text x="80" y="412" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">Pal</text>
+    <text x="250" y="412" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">terrorists new Genocide Updated[ Pal]</text>
+    <text x="780" y="412" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.850</text>
+    <text x="880" y="412" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.3</text>
+    <text x="980" y="412" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.337</text>
+    <rect x="0" y="420" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="442" font-family="Courier, monospace" font-size="11" fill="#6c757d">13</text>
+    <text x="80" y="442" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">China</text>
+    <text x="250" y="442" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">dystop Pal HUGE Monkey[ China]</text>
+    <text x="780" y="442" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">1.992</text>
+    <text x="880" y="442" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">2.3</text>
+    <text x="980" y="442" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.435</text>
+    <rect x="0" y="450" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="472" font-family="Courier, monospace" font-size="11" fill="#6c757d">14</text>
+    <text x="80" y="472" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">\n</text>
+    <text x="250" y="472" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Shiva Zika Genocide Subway[\n]</text>
+    <text x="780" y="472" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.004</text>
+    <text x="880" y="472" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.2</text>
+    <text x="980" y="472" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.353</text>
+    <rect x="0" y="480" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="502" font-family="Courier, monospace" font-size="11" fill="#6c757d">15</text>
+    <text x="80" y="502" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">\n</text>
+    <text x="250" y="502" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">BDS meme slideshow ransomware[\n]</text>
+    <text x="780" y="502" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.163</text>
+    <text x="880" y="502" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.4</text>
+    <text x="980" y="502" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.404</text>
+    <rect x="0" y="510" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="532" font-family="Courier, monospace" font-size="11" fill="#6c757d">16</text>
+    <text x="80" y="532" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">Israel</text>
+    <text x="250" y="532" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Campaign FurthermoreCritics Says[Israel]</text>
+    <text x="780" y="532" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.286</text>
+    <text x="880" y="532" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.7</text>
+    <text x="980" y="532" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.342</text>
+    <rect x="0" y="540" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="562" font-family="Courier, monospace" font-size="11" fill="#6c757d">17</text>
+    <text x="80" y="562" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">is</text>
+    <text x="250" y="562" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Appears AzerbaijanPakistan UAE[ is]</text>
+    <text x="780" y="562" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.478</text>
+    <text x="880" y="562" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.9</text>
+    <text x="980" y="562" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.306</text>
+    <rect x="0" y="570" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="592" font-family="Courier, monospace" font-size="11" fill="#6c757d">18</text>
+    <text x="80" y="592" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">a</text>
+    <text x="250" y="592" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Notwithstanding VenezuelaIs AMERICA[ a]</text>
+    <text x="780" y="592" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.376</text>
+    <text x="880" y="592" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="980" y="592" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.309</text>
+    <rect x="0" y="600" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="622" font-family="Courier, monospace" font-size="11" fill="#6c757d">19</text>
+    <text x="80" y="622" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">country</text>
+    <text x="250" y="622" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">constitutedIran constitutedhas[ country]</text>
+    <text x="780" y="622" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.060</text>
+    <text x="880" y="622" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.0</text>
+    <text x="980" y="622" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.287</text>
+    <rect x="0" y="630" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="652" font-family="Courier, monospace" font-size="11" fill="#6c757d">20</text>
+    <text x="80" y="652" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">desperate</text>
+    <text x="250" y="652" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">quartered kingdom humankind Aman[ desperate]</text>
+    <text x="780" y="652" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.127</text>
+    <text x="880" y="652" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.6</text>
+    <text x="980" y="652" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.345</text>
+    <rect x="0" y="660" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="682" font-family="Courier, monospace" font-size="11" fill="#6c757d">21</text>
+    <text x="80" y="682" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">for</text>
+    <text x="250" y="682" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Shiite desperate eager desperate[ for]</text>
+    <text x="780" y="682" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.316</text>
+    <text x="880" y="682" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.4</text>
+    <text x="980" y="682" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.337</text>
+    <rect x="0" y="690" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="712" font-family="Courier, monospace" font-size="11" fill="#6c757d">22</text>
+    <text x="80" y="712" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">friends</text>
+    <text x="250" y="712" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Okinawa seek opportunities for[ friends]</text>
+    <text x="780" y="712" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.258</text>
+    <text x="880" y="712" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.4</text>
+    <text x="980" y="712" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.346</text>
+    <rect x="0" y="720" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="742" font-family="Courier, monospace" font-size="11" fill="#6c757d">23</text>
+    <text x="80" y="742" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">.</text>
+    <text x="250" y="742" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">龍喚士 adventurers exalted NGOs[.]</text>
+    <text x="780" y="742" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.208</text>
+    <text x="880" y="742" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.0</text>
+    <text x="980" y="742" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.335</text>
+    <rect x="0" y="750" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="772" font-family="Courier, monospace" font-size="11" fill="#6c757d">24</text>
+    <text x="80" y="772" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">Is</text>
+    <text x="250" y="772" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">imperialist Consequently! Resistance[ Is]</text>
+    <text x="780" y="772" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.130</text>
+    <text x="880" y="772" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="980" y="772" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.291</text>
+    <rect x="0" y="780" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="802" font-family="Courier, monospace" font-size="11" fill="#6c757d">25</text>
+    <text x="80" y="802" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">olated</text>
+    <text x="250" y="802" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Whereas dysfunctional Inolated[olated]</text>
+    <text x="780" y="802" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.516</text>
+    <text x="880" y="802" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.8</text>
+    <text x="980" y="802" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.391</text>
+    <rect x="0" y="810" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="832" font-family="Courier, monospace" font-size="11" fill="#6c757d">26</text>
+    <text x="80" y="832" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">in</text>
+    <text x="250" y="832" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Confederacy afflicted Abandonolated[ in]</text>
+    <text x="780" y="832" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.851</text>
+    <text x="880" y="832" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.3</text>
+    <text x="980" y="832" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.377</text>
+    <rect x="0" y="840" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="862" font-family="Courier, monospace" font-size="11" fill="#6c757d">27</text>
+    <text x="80" y="862" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">the</text>
+    <text x="250" y="862" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Exile isolated abroad isolated[ the]</text>
+    <text x="780" y="862" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.200</text>
+    <text x="880" y="862" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.9</text>
+    <text x="980" y="862" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.321</text>
+    <rect x="0" y="870" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="892" font-family="Courier, monospace" font-size="11" fill="#6c757d">28</text>
+    <text x="80" y="892" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">Middle</text>
+    <text x="250" y="892" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Euras occupying abroad drifting[ Middle]</text>
+    <text x="780" y="892" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.006</text>
+    <text x="880" y="892" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.2</text>
+    <text x="980" y="892" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.323</text>
+    <rect x="0" y="900" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="922" font-family="Courier, monospace" font-size="11" fill="#6c757d">29</text>
+    <text x="80" y="922" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">East</text>
+    <text x="250" y="922" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Thinking Europe Middle stagnation[ East]</text>
+    <text x="780" y="922" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.396</text>
+    <text x="880" y="922" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.4</text>
+    <text x="980" y="922" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.328</text>
+    <rect x="0" y="930" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="952" font-family="Courier, monospace" font-size="11" fill="#6c757d">30</text>
+    <text x="80" y="952" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">and</text>
+    <text x="250" y="952" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Outs Europe Appalach Appalach[ and]</text>
+    <text x="780" y="952" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">1.235</text>
+    <text x="880" y="952" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.6</text>
+    <text x="980" y="952" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.400</text>
+    <rect x="0" y="960" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="982" font-family="Courier, monospace" font-size="11" fill="#6c757d">31</text>
+    <text x="80" y="982" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">hated</text>
+    <text x="250" y="982" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">empires because despisedcolonial[ hated]</text>
+    <text x="780" y="982" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">2.994</text>
+    <text x="880" y="982" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">3.1</text>
+    <text x="980" y="982" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.497</text>
+    <rect x="0" y="990" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1012" font-family="Courier, monospace" font-size="11" fill="#6c757d">32</text>
+    <text x="80" y="1012" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">in</text>
+    <text x="250" y="1012" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">culture disliked despised except[ in]</text>
+    <text x="780" y="1012" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.459</text>
+    <text x="880" y="1012" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.4</text>
+    <text x="980" y="1012" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.409</text>
+    <rect x="0" y="1020" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1042" font-family="Courier, monospace" font-size="11" fill="#6c757d">33</text>
+    <text x="80" y="1042" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">large</text>
+    <text x="250" y="1042" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">culture abroad insults Outside[ large]</text>
+    <text x="780" y="1042" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.581</text>
+    <text x="880" y="1042" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.0</text>
+    <text x="980" y="1042" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.332</text>
+    <rect x="0" y="1050" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1072" font-family="Courier, monospace" font-size="11" fill="#6c757d">34</text>
+    <text x="80" y="1072" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">parts</text>
+    <text x="250" y="1072" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">countries large inside rough[ parts]</text>
+    <text x="780" y="1072" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.103</text>
+    <text x="880" y="1072" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.1</text>
+    <text x="980" y="1072" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.350</text>
+    <rect x="0" y="1080" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1102" font-family="Courier, monospace" font-size="11" fill="#6c757d">35</text>
+    <text x="80" y="1102" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">of</text>
+    <text x="250" y="1102" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">countries turbulent corners mostly[ of]</text>
+    <text x="780" y="1102" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">1.428</text>
+    <text x="880" y="1102" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.4</text>
+    <text x="980" y="1102" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.421</text>
+    <rect x="0" y="1110" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1132" font-family="Courier, monospace" font-size="11" fill="#6c757d">36</text>
+    <text x="80" y="1132" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">the</text>
+    <text x="250" y="1132" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">rural parts fragmented mostly[ the]</text>
+    <text x="780" y="1132" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.455</text>
+    <text x="880" y="1132" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.0</text>
+    <text x="980" y="1132" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.335</text>
+    <rect x="0" y="1140" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1162" font-family="Courier, monospace" font-size="11" fill="#6c757d">37</text>
+    <text x="80" y="1162" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">Arab</text>
+    <text x="250" y="1162" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">societies dominating outside spreading[ Arab]</text>
+    <text x="780" y="1162" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.131</text>
+    <text x="880" y="1162" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="980" y="1162" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.254</text>
+    <rect x="0" y="1170" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1192" font-family="Courier, monospace" font-size="11" fill="#6c757d">38</text>
+    <text x="80" y="1192" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">world</text>
+    <text x="250" y="1192" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">continent Arab strife Europe[ world]</text>
+    <text x="780" y="1192" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">1.111</text>
+    <text x="880" y="1192" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.2</text>
+    <text x="980" y="1192" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.308</text>
+    <rect x="0" y="1200" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1222" font-family="Courier, monospace" font-size="11" fill="#6c757d">39</text>
+    <text x="80" y="1222" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">,</text>
+    <text x="250" y="1222" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">genreiterranean obscurityersion[,]</text>
+    <text x="780" y="1222" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.055</text>
+    <text x="880" y="1222" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.1</text>
+    <text x="980" y="1222" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.351</text>
+    <rect x="0" y="1230" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1252" font-family="Courier, monospace" font-size="11" fill="#6c757d">40</text>
+    <text x="80" y="1252" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">it</text>
+    <text x="250" y="1252" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">civilizationellationiancerieg[ it]</text>
+    <text x="780" y="1252" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.192</text>
+    <text x="880" y="1252" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.1</text>
+    <text x="980" y="1252" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.343</text>
+    <rect x="0" y="1260" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1282" font-family="Courier, monospace" font-size="11" fill="#6c757d">41</text>
+    <text x="80" y="1282" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">struggles</text>
+    <text x="250" y="1282" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">empiretheyigntyyet[ struggles]</text>
+    <text x="780" y="1282" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.087</text>
+    <text x="880" y="1282" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.9</text>
+    <text x="980" y="1282" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.278</text>
+    <rect x="0" y="1290" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1312" font-family="Courier, monospace" font-size="11" fill="#6c757d">42</text>
+    <text x="80" y="1312" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">to</text>
+    <text x="250" y="1312" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">civilisation struggling struggleforces[ to]</text>
+    <text x="780" y="1312" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.169</text>
+    <text x="880" y="1312" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.9</text>
+    <text x="980" y="1312" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.290</text>
+    <rect x="0" y="1320" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1342" font-family="Courier, monospace" font-size="11" fill="#6c757d">43</text>
+    <text x="80" y="1342" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">make</text>
+    <text x="250" y="1342" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">oppressed struggles difficult to[ make]</text>
+    <text x="780" y="1342" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.542</text>
+    <text x="880" y="1342" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.9</text>
+    <text x="980" y="1342" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.310</text>
+    <rect x="0" y="1350" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1372" font-family="Courier, monospace" font-size="11" fill="#6c757d">44</text>
+    <text x="80" y="1372" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">alliances</text>
+    <text x="250" y="1372" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">nations make precarious make[ alliances]</text>
+    <text x="780" y="1372" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.101</text>
+    <text x="880" y="1372" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="980" y="1372" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.249</text>
+    <rect x="0" y="1380" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1402" font-family="Courier, monospace" font-size="11" fill="#6c757d">45</text>
+    <text x="80" y="1402" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">.</text>
+    <text x="250" y="1402" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">empires strugglestrength alliances[.]</text>
+    <text x="780" y="1402" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.145</text>
+    <text x="880" y="1402" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.7</text>
+    <text x="980" y="1402" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.306</text>
+    <rect x="0" y="1410" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1432" font-family="Courier, monospace" font-size="11" fill="#6c757d">46</text>
+    <text x="80" y="1432" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">The</text>
+    <text x="250" y="1432" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">civilisation Nevertheless vitality Nevertheless[ The]</text>
+    <text x="780" y="1432" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.064</text>
+    <text x="880" y="1432" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.3</text>
+    <text x="980" y="1432" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.206</text>
+    <rect x="0" y="1440" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1462" font-family="Courier, monospace" font-size="11" fill="#6c757d">47</text>
+    <text x="80" y="1462" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">few</text>
+    <text x="250" y="1462" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Socialist Making Having resentment[ few]</text>
+    <text x="780" y="1462" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.172</text>
+    <text x="880" y="1462" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.6</text>
+    <text x="980" y="1462" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.245</text>
+    <rect x="0" y="1470" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1492" font-family="Courier, monospace" font-size="11" fill="#6c757d">48</text>
+    <text x="80" y="1492" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">it</text>
+    <text x="250" y="1492" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Returning handful Little peasants[ it]</text>
+    <text x="780" y="1492" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.739</text>
+    <text x="880" y="1492" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">2.5</text>
+    <text x="980" y="1492" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.498</text>
+    <rect x="0" y="1500" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1522" font-family="Courier, monospace" font-size="11" fill="#6c757d">49</text>
+    <text x="80" y="1522" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">has</text>
+    <text x="250" y="1522" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Few they possessions they[ has]</text>
+    <text x="780" y="1522" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.482</text>
+    <text x="880" y="1522" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.4</text>
+    <text x="980" y="1522" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.375</text>
+    <rect x="0" y="1530" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1552" font-family="Courier, monospace" font-size="11" fill="#6c757d">50</text>
+    <text x="80" y="1552" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">,</text>
+    <text x="250" y="1552" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">selves favored ones were[,]</text>
+    <text x="780" y="1552" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.640</text>
+    <text x="880" y="1552" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.4</text>
+    <text x="980" y="1552" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.429</text>
+    <rect x="0" y="1560" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1582" font-family="Courier, monospace" font-size="11" fill="#6c757d">51</text>
+    <text x="80" y="1582" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">it</text>
+    <text x="250" y="1582" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">aristilyites;[ it]</text>
+    <text x="780" y="1582" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.661</text>
+    <text x="880" y="1582" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.4</text>
+    <text x="980" y="1582" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.435</text>
+    <rect x="0" y="1590" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1612" font-family="Courier, monospace" font-size="11" fill="#6c757d">52</text>
+    <text x="80" y="1612" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">guards</text>
+    <text x="250" y="1612" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">empire nobodythey foe[ guards]</text>
+    <text x="780" y="1612" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.247</text>
+    <text x="880" y="1612" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.9</text>
+    <text x="980" y="1612" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.291</text>
+    <rect x="0" y="1620" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1642" font-family="Courier, monospace" font-size="11" fill="#6c757d">53</text>
+    <text x="80" y="1642" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">fiercely</text>
+    <text x="250" y="1642" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Barbar guard guard keep[ fiercely]</text>
+    <text x="780" y="1642" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.120</text>
+    <text x="880" y="1642" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.9</text>
+    <text x="980" y="1642" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.266</text>
+    <rect x="0" y="1650" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1672" font-family="Courier, monospace" font-size="11" fill="#6c757d">54</text>
+    <text x="80" y="1672" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">.</text>
+    <text x="250" y="1672" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">armies steadykeep steady[.]</text>
+    <text x="780" y="1672" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.129</text>
+    <text x="880" y="1672" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.7</text>
+    <text x="980" y="1672" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.302</text>
+    <rect x="0" y="1680" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1702" font-family="Courier, monospace" font-size="11" fill="#6c757d">55</text>
+    <text x="80" y="1702" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">So</text>
+    <text x="250" y="1702" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">turbulent Moreover strong aristocracy[ So]</text>
+    <text x="780" y="1702" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.125</text>
+    <text x="880" y="1702" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.5</text>
+    <text x="980" y="1702" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.247</text>
+    <rect x="0" y="1710" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1732" font-family="Courier, monospace" font-size="11" fill="#6c757d">56</text>
+    <text x="80" y="1732" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">it</text>
+    <text x="250" y="1732" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">civilizedSoThusso[ it]</text>
+    <text x="780" y="1732" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.784</text>
+    <text x="880" y="1732" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.1</text>
+    <text x="980" y="1732" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.354</text>
+    <rect x="0" y="1740" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1762" font-family="Courier, monospace" font-size="11" fill="#6c757d">57</text>
+    <text x="80" y="1762" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">should</text>
+    <text x="250" y="1762" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">majestic Itso it[ should]</text>
+    <text x="780" y="1762" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.411</text>
+    <text x="880" y="1762" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.1</text>
+    <text x="980" y="1762" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.352</text>
+    <rect x="0" y="1770" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1792" font-family="Courier, monospace" font-size="11" fill="#6c757d">58</text>
+    <text x="80" y="1792" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">perhaps</text>
+    <text x="250" y="1792" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">isSpecialOrderable itshould surely[ perhaps]</text>
+    <text x="780" y="1792" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.256</text>
+    <text x="880" y="1792" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.2</text>
+    <text x="980" y="1792" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.354</text>
+    <rect x="0" y="1800" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1822" font-family="Courier, monospace" font-size="11" fill="#6c757d">59</text>
+    <text x="80" y="1822" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">come</text>
+    <text x="250" y="1822" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">proverb might surely maybe[ come]</text>
+    <text x="780" y="1822" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.060</text>
+    <text x="880" y="1822" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.2</text>
+    <text x="980" y="1822" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.355</text>
+    <rect x="0" y="1830" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1852" font-family="Courier, monospace" font-size="11" fill="#6c757d">60</text>
+    <text x="80" y="1852" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">as</text>
+    <text x="250" y="1852" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">come come come It[ as]</text>
+    <text x="780" y="1852" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.069</text>
+    <text x="880" y="1852" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.0</text>
+    <text x="980" y="1852" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.337</text>
+    <rect x="0" y="1860" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1882" font-family="Courier, monospace" font-size="11" fill="#6c757d">61</text>
+    <text x="80" y="1882" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">no</text>
+    <text x="250" y="1882" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">come as come as[ no]</text>
+    <text x="780" y="1882" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.002</text>
+    <text x="880" y="1882" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.1</text>
+    <text x="980" y="1882" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.339</text>
+    <rect x="0" y="1890" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1912" font-family="Courier, monospace" font-size="11" fill="#6c757d">62</text>
+    <text x="80" y="1912" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">surprise</text>
+    <text x="250" y="1912" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">hardly shouldn no suffice[ surprise]</text>
+    <text x="780" y="1912" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.056</text>
+    <text x="880" y="1912" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.1</text>
+    <text x="980" y="1912" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.279</text>
+    <rect x="0" y="1920" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1942" font-family="Courier, monospace" font-size="11" fill="#6c757d">63</text>
+    <text x="80" y="1942" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">that</text>
+    <text x="250" y="1942" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">unsurintuitive unlikelyCome[ that]</text>
+    <text x="780" y="1942" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.128</text>
+    <text x="880" y="1942" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.1</text>
+    <text x="980" y="1942" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.354</text>
+    <rect x="0" y="1950" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="1972" font-family="Courier, monospace" font-size="11" fill="#6c757d">64</text>
+    <text x="80" y="1972" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">for</text>
+    <text x="250" y="1972" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">nationalists Nonetheless irrational Reasons[ for]</text>
+    <text x="780" y="1972" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">1.809</text>
+    <text x="880" y="1972" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">2.5</text>
+    <text x="980" y="1972" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.554</text>
+    <rect x="0" y="1980" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2002" font-family="Courier, monospace" font-size="11" fill="#6c757d">65</text>
+    <text x="80" y="2002" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">years</text>
+    <text x="250" y="2002" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Opportun for Opportun crises[ years]</text>
+    <text x="780" y="2002" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.416</text>
+    <text x="880" y="2002" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.3</text>
+    <text x="980" y="2002" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.317</text>
+    <rect x="0" y="2010" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2032" font-family="Courier, monospace" font-size="11" fill="#6c757d">66</text>
+    <text x="80" y="2032" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">Israel</text>
+    <text x="250" y="2032" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">selves revolutionsYearsstill[ Israel]</text>
+    <text x="780" y="2032" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.053</text>
+    <text x="880" y="2032" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.1</text>
+    <text x="980" y="2032" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.294</text>
+    <rect x="0" y="2040" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2062" font-family="Courier, monospace" font-size="11" fill="#6c757d">67</text>
+    <text x="80" y="2062" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">has</text>
+    <text x="250" y="2062" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">empirestoday Finlandtoday[ has]</text>
+    <text x="780" y="2062" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.129</text>
+    <text x="880" y="2062" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.9</text>
+    <text x="980" y="2062" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.324</text>
+    <rect x="0" y="2070" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2092" font-family="Courier, monospace" font-size="11" fill="#6c757d">68</text>
+    <text x="80" y="2092" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">been</text>
+    <text x="250" y="2092" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">empires latelyAmericansijing[ been]</text>
+    <text x="780" y="2092" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.136</text>
+    <text x="880" y="2092" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.7</text>
+    <text x="980" y="2092" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.265</text>
+    <rect x="0" y="2100" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2122" font-family="Courier, monospace" font-size="11" fill="#6c757d">69</text>
+    <text x="80" y="2122" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">cour</text>
+    <text x="250" y="2122" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">monarchy exists been administrations[ cour]</text>
+    <text x="780" y="2122" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.011</text>
+    <text x="880" y="2122" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.4</text>
+    <text x="980" y="2122" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.189</text>
+    <rect x="0" y="2130" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2152" font-family="Courier, monospace" font-size="11" fill="#6c757d">70</text>
+    <text x="80" y="2152" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">ting</text>
+    <text x="250" y="2152" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">empires pursued cour flourished[ting]</text>
+    <text x="780" y="2152" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.067</text>
+    <text x="880" y="2152" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.9</text>
+    <text x="980" y="2152" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.282</text>
+    <rect x="0" y="2160" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2182" font-family="Courier, monospace" font-size="11" fill="#6c757d">71</text>
+    <text x="80" y="2182" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">China</text>
+    <text x="250" y="2182" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">hegemony befriend negotiate attracts[ China]</text>
+    <text x="780" y="2182" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.273</text>
+    <text x="880" y="2182" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="980" y="2182" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.248</text>
+    <rect x="0" y="2190" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2212" font-family="Courier, monospace" font-size="11" fill="#6c757d">72</text>
+    <text x="80" y="2212" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">,</text>
+    <text x="250" y="2212" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">libertarians greed Brazil lured[,]</text>
+    <text x="780" y="2212" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.084</text>
+    <text x="880" y="2212" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.0</text>
+    <text x="980" y="2212" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.341</text>
+    <rect x="0" y="2220" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2242" font-family="Courier, monospace" font-size="11" fill="#6c757d">73</text>
+    <text x="80" y="2242" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">in</text>
+    <text x="250" y="2242" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">empires', libertarians),[ in]</text>
+    <text x="780" y="2242" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.097</text>
+    <text x="880" y="2242" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="980" y="2242" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.307</text>
+    <rect x="0" y="2250" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2272" font-family="Courier, monospace" font-size="11" fill="#6c757d">74</text>
+    <text x="80" y="2272" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">king</text>
+    <text x="250" y="2272" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">empires abroad, negoti[king]</text>
+    <text x="780" y="2272" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.154</text>
+    <text x="880" y="2272" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.1</text>
+    <text x="980" y="2272" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.345</text>
+    <rect x="0" y="2280" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2302" font-family="Courier, monospace" font-size="11" fill="#6c757d">75</text>
+    <text x="80" y="2302" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">trade</text>
+    <text x="250" y="2302" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Euras sign forge sign[ trade]</text>
+    <text x="780" y="2302" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.026</text>
+    <text x="880" y="2302" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.0</text>
+    <text x="980" y="2302" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.282</text>
+    <rect x="0" y="2310" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2332" font-family="Courier, monospace" font-size="11" fill="#6c757d">76</text>
+    <text x="80" y="2332" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">deals</text>
+    <text x="250" y="2332" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">bourgeois sell tradeexpl[ deals]</text>
+    <text x="780" y="2332" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.058</text>
+    <text x="880" y="2332" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.9</text>
+    <text x="980" y="2332" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.268</text>
+    <rect x="0" y="2340" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2362" font-family="Courier, monospace" font-size="11" fill="#6c757d">77</text>
+    <text x="80" y="2362" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">and</text>
+    <text x="250" y="2362" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Industry bribes trade tricks[ and]</text>
+    <text x="780" y="2362" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.329</text>
+    <text x="880" y="2362" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.1</text>
+    <text x="980" y="2362" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.351</text>
+    <rect x="0" y="2370" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2392" font-family="Courier, monospace" font-size="11" fill="#6c757d">78</text>
+    <text x="80" y="2392" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">f</text>
+    <text x="250" y="2392" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">capitalist because exports because[ f]</text>
+    <text x="780" y="2392" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.095</text>
+    <text x="880" y="2392" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.5</text>
+    <text x="980" y="2392" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.218</text>
+    <rect x="0" y="2400" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2422" font-family="Courier, monospace" font-size="11" fill="#6c757d">79</text>
+    <text x="80" y="2422" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">ê</text>
+    <text x="250" y="2422" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">Chinese f f f[ê]</text>
+    <text x="780" y="2422" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.485</text>
+    <text x="880" y="2422" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.6</text>
+    <text x="980" y="2422" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.232</text>
+    <rect x="0" y="2430" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2452" font-family="Courier, monospace" font-size="11" fill="#6c757d">80</text>
+    <text x="80" y="2452" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">ting</text>
+    <text x="250" y="2452" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">diplomacy fe felike[ting]</text>
+    <text x="780" y="2452" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">1.153</text>
+    <text x="880" y="2452" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">2.4</text>
+    <text x="980" y="2452" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.498</text>
+    <rect x="0" y="2460" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2482" font-family="Courier, monospace" font-size="11" fill="#6c757d">81</text>
+    <text x="80" y="2482" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">one</text>
+    <text x="250" y="2482" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">capitalist sell but promote[ one]</text>
+    <text x="780" y="2482" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.410</text>
+    <text x="880" y="2482" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.1</text>
+    <text x="980" y="2482" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.382</text>
+    <rect x="0" y="2490" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2512" font-family="Courier, monospace" font-size="11" fill="#6c757d">82</text>
+    <text x="80" y="2512" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">another</text>
+    <text x="250" y="2512" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">trade mutual one swap[ another]</text>
+    <text x="780" y="2512" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.263</text>
+    <text x="880" y="2512" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.0</text>
+    <text x="980" y="2512" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.320</text>
+    <rect x="0" y="2520" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2542" font-family="Courier, monospace" font-size="11" fill="#6c757d">83</text>
+    <text x="80" y="2542" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">over</text>
+    <text x="250" y="2542" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">populism pact capitalists exchange[ over]</text>
+    <text x="780" y="2542" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.162</text>
+    <text x="880" y="2542" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.9</text>
+    <text x="980" y="2542" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.333</text>
+    <rect x="0" y="2550" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2572" font-family="Courier, monospace" font-size="11" fill="#6c757d">84</text>
+    <text x="80" y="2572" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">champagne</text>
+    <text x="250" y="2572" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">socialists talk on praise[ champagne]</text>
+    <text x="780" y="2572" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.083</text>
+    <text x="880" y="2572" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="980" y="2572" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.255</text>
+    <rect x="0" y="2580" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2602" font-family="Courier, monospace" font-size="11" fill="#6c757d">85</text>
+    <text x="80" y="2602" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">.</text>
+    <text x="250" y="2602" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">capitalists opium greed splendid[.]</text>
+    <text x="780" y="2602" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.161</text>
+    <text x="880" y="2602" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.6</text>
+    <text x="980" y="2602" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.286</text>
+    <rect x="0" y="2610" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2632" font-family="Courier, monospace" font-size="11" fill="#6c757d">86</text>
+    <text x="80" y="2632" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">But</text>
+    <text x="250" y="2632" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">populist flourish Moreover prosperity[ But]</text>
+    <text x="780" y="2632" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.137</text>
+    <text x="880" y="2632" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.6</text>
+    <text x="980" y="2632" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.239</text>
+    <rect x="0" y="2640" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2662" font-family="Courier, monospace" font-size="11" fill="#6c757d">87</text>
+    <text x="80" y="2662" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">that</text>
+    <text x="250" y="2662" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">But Yet Yet But[ that]</text>
+    <text x="780" y="2662" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.034</text>
+    <text x="880" y="2662" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.6</text>
+    <text x="980" y="2662" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.260</text>
+    <rect x="0" y="2670" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2692" font-family="Courier, monospace" font-size="11" fill="#6c757d">88</text>
+    <text x="80" y="2692" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">process</text>
+    <text x="250" y="2692" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">populism Such However But[ process]</text>
+    <text x="780" y="2692" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.061</text>
+    <text x="880" y="2692" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="980" y="2692" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.265</text>
+    <rect x="0" y="2700" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2722" font-family="Courier, monospace" font-size="11" fill="#6c757d">89</text>
+    <text x="80" y="2722" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">now</text>
+    <text x="250" y="2722" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">However reasoning discourse This[ now]</text>
+    <text x="780" y="2722" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.213</text>
+    <text x="880" y="2722" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">1.2</text>
+    <text x="980" y="2722" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.328</text>
+    <rect x="0" y="2730" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2752" font-family="Courier, monospace" font-size="11" fill="#6c757d">90</text>
+    <text x="80" y="2752" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">finds</text>
+    <text x="250" y="2752" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">contradictionnow situationnow[ finds]</text>
+    <text x="780" y="2752" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.111</text>
+    <text x="880" y="2752" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="980" y="2752" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.289</text>
+    <rect x="0" y="2760" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2782" font-family="Courier, monospace" font-size="11" fill="#6c757d">91</text>
+    <text x="80" y="2782" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">Israel</text>
+    <text x="250" y="2782" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">leadershipnow Thenow[ Israel]</text>
+    <text x="780" y="2782" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.066</text>
+    <text x="880" y="2782" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="980" y="2782" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.256</text>
+    <rect x="0" y="2790" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2812" font-family="Courier, monospace" font-size="11" fill="#6c757d">92</text>
+    <text x="80" y="2812" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">in</text>
+    <text x="250" y="2812" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">crisis nation Israel itself[ in]</text>
+    <text x="780" y="2812" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.032</text>
+    <text x="880" y="2812" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="980" y="2812" font-family="Courier, monospace" font-size="11" fill="#ff8c00" font-weight="bold">0.300</text>
+    <rect x="0" y="2820" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2842" font-family="Courier, monospace" font-size="11" fill="#6c757d">93</text>
+    <text x="80" y="2842" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">an</text>
+    <text x="250" y="2842" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">crisis in into in[ an]</text>
+    <text x="780" y="2842" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.067</text>
+    <text x="880" y="2842" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.7</text>
+    <text x="980" y="2842" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.297</text>
+    <rect x="0" y="2850" width="1160" height="30" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2872" font-family="Courier, monospace" font-size="11" fill="#6c757d">94</text>
+    <text x="80" y="2872" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">awkward</text>
+    <text x="250" y="2872" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">crisis a an fragile[ awkward]</text>
+    <text x="780" y="2872" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.114</text>
+    <text x="880" y="2872" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="980" y="2872" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.261</text>
+    <rect x="0" y="2880" width="1160" height="30" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="15" y="2902" font-family="Courier, monospace" font-size="11" fill="#6c757d">95</text>
+    <text x="80" y="2902" font-family="Courier, monospace" font-size="12" font-weight="bold" fill="#212529">bind</text>
+    <text x="250" y="2902" font-family="Arial, sans-serif" font-size="11" font-style="italic" fill="#495057">positionawkward precarious dilemma[ bind]</text>
+    <text x="780" y="2902" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.151</text>
+    <text x="880" y="2902" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="980" y="2902" font-family="Courier, monospace" font-size="11" fill="#28a745" font-weight="bold">0.239</text>
+  </g>
+</svg>

@@ -63,10 +63,19 @@ class EncoderConfig:
 class Encoder(nn.Module):
     """Processes generated tokens and projects final hidden to activation dims."""
 
-    def __init__(self, cfg: EncoderConfig):
+    def __init__(self, cfg: EncoderConfig, base_to_use: Optional[PreTrainedModel] = None):
         super().__init__()
         self.config = cfg
-        self.base: PreTrainedModel = AutoModelForCausalLM.from_pretrained(cfg.model_name)
+        
+        # Use provided base model or load a new one
+        if base_to_use is not None and not cfg.base_model and cfg.use_base_model:
+            # If we're not training the base model and one is provided, use it
+            self.base = base_to_use
+            log.info("Using shared base model for Encoder (memory efficient)")
+        else:
+            # Load our own copy
+            self.base: PreTrainedModel = AutoModelForCausalLM.from_pretrained(cfg.model_name)
+            
         d_model = self.base.config.hidden_size
         self._use_base = cfg.use_base_model
         if self._use_base:
@@ -94,7 +103,7 @@ class Encoder(nn.Module):
         if cfg.eye_init:
             nn.init.eye_(self.proj.weight)
             nn.init.zeros_(self.proj.bias) # Also initialize bias to zeros with eye_init
-            log.info("Initialized projection layer as identity matrix")
+            log.info("Initialized projection layer as identity matrix (encoder)")
         # Configure trainability of the output projection layer
         for p in self.proj.parameters():
             p.requires_grad_(cfg.projection_layer)

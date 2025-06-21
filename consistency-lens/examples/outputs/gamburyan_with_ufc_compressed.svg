@@ -1,0 +1,708 @@
+<?xml version="1.0" ?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="2559" viewBox="0 0 1200 2559">
+  <rect width="100%" height="100%" fill="#ffffff"/>
+  <g id="header">
+    <rect x="15" y="10" width="1170" height="138" fill="#f8f9fa" stroke="#dee2e6" stroke-width="1" rx="6"/>
+    <text x="30" y="35" font-family="Arial, sans-serif" font-size="20" font-weight="bold" fill="#212529">Token-by-Token Analysis</text>
+    <text x="30" y="55" font-family="Arial, sans-serif" font-size="12" fill="#6c757d">Total Tokens: 98 | Analysis Type: Token-by-token breakdown</text>
+    <rect x="30" y="70" width="1140" height="63" fill="#e9ecef" stroke="#dee2e6" stroke-width="1" rx="4"/>
+    <text x="45" y="88" font-family="Georgia, serif" font-size="14" fill="#212529">Gamburyan is set to make his 135-pound men's bantamweight debut against Cody &quot;The Renegade&quot; Gibson at the MGM</text>
+    <text x="45" y="104" font-family="Georgia, serif" font-size="14" fill="#212529">Grand Arena on a pay-per-view card headlined by the UFC light heavyweight title fight between champion Jon</text>
+    <text x="45" y="120" font-family="Georgia, serif" font-size="14" fill="#212529">Jones and Daniel Cormierr</text>
+  </g>
+  <g id="token-table" transform="translate(15, 173)">
+    <rect x="0" y="0" width="1170" height="24" fill="#343a40"/>
+    <text x="10" y="17" font-family="Arial, sans-serif" font-size="12" fill="white" font-weight="bold">Pos</text>
+    <text x="70" y="17" font-family="Arial, sans-serif" font-size="12" fill="white" font-weight="bold">Token</text>
+    <text x="240" y="17" font-family="Arial, sans-serif" font-size="12" fill="white" font-weight="bold">Explanation</text>
+    <text x="785" y="17" font-family="Arial, sans-serif" font-size="12" fill="white" font-weight="bold">KL Div</text>
+    <text x="885" y="17" font-family="Arial, sans-serif" font-size="12" fill="white" font-weight="bold">MSE</text>
+    <text x="985" y="17" font-family="Arial, sans-serif" font-size="12" fill="white" font-weight="bold">Rel RMSE</text>
+    <rect x="0" y="24" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="41" font-family="Courier, monospace" font-size="10" fill="#6c757d">0</text>
+    <text x="70" y="41" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">Looking</text>
+    <text x="240" y="41" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">Referred oun vacated Ging[Looking]</text>
+    <text x="785" y="41" font-family="Courier, monospace" font-size="10" fill="#dc3545" font-weight="bold">4.555</text>
+    <text x="885" y="41" font-family="Courier, monospace" font-size="10" fill="#dc3545" font-weight="bold">11510.5</text>
+    <text x="985" y="41" font-family="Courier, monospace" font-size="10" fill="#dc3545" font-weight="bold">0.988</text>
+    <rect x="0" y="48" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="65" font-family="Courier, monospace" font-size="10" fill="#6c757d">1</text>
+    <text x="70" y="65" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">to</text>
+    <text x="240" y="65" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">Available Looking SearchLooking[ to]</text>
+    <text x="785" y="65" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.470</text>
+    <text x="885" y="65" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">2.2</text>
+    <text x="985" y="65" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.582</text>
+    <rect x="0" y="72" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="89" font-family="Courier, monospace" font-size="10" fill="#6c757d">2</text>
+    <text x="70" y="89" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">leave</text>
+    <text x="240" y="89" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">Browse desires To Expect[ leave]</text>
+    <text x="785" y="89" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.316</text>
+    <text x="885" y="89" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.9</text>
+    <text x="985" y="89" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.436</text>
+    <rect x="0" y="96" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="113" font-family="Courier, monospace" font-size="10" fill="#6c757d">3</text>
+    <text x="70" y="113" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">a</text>
+    <text x="240" y="113" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">Leave leave Leave leave[ a]</text>
+    <text x="785" y="113" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.209</text>
+    <text x="885" y="113" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.5</text>
+    <text x="985" y="113" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.392</text>
+    <rect x="0" y="120" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="137" font-family="Courier, monospace" font-size="10" fill="#6c757d">4</text>
+    <text x="70" y="137" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">two</text>
+    <text x="240" y="137" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">Reserved saved created placed[ two]</text>
+    <text x="785" y="137" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.106</text>
+    <text x="885" y="137" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.5</text>
+    <text x="985" y="137" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.382</text>
+    <rect x="0" y="144" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="161" font-family="Courier, monospace" font-size="10" fill="#6c757d">5</text>
+    <text x="70" y="161" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">-</text>
+    <text x="240" y="161" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">Reserved two opted nested[-]</text>
+    <text x="785" y="161" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.343</text>
+    <text x="885" y="161" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.6</text>
+    <text x="985" y="161" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.353</text>
+    <rect x="0" y="168" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="185" font-family="Courier, monospace" font-size="10" fill="#6c757d">6</text>
+    <text x="70" y="185" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">fight</text>
+    <text x="240" y="185" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">Defensive two relocated six[fight]</text>
+    <text x="785" y="185" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">1.586</text>
+    <text x="885" y="185" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.8</text>
+    <text x="985" y="185" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.379</text>
+    <rect x="0" y="192" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="209" font-family="Courier, monospace" font-size="10" fill="#6c757d">7</text>
+    <text x="70" y="209" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">win</text>
+    <text x="240" y="209" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">Played competitive sealed wrestle[ win]</text>
+    <text x="785" y="209" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">2.333</text>
+    <text x="885" y="209" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">2.1</text>
+    <text x="985" y="209" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.416</text>
+    <rect x="0" y="216" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="233" font-family="Courier, monospace" font-size="10" fill="#6c757d">8</text>
+    <text x="70" y="233" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">less</text>
+    <text x="240" y="233" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">Playoffs win victory win[less]</text>
+    <text x="785" y="233" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">2.568</text>
+    <text x="885" y="233" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.5</text>
+    <text x="985" y="233" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.415</text>
+    <rect x="0" y="240" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="257" font-family="Courier, monospace" font-size="10" fill="#6c757d">9</text>
+    <text x="70" y="257" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">streak</text>
+    <text x="240" y="257" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">Playoffs undefeated finish undefeated[ streak]</text>
+    <text x="785" y="257" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">2.053</text>
+    <text x="885" y="257" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">2.0</text>
+    <text x="985" y="257" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.418</text>
+    <rect x="0" y="264" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="281" font-family="Courier, monospace" font-size="10" fill="#6c757d">10</text>
+    <text x="70" y="281" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">behind</text>
+    <text x="240" y="281" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">streak goodbye trophy leave[ behind]</text>
+    <text x="785" y="281" font-family="Courier, monospace" font-size="10" fill="#dc3545" font-weight="bold">3.397</text>
+    <text x="885" y="281" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.9</text>
+    <text x="985" y="281" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.450</text>
+    <rect x="0" y="288" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="305" font-family="Courier, monospace" font-size="10" fill="#6c757d">11</text>
+    <text x="70" y="305" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">him</text>
+    <text x="240" y="305" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">matchups unsustainable backfield atop[ him]</text>
+    <text x="785" y="305" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">2.231</text>
+    <text x="885" y="305" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">2.0</text>
+    <text x="985" y="305" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.420</text>
+    <rect x="0" y="312" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="329" font-family="Courier, monospace" font-size="10" fill="#6c757d">12</text>
+    <text x="70" y="329" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">,</text>
+    <text x="240" y="329" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">backfield victoriouschoes reconc[,]</text>
+    <text x="785" y="329" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.105</text>
+    <text x="885" y="329" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.5</text>
+    <text x="985" y="329" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.403</text>
+    <rect x="0" y="336" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="353" font-family="Courier, monospace" font-size="10" fill="#6c757d">13</text>
+    <text x="70" y="353" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">Manny</text>
+    <text x="240" y="353" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFCournaments Neverthelessournaments[ Manny]</text>
+    <text x="785" y="353" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.238</text>
+    <text x="885" y="353" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.2</text>
+    <text x="985" y="353" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.277</text>
+    <rect x="0" y="360" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="377" font-family="Courier, monospace" font-size="10" fill="#6c757d">14</text>
+    <text x="70" y="377" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">Gamb</text>
+    <text x="240" y="377" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">Hopefully Manny Manny Miguel[ Gamb]</text>
+    <text x="785" y="377" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.125</text>
+    <text x="885" y="377" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.1</text>
+    <text x="985" y="377" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.282</text>
+    <rect x="0" y="384" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="401" font-family="Courier, monospace" font-size="10" fill="#6c757d">15</text>
+    <text x="70" y="401" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">ury</text>
+    <text x="240" y="401" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">Robb Gamb Gab Gamb[ury]</text>
+    <text x="785" y="401" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.008</text>
+    <text x="885" y="401" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.0</text>
+    <text x="985" y="401" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.351</text>
+    <rect x="0" y="408" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="425" font-family="Courier, monospace" font-size="10" fill="#6c757d">16</text>
+    <text x="70" y="425" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">an</text>
+    <text x="240" y="425" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">aminer Bryantmaxwellulia[an]</text>
+    <text x="785" y="425" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.256</text>
+    <text x="885" y="425" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.4</text>
+    <text x="985" y="425" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.389</text>
+    <rect x="0" y="432" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="449" font-family="Courier, monospace" font-size="10" fill="#6c757d">17</text>
+    <text x="70" y="449" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">will</text>
+    <text x="240" y="449" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">jandro Cabrera Ryuotto[ will]</text>
+    <text x="785" y="449" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.408</text>
+    <text x="885" y="449" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.2</text>
+    <text x="985" y="449" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.366</text>
+    <rect x="0" y="456" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="473" font-family="Courier, monospace" font-size="10" fill="#6c757d">18</text>
+    <text x="70" y="473" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">return</text>
+    <text x="240" y="473" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">Conorwill superstarwill[ return]</text>
+    <text x="785" y="473" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.063</text>
+    <text x="885" y="473" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.1</text>
+    <text x="985" y="473" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.318</text>
+    <rect x="0" y="480" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="497" font-family="Courier, monospace" font-size="10" fill="#6c757d">19</text>
+    <text x="70" y="497" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">to</text>
+    <text x="240" y="497" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">defenseman returnumerable returns[ to]</text>
+    <text x="785" y="497" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.156</text>
+    <text x="885" y="497" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.0</text>
+    <text x="985" y="497" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.330</text>
+    <rect x="0" y="504" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="521" font-family="Courier, monospace" font-size="10" fill="#6c757d">20</text>
+    <text x="70" y="521" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">the</text>
+    <text x="240" y="521" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">teammate returns to reborn[ the]</text>
+    <text x="785" y="521" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.175</text>
+    <text x="885" y="521" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="985" y="521" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.313</text>
+    <rect x="0" y="528" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="545" font-family="Courier, monospace" font-size="10" fill="#6c757d">21</text>
+    <text x="70" y="545" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">UFC</text>
+    <text x="240" y="545" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">MMA adapting poised returning[ UFC]</text>
+    <text x="785" y="545" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">1.233</text>
+    <text x="885" y="545" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.0</text>
+    <text x="985" y="545" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.259</text>
+    <rect x="0" y="552" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="569" font-family="Courier, monospace" font-size="10" fill="#6c757d">22</text>
+    <text x="70" y="569" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">oct</text>
+    <text x="240" y="569" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC UFC competing MMA[ oct]</text>
+    <text x="785" y="569" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.007</text>
+    <text x="885" y="569" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.0</text>
+    <text x="985" y="569" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.270</text>
+    <rect x="0" y="576" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="593" font-family="Courier, monospace" font-size="10" fill="#6c757d">23</text>
+    <text x="70" y="593" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">agon</text>
+    <text x="240" y="593" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC boxing retire UFC[agon]</text>
+    <text x="785" y="593" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.404</text>
+    <text x="885" y="593" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.7</text>
+    <text x="985" y="593" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.372</text>
+    <rect x="0" y="600" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="617" font-family="Courier, monospace" font-size="10" fill="#6c757d">24</text>
+    <text x="70" y="617" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">on</text>
+    <text x="240" y="617" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC TBA UFC rebirth[ on]</text>
+    <text x="785" y="617" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.105</text>
+    <text x="885" y="617" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.9</text>
+    <text x="985" y="617" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.322</text>
+    <rect x="0" y="624" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="641" font-family="Courier, monospace" font-size="10" fill="#6c757d">25</text>
+    <text x="70" y="641" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">Sept</text>
+    <text x="240" y="641" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC premie on debut[ Sept]</text>
+    <text x="785" y="641" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.001</text>
+    <text x="885" y="641" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.9</text>
+    <text x="985" y="641" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.289</text>
+    <rect x="0" y="648" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="665" font-family="Courier, monospace" font-size="10" fill="#6c757d">26</text>
+    <text x="70" y="665" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">.</text>
+    <text x="240" y="665" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC Sept season Sept[.]</text>
+    <text x="785" y="665" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.024</text>
+    <text x="885" y="665" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.7</text>
+    <text x="985" y="665" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.284</text>
+    <rect x="0" y="672" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="689" font-family="Courier, monospace" font-size="10" fill="#6c757d">27</text>
+    <text x="70" y="689" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">27</text>
+    <text x="240" y="689" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC TBA January stage[ 27]</text>
+    <text x="785" y="689" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.605</text>
+    <text x="885" y="689" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.1</text>
+    <text x="985" y="689" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.325</text>
+    <rect x="0" y="696" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="713" font-family="Courier, monospace" font-size="10" fill="#6c757d">28</text>
+    <text x="70" y="713" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">in</text>
+    <text x="240" y="713" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC kickoff Wednesday UFC[ in]</text>
+    <text x="785" y="713" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.163</text>
+    <text x="885" y="713" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.7</text>
+    <text x="985" y="713" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.294</text>
+    <rect x="0" y="720" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="737" font-family="Courier, monospace" font-size="10" fill="#6c757d">29</text>
+    <text x="70" y="737" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">Las</text>
+    <text x="240" y="737" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC events outside marathon[ Las]</text>
+    <text x="785" y="737" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.000</text>
+    <text x="885" y="737" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.7</text>
+    <text x="985" y="737" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.231</text>
+    <rect x="0" y="744" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="761" font-family="Courier, monospace" font-size="10" fill="#6c757d">30</text>
+    <text x="70" y="761" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">Vegas</text>
+    <text x="240" y="761" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC Seoul abroad Las[ Vegas]</text>
+    <text x="785" y="761" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.899</text>
+    <text x="885" y="761" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.9</text>
+    <text x="985" y="761" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.255</text>
+    <rect x="0" y="768" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="785" font-family="Courier, monospace" font-size="10" fill="#6c757d">31</text>
+    <text x="70" y="785" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">at</text>
+    <text x="240" y="785" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC Vegas Anaheim Vegas[ at]</text>
+    <text x="785" y="785" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.853</text>
+    <text x="885" y="785" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="985" y="785" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.316</text>
+    <rect x="0" y="792" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="809" font-family="Courier, monospace" font-size="10" fill="#6c757d">32</text>
+    <text x="70" y="809" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">UFC</text>
+    <text x="240" y="809" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC fights atevent[ UFC]</text>
+    <text x="785" y="809" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.066</text>
+    <text x="885" y="809" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="985" y="809" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.249</text>
+    <rect x="0" y="816" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="833" font-family="Courier, monospace" font-size="10" fill="#6c757d">33</text>
+    <text x="70" y="833" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">178</text>
+    <text x="240" y="833" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC UFC UFC at[ 178]</text>
+    <text x="785" y="833" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.557</text>
+    <text x="885" y="833" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.7</text>
+    <text x="985" y="833" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.244</text>
+    <rect x="0" y="840" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="857" font-family="Courier, monospace" font-size="10" fill="#6c757d">34</text>
+    <text x="70" y="857" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">in</text>
+    <text x="240" y="857" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC UFC tournament TBD[ in]</text>
+    <text x="785" y="857" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.331</text>
+    <text x="885" y="857" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.1</text>
+    <text x="985" y="857" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.355</text>
+    <rect x="0" y="864" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="881" font-family="Courier, monospace" font-size="10" fill="#6c757d">35</text>
+    <text x="70" y="881" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">a</text>
+    <text x="240" y="881" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC inside UFC abroad[ a]</text>
+    <text x="785" y="881" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.245</text>
+    <text x="885" y="881" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="985" y="881" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.313</text>
+    <rect x="0" y="888" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="905" font-family="Courier, monospace" font-size="10" fill="#6c757d">36</text>
+    <text x="70" y="905" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">new</text>
+    <text x="240" y="905" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC sanctioned inside scheduled[ new]</text>
+    <text x="785" y="905" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.674</text>
+    <text x="885" y="905" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="985" y="905" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.293</text>
+    <rect x="0" y="912" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="929" font-family="Courier, monospace" font-size="10" fill="#6c757d">37</text>
+    <text x="70" y="929" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">weight</text>
+    <text x="240" y="929" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC competed other upcoming[ weight]</text>
+    <text x="785" y="929" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.054</text>
+    <text x="885" y="929" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.9</text>
+    <text x="985" y="929" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.287</text>
+    <rect x="0" y="936" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="953" font-family="Courier, monospace" font-size="10" fill="#6c757d">38</text>
+    <text x="70" y="953" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">class</text>
+    <text x="240" y="953" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">revamped UFC new gym[ class]</text>
+    <text x="785" y="953" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.365</text>
+    <text x="885" y="953" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">2.1</text>
+    <text x="985" y="953" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.424</text>
+    <rect x="0" y="960" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="977" font-family="Courier, monospace" font-size="10" fill="#6c757d">39</text>
+    <text x="70" y="977" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">.</text>
+    <text x="240" y="977" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC contender MMA roster[.]</text>
+    <text x="785" y="977" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.157</text>
+    <text x="885" y="977" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.5</text>
+    <text x="985" y="977" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.269</text>
+    <rect x="0" y="984" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1001" font-family="Courier, monospace" font-size="10" fill="#6c757d">40</text>
+    <text x="70" y="1001" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">\n</text>
+    <text x="240" y="1001" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">NFL Additionally superstarEarlier[\n]</text>
+    <text x="785" y="1001" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.000</text>
+    <text x="885" y="1001" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.6</text>
+    <text x="985" y="1001" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.296</text>
+    <rect x="0" y="1008" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1025" font-family="Courier, monospace" font-size="10" fill="#6c757d">41</text>
+    <text x="70" y="1025" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">\n</text>
+    <text x="240" y="1025" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC event athlete debut[\n]</text>
+    <text x="785" y="1025" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.040</text>
+    <text x="885" y="1025" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.4</text>
+    <text x="985" y="1025" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.214</text>
+    <rect x="0" y="1032" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1049" font-family="Courier, monospace" font-size="10" fill="#6c757d">42</text>
+    <text x="70" y="1049" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">G</text>
+    <text x="240" y="1049" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">Celticsicipated AdditionallyAsked[G]</text>
+    <text x="785" y="1049" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.031</text>
+    <text x="885" y="1049" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.5</text>
+    <text x="985" y="1049" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.213</text>
+    <rect x="0" y="1056" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1073" font-family="Courier, monospace" font-size="10" fill="#6c757d">43</text>
+    <text x="70" y="1073" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">amb</text>
+    <text x="240" y="1073" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">AlthoughGAlthoughG[amb]</text>
+    <text x="785" y="1073" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.002</text>
+    <text x="885" y="1073" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.6</text>
+    <text x="985" y="1073" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.332</text>
+    <rect x="0" y="1080" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1097" font-family="Courier, monospace" font-size="10" fill="#6c757d">44</text>
+    <text x="70" y="1097" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">ury</text>
+    <text x="240" y="1097" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">However MangGarKal[ury]</text>
+    <text x="785" y="1097" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.001</text>
+    <text x="885" y="1097" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.3</text>
+    <text x="985" y="1097" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.339</text>
+    <rect x="0" y="1104" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1121" font-family="Courier, monospace" font-size="10" fill="#6c757d">45</text>
+    <text x="70" y="1121" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">an</text>
+    <text x="240" y="1121" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">After McGregormaxwellJackson[an]</text>
+    <text x="785" y="1121" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.029</text>
+    <text x="885" y="1121" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.9</text>
+    <text x="985" y="1121" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.309</text>
+    <rect x="0" y="1128" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1145" font-family="Courier, monospace" font-size="10" fill="#6c757d">46</text>
+    <text x="70" y="1145" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">is</text>
+    <text x="240" y="1145" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC AlonsoAlthough Diaz[ is]</text>
+    <text x="785" y="1145" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.124</text>
+    <text x="885" y="1145" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.4</text>
+    <text x="985" y="1145" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.218</text>
+    <rect x="0" y="1152" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1169" font-family="Courier, monospace" font-size="10" fill="#6c757d">47</text>
+    <text x="70" y="1169" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">set</text>
+    <text x="240" y="1169" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">defensemanhas Rouse is[ set]</text>
+    <text x="785" y="1169" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.041</text>
+    <text x="885" y="1169" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.6</text>
+    <text x="985" y="1169" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.254</text>
+    <rect x="0" y="1176" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1193" font-family="Courier, monospace" font-size="10" fill="#6c757d">48</text>
+    <text x="70" y="1193" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">to</text>
+    <text x="240" y="1193" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC slatedis slated[ to]</text>
+    <text x="785" y="1193" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.156</text>
+    <text x="885" y="1193" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.9</text>
+    <text x="985" y="1193" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.323</text>
+    <rect x="0" y="1200" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1217" font-family="Courier, monospace" font-size="10" fill="#6c757d">49</text>
+    <text x="70" y="1217" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">make</text>
+    <text x="240" y="1217" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC slated willUFC[ make]</text>
+    <text x="785" y="1217" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.040</text>
+    <text x="885" y="1217" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.5</text>
+    <text x="985" y="1217" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.253</text>
+    <rect x="0" y="1224" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1241" font-family="Courier, monospace" font-size="10" fill="#6c757d">50</text>
+    <text x="70" y="1241" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">his</text>
+    <text x="240" y="1241" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">midfielder makemakes earn[ his]</text>
+    <text x="785" y="1241" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.056</text>
+    <text x="885" y="1241" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="985" y="1241" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.299</text>
+    <rect x="0" y="1248" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1265" font-family="Courier, monospace" font-size="10" fill="#6c757d">51</text>
+    <text x="70" y="1265" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">135</text>
+    <text x="240" y="1265" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC competed preparingWant[ 135]</text>
+    <text x="785" y="1265" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.043</text>
+    <text x="885" y="1265" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.7</text>
+    <text x="985" y="1265" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.266</text>
+    <rect x="0" y="1272" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1289" font-family="Courier, monospace" font-size="10" fill="#6c757d">52</text>
+    <text x="70" y="1289" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">-</text>
+    <text x="240" y="1289" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC 135 weigh 145[-]</text>
+    <text x="785" y="1289" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.001</text>
+    <text x="885" y="1289" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.9</text>
+    <text x="985" y="1289" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.294</text>
+    <rect x="0" y="1296" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1313" font-family="Courier, monospace" font-size="10" fill="#6c757d">53</text>
+    <text x="70" y="1313" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">pound</text>
+    <text x="240" y="1313" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">MMA competed 135 pounds[pound]</text>
+    <text x="785" y="1313" font-family="Courier, monospace" font-size="10" fill="#dc3545" font-weight="bold">4.659</text>
+    <text x="885" y="1313" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.2</text>
+    <text x="985" y="1313" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.333</text>
+    <rect x="0" y="1320" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1337" font-family="Courier, monospace" font-size="10" fill="#6c757d">54</text>
+    <text x="70" y="1337" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">men</text>
+    <text x="240" y="1337" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC crowned MMA 1[ men]</text>
+    <text x="785" y="1337" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.042</text>
+    <text x="885" y="1337" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.3</text>
+    <text x="985" y="1337" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.379</text>
+    <rect x="0" y="1344" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1361" font-family="Courier, monospace" font-size="10" fill="#6c757d">55</text>
+    <text x="70" y="1361" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">'s</text>
+    <text x="240" y="1361" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">NASCAR men mus men['s]</text>
+    <text x="785" y="1361" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.488</text>
+    <text x="885" y="1361" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.3</text>
+    <text x="985" y="1361" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.348</text>
+    <rect x="0" y="1368" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1385" font-family="Courier, monospace" font-size="10" fill="#6c757d">56</text>
+    <text x="70" y="1385" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">b</text>
+    <text x="240" y="1385" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">Lakers deserving MVP racing[ b]</text>
+    <text x="785" y="1385" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.006</text>
+    <text x="885" y="1385" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="985" y="1385" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.278</text>
+    <rect x="0" y="1392" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1409" font-family="Courier, monospace" font-size="10" fill="#6c757d">57</text>
+    <text x="70" y="1409" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">antam</text>
+    <text x="240" y="1409" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC b competed b[antam]</text>
+    <text x="785" y="1409" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.000</text>
+    <text x="885" y="1409" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.7</text>
+    <text x="985" y="1409" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.222</text>
+    <rect x="0" y="1416" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1433" font-family="Courier, monospace" font-size="10" fill="#6c757d">58</text>
+    <text x="70" y="1433" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">weight</text>
+    <text x="240" y="1433" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC heavyweight boxingirm[weight]</text>
+    <text x="785" y="1433" font-family="Courier, monospace" font-size="10" fill="#dc3545" font-weight="bold">4.858</text>
+    <text x="885" y="1433" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.4</text>
+    <text x="985" y="1433" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.352</text>
+    <rect x="0" y="1440" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1457" font-family="Courier, monospace" font-size="10" fill="#6c757d">59</text>
+    <text x="70" y="1457" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">debut</text>
+    <text x="240" y="1457" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC heavyweight pitcher enter[ debut]</text>
+    <text x="785" y="1457" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.120</text>
+    <text x="885" y="1457" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.2</text>
+    <text x="985" y="1457" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.324</text>
+    <rect x="0" y="1464" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1481" font-family="Courier, monospace" font-size="10" fill="#6c757d">60</text>
+    <text x="70" y="1481" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">against</text>
+    <text x="240" y="1481" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC debut boxer matchup[ against]</text>
+    <text x="785" y="1481" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.031</text>
+    <text x="885" y="1481" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.5</text>
+    <text x="985" y="1481" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.249</text>
+    <rect x="0" y="1488" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1505" font-family="Courier, monospace" font-size="10" fill="#6c757d">61</text>
+    <text x="70" y="1505" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">Cody</text>
+    <text x="240" y="1505" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC matches fighters to[ Cody]</text>
+    <text x="785" y="1505" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.190</text>
+    <text x="885" y="1505" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.3</text>
+    <text x="985" y="1505" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.152</text>
+    <rect x="0" y="1512" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1529" font-family="Courier, monospace" font-size="10" fill="#6c757d">62</text>
+    <text x="70" y="1529" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">&quot;</text>
+    <text x="240" y="1529" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC Cody Cody Cody[ &quot;]</text>
+    <text x="785" y="1529" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.117</text>
+    <text x="885" y="1529" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.5</text>
+    <text x="985" y="1529" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.223</text>
+    <rect x="0" y="1536" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1553" font-family="Courier, monospace" font-size="10" fill="#6c757d">63</text>
+    <text x="70" y="1553" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">The</text>
+    <text x="240" y="1553" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC punches like Jessica[The]</text>
+    <text x="785" y="1553" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.239</text>
+    <text x="885" y="1553" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.0</text>
+    <text x="985" y="1553" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.328</text>
+    <rect x="0" y="1560" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1577" font-family="Courier, monospace" font-size="10" fill="#6c757d">64</text>
+    <text x="70" y="1577" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">Reneg</text>
+    <text x="240" y="1577" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">fucking calling Being called[ Reneg]</text>
+    <text x="785" y="1577" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.007</text>
+    <text x="885" y="1577" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="985" y="1577" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.246</text>
+    <rect x="0" y="1584" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1601" font-family="Courier, monospace" font-size="10" fill="#6c757d">65</text>
+    <text x="70" y="1601" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">ade</text>
+    <text x="240" y="1601" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">fighting Reneg Reneg Reneg[ade]</text>
+    <text x="785" y="1601" font-family="Courier, monospace" font-size="10" fill="#dc3545" font-weight="bold">6.582</text>
+    <text x="885" y="1601" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.6</text>
+    <text x="985" y="1601" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.430</text>
+    <rect x="0" y="1608" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1625" font-family="Courier, monospace" font-size="10" fill="#6c757d">66</text>
+    <text x="70" y="1625" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">&quot;</text>
+    <text x="240" y="1625" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC Curtis Conor Shane[&quot;]</text>
+    <text x="785" y="1625" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.106</text>
+    <text x="885" y="1625" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.1</text>
+    <text x="985" y="1625" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.350</text>
+    <rect x="0" y="1632" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1649" font-family="Courier, monospace" font-size="10" fill="#6c757d">67</text>
+    <text x="70" y="1649" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">Gibson</text>
+    <text x="240" y="1649" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">boxer Zimmerman catcher Hernandez[ Gibson]</text>
+    <text x="785" y="1649" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.061</text>
+    <text x="885" y="1649" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.0</text>
+    <text x="985" y="1649" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.271</text>
+    <rect x="0" y="1656" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1673" font-family="Courier, monospace" font-size="10" fill="#6c757d">68</text>
+    <text x="70" y="1673" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">at</text>
+    <text x="240" y="1673" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC boxer matchup Diaz[ at]</text>
+    <text x="785" y="1673" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.023</text>
+    <text x="885" y="1673" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.6</text>
+    <text x="985" y="1673" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.266</text>
+    <rect x="0" y="1680" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1697" font-family="Courier, monospace" font-size="10" fill="#6c757d">69</text>
+    <text x="70" y="1697" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">the</text>
+    <text x="240" y="1697" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC matchup at at[ the]</text>
+    <text x="785" y="1697" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.178</text>
+    <text x="885" y="1697" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.6</text>
+    <text x="985" y="1697" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.275</text>
+    <rect x="0" y="1704" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1721" font-family="Courier, monospace" font-size="10" fill="#6c757d">70</text>
+    <text x="70" y="1721" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">MGM</text>
+    <text x="240" y="1721" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC attending at attending[ MGM]</text>
+    <text x="785" y="1721" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.001</text>
+    <text x="885" y="1721" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.3</text>
+    <text x="985" y="1721" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.151</text>
+    <rect x="0" y="1728" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1745" font-family="Courier, monospace" font-size="10" fill="#6c757d">71</text>
+    <text x="70" y="1745" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">Grand</text>
+    <text x="240" y="1745" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">concert MGM MGM MI[ Grand]</text>
+    <text x="785" y="1745" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.062</text>
+    <text x="885" y="1745" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.2</text>
+    <text x="985" y="1745" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.309</text>
+    <rect x="0" y="1752" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1769" font-family="Courier, monospace" font-size="10" fill="#6c757d">72</text>
+    <text x="70" y="1769" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">Arena</text>
+    <text x="240" y="1769" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">HBO Stadium Paramount San[ Arena]</text>
+    <text x="785" y="1769" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.099</text>
+    <text x="885" y="1769" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.3</text>
+    <text x="985" y="1769" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.316</text>
+    <rect x="0" y="1776" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1793" font-family="Courier, monospace" font-size="10" fill="#6c757d">73</text>
+    <text x="70" y="1793" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">on</text>
+    <text x="240" y="1793" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC venue Cincinnati Arena[ on]</text>
+    <text x="785" y="1793" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.142</text>
+    <text x="885" y="1793" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.5</text>
+    <text x="985" y="1793" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.237</text>
+    <rect x="0" y="1800" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1817" font-family="Courier, monospace" font-size="10" fill="#6c757d">74</text>
+    <text x="70" y="1817" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">a</text>
+    <text x="240" y="1817" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC session on MMA[ a]</text>
+    <text x="785" y="1817" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.265</text>
+    <text x="885" y="1817" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.6</text>
+    <text x="985" y="1817" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.273</text>
+    <rect x="0" y="1824" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1841" font-family="Courier, monospace" font-size="10" fill="#6c757d">75</text>
+    <text x="70" y="1841" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">pay</text>
+    <text x="240" y="1841" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC scheduled on televised[ pay]</text>
+    <text x="785" y="1841" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.008</text>
+    <text x="885" y="1841" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.5</text>
+    <text x="985" y="1841" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.216</text>
+    <rect x="0" y="1848" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1865" font-family="Courier, monospace" font-size="10" fill="#6c757d">76</text>
+    <text x="70" y="1865" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">-</text>
+    <text x="240" y="1865" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC pay paid pay[-]</text>
+    <text x="785" y="1865" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.000</text>
+    <text x="885" y="1865" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.7</text>
+    <text x="985" y="1865" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.230</text>
+    <rect x="0" y="1872" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1889" font-family="Courier, monospace" font-size="10" fill="#6c757d">77</text>
+    <text x="70" y="1889" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">per</text>
+    <text x="240" y="1889" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">Netflix pay in pay[per]</text>
+    <text x="785" y="1889" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.001</text>
+    <text x="885" y="1889" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.9</text>
+    <text x="985" y="1889" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.250</text>
+    <rect x="0" y="1896" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1913" font-family="Courier, monospace" font-size="10" fill="#6c757d">78</text>
+    <text x="70" y="1913" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">-</text>
+    <text x="240" y="1913" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">movieperper per[-]</text>
+    <text x="785" y="1913" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.002</text>
+    <text x="885" y="1913" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">4.2</text>
+    <text x="985" y="1913" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.559</text>
+    <rect x="0" y="1920" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1937" font-family="Courier, monospace" font-size="10" fill="#6c757d">79</text>
+    <text x="70" y="1937" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">view</text>
+    <text x="240" y="1937" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC pre cash price[view]</text>
+    <text x="785" y="1937" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.868</text>
+    <text x="885" y="1937" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">2.5</text>
+    <text x="985" y="1937" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.483</text>
+    <rect x="0" y="1944" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1961" font-family="Courier, monospace" font-size="10" fill="#6c757d">80</text>
+    <text x="70" y="1961" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">card</text>
+    <text x="240" y="1961" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC televised MMA scheduled[ card]</text>
+    <text x="785" y="1961" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.115</text>
+    <text x="885" y="1961" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.2</text>
+    <text x="985" y="1961" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.324</text>
+    <rect x="0" y="1968" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="1985" font-family="Courier, monospace" font-size="10" fill="#6c757d">81</text>
+    <text x="70" y="1985" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">headlined</text>
+    <text x="240" y="1985" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC event tournament event[ headlined]</text>
+    <text x="785" y="1985" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.001</text>
+    <text x="885" y="1985" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="985" y="1985" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.264</text>
+    <rect x="0" y="1992" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="2009" font-family="Courier, monospace" font-size="10" fill="#6c757d">82</text>
+    <text x="70" y="2009" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">by</text>
+    <text x="240" y="2009" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC scheduled boxinghost[ by]</text>
+    <text x="785" y="2009" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.265</text>
+    <text x="885" y="2009" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.6</text>
+    <text x="985" y="2009" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.437</text>
+    <rect x="0" y="2016" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="2033" font-family="Courier, monospace" font-size="10" fill="#6c757d">83</text>
+    <text x="70" y="2033" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">the</text>
+    <text x="240" y="2033" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">championship featuring commercials featuring[ the]</text>
+    <text x="785" y="2033" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.064</text>
+    <text x="885" y="2033" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.7</text>
+    <text x="985" y="2033" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.344</text>
+    <rect x="0" y="2040" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="2057" font-family="Courier, monospace" font-size="10" fill="#6c757d">84</text>
+    <text x="70" y="2057" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">UFC</text>
+    <text x="240" y="2057" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC promoting onring[ UFC]</text>
+    <text x="785" y="2057" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.434</text>
+    <text x="885" y="2057" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.9</text>
+    <text x="985" y="2057" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.272</text>
+    <rect x="0" y="2064" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="2081" font-family="Courier, monospace" font-size="10" fill="#6c757d">85</text>
+    <text x="70" y="2081" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">light</text>
+    <text x="240" y="2081" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC UFC sponsoring UFC[ light]</text>
+    <text x="785" y="2081" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.014</text>
+    <text x="885" y="2081" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.6</text>
+    <text x="985" y="2081" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.233</text>
+    <rect x="0" y="2088" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="2105" font-family="Courier, monospace" font-size="10" fill="#6c757d">86</text>
+    <text x="70" y="2105" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">heavyweight</text>
+    <text x="240" y="2105" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC wrestling heavy MMA[ heavyweight]</text>
+    <text x="785" y="2105" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.516</text>
+    <text x="885" y="2105" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.3</text>
+    <text x="985" y="2105" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.341</text>
+    <rect x="0" y="2112" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="2129" font-family="Courier, monospace" font-size="10" fill="#6c757d">87</text>
+    <text x="70" y="2129" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">title</text>
+    <text x="240" y="2129" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC boxing heavyweight with[ title]</text>
+    <text x="785" y="2129" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.162</text>
+    <text x="885" y="2129" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.9</text>
+    <text x="985" y="2129" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.277</text>
+    <rect x="0" y="2136" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="2153" font-family="Courier, monospace" font-size="10" fill="#6c757d">88</text>
+    <text x="70" y="2153" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">fight</text>
+    <text x="240" y="2153" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC boxing tournament title[ fight]</text>
+    <text x="785" y="2153" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.472</text>
+    <text x="885" y="2153" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.4</text>
+    <text x="985" y="2153" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.326</text>
+    <rect x="0" y="2160" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="2177" font-family="Courier, monospace" font-size="10" fill="#6c757d">89</text>
+    <text x="70" y="2177" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">between</text>
+    <text x="240" y="2177" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC fight MMA fight[ between]</text>
+    <text x="785" y="2177" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.054</text>
+    <text x="885" y="2177" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.8</text>
+    <text x="985" y="2177" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.292</text>
+    <rect x="0" y="2184" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="2201" font-family="Courier, monospace" font-size="10" fill="#6c757d">90</text>
+    <text x="70" y="2201" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">champion</text>
+    <text x="240" y="2201" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC fights betweenUFC[ champion]</text>
+    <text x="785" y="2201" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.068</text>
+    <text x="885" y="2201" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.7</text>
+    <text x="985" y="2201" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.256</text>
+    <rect x="0" y="2208" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="2225" font-family="Courier, monospace" font-size="10" fill="#6c757d">91</text>
+    <text x="70" y="2225" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">Jon</text>
+    <text x="240" y="2225" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC winner race champion[ Jon]</text>
+    <text x="785" y="2225" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.021</text>
+    <text x="885" y="2225" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.6</text>
+    <text x="985" y="2225" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.223</text>
+    <rect x="0" y="2232" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="2249" font-family="Courier, monospace" font-size="10" fill="#6c757d">92</text>
+    <text x="70" y="2249" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">Jones</text>
+    <text x="240" y="2249" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC fighters Jon Thor[ Jones]</text>
+    <text x="785" y="2249" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.152</text>
+    <text x="885" y="2249" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.9</text>
+    <text x="985" y="2249" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.267</text>
+    <rect x="0" y="2256" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="2273" font-family="Courier, monospace" font-size="10" fill="#6c757d">93</text>
+    <text x="70" y="2273" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">and</text>
+    <text x="240" y="2273" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC matchups boxer Jones[ and]</text>
+    <text x="785" y="2273" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.293</text>
+    <text x="885" y="2273" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.1</text>
+    <text x="985" y="2273" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.357</text>
+    <rect x="0" y="2280" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="2297" font-family="Courier, monospace" font-size="10" fill="#6c757d">94</text>
+    <text x="70" y="2297" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">Daniel</text>
+    <text x="240" y="2297" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC fighters because wrestler[ Daniel]</text>
+    <text x="785" y="2297" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.004</text>
+    <text x="885" y="2297" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.5</text>
+    <text x="985" y="2297" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.219</text>
+    <rect x="0" y="2304" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="2321" font-family="Courier, monospace" font-size="10" fill="#6c757d">95</text>
+    <text x="70" y="2321" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">Corm</text>
+    <text x="240" y="2321" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">UFC Daniel Daniel if[ Corm]</text>
+    <text x="785" y="2321" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.000</text>
+    <text x="885" y="2321" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.6</text>
+    <text x="985" y="2321" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.204</text>
+    <rect x="0" y="2328" width="1170" height="24" fill="#ffffff" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="2345" font-family="Courier, monospace" font-size="10" fill="#6c757d">96</text>
+    <text x="70" y="2345" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">ier</text>
+    <text x="240" y="2345" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">boxing Corm Mayweather if[ier]</text>
+    <text x="785" y="2345" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.005</text>
+    <text x="885" y="2345" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.5</text>
+    <text x="985" y="2345" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.366</text>
+    <rect x="0" y="2352" width="1170" height="24" fill="#f8f9fa" stroke="#dee2e6" stroke-width="0.5"/>
+    <text x="10" y="2369" font-family="Courier, monospace" font-size="10" fill="#6c757d">97</text>
+    <text x="70" y="2369" font-family="Courier, monospace" font-size="11" font-weight="bold" fill="#212529">r</text>
+    <text x="240" y="2369" font-family="Arial, sans-serif" font-size="10" font-style="italic" fill="#495057">baseball Morrison Cruzler[r]</text>
+    <text x="785" y="2369" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">0.394</text>
+    <text x="885" y="2369" font-family="Courier, monospace" font-size="10" fill="#28a745" font-weight="bold">1.4</text>
+    <text x="985" y="2369" font-family="Courier, monospace" font-size="10" fill="#ff8c00" font-weight="bold">0.426</text>
+  </g>
+</svg>

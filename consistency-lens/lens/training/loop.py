@@ -30,7 +30,7 @@ def compute_advantages(A,A_train, group_n, no_advantage=False):
     # minus sign, crucial
     mse_reward = -(A-A_train).pow(2).mean(dim=-1)#only mean over features, still per-batch
     if no_advantage:
-        mse_reward_std = mse_reward.std()
+        mse_reward_std = torch.zeros_like(mse_reward)
         return mse_reward_std, mse_reward.mean()
     reshaped_mse_reward = mse_reward.reshape(-1,group_n )
     means = reshaped_mse_reward.mean(dim=-1,keepdim=True)
@@ -140,7 +140,7 @@ def train_step(  # noqa: D401
     original_token_pos_A = batch.get("token_pos_A")
 
     tau = _loss_fns.get("tau", 1.0) if _loss_fns else 1.0
-    T_text = _loss_fns.get("T_text", 8) if _loss_fns else 8
+    t_text = _loss_fns.get("t_text", 8) if _loss_fns else 8
     
     if debug_mode:
         # Debug: Check for NaN in input activation
@@ -159,17 +159,17 @@ def train_step(  # noqa: D401
     with context:
         if dec.config.use_flash_attention:
             # Use Flash Attention with KV cache for optimized O(n) generation
-            gen = dec.generate_soft_kv_flash(A, max_length=T_text, gumbel_tau=tau, original_token_pos=original_token_pos_A)
+            gen = dec.generate_soft_kv_flash(A, max_length=t_text, gumbel_tau=tau, original_token_pos=original_token_pos_A)
         elif dec.config.use_kv_cache:
             # Use KV-cached generation for O(n) attention computation
             if GRPO_training and not GRPO_validate_mode:
-                gen = dec.generate_soft_kv_cached_nondiff(A, max_length=T_text, gumbel_tau=tau, original_token_pos=original_token_pos_A)
+                gen = dec.generate_soft_kv_cached_nondiff(A, max_length=t_text, gumbel_tau=tau, original_token_pos=original_token_pos_A)
             else:
-                gen = dec.generate_soft_kv_cached(A, max_length=T_text, gumbel_tau=tau, original_token_pos=original_token_pos_A)
+                gen = dec.generate_soft_kv_cached(A, max_length=t_text, gumbel_tau=tau, original_token_pos=original_token_pos_A)
         elif dec.config.use_checkpointing:
-            gen = dec.generate_soft_chkpt(A, max_length=T_text, gumbel_tau=tau, checkpoint_every_n_tokens=dec.config.checkpoint_every_n_tokens, original_token_pos=original_token_pos_A)
+            gen = dec.generate_soft_chkpt(A, max_length=t_text, gumbel_tau=tau, checkpoint_every_n_tokens=dec.config.checkpoint_every_n_tokens, original_token_pos=original_token_pos_A)
         else:
-            gen = dec.generate_soft(A, max_length=T_text, gumbel_tau=tau, original_token_pos=original_token_pos_A)
+            gen = dec.generate_soft(A, max_length=t_text, gumbel_tau=tau, original_token_pos=original_token_pos_A)
 
     # Ensure original_token_pos_A is 2D for gather (B, 1)
     if original_token_pos_A.dim() == 1:
@@ -219,6 +219,9 @@ def train_step(  # noqa: D401
         with grad_context_lm:
             # Compute LM loss, using no_grad if weight is 0
             d_model_pred_logits = gen.raw_lm_logits # Shape is (B, T_text, V) as per decoder.py
+            if d_model_pred_logits is None:
+                log.error("d_model_pred_logits is None")
+                raise ValueError(f"d_model_pred_logits is None: {GRPO_validate_mode}, {GRPO_training}, {lm_w}, {do_lm_computation}, {eval_mode}, {resample_ablation}, {kl_base}, {mse_w}, {ent_w}, {GRPO_w}, {GRPO_training}, {group_n}, {t_text}, {tau}, {alpha}")
             B = A.shape[0] # Batch size from input A
             natural_prefix_expanded = cached_prefix_ids.expand(B, -1).to(A.device)  # Shape: (B, prefix_len)
 
@@ -336,12 +339,12 @@ def train_step(  # noqa: D401
             with torch.no_grad() if enc.config.stop_grad_aprime else contextlib.nullcontext():
                 # Use differentiable generation if configured
                 if hasattr(dec.config, 'use_kv_cache') and dec.config.use_kv_cache:
-                    gen_ap = dec.generate_soft_kv_cached(Ap, max_length=T_text, gumbel_tau=tau, original_token_pos=original_token_pos_Ap)
+                    gen_ap = dec.generate_soft_kv_cached(Ap, max_length=t_text, gumbel_tau=tau, original_token_pos=original_token_pos_Ap)
                 elif hasattr(dec.config, 'use_checkpointing') and dec.config.use_checkpointing:
                     # Note: generate_soft_chkpt was not updated in this round of changes for original_token_pos
-                    gen_ap = dec.generate_soft_chkpt(Ap, max_length=T_text, gumbel_tau=tau, original_token_pos=original_token_pos_Ap)
+                    gen_ap = dec.generate_soft_chkpt(Ap, max_length=t_text, gumbel_tau=tau, original_token_pos=original_token_pos_Ap)
                 else:
-                    gen_ap = dec.generate_soft(Ap, max_length=T_text, gumbel_tau=tau, original_token_pos=original_token_pos_Ap)
+                    gen_ap = dec.generate_soft(Ap, max_length=t_text, gumbel_tau=tau, original_token_pos=original_token_pos_Ap)
                 current_token_ids_ap = batch["input_ids_A"].gather(1, original_token_pos_Ap.unsqueeze(1)).squeeze(1)
                 Ap_hat = enc(gen_ap.generated_text_embeddings, original_token_pos=original_token_pos_Ap, current_token_ids=current_token_ids_ap if enc.config.add_current_token else None) # Detached if kl_base == 0 via grad_context
                 del gen_ap
@@ -511,11 +514,15 @@ def train_step(  # noqa: D401
             return_logits=False
         )#probs shape (B,T_text
         if ent_w==0:
-            if entropy is not None:
+            if entropy is not None and ent_w==0:
                 entropy = entropy.detach()
                 entropy=entropy.mean()
             else:
                 entropy = torch.tensor(0.0, device=A.device, dtype=A.dtype)
+        elif ent_w!=0:
+            if dec.config.clamp_entropy and not GRPO_validate_mode:
+                entropy = torch.clamp(entropy.mean(dim=-1), min=0.0, max=dec.config.clamp_entropy)# only clip if the mean of sequence is above the threshold
+            entropy = entropy.mean()
         if _loss_fns['GRPO_beta']!=0:
             # print("probs",probs_of_interest[:10])
             # print("orig",trimmed_orig_model_pred_logprobs_of_interest[:10])

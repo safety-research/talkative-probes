@@ -14,6 +14,7 @@ def param_groups(
     embedding_lr_mult: float = 1.0,
     prompt_lr_mult: float = 10.0,
     base_model_lr_mult: float = 1.0,
+    overall_encoder_lr_mult: float = 1.0,
     weight_decay: float = 0.01,
 ) -> List[dict]:  # noqa: D401
     """Create parameter groups for AdamW.
@@ -37,7 +38,7 @@ def param_groups(
         models = [models]
 
     groups: List[dict] = []
-    for m in models:
+    for i,m in enumerate(models):
         for n, p in m.named_parameters():
             if not p.requires_grad:
                 continue
@@ -69,6 +70,13 @@ def param_groups(
                 lr_scale = base_model_lr_mult
             else:
                 lr_scale = 1.0
+
+            if i == 0:
+                print("Decoder LR multiplier: 1")
+                lr_scale = 1* lr_scale
+            else:
+                print(f"Overall encoder LR multiplier: {overall_encoder_lr_mult}")
+                lr_scale = overall_encoder_lr_mult*lr_scale
 
             groups.append({"params": [p], "weight_decay": decay, "lr": lr * lr_scale})
 

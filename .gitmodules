@@ -7,3 +7,6 @@
 [submodule "submodules/CircuitsVis"]
 	path = submodules/CircuitsVis
 	url = https://github.com/kitft/CircuitsVis.git
+[submodule "consistency-lens/tuned-lens"]
+	path = consistency-lens/tuned-lens
+	url = https://github.com/AlignmentResearch/tuned-lens

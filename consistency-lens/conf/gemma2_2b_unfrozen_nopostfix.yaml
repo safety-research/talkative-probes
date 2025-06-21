@@ -33,10 +33,12 @@ trainable_components:
     per_layer_projections: true 
     use_dropout: false
     use_gumbel_for_LMorig: false # shouldn't matter too much
-    projection_init_method: "default"  # Options: "default", "tuned_lens_composition"
+    projection_init_method: "tuned_lens_composition"  # Options: "default", "tuned_lens_composition"
     projection_init_tl_comp_use_composed_bias: true
+    projection_init_tl_checkpoint: "/workspace/kitf/talkative-probes/consistency-lens/tuned-lens/my_lenses/google/gemma-2-2b"
     subtract_add_pos_embeddings: false 
     extra_pos_embeddings: false
+    clamp_entropy: 0.8
   encoder:
     base_model: true                 # FROZEN throughout
     pos_embeddings: false
@@ -97,6 +99,9 @@ resample_ablation: false
 batch_size: 256
 gradient_accumulation_steps: 16
 
+custom_lr_multipliers:
+  overall_encoder: 0.1
+
 freeze_schedule:
   enabled: true                 # Enable freeze schedule
   
@@ -140,7 +145,9 @@ verbose_samples:
   top_n_predictions: 5
   generate_continuation: true
   continuation_tokens: 50
-  compare_with_tuned_lens: false
+  compare_with_tuned_lens: true
+  tuned_lens_checkpoint_path_or_name: "/workspace/kitf/talkative-probes/consistency-lens/tuned-lens/my_lenses/google/gemma-2-2b"
+
 
 
 do_kl_computation: false

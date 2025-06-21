@@ -20,7 +20,6 @@ def escape_newlines(text: str) -> str:
     """Helper to escape newlines for display."""
     return text.replace("\n", "\\n")
 
-
 def generate_autoregressive_continuation(
     orig_model: OrigWrapper,
     input_ids: torch.Tensor,
@@ -29,64 +28,58 @@ def generate_autoregressive_continuation(
     tok: PreTrainedTokenizerBase,
     device: torch.device,
     temperature: float = 0.8,
-    top_p: float = 0.9
+    top_p: Optional[float] = None,
+    attention_mask: torch.Tensor | None = None,
 ) -> str:
     """Generate autoregressive continuation from a specific position.
-    
+
     Args:
-        orig_model: The original model wrapper
-        input_ids: Input token IDs [batch_size, seq_len]
-        start_position: Position to start generation from (0-indexed)
-        num_tokens: Number of tokens to generate
-        tok: Tokenizer
-        device: Device to run on
-        temperature: Sampling temperature
-        top_p: Top-p sampling threshold
-        
+        orig_model: The original model wrapper.
+        input_ids: Input token IDs [batch_size, seq_len].
+        start_position: Position to start generation from. The token at this position
+                      is included in the prompt.
+        num_tokens: Number of tokens to generate.
+        tok: Tokenizer.
+        device: Device to run on (note: model's device is used by `generate`).
+        temperature: Sampling temperature.
+        top_p: Top-p sampling threshold. If None, this sampling method is disabled.
+        attention_mask: Optional attention mask for input_ids.
+
     Returns:
-        Generated text string
+        Generated text string.
     """
     # Get the prefix up to and including start_position
     if start_position >= input_ids.size(1):
         prefix_ids = input_ids
     else:
         prefix_ids = input_ids[:, :start_position + 1]
-    
-    generated_ids = prefix_ids.clone()
-    
+
+    prefix_len = prefix_ids.shape[1]
+
+    # Slice the attention mask if provided
+    prefix_attention_mask = None
+    if attention_mask is not None:
+        prefix_attention_mask = attention_mask[:, :prefix_len]
+    elif tok.pad_token_id is not None:
+        # Create mask from pad tokens if not provided
+        prefix_attention_mask = (prefix_ids != tok.pad_token_id).long()
+
     with torch.no_grad():
-        for _ in range(num_tokens):
-            # Get model predictions
-            outputs = orig_model.model(input_ids=generated_ids)
-            next_token_logits = outputs.logits[:, -1, :] / temperature
-            
-            # Apply top-p sampling
-            sorted_logits, sorted_indices = torch.sort(next_token_logits, descending=True)
-            cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
-            
-            # Remove tokens with cumulative probability above the threshold
-            sorted_indices_to_remove = cumulative_probs > top_p
-            sorted_indices_to_remove[:, 1:] = sorted_indices_to_remove[:, :-1].clone()
-            sorted_indices_to_remove[:, 0] = 0
-            
-            # Set logits to -inf for removed indices
-            indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
-            next_token_logits[indices_to_remove] = float('-inf')
-            
-            # Sample next token
-            probs = torch.softmax(next_token_logits, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1)
-            
-            # Append to generated sequence
-            generated_ids = torch.cat([generated_ids, next_token], dim=-1)
-            
-            # Stop if we hit end of sequence token
-            if tok.eos_token_id is not None and next_token.item() == tok.eos_token_id:
-                break
-    
-    # Decode only the generated portion
-    generated_portion = generated_ids[0, prefix_ids.size(1):].tolist()
-    return tok.decode(generated_portion)
+        # Use the model's generate function for efficient, correct generation
+        # with KV caching.
+        generated_ids = orig_model.model.generate(
+            input_ids=prefix_ids,
+            attention_mask=prefix_attention_mask,
+            max_new_tokens=num_tokens,
+            do_sample=True,
+            temperature=temperature,
+            top_p=top_p,
+            pad_token_id=tok.eos_token_id,  # Use EOS token for padding
+        )
+
+    # Decode only the newly generated tokens
+    newly_generated_ids = generated_ids[0, prefix_len:]
+    return escape_newlines(tok.decode(newly_generated_ids, skip_special_tokens=True))
 
 
 def get_top_n_tokens(logits_tensor_slice: torch.Tensor, tok: PreTrainedTokenizerBase, top_n: int) -> List[str]:
@@ -355,22 +348,23 @@ def compute_single_sample_losses(
         batch["A_prime"] = A_single.clone()
     
     # Prepare loss functions dict
-    _loss_fns = {
-        "T_text": sch_args.get("T_text", 8),
-        "tau": sch_args.get("tau", 1.0),
-        "alpha": sch_args.get("alpha", 0.1),
-        "kl_base_weight": sch_args.get("kl_base_weight", 1.0),
-        "entropy_weight": sch_args.get("entropy_weight", 0.0),
-        "mse_weight": sch_args.get("mse_weight", 0.0),
-        "lm_base_weight": sch_args.get("lm_base_weight", 0.0),
-        "GRPO_weight": sch_args.get("GRPO_weight", 0.0),
-        "GRPO_beta": sch_args.get("GRPO_beta", 0.0),
-        "group_n": sch_args.get("group_n", 1),
-    }
+    # _loss_fns = {
+    #     "t_text": sch_args["t_text"],
+    #     "tau": sch_args["tau"],
+    #     "alpha": sch_args["alpha"],
+    #     "kl_base_weight": sch_args["kl_base_weight"],
+    #     "entropy_weight": sch_args["entropy_weight"],
+    #     "mse_weight": sch_args["mse_weight"],
+    #     "lm_base_weight": sch_args["lm_base_weight"],
+    #     "GRPO_weight": sch_args["GRPO_weight"],
+    #     "GRPO_beta": sch_args["GRPO_beta"],
+    #     "group_n": sch_args["group_n"],
+    # }
+    _loss_fns = sch_args
     
     # Override T_text from config if available
     if config and "t_text" in config:
-        _loss_fns["T_text"] = config["t_text"]
+        _loss_fns["t_text"] = config["t_text"]
     
     # Call train_step with verbose_eval=True to get intermediate values
     with torch.no_grad():  # We don't need gradients for verbose samples
@@ -383,22 +377,23 @@ def compute_single_sample_losses(
             cached_prefix_ids=cached_prefix_ids,
             resample_ablation=resample_ablation,
             eval_mode=False,  # Normal mode, not intervention mode
-            verbose_eval=True  # Get intermediate values
+            verbose_eval=True,  # Get intermediate values
+            GRPO_validate_mode=True,
         )
     
     # Extract intermediate values from verbose output
     verbose_intermediate = losses.get("verbose_intermediate", {})
     
     # Get the generation results and reconstructions from train_step
-    gen_A_single = verbose_intermediate.get("gen")
-    A_hat_A_single = verbose_intermediate.get("A_hat")
-    A_train = verbose_intermediate.get("A_train")
-    logits_A_single_pos = verbose_intermediate.get("logits_orig")
-    logits_A_train_kl_pos = verbose_intermediate.get("logits_approx")
+    gen_A_single = verbose_intermediate["gen"].detach()
+    A_hat_A_single = verbose_intermediate["A_hat"].detach()
+    A_train = verbose_intermediate["A_train"].detach()
+    logits_A_single_pos = verbose_intermediate["logits_orig"].detach()
+    logits_A_train_kl_pos = verbose_intermediate["logits_approx"].detach()
     
     # Compute additional MSEs that train_step doesn't provide
     mse_A_vs_zero = torch.nn.functional.mse_loss(A_single, torch.zeros_like(A_single)).item()
-    mse_A_vs_Ahat = torch.nn.functional.mse_loss(A_single, A_hat_A_single).item() if A_hat_A_single is not None else 0.0
+    mse_A_vs_Ahat = torch.nn.functional.mse_loss(A_single, A_hat_A_single.to(A_single.device)).item() if A_hat_A_single is not None else 0.0
     
     mse_A_vs_aprime = None
     if A_prime_single is not None and not torch.equal(A_prime_single, A_single):
@@ -524,14 +519,14 @@ def process_and_print_verbose_batch_samples(
             resample_ablation=resample_ablation,
             tokenizer=tok,
         )
-        sample_losses = results_from_compute["losses"] 
+        sample_losses = results_from_compute["losses"]
         computed_tensors = results_from_compute["computed_values"]
 
-        gen_single = computed_tensors["gen_A_single"]
-        A_hat_single = computed_tensors["A_hat_A_single"]
-        logits_orig_at_p_batched = computed_tensors["logits_A_single_pos"] 
-        A_train_i_for_kl = computed_tensors["A_train_kl"]
-        logits_train_at_p_batched = computed_tensors["logits_A_train_kl_pos"]
+        gen_single = computed_tensors["gen_A_single"].detach()
+        A_hat_single = computed_tensors["A_hat_A_single"].detach()
+        logits_orig_at_p_batched = computed_tensors["logits_A_single_pos"].detach() 
+        A_train_i_for_kl = computed_tensors["A_train_kl"].detach()
+        logits_train_at_p_batched = computed_tensors["logits_A_train_kl_pos"].detach()
 
         A_i_cast = A_i.to(orig.model.lm_head.weight.dtype)
         logit_lens_logits_from_A_i = orig.model.lm_head(A_i_cast)
@@ -555,7 +550,7 @@ def process_and_print_verbose_batch_samples(
             logits_aprime_at_p_batched = logits_aprime_all_pos[:, p]
             top_n_aprime_tokens = get_top_n_tokens(logits_aprime_at_p_batched.squeeze(0), tok, top_n_analysis)
         
-        logits_approx_all_pos = orig.forward_with_replacement(input_ids_seq, A_hat_single, l, p).logits
+        logits_approx_all_pos = orig.forward_with_replacement(input_ids_seq, A_hat_single.to(device), l, p).logits
         logits_approx_at_p_batched = logits_approx_all_pos[:, p]
         top_n_lens_recon_tokens = get_top_n_tokens(logits_approx_at_p_batched.squeeze(0), tok, top_n_analysis)
 
@@ -604,49 +599,58 @@ def process_and_print_verbose_batch_samples(
         A_hat_baseline = enc(prev_token_embeddings, current_token_ids=batch["input_ids_A"][i][p].to(device).unsqueeze(0) if enc.config.add_current_token else None)
         
         # Compute predictions and metrics for baseline
-        logits_baseline_all_pos = orig.forward_with_replacement(input_ids_seq, A_hat_baseline, l, p).logits
+        logits_baseline_all_pos = orig.forward_with_replacement(input_ids_seq, A_hat_baseline.to(device), l, p).logits
         logits_baseline_at_p_batched = logits_baseline_all_pos[:, p]
         top_n_baseline_tokens = get_top_n_tokens(logits_baseline_at_p_batched.squeeze(0), tok, top_n_analysis)
         
         # Compute MSE for baseline
-        mse_baseline_vs_A = torch.nn.functional.mse_loss(A_i, A_hat_baseline).item()
+        mse_baseline_vs_A = torch.nn.functional.mse_loss(A_i, A_hat_baseline.to(A_i.device)).item()
+        
+        # Clean up baseline tensors
+        del prev_token_embeddings, A_hat_baseline, logits_baseline_all_pos
         
         # Compute shuffle intervention: shuffle first (n-3) tokens of decoder output
         T_text = cfg.get("t_text", 8)
         shuffle_count = max(0, T_text - 3)
-        shuffled_embeds = gen_single.generated_text_embeddings.clone()
+        shuffled_embeds = gen_single.generated_text_embeddings.clone().to(device)
         
         if shuffle_count > 0:
-            # Shuffle the first shuffle_count tokens
-            indices = torch.randperm(shuffle_count, device=device)
-            shuffled_embeds[0, :shuffle_count] = gen_single.generated_text_embeddings[0, indices]
+            # Shuffle the first shuffle_count tokens - indices on same device as embeddings
+            indices = torch.randperm(shuffle_count, device=shuffled_embeds.device)
+            shuffled_embeds[0, :shuffle_count] = shuffled_embeds[0, indices]
         
         # Pass shuffled embeddings through encoder
         A_hat_shuffled = enc(shuffled_embeds, current_token_ids=batch["input_ids_A"][i][p].to(device).unsqueeze(0) if enc.config.add_current_token else None)
         
         # Compute predictions for shuffled reconstruction
-        logits_shuffled_all_pos = orig.forward_with_replacement(input_ids_seq, A_hat_shuffled, l, p).logits
+        logits_shuffled_all_pos = orig.forward_with_replacement(input_ids_seq, A_hat_shuffled.to(device), l, p).logits
         logits_shuffled_at_p_batched = logits_shuffled_all_pos[:, p]
         top_n_shuffled_tokens = get_top_n_tokens(logits_shuffled_at_p_batched.squeeze(0), tok, top_n_analysis)
         
         # Compute MSE for shuffled
-        mse_shuffled_vs_A = torch.nn.functional.mse_loss(A_i, A_hat_shuffled).item()
+        mse_shuffled_vs_A = torch.nn.functional.mse_loss(A_i, A_hat_shuffled.to(A_i.device)).item()
+        
+        # Clean up shuffle tensors
+        del shuffled_embeds, A_hat_shuffled, logits_shuffled_all_pos
         
         # Compute full shuffle intervention: shuffle ALL tokens of decoder output
-        full_shuffled_embeds = gen_single.generated_text_embeddings.clone()
-        indices_full = torch.randperm(T_text, device=device)
-        full_shuffled_embeds[0] = gen_single.generated_text_embeddings[0, indices_full]
+        full_shuffled_embeds = gen_single.generated_text_embeddings.clone().to(device)
+        indices_full = torch.randperm(T_text, device=full_shuffled_embeds.device)
+        full_shuffled_embeds[0] = full_shuffled_embeds[0, indices_full]
         
         # Pass full shuffled embeddings through encoder
         A_hat_full_shuffled = enc(full_shuffled_embeds, current_token_ids=batch["input_ids_A"][i][p].to(device).unsqueeze(0) if enc.config.add_current_token else None)
         
         # Compute predictions for full shuffled reconstruction
-        logits_full_shuffled_all_pos = orig.forward_with_replacement(input_ids_seq, A_hat_full_shuffled, l, p).logits
+        logits_full_shuffled_all_pos = orig.forward_with_replacement(input_ids_seq, A_hat_full_shuffled.to(device), l, p).logits
         logits_full_shuffled_at_p_batched = logits_full_shuffled_all_pos[:, p]
         top_n_full_shuffled_tokens = get_top_n_tokens(logits_full_shuffled_at_p_batched.squeeze(0), tok, top_n_analysis)
         
         # Compute MSE for full shuffled
-        mse_full_shuffled_vs_A = torch.nn.functional.mse_loss(A_i, A_hat_full_shuffled).item()
+        mse_full_shuffled_vs_A = torch.nn.functional.mse_loss(A_i, A_hat_full_shuffled.to(A_i.device)).item()
+        
+        # Clean up full shuffle tensors
+        del full_shuffled_embeds, A_hat_full_shuffled, logits_full_shuffled_all_pos
 
         # TunedLens predictions
         top_n_tuned_lens_tokens = ["N/A"] * top_n_analysis
@@ -719,33 +723,33 @@ def process_and_print_verbose_batch_samples(
         if crop_end_idx < len(raw_prefix_ids): original_string_cropped = original_string_cropped + "..."
         original_token_at_p_str = escape_newlines(tok.decode([raw_prefix_ids[p]])) if p < len(raw_prefix_ids) else "N/A"
 
-        gen_token_ids_full = gen_single.hard_token_ids[0].tolist()
+        gen_token_ids_full = gen_single.hard_token_ids[0].cpu().tolist()
         gen_tokens = [escape_newlines(tok.decode([tid])) for tid in gen_token_ids_full]
         k_for_decoder_preds = min(top_n_analysis, gen_single.raw_lm_logits.size(-1))
         decoder_preds_by_rank = build_topk_preds_by_rank(
-            gen_single.raw_lm_logits, len(gen_tokens), k_for_decoder_preds, tok
+            gen_single.raw_lm_logits.cpu(), len(gen_tokens), k_for_decoder_preds, tok
         )
 
-        base_gen_single = dec.generate_soft(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, use_projection=True)
-        base_token_ids_full = base_gen_single.hard_token_ids[0].tolist()
+        base_gen_single = dec.generate_soft_kv_cached(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, use_projection=True)
+        base_token_ids_full = base_gen_single.hard_token_ids[0].cpu().tolist()
         base_gen_tokens = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full]
         base_preds_by_rank = build_topk_preds_by_rank(
-            base_gen_single.raw_lm_logits, len(base_gen_tokens), k_for_decoder_preds, tok
+            base_gen_single.raw_lm_logits.cpu(), len(base_gen_tokens), k_for_decoder_preds, tok
         )
 
         left_ids, right_ids, _, _ = dec.tokenize_and_embed_prompt(cfg["decoder_prompt"], tok)
-        base_gen_single_hard = dec.generate_soft(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, hard_left_emb=left_ids, hard_right_emb=right_ids, use_projection=True)
-        base_token_ids_full_hard = base_gen_single_hard.hard_token_ids[0].tolist()
+        base_gen_single_hard = dec.generate_soft_kv_cached(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, hard_left_emb=left_ids, hard_right_emb=right_ids, use_projection=True)
+        base_token_ids_full_hard = base_gen_single_hard.hard_token_ids[0].cpu().tolist()
         base_gen_tokens_hard = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full_hard]
         base_preds_by_rank_hard = build_topk_preds_by_rank(
-            base_gen_single_hard.raw_lm_logits, len(base_gen_tokens_hard), k_for_decoder_preds, tok
+            base_gen_single_hard.raw_lm_logits.cpu(), len(base_gen_tokens_hard), k_for_decoder_preds, tok
         )
 
-        base_gen_single_hard_no_map = dec.generate_soft(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, hard_left_emb=left_ids, hard_right_emb=right_ids, use_projection=False)
-        base_token_ids_full_hard_no_map = base_gen_single_hard_no_map.hard_token_ids[0].tolist()
+        base_gen_single_hard_no_map = dec.generate_soft_kv_cached(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, hard_left_emb=left_ids, hard_right_emb=right_ids, use_projection=False)
+        base_token_ids_full_hard_no_map = base_gen_single_hard_no_map.hard_token_ids[0].cpu().tolist()
         base_gen_tokens_hard_no_map = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full_hard_no_map]
         base_preds_by_rank_hard_no_map = build_topk_preds_by_rank(
-            base_gen_single_hard_no_map.raw_lm_logits, len(base_gen_tokens_hard_no_map), k_for_decoder_preds, tok
+            base_gen_single_hard_no_map.raw_lm_logits.cpu(), len(base_gen_tokens_hard_no_map), k_for_decoder_preds, tok
         )
         
         context_display_range = f"{display_start_idx}-{display_end_idx-1}" if displayed_positions else "empty"
@@ -924,6 +928,7 @@ def process_and_print_verbose_batch_samples(
                 "metrics_at_p": analysis_metrics_for_print, # Contains MSEs and KLs for various conditions
                 "all_losses": sample_losses, # Full loss dictionary
             }
+            sample_data = {k: v.cpu().numpy() if isinstance(v, torch.Tensor) else v for k, v in sample_data.items()}
             structured_samples.append(sample_data)
         
         if capture_output:
