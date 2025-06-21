@@ -803,6 +803,7 @@ class LensAnalyzer:
             "GRPO_entropy_weight": loss_weights.get('GRPO_entropy_weight', 0.0),
             "GRPO_weight": loss_weights.get('GRPO_weight', 0.0),
             "GRPO_beta": loss_weights.get('GRPO_beta', 0.0),
+            "group_n": self.config['group_n'],
         }
 
         # Models dictionary
@@ -842,7 +843,8 @@ class LensAnalyzer:
             capture_output=False,
             cached_prefix_ids=cached_prefix_ids, # Assuming no cached prefix for interactive use
             resample_ablation=self.config.get('resample_ablation', True), # Get from config or default
-            comparison_tuned_lens=self.comparison_tuned_lens # Pass the loaded TunedLens
+            comparison_tuned_lens=self.comparison_tuned_lens, # Pass the loaded TunedLens
+            do_soft_token_embeds=False,
         )
 
 def quick_analyze(text: str, show_plot: bool = True):
@@ -925,7 +927,7 @@ TEST_STRING = "A paper butterfly is displayed on a coffin during Asia Funeral Ex
 
 TEST_STRING = """This photo shows an image of a cougar in Wyoming. Animal control officers in Fairfax County have set up cameras this week in hopes of capturing the image of a cougar reported in the Alexandria section of the county. (Neil Wight/AP)\n\nMultiple sightings of what animal control officials are calling "possibly a cougar" have authorities in Fairfax County on high alert.\n\nOfficials received two reports this week of a "large cat" with an orange"""
 # TEST_STRING = "India fearing Chinese submarines is not unwarranted. In 2014, the Chinese Navy frequently docked its submarines in Sri Lanka, saying they were goodwill visits and to replenish ships on deployment to the Arabian Sea.\n\nLater, in 2015, the Chinese Navy, or the People's Liberation Army Navy (PLAN), was seen docking in vessels Pakistan. The frequent visits and the constant reporting on them has led Indian Navy to get the best aircraft in its inventory, P-8I"
-TEST_STRING = "<|endoftext|>On a third-down in 11-on-11 scrimmage, he zoomed past starting left tackle Jake Matthews and sacked quarterback Matt Ryan. Well, he tagged him down, since they don't tackle to the ground anymore in NFL practices."#\n\nBut that's a practice sack and the Falcons are hoping their first-round pick, who has recovered from offseason shoulder surgery, has plenty of real sacks in his 6-foot, 2-inch and 250-pound"
+TEST_STRING = "<|endoftext|>On a third-down in 11-on-11 scrimmage, he zoomed past starting left tackle Jake Matthews and sacked quarterback Matt Ryan. Well, he tagged him down, since they don't tackle to the ground anymore in NFL practices.\n\nBut that's a practice sack and the Falcons are hoping their first-round pick, who has recovered from offseason shoulder surgery, has plenty of real sacks in his 6-foot, 2-inch and 250-pound"
 # TEST_STRING = "Israel Accused of Suppressing Terror Evidence to Help Out New Pal China\n\nIsrael is a country desperate for friends. Isolated in the Middle East and hated in large parts of the Arab world, it struggles to make alliances. The few it has, it guards fiercely. So it should perhaps come as no surprise that for years Israel has been courting China, inking trade deals and fêting one another over champagne. But that process now finds Israel in an awkward bind"
 analyzer.decoder = analyzer.decoder.to(DEVICE)
 #analyzer.encoder = analyzer.encoder.to('cpu')

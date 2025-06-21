@@ -285,6 +285,26 @@ GRPO_entropy_weight: 0.0
 # avoid posterior collapse; set to 0.0 to disable.
 entropy_weight: 0.000
 
+# Entropy weight schedule - dynamically adjust entropy bonus during training
+# This allows for better control over token diversity throughout training
+entropy_schedule:
+  type: "constant"      # Options: constant, linear_warmup, linear_decay, linear_decay_after_constant, cosine_anneal, exponential_decay
+  value: 0.0            # For constant schedule (same as entropy_weight above for backward compatibility)
+  # For linear_decay_after_constant (recommended - start high to prevent collapse, then decay):
+  # type: "linear_decay_after_constant"
+  # constant_steps_before_decay: "1000s"  # Keep high entropy for initial steps
+  # start_value: 0.01     # Initial high entropy bonus
+  # end_value: 0.001      # Final lower entropy bonus
+  # num_steps: "5000s"    # Total duration (includes constant phase)
+  # For linear_warmup:
+  # start_value: 0.0
+  # end_value: 0.01
+  # num_steps: "2000s"   # Duration - Examples: "2000s", "1e", "5000steps", "2epochs"
+  # For linear_decay:
+  # start_value: 0.01
+  # end_value: 0.0
+  # num_steps: "-1"      # "-1" = full training duration
+
 # Validation split & scheduling
 val_fraction: 0.1               # Fraction of dataset for validation
 split_seed: 42                  # Random seed for train/val split

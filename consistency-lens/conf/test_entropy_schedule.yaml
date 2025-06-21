@@ -1,0 +1,24 @@
+# Test configuration with entropy schedule
+defaults:
+  - config  # Inherit from base config
+
+# Override entropy settings to test the schedule
+entropy_weight: 0.0  # This will be ignored when entropy_schedule is present
+
+# Test entropy schedule - linear decay after constant
+entropy_schedule:
+  type: "linear_decay_after_constant"
+  constant_steps_before_decay: "1000s"  # Keep high entropy for 1000 steps
+  start_value: 0.01                     # Start with higher entropy bonus
+  end_value: 0.001                      # Decay to smaller constant value  
+  num_steps: "5000s"                    # Total duration (1000s constant + 4000s decay)
+
+# Quick test settings
+max_train_steps: 100
+num_train_epochs: 0
+log_interval: "10s"
+wandb_log_interval: "1s"
+
+# Disable wandb for testing
+wandb:
+  mode: "disabled"

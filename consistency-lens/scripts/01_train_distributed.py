@@ -234,6 +234,17 @@ def distributed_train_step(
     }
     
     # Loss function parameters
+    # Handle entropy schedule with backward compatibility
+    entropy_schedule = config.get('entropy_schedule', None)
+    if entropy_schedule:
+        entropy_weight = get_schedule_value(entropy_schedule, step, config['max_train_steps'],
+                                          current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0,
+                                          steps_per_epoch=steps_per_epoch,
+                                          grad_accum_steps=gradient_accumulation_steps)
+    else:
+        # Fall back to static entropy_weight for backward compatibility
+        entropy_weight = config.get('entropy_weight', 0.0)
+    
     loss_fns = {
         "T_text": config.get('t_text', 8),
         "tau": get_schedule_value(config['gumbel_tau_schedule'], step, config['max_train_steps'], 
@@ -245,7 +256,7 @@ def distributed_train_step(
                                   steps_per_epoch=steps_per_epoch, 
                                   grad_accum_steps=gradient_accumulation_steps),
         "kl_base_weight": config.get('kl_base_weight', 1.0),
-        "entropy_weight": config.get('entropy_weight', 0.0),
+        "entropy_weight": entropy_weight,
         "mse_weight": config.get('mse_weight', 0.0),
         "lm_base_weight": config.get('lm_base_weight'),
         "GRPO_weight": config['GRPO_weight'],
@@ -576,37 +587,43 @@ def generate_verbose_samples_from_batch(
 
     try:
         # Ensure we're in no_grad mode to prevent gradient accumulation
-        with torch.no_grad():
-            # Generate verbose samples
-            num_printed, captured_text = process_and_print_verbose_batch_samples(
-                batch=batch,
-                cfg=config,
-                models={"dec": decoder_base, "enc": encoder_base},
-                orig=orig_model,
-                tok=tokenizer,
-                sch_args=sch_args_verbose,
-                device=device,
-                num_samples=verbose_config.get('num_samples', 2),
-                top_n_analysis=verbose_config.get('top_n_predictions', 3),
-                printed_count_so_far=0,
-                generate_continuation=verbose_config.get('generate_continuation', True),
-                continuation_tokens=verbose_config.get('continuation_tokens', 30),
-                return_structured_data=False,
-                capture_output=True,
-                cached_prefix_ids=cached_prefix_ids,
-                resample_ablation=config.get('resample_ablation', True),
-                comparison_tuned_lens=comparison_tuned_lens # Pass it down
-            )
+        with torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CUDA],
+                profile_memory=True,
+                record_shapes=True
+            ) as prof:
+            with torch.no_grad():
+                # Generate verbose samples
+                num_printed, captured_text = process_and_print_verbose_batch_samples(
+                    batch=batch,
+                    cfg=config,
+                    models={"dec": decoder_base, "enc": encoder_base},
+                    orig=orig_model,
+                    tok=tokenizer,
+                    sch_args=sch_args_verbose,
+                    device=device,
+                    num_samples=verbose_config.get('num_samples', 2),
+                    top_n_analysis=verbose_config.get('top_n_predictions', 3),
+                    printed_count_so_far=0,
+                    generate_continuation=verbose_config.get('generate_continuation', True),
+                    continuation_tokens=verbose_config.get('continuation_tokens', 30),
+                    return_structured_data=False,
+                    capture_output=True,
+                    cached_prefix_ids=cached_prefix_ids,
+                    resample_ablation=config.get('resample_ablation', True),
+                    comparison_tuned_lens=comparison_tuned_lens # Pass it down
+                )
         
-        # Log to wandb
-        if captured_text and current_wandb_run_id:
-            table_name = f"{data_source}_verbose_samples_dist"
-            verbose_samples_logger.log_verbose_samples(
-                captured_text,
-                step=step,
-                table_name=table_name,
-                limit_rows=verbose_config.get('wandb_table_limit', False)
-            )
+            # Log to wandb
+            if captured_text and current_wandb_run_id:
+                table_name = f"{data_source}_verbose_samples_dist"
+                verbose_samples_logger.log_verbose_samples(
+                    captured_text,
+                    step=step,
+                    table_name=table_name,
+                    limit_rows=verbose_config.get('wandb_table_limit', False)
+                )
+        print(prof.key_averages().table(sort_by="cuda_memory_usage", row_limit=10))
             
     finally:
         # Always restore training mode
@@ -614,6 +631,22 @@ def generate_verbose_samples_from_batch(
         encoder_base.train()
         # orig_model.model stays in eval mode
         orig_model.model.eval()
+        
+        # Clear any potential internal model caches
+        # Some models (like Llama, Gemma) might have internal KV caches
+        if hasattr(orig_model.model, 'past_key_values'):
+            log.error("Clearing orig_model.model.past_key_values")  
+            orig_model.model.past_key_values = None
+        
+        # Clear decoder's base model cache if it exists
+        if hasattr(decoder_base, 'base') and hasattr(decoder_base.base, 'past_key_values'):
+            log.error("Clearing decoder_base.base.past_key_values")
+            decoder_base.base.past_key_values = None
+            
+        # Clear encoder's base model cache if it exists  
+        if hasattr(encoder_base, 'base') and hasattr(encoder_base.base, 'past_key_values'):
+            log.error("Clearing encoder_base.base.past_key_values")
+            encoder_base.base.past_key_values = None
         
         # Force cleanup of any GPU memory that might have been allocated
         if torch.cuda.is_available():
@@ -765,6 +798,17 @@ def validate_distributed(
     #     "group_n": config['group_n'],
     # }
       # Loss function parameters
+    # Handle entropy schedule with backward compatibility
+    entropy_schedule = config.get('entropy_schedule', None)
+    if entropy_schedule:
+        entropy_weight = get_schedule_value(entropy_schedule, step, config['max_train_steps'],
+                                          current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0,
+                                          steps_per_epoch=steps_per_epoch,
+                                          grad_accum_steps=gradient_accumulation_steps)
+    else:
+        # Fall back to static entropy_weight for backward compatibility
+        entropy_weight = config.get('entropy_weight', 0.0)
+    
     loss_fns = {
         "T_text": config.get('t_text', 8),
         "tau": get_schedule_value(config['gumbel_tau_schedule'], step, config['max_train_steps'], 
@@ -776,7 +820,7 @@ def validate_distributed(
                                   steps_per_epoch=steps_per_epoch, 
                                   grad_accum_steps=gradient_accumulation_steps),
         "kl_base_weight": config.get('kl_base_weight', 1.0),
-        "entropy_weight": config.get('entropy_weight', 0.0),
+        "entropy_weight": entropy_weight,
         "mse_weight": config.get('mse_weight', 0.0),
         "lm_base_weight": config.get('lm_base_weight'),
         "GRPO_weight": config['GRPO_weight'],
@@ -2469,6 +2513,16 @@ def main(cfg: DictConfig) -> None:
                                                                current_epoch=current_epoch, 
                                                                steps_per_epoch=steps_per_epoch, 
                                                                grad_accum_steps=gradient_accumulation_steps)
+                
+                # Get current entropy weight for logging
+                entropy_schedule_log = config.get('entropy_schedule', None)
+                if entropy_schedule_log:
+                    current_entropy_log = get_schedule_value(entropy_schedule_log, step, max_steps,
+                                                            current_epoch=current_epoch,
+                                                            steps_per_epoch=steps_per_epoch,
+                                                            grad_accum_steps=gradient_accumulation_steps)
+                else:
+                    current_entropy_log = config.get('entropy_weight', 0.0)
 
                 wandb_metrics = {
                     'train/loss': avg_loss, # This is the running average loss
@@ -2487,7 +2541,7 @@ def main(cfg: DictConfig) -> None:
                     'params/alpha': current_alpha_log,
                     'params/lm_w': config.get('lm_base_weight'),
                     'params/kl_w': config.get('kl_base_weight', 1.0),
-                    'params/entropy_w': config.get('entropy_weight', 0.0),
+                    'params/entropy_w': current_entropy_log,
                     'params/GRPO_entropy_w': config.get('GRPO_entropy_weight', 0.0),
                     'params/GRPO_w': config.get('GRPO_weight', 0.0),
                     'params/GRPO_beta': config.get('GRPO_beta', 0.0),

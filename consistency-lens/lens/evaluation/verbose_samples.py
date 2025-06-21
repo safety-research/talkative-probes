@@ -446,6 +446,7 @@ def process_and_print_verbose_batch_samples(
     resample_ablation: bool = True,
     comparison_tuned_lens: Optional["TunedLens"] = None,
     random_from_batch: bool = True,
+    do_soft_token_embeds: bool = True,
 ) -> Union[int, Tuple[int, List[Dict[str, Any]]], Tuple[int, str]]:
     """Processes and prints verbose samples from a batch.
     
@@ -652,6 +653,11 @@ def process_and_print_verbose_batch_samples(
         # Clean up full shuffle tensors
         del full_shuffled_embeds, A_hat_full_shuffled, logits_full_shuffled_all_pos
 
+        # Clean up full logits tensors that are no longer needed
+        del logits_natural_all_pos, logits_zero_all_pos, logits_approx_all_pos
+        if A_prime_i is not None and 'logits_aprime_all_pos' in locals():
+            del logits_aprime_all_pos
+
         # TunedLens predictions
         top_n_tuned_lens_tokens = ["N/A"] * top_n_analysis
         logits_tuned_lens_at_p_batched = None
@@ -736,6 +742,8 @@ def process_and_print_verbose_batch_samples(
         base_preds_by_rank = build_topk_preds_by_rank(
             base_gen_single.raw_lm_logits.cpu(), len(base_gen_tokens), k_for_decoder_preds, tok
         )
+        # Clean up generation results
+        del base_gen_single
 
         left_ids, right_ids, _, _ = dec.tokenize_and_embed_prompt(cfg["decoder_prompt"], tok)
         base_gen_single_hard = dec.generate_soft_kv_cached(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, hard_left_emb=left_ids, hard_right_emb=right_ids, use_projection=True)
@@ -744,6 +752,8 @@ def process_and_print_verbose_batch_samples(
         base_preds_by_rank_hard = build_topk_preds_by_rank(
             base_gen_single_hard.raw_lm_logits.cpu(), len(base_gen_tokens_hard), k_for_decoder_preds, tok
         )
+        # Clean up generation results
+        del base_gen_single_hard
 
         base_gen_single_hard_no_map = dec.generate_soft_kv_cached(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, hard_left_emb=left_ids, hard_right_emb=right_ids, use_projection=False)
         base_token_ids_full_hard_no_map = base_gen_single_hard_no_map.hard_token_ids[0].cpu().tolist()
@@ -751,6 +761,8 @@ def process_and_print_verbose_batch_samples(
         base_preds_by_rank_hard_no_map = build_topk_preds_by_rank(
             base_gen_single_hard_no_map.raw_lm_logits.cpu(), len(base_gen_tokens_hard_no_map), k_for_decoder_preds, tok
         )
+        # Clean up generation results
+        del base_gen_single_hard_no_map
         
         context_display_range = f"{display_start_idx}-{display_end_idx-1}" if displayed_positions else "empty"
         context_labels = ["Position:", "Token:", "BaseLM (shift):"]
@@ -966,10 +978,28 @@ def process_and_print_verbose_batch_samples(
                 resample_ablation=resample_ablation
             )
         num_printed_this_batch += 1
+        
+        # Force cleanup after each sample to prevent accumulation
+        del A_i, input_ids_seq
+        if A_prime_i is not None:
+            del A_prime_i
+        del gen_single, A_hat_single, A_train_i_for_kl
+        del logits_orig_at_p_batched, logits_train_at_p_batched
+        del logits_natural_at_p_batched, logits_zero_at_p_batched, logits_approx_at_p_batched
+        del logits_baseline_at_p_batched, logits_shuffled_at_p_batched, logits_full_shuffled_at_p_batched
+        if logits_aprime_at_p_batched is not None:
+            del logits_aprime_at_p_batched
+        if logits_tuned_lens_at_p_batched is not None:
+            del logits_tuned_lens_at_p_batched
+        
+        # Force GPU memory cleanup after each sample
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         if (printed_count_so_far + num_printed_this_batch) >= num_samples:
             break
     
-    if num_printed_this_batch > 0:
+    if num_printed_this_batch > 0 and do_soft_token_embeds:
         soft_prompt_projections = get_soft_prompt_projections(dec, enc, orig, tok)
         soft_prompt_text = format_soft_prompt_projections(soft_prompt_projections)
         

@@ -94,6 +94,20 @@ lm_base_weight: 0.001
 kl_base_weight: 1.0
 mse_weight: 0.000001
 
+# Entropy weight configuration
+entropy_weight: 0.0  # Static value (used if entropy_schedule is not defined)
+
+# Entropy weight schedule - dynamically adjust entropy bonus during training
+# Start with higher entropy to encourage diversity, then ramp down to avoid interfering with learning
+entropy_schedule:
+  type: constant
+  value: 1.0
+  #type: "linear_decay_after_constant"  # Keep high initially, then decay
+  #constant_steps_before_decay: "50os"  # Keep high entropy for 50 optimizer steps
+  #start_value: 1                   # Start with higher entropy bonus
+  #end_value:  0.1                    # Decay to smaller constant value
+  #num_steps: "1000os"                   # Total duration (50os constant + 150os decay)
+
 resample_ablation: false
 
 batch_size: 256
