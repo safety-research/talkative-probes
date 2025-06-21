@@ -6,3 +6,7 @@ outputs/*
 *.log
 /.uv_cache/
 /.venv/
+transformers
+transformers/*
+tuned-lens
+tuned-lens/*
