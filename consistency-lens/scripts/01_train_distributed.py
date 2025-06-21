@@ -1171,6 +1171,7 @@ def validate_distributed(
             if active_comparison_tuned_lens is not None:
                 del active_comparison_tuned_lens
                 torch.cuda.empty_cache()  # Force GPU memory cleanup
+                log.info("Cleared active_comparison_tuned_lens and emptied cache")
     
     # Put models back in train mode
     decoder_base.train()

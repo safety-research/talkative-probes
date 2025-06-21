@@ -987,6 +987,10 @@ def process_and_print_verbose_batch_samples(
         del logits_orig_at_p_batched, logits_train_at_p_batched
         del logits_natural_at_p_batched, logits_zero_at_p_batched, logits_approx_at_p_batched
         del logits_baseline_at_p_batched, logits_shuffled_at_p_batched, logits_full_shuffled_at_p_batched
+        del logit_lens_logits_from_A_i, zero_activation, prev_token_ids_tensor
+        del base_gen_tokens, base_gen_tokens_hard, base_gen_tokens_hard_no_map
+        if 'natural_base_logits_at_p' in locals():
+            del natural_base_logits_at_p
         if logits_aprime_at_p_batched is not None:
             del logits_aprime_at_p_batched
         if logits_tuned_lens_at_p_batched is not None:
