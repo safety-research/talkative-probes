@@ -943,14 +943,15 @@ print(df.to_string(index=False))
 
 # %%
 # clear cache
-import gc
-gc.collect()
-torch.cuda.empty_cache()
+for i in range(1):
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
 
 # %%
 torch.manual_seed(47)   
 analyzer.run_verbose_sample(TEST_STRING, 66, continuation_tokens=100)
-# %%
+#%%
 # Visualize KL divergence across positions
 fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
 
@@ -1492,9 +1493,10 @@ analyzer.run_verbose_sample(TEST_STRING, position_to_analyze=103)
 TEST_STRING = " t h e   c a t   s a t   o n   t h e   m a t\n the cat sat on the mat\n\n t h e   d o g   a t e   t h e   f o o d\n\nthe dog ate the food\n\nt h e   q u e e n   k i l l e d   t h e   j o k e r\n\nthe queen killed the"
 encodestring = analyzer.tokenizer.encode(TEST_STRING)
 listouts = []
+n_tok=30
 for i in range(10):
-    generateddirectly = analyzer.orig_model.model.generate(torch.tensor([encodestring]).to(analyzer.device),attention_mask=torch.ones_like(torch.tensor([encodestring], device=analyzer.device), dtype=torch.bool), max_new_tokens=100, do_sample=True)
-    tokenizerstring = analyzer.tokenizer.decode(generateddirectly[0][-100:]).replace("\n","\\n")
+    generateddirectly = analyzer.orig_model.model.generate(torch.tensor([encodestring]).to(analyzer.device),attention_mask=torch.ones_like(torch.tensor([encodestring], device=analyzer.device), dtype=torch.bool), max_new_tokens=n_tok, do_sample=True)
+    tokenizerstring = analyzer.tokenizer.decode(generateddirectly[0][-n_tok:]).replace("\n","\\n")
     listouts.append(tokenizerstring)
 
 # %%

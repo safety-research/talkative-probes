@@ -72,128 +72,24 @@ import importlib
 import dotenv
 dotenv.load_dotenv()
 
-train_module = importlib.import_module("01_train")
-extract_dataset_info = train_module.extract_dataset_info
-resolve_path = train_module.resolve_path
-generate_run_name = train_module.generate_run_name  
-prepare_dataset_and_loaders = train_module._prepare_dataloaders
-_resolve_schedule_to_steps = train_module._resolve_schedule_to_steps
-process_and_print_verbose_batch_samples = train_module.process_and_print_verbose_batch_samples
-_get_hydra_config_name = train_module._get_hydra_config_name
-get_system_metrics = train_module.get_system_metrics
-do_all_initial_validation = train_module.do_all_initial_validation
-
-
-def get_initial_model_state(model: torch.nn.Module) -> dict:
-    """Capture initial trainable parameters (always stored on CPU)."""
-    state = {}
-    for name, p in model.named_parameters():
-        if p.requires_grad:
-            state[name] = p.detach().cpu().clone()   #  <-- keep on CPU
-    return state
-
-
-
-class Timer:
-    def __init__(self, name: str, logger: logging.Logger, main_process: bool = True,
-                 log_wandb: bool = False, wandb_step: int = None):
-        self.name = name
-        self.logger = logger
-        self.main_process = main_process
-        self.start_time = None
-        self.elapsed_time = None
-        self.log_wandb = log_wandb
-        self.wandb_step = wandb_step
-
-    def __enter__(self):
-        if self.main_process:
-            self.start_time = time.time()
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.main_process and self.start_time is not None:
-            self.elapsed_time = time.time() - self.start_time
-            self.logger.info(f"Phase '{self.name}' took {self.elapsed_time:.2f}s")
-            if self.log_wandb and self.wandb_step is not None:
-                metric_name = f"time/{self.name.replace(' ', '_').lower()}_duration_s"
-                log_metrics({metric_name: self.elapsed_time}, step=self.wandb_step)
-
+from lens.training.train_aux import (
+    extract_dataset_info,
+    resolve_path,
+    generate_run_name,
+    _prepare_dataloaders,
+    _resolve_schedule_to_steps,
+    process_and_print_verbose_batch_samples,
+    _get_hydra_config_name,
+    get_system_metrics,
+    do_all_initial_validation,
+    get_initial_model_state,
+    Timer,
+    convert_batch_dtype,
+    check_model_dtypes
+)
 
 # Track if we've logged the first conversion
 _first_conversion_logged = False
-
-def convert_batch_dtype(batch, config, device, logger=None, is_main_process=True):
-    """Convert batch tensors to the appropriate dtype based on config.
-    
-    Args:
-        batch: Dictionary containing batch data
-        config: Training configuration
-        device: Target device
-        logger: Optional logger for first-time conversion message
-        is_main_process: Whether this is the main process
-        
-    Returns:
-        tuple: (converted_count, target_dtype) or (0, None) if no conversion
-    """
-    global _first_conversion_logged
-    
-    if not config.get('force_data_conversion', False):
-        return 0, None
-    
-    # Determine target dtype based on mixed precision config
-    mixed_precision_config = config.get('mixed_precision', {'enabled': True, 'dtype': 'auto'})
-    target_dtype = torch.float32  # Default
-    
-    if device.type == "cuda" and mixed_precision_config.get('enabled', True):
-        dtype_str = mixed_precision_config.get('dtype', 'auto')
-        if dtype_str == 'float16':
-            target_dtype = torch.float16
-        elif dtype_str == 'bfloat16':
-            target_dtype = torch.bfloat16
-        # For 'auto' and 'float32', keep float32
-    
-    # Convert batch tensors to target dtype
-    converted_count = 0
-    source_dtype = None
-    for key, val in batch.items():
-        if isinstance(val, torch.Tensor) and val.dtype in [torch.float16, torch.bfloat16, torch.float32]:
-            if val.dtype != target_dtype:
-                if source_dtype is None:
-                    source_dtype = val.dtype
-                batch[key] = val.to(dtype=target_dtype)
-                converted_count += 1
-    
-    # Log first conversion
-    if converted_count > 0 and not _first_conversion_logged and logger and is_main_process:
-        logger.info(f"Converting batch data from {source_dtype} to {target_dtype} (first batch)")
-        _first_conversion_logged = True
-    
-    return converted_count, target_dtype
-
-
-def check_model_dtypes(models_dict, expected_dtype, logger, step=None):
-    """Debug function to check all model tensors have the expected dtype."""
-    issues = []
-    for model_name, model in models_dict.items():
-        # Check parameters
-        for name, param in model.named_parameters():
-            if param.dtype != expected_dtype:
-                issues.append(f"{model_name}.{name}: {param.dtype} (expected {expected_dtype})")
-        
-        # Check buffers
-        for name, buffer in model.named_buffers():
-            if buffer.dtype in [torch.float16, torch.bfloat16, torch.float32] and buffer.dtype != expected_dtype:
-                issues.append(f"{model_name}.{name} (buffer): {buffer.dtype} (expected {expected_dtype})")
-    
-    if issues:
-        logger.error(f"Dtype mismatches found at step {step}:")
-        for issue in issues[:10]:  # Show first 10 issues
-            logger.error(f"  - {issue}")
-        if len(issues) > 10:
-            logger.error(f"  ... and {len(issues) - 10} more")
-        return False
-    return True
-
 
 def distributed_train_step(
     decoder,
@@ -587,11 +483,10 @@ def generate_verbose_samples_from_batch(
 
     try:
         # Ensure we're in no_grad mode to prevent gradient accumulation
-        with torch.profiler.profile(
-                activities=[torch.profiler.ProfilerActivity.CUDA],
-                profile_memory=True,
-                record_shapes=True
-            ) as prof:
+        with nullcontext():#torch.profiler.profile(
+            #   activities=[torch.profiler.ProfilerActivity.CUDA],
+            #   profile_memory=True,
+            #   record_shapes=True) as prof:
             with torch.no_grad():
                 # Generate verbose samples
                 num_printed, captured_text = process_and_print_verbose_batch_samples(
@@ -623,7 +518,7 @@ def generate_verbose_samples_from_batch(
                     table_name=table_name,
                     limit_rows=verbose_config.get('wandb_table_limit', False)
                 )
-        print(prof.key_averages().table(sort_by="cuda_memory_usage", row_limit=10))
+        #print(prof.key_averages().table(sort_by="cuda_memory_usage", row_limit=10))
             
     finally:
         # Always restore training mode
@@ -1133,11 +1028,9 @@ def validate_distributed(
                 val_metrics['val/intervention_batches'] = intervention_batches
             
             log_metrics(val_metrics, step)
-    
 
     # Generate verbose samples if on main process and conditions are met
     if is_main_process and all(v is not None for v in [current_epoch, max_steps, gradient_accumulation_steps, val_interval]):
-        # Move comparison_tuned_lens to device if it exists
         active_comparison_tuned_lens = None
         if comparison_tuned_lens:
             try:
@@ -1167,10 +1060,15 @@ def validate_distributed(
                 comparison_tuned_lens=active_comparison_tuned_lens
             )
         finally:
-            # Clean up GPU memory
+            # Move back to cpu instead of just deleting
             if active_comparison_tuned_lens is not None:
+                try:
+                    active_comparison_tuned_lens = active_comparison_tuned_lens.to('cpu')
+                    log.info("Moved active_comparison_tuned_lens back to cpu")
+                except Exception as e:
+                    log.warning(f"Failed to move active_comparison_tuned_lens back to cpu: {e}")
                 del active_comparison_tuned_lens
-                torch.cuda.empty_cache()  # Force GPU memory cleanup
+                torch.cuda.empty_cache()
                 log.info("Cleared active_comparison_tuned_lens and emptied cache")
     
     # Put models back in train mode

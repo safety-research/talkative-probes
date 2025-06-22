@@ -1303,6 +1303,7 @@ class Decoder(nn.Module):
         do_patching: bool = True,
         special_token = None,
         original_token_pos: Optional[torch.Tensor] = None,
+        return_logits: bool = False,
     ) -> Generated:
         """Differentiable generation with KV caching for O(n) attention computation.
         
@@ -1522,6 +1523,8 @@ class Decoder(nn.Module):
                         tau=max(gumbel_tau, 0.1),  # Prevent extremely low tau
                         hard=True
                     ).to(logits_t.dtype)
+                if return_logits:
+                    logits_list.append(logits_t)
 
                 # Get embeddings
                 emb_t_input = ste_token_dist @ input_emb_table
@@ -1566,13 +1569,17 @@ class Decoder(nn.Module):
 
         hard_ids = torch.stack(hard_ids_list, dim=1)
         text_embs = torch.stack(output_embs_list, dim=1)
+        if return_logits:
+            logits = torch.stack(logits_list, dim=1)
+        else:
+            logits = None
         
         # Stack outputs
         #hard_ids = torch.stack(hard_ids_list, dim=1)
         
         #text_embs = torch.stack(output_embs_list, dim=1)
         # should be embedded with enc's input, but it's the same so ok for now! 
-        return Generated(text_embs,None, hard_ids)
+        return Generated(text_embs,logits, hard_ids)
 
     
     def fwd_tokens(

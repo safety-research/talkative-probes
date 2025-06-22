@@ -532,6 +532,7 @@ def process_and_print_verbose_batch_samples(
         A_i_cast = A_i.to(orig.model.lm_head.weight.dtype)
         logit_lens_logits_from_A_i = orig.model.lm_head(A_i_cast)
         top_n_logit_lens_tokens = get_top_n_tokens(logit_lens_logits_from_A_i.squeeze(0), tok, top_n_analysis)
+        del A_i_cast
         
         with torch.no_grad():
             logits_natural_all_pos = orig.model(input_ids=input_ids_seq).logits
@@ -608,7 +609,7 @@ def process_and_print_verbose_batch_samples(
         mse_baseline_vs_A = torch.nn.functional.mse_loss(A_i, A_hat_baseline.to(A_i.device)).item()
         
         # Clean up baseline tensors
-        del prev_token_embeddings, A_hat_baseline, logits_baseline_all_pos
+        del prev_token_embeddings, A_hat_baseline
         
         # Compute shuffle intervention: shuffle first (n-3) tokens of decoder output
         T_text = cfg.get("t_text", 8)
@@ -632,7 +633,7 @@ def process_and_print_verbose_batch_samples(
         mse_shuffled_vs_A = torch.nn.functional.mse_loss(A_i, A_hat_shuffled.to(A_i.device)).item()
         
         # Clean up shuffle tensors
-        del shuffled_embeds, A_hat_shuffled, logits_shuffled_all_pos
+        del shuffled_embeds, A_hat_shuffled
         
         # Compute full shuffle intervention: shuffle ALL tokens of decoder output
         full_shuffled_embeds = gen_single.generated_text_embeddings.clone().to(device)
@@ -651,10 +652,10 @@ def process_and_print_verbose_batch_samples(
         mse_full_shuffled_vs_A = torch.nn.functional.mse_loss(A_i, A_hat_full_shuffled.to(A_i.device)).item()
         
         # Clean up full shuffle tensors
-        del full_shuffled_embeds, A_hat_full_shuffled, logits_full_shuffled_all_pos
+        del full_shuffled_embeds, A_hat_full_shuffled
 
         # Clean up full logits tensors that are no longer needed
-        del logits_natural_all_pos, logits_zero_all_pos, logits_approx_all_pos
+        del logits_natural_all_pos, logits_zero_all_pos, logits_approx_all_pos, logits_baseline_all_pos, logits_shuffled_all_pos, logits_full_shuffled_all_pos
         if A_prime_i is not None and 'logits_aprime_all_pos' in locals():
             del logits_aprime_all_pos
 
@@ -675,6 +676,7 @@ def process_and_print_verbose_batch_samples(
                         logits_tuned_lens_at_p_batched = comparison_tuned_lens(A_i_casted, idx=l)
 
                     top_n_tuned_lens_tokens = get_top_n_tokens(logits_tuned_lens_at_p_batched.squeeze(0), tok, top_n_analysis)
+                    del A_i_casted
                 except Exception as e:
                     # import logging
                     # logging.getLogger(__name__).error(f"Error during TunedLens prediction for layer {l}: {e}", exc_info=True)
@@ -736,7 +738,7 @@ def process_and_print_verbose_batch_samples(
             gen_single.raw_lm_logits.cpu(), len(gen_tokens), k_for_decoder_preds, tok
         )
 
-        base_gen_single = dec.generate_soft_kv_cached(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, use_projection=True)
+        base_gen_single = dec.generate_soft_kv_cached_nondiff(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, use_projection=True, return_logits=True  )
         base_token_ids_full = base_gen_single.hard_token_ids[0].cpu().tolist()
         base_gen_tokens = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full]
         base_preds_by_rank = build_topk_preds_by_rank(
@@ -746,7 +748,7 @@ def process_and_print_verbose_batch_samples(
         del base_gen_single
 
         left_ids, right_ids, _, _ = dec.tokenize_and_embed_prompt(cfg["decoder_prompt"], tok)
-        base_gen_single_hard = dec.generate_soft_kv_cached(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, hard_left_emb=left_ids, hard_right_emb=right_ids, use_projection=True)
+        base_gen_single_hard = dec.generate_soft_kv_cached_nondiff(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, hard_left_emb=left_ids, hard_right_emb=right_ids, use_projection=True, return_logits=True)
         base_token_ids_full_hard = base_gen_single_hard.hard_token_ids[0].cpu().tolist()
         base_gen_tokens_hard = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full_hard]
         base_preds_by_rank_hard = build_topk_preds_by_rank(
@@ -755,7 +757,7 @@ def process_and_print_verbose_batch_samples(
         # Clean up generation results
         del base_gen_single_hard
 
-        base_gen_single_hard_no_map = dec.generate_soft_kv_cached(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, hard_left_emb=left_ids, hard_right_emb=right_ids, use_projection=False)
+        base_gen_single_hard_no_map = dec.generate_soft_kv_cached_nondiff(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, hard_left_emb=left_ids, hard_right_emb=right_ids, use_projection=False, return_logits=True)
         base_token_ids_full_hard_no_map = base_gen_single_hard_no_map.hard_token_ids[0].cpu().tolist()
         base_gen_tokens_hard_no_map = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full_hard_no_map]
         base_preds_by_rank_hard_no_map = build_topk_preds_by_rank(
@@ -771,6 +773,7 @@ def process_and_print_verbose_batch_samples(
             if t_idx < base_model_full_logits.size(1) else "N/A"
             for t_idx in range(len(raw_prefix_ids))
         ]
+        del base_model_full_logits  # No longer needed
         shifted_preds_for_display = [
             preds_prefix_full_single_top[display_start_idx + k_rel - 1] 
             if display_start_idx + k_rel > 0 and display_start_idx + k_rel -1 < len(preds_prefix_full_single_top) 
@@ -778,6 +781,7 @@ def process_and_print_verbose_batch_samples(
             for k_rel in range(len(displayed_prefix_tokens))
         ]
         context_data_rows = [list(displayed_positions), list(displayed_prefix_tokens), list(shifted_preds_for_display)]
+        del preds_prefix_full_single_top  # No longer needed
         relative_p = p - display_start_idx
         if 0 <= relative_p < len(displayed_prefix_tokens):
             context_data_rows[0][relative_p] = f"[{context_data_rows[0][relative_p]}]P"
@@ -980,21 +984,31 @@ def process_and_print_verbose_batch_samples(
         num_printed_this_batch += 1
         
         # Force cleanup after each sample to prevent accumulation
-        del A_i, input_ids_seq
+        del (
+            A_i, input_ids_seq, gen_single, A_hat_single, A_train_i_for_kl,
+            logits_orig_at_p_batched, logits_train_at_p_batched,
+            logits_natural_at_p_batched, logits_zero_at_p_batched,
+            logits_approx_at_p_batched, logits_baseline_at_p_batched,
+            logits_shuffled_at_p_batched, logits_full_shuffled_at_p_batched,
+            logit_lens_logits_from_A_i, zero_activation, prev_token_ids_tensor,
+            base_gen_tokens, base_gen_tokens_hard, base_gen_tokens_hard_no_map,
+            results_from_compute, computed_tensors,
+            analysis_preds_dict, analysis_metrics_for_print, sample_losses, kl_divergences_for_print_section,
+            gen_tokens, decoder_preds_by_rank, base_preds_by_rank, base_preds_by_rank_hard, base_preds_by_rank_hard_no_map,
+            context_data_rows,
+        )
         if A_prime_i is not None:
             del A_prime_i
-        del gen_single, A_hat_single, A_train_i_for_kl
-        del logits_orig_at_p_batched, logits_train_at_p_batched
-        del logits_natural_at_p_batched, logits_zero_at_p_batched, logits_approx_at_p_batched
-        del logits_baseline_at_p_batched, logits_shuffled_at_p_batched, logits_full_shuffled_at_p_batched
-        del logit_lens_logits_from_A_i, zero_activation, prev_token_ids_tensor
-        del base_gen_tokens, base_gen_tokens_hard, base_gen_tokens_hard_no_map
         if 'natural_base_logits_at_p' in locals():
             del natural_base_logits_at_p
         if logits_aprime_at_p_batched is not None:
             del logits_aprime_at_p_batched
         if logits_tuned_lens_at_p_batched is not None:
             del logits_tuned_lens_at_p_batched
+        if autoregressive_continuation is not None:
+            del autoregressive_continuation
+        if a_prime_string_cropped is not None:
+            del a_prime_string_cropped
         
         # Force GPU memory cleanup after each sample
         if torch.cuda.is_available():
