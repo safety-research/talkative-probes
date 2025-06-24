@@ -35,6 +35,13 @@ class Generated(NamedTuple):
             self.hard_token_ids.cpu()
         )
 
+    def clone(self):
+        return Generated(
+            self.generated_text_embeddings.clone(),
+            self.raw_lm_logits.clone(),
+            self.hard_token_ids.clone()
+        )
+
 @dataclass
 class DecoderConfig:
     model_name: str
@@ -164,22 +171,24 @@ class Decoder(nn.Module):
         # If self.base is frozen, self.out allows the Decoder to adapt the
         # (frozen) base model\'s representations for the explanation generation task.
         # If self.base is trainable, self.out is trained along with it.
-        self.out = nn.Linear(d_model, self.base.config.vocab_size, bias=False)
         # Initialise `self.out` with a copy of the original unembedding matrix
         # (i.e. the tied output embedding / LM head from the base model).
-        with torch.no_grad():
-            try:
-                orig_out_w = self.base.get_output_embeddings().weight
-            except AttributeError:
-                # Fallback for models that expose `lm_head`
-                orig_out_w = self.base.lm_head.weight  # type: ignore[attr-defined]
+        if cfg.output_head:
+            raise ValueError("output_head is not supported for now")
+                #self.out = nn.Linear(d_model, self.base.config.vocab_size, bias=False)
+            with torch.no_grad():
+                try:
+                    orig_out_w = self.base.get_output_embeddings().weight
+                except AttributeError:
+                    # Fallback for models that expose `lm_head`
+                    orig_out_w = self.base.lm_head.weight  # type: ignore[attr-defined]
 
-            if orig_out_w.shape == self.out.weight.shape:
-                self.out.weight.copy_(orig_out_w)
+                if orig_out_w.shape == self.out.weight.shape:
+                    self.out.weight.copy_(orig_out_w)
 
-        # Configure trainability of the output head (separate from the base model)
-        for p in self.out.parameters():
-            p.requires_grad_(cfg.output_head)
+            # Configure trainability of the output head (separate from the base model)
+            for p in self.out.parameters():
+                p.requires_grad_(cfg.output_head)
         
         # Configure trainability of the embedding heads (input/output embeddings)
         # These may be tied in many models like GPT-2
@@ -191,18 +200,24 @@ class Decoder(nn.Module):
         except AttributeError:
             log.warning("Could not access input embeddings for freezing control")
         
-        try:
-            output_embeddings = self.base.get_output_embeddings()
-            if output_embeddings is not None:
-                for p in output_embeddings.parameters():
-                    p.requires_grad_(cfg.embedding_head)
-        except AttributeError:
-            # Fallback for models that expose `lm_head`
-            if hasattr(self.base, 'lm_head'):
-                for p in self.base.lm_head.parameters():
-                    p.requires_grad_(cfg.embedding_head)
-            else:
-                log.warning("Could not access output embeddings for freezing control")
+
+        input_emb_table = self.base.get_input_embeddings().weight
+        output_emb_table = self.base.get_output_embeddings().weight
+        embeddings_tied = (input_emb_table.data_ptr() == output_emb_table.data_ptr())
+
+        if not embeddings_tied:
+            try:
+                output_embeddings = self.base.get_output_embeddings()
+                if output_embeddings is not None:
+                    for p in output_embeddings.parameters():
+                        p.requires_grad_(cfg.output_embedding_head)
+            except AttributeError:
+                # Fallback for models that expose `lm_head`
+                if hasattr(self.base, 'lm_head'):
+                    for p in self.base.lm_head.parameters():
+                        p.requires_grad_(cfg.embedding_head)
+                else:
+                    log.warning("Could not access output embeddings for freezing control")
             
         #if not cfg.embedding_head and not cfg.output_head:
         #    embed_prod_out = self.out.weight @ self.base.get_output_embeddings().weight.T
@@ -291,19 +306,21 @@ class Decoder(nn.Module):
         vocab_size = self.base.config.vocab_size
         n_layers = self.base.config.num_hidden_layers
         
-        if self.out.out_features != vocab_size:
-            self.out = nn.Linear(d_model, vocab_size, bias=False).to(old_device)
-            # Initialize with new model's output embeddings
-            with torch.no_grad():
-                try:
-                    orig_out_w = self.base.get_output_embeddings().weight
-                except AttributeError:
-                    orig_out_w = self.base.lm_head.weight
-                if orig_out_w.shape == self.out.weight.shape:
-                    self.out.weight.copy_(orig_out_w)
+        # if False: self.out.out_features != vocab_size:
+        #     pass
+        #     #raise ValueError("trainable output_head is not supported for now")
+        #     self.out = nn.Linear(d_model, vocab_size, bias=False).to(old_device)
+        #     # Initialize with new model's output embeddings
+        #     with torch.no_grad():
+        #         try:
+        #             orig_out_w = self.base.get_output_embeddings().weight
+        #         except AttributeError:
+        #             orig_out_w = self.base.lm_head.weight
+        #         if orig_out_w.shape == self.out.weight.shape:
+        #             self.out.weight.copy_(orig_out_w)
             
-            for p in self.out.parameters():
-                p.requires_grad_(self.config.output_head)
+        #     for p in self.out.parameters():
+        #         p.requires_grad_(self.config.output_head)
         
         # Restore or reinitialize projection weights
         if self.config.per_layer_projections:
@@ -365,6 +382,7 @@ class Decoder(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         cache_position: Optional[torch.LongTensor] = None,
         max_total_len_for_cache: Optional[int] = None,
+        return_past_key_values: bool = False,
     ) -> tuple[torch.Tensor, Optional[Any]]:
         """
         Performs a forward pass through the model, with activation patching at each layer.
@@ -596,7 +614,10 @@ class Decoder(nn.Module):
 
         # Final layer norm
         hidden_states = final_norm(hidden_states)
-        return hidden_states, past_key_values
+        if return_past_key_values:
+            return hidden_states, past_key_values
+        else:
+            return hidden_states
 
     def generate_soft(
         self,
@@ -611,6 +632,7 @@ class Decoder(nn.Module):
         do_patching: bool = True,
         special_token = None,
         original_token_pos: Optional[torch.Tensor] = None,
+        add_tokens: list[int] = None,
     ) -> Generated:
         """Differentiable autoregressive sampling with Gumbel-Softmax.
 
@@ -647,7 +669,7 @@ class Decoder(nn.Module):
         else:   
             main_model = self
             main_base = self.base
-            main_out = self.out
+            main_out = self.base.get_output_embeddings()
 
         if hard_left_emb is not None:
             prompt_left_emb = main_base.get_input_embeddings().weight[hard_left_emb].clone()
@@ -717,6 +739,12 @@ class Decoder(nn.Module):
             
         if prompt_right_emb is not None:
             parts.append(prompt_right_emb.expand(B, -1, -1))
+        if add_tokens is not None:
+            token_ids_tensor = torch.tensor(
+                add_tokens, dtype=torch.long, device=input_emb_table.device
+            )
+            added_token_embeddings = input_emb_table[token_ids_tensor].unsqueeze(0).expand(B, -1, -1)
+            parts.append(added_token_embeddings)
             
         seq_embs = torch.cat(parts, dim=1)
 
@@ -727,13 +755,15 @@ class Decoder(nn.Module):
         for _ in range(max_length):
             if self.config.patch_all_layers:
                 # Custom forward pass with activation patching at all layers
-                h_last,_ = self._patched_forward(
+                h_last = self._patched_forward(
                     main_base=main_base,
                     seq_embs=seq_embs,
                     activation_input_modified=activation_input_modified,
                     use_projection=use_projection,
                     do_patching=do_patching,
                     prompt_left_emb=prompt_left_emb,
+                    return_past_key_values=False,
+                    use_cache=False,
                 )
                 logits_t = main_out(h_last[:, -1])  # (B, V)
             else:
@@ -851,7 +881,7 @@ class Decoder(nn.Module):
                 nan_found = True
         
         # Check output head
-        if torch.isnan(self.out.weight).any():
+        if torch.isnan(self.base.get_output_embeddings().weight).any():
             log.error(f"NaN detected in output head weights")
             nan_found = True
         
@@ -929,7 +959,7 @@ class Decoder(nn.Module):
         else:   
             main_model = self
             main_base = self.base
-            main_out = self.out
+            main_out = self.base.get_output_embeddings()
 
         if hard_left_emb is not None:
             prompt_left_emb = main_base.get_input_embeddings().weight[hard_left_emb].clone()
@@ -1050,7 +1080,8 @@ class Decoder(nn.Module):
                 use_cache=True, # KV caching is the point of this function
                 attention_mask=None, # Assuming causal mask is handled internally by model
                 #cache_position=cache_position if is_gemma2 else None,
-                max_total_len_for_cache=max_total_length_for_cache if is_gemma2 else None # Pass for Gemma2
+                max_total_len_for_cache=max_total_length_for_cache if is_gemma2 else None, # Pass for Gemma2
+                return_past_key_values=True,
             )
         else:
             # Original behavior - use standard forward pass with caching
@@ -1304,6 +1335,7 @@ class Decoder(nn.Module):
         special_token = None,
         original_token_pos: Optional[torch.Tensor] = None,
         return_logits: bool = False,
+        add_tokens: list[int] = None,
     ) -> Generated:
         """Differentiable generation with KV caching for O(n) attention computation.
         
@@ -1339,7 +1371,7 @@ class Decoder(nn.Module):
         else:   
             main_model = self
             main_base = self.base
-            main_out = self.out
+            main_out = self.base.get_output_embeddings()
 
         if hard_left_emb is not None:
             prompt_left_emb = main_base.get_input_embeddings().weight[hard_left_emb].clone()
@@ -1409,11 +1441,22 @@ class Decoder(nn.Module):
             parts.append(a_proj)
         else: 
             print("patching in special token")
-            parts.append(main_base.get_input_embeddings().weight[special_token.squeeze().item() if isinstance(special_token, torch.Tensor) else special_token].clone().unsqueeze(0).repeat(B,1,1))
+            parts.append(input_emb_table[special_token.squeeze().item() if isinstance(special_token, torch.Tensor) else special_token].clone().unsqueeze(0).repeat(B,1,1))
             
         if prompt_right_emb is not None:
             parts.append(prompt_right_emb.expand(B, -1, -1))
-            
+        
+        if add_tokens is not None:
+            # Convert the list of token IDs to a tensor on the correct device and with the correct dtype.
+            token_ids_tensor = torch.tensor(
+                add_tokens, dtype=torch.long, device=input_emb_table.device
+            )
+            # Get embeddings for these tokens, then unsqueeze to add a batch dimension,
+            # and expand to match the batch size B.
+            # Using expand is generally preferred over repeat for memory efficiency here.
+            added_token_embeddings = input_emb_table[token_ids_tensor].unsqueeze(0).expand(B, -1, -1)
+            parts.append(added_token_embeddings)
+            print(f"Added tokens: {self.tokenizer.decode(add_tokens)}, new length: {len(parts)} (added {len(add_tokens)} tokens)")
         seq_embs = torch.cat(parts, dim=1)
         
         # Initialize storage
@@ -1459,7 +1502,8 @@ class Decoder(nn.Module):
                 use_cache=True, # KV caching is the point of this function
                 attention_mask=None, # Assuming causal mask is handled internally by model
                 #cache_position=cache_position if is_gemma2 else None,
-                max_total_len_for_cache=max_total_length_for_cache if is_gemma2 else None # Pass for Gemma2
+                max_total_len_for_cache=max_total_length_for_cache if is_gemma2 else None, # Pass for Gemma2
+                return_past_key_values=True,
             )
         else:
             # Original behavior - use standard forward pass with caching
@@ -1617,7 +1661,7 @@ class Decoder(nn.Module):
 
         # Setup similar to generate()
         main_base = self.base
-        main_out = self.out
+        main_out = self.base.get_output_embeddings()
 
         prompt_left_emb = self.prompt_left_emb
         prompt_right_emb = self.prompt_right_emb
@@ -1692,13 +1736,15 @@ class Decoder(nn.Module):
         # A single forward pass through the model.
         if self.config.patch_all_layers:
             # Custom forward pass with activation patching at all layers
-            hidden_states, _ = self._patched_forward(
+            hidden_states = self._patched_forward(
                 main_base=main_base,
                 seq_embs=seq_embs,
                 activation_input_modified=activation_input_modified,
                 use_projection=use_projection,
                 do_patching=True,  # Always patch when calling fwd_tokens
                 prompt_left_emb=prompt_left_emb,
+                return_past_key_values=False,
+                use_cache=False,
             )
             logits = main_out(hidden_states)
         else:

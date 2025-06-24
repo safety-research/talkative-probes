@@ -485,7 +485,7 @@ def main(cfg: DictConfig) -> None:
             loss_components = train_step(
                 batch, {"dec": dec, "enc": enc, "orig": orig},
                 {
-                    "tau": current_gumbel_tau, "T_text": config['t_text'], "alpha": current_alpha_val,
+                    "tau": current_gumbel_tau, "t_text": config['t_text'], "alpha": current_alpha_val,
                     "lm_base_weight": config['lm_base_weight'], "kl_base_weight": config['kl_base_weight'],
                     "entropy_weight": config['entropy_weight'], "mse_weight": config.get('mse_weight', 0.0),
                 },

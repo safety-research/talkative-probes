@@ -3,12 +3,19 @@
 import torch
 import transformers
 from transformers import AutoModelForCausalLM
+from typing import Optional, Tuple, Union
+from contextlib import nullcontext
 
 __all__ = ["OrigWrapper"]
 
 
 class OrigWrapper:
     """Thin wrapper around HF CausalLM that supports `forward_with_replacement`."""
+
+    # Define the replacement function as a static method
+    @staticmethod
+    def _static_reshape_inputs(x, **__) -> dict:
+        return {"input_ids": x}
 
     def __init__(self, model_name: str, load_in_8bit: bool = False, base_to_use = None) -> None:
         if base_to_use is None:
@@ -156,6 +163,263 @@ class OrigWrapper:
             handle.remove()
             return out
 
+    def get_activations_at_positions(
+        self,
+        input_ids: torch.Tensor,
+        layer_idx: int,
+        token_positions: Optional[Union[int, torch.Tensor]] = None,
+        min_pos_to_select_from: Optional[int] = None,
+        *,
+        attention_mask: Optional[torch.Tensor] = None,
+        no_grad: bool = True,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Extracts hidden state activations from a specified layer at given or calculated token positions
+        using a forward hook.
+
+        Args:
+            input_ids: Input token ids, shape (B, seq_len) or (seq_len).
+            layer_idx: 0-indexed layer to extract activations from.
+            token_positions: Optional. Exact token positions (0-indexed) to extract activations from.
+                             Can be an int for a single sequence or a 1D tensor of shape (B,) for a batch.
+                             If provided, `min_pos_to_select_from` is ignored.
+            min_pos_to_select_from: Optional. If `token_positions` is None, this is used to calculate
+                                    the token positions. The position is calculated as the middle
+                                    of the non-padding tokens, starting from at least this index.
+                                    Defaults to 0 if not specified and calculating positions.
+            attention_mask: Optional attention mask, shape (B, seq_len). If None and pad_token_id
+                            is configured, it's created from pad tokens.
+            no_grad: Whether to run in no_grad context.
+
+        Returns:
+            A tuple containing:
+            - selected_activations: Tensor of shape (B, hidden_dim) or (hidden_dim)
+                                    containing the activations.
+            - calculated_token_positions: Tensor of shape (B,) or scalar tensor
+                                          containing the token positions used.
+        """
+        self._validate_layer_idx(layer_idx)
+
+        if token_positions is None and min_pos_to_select_from is None:
+            min_pos_to_select_from = 0
+        elif token_positions is not None and min_pos_to_select_from is not None:
+            pass
+
+        was_1d_input = False
+        if input_ids.ndim == 1:
+            input_ids = input_ids.unsqueeze(0)
+            was_1d_input = True
+            if isinstance(token_positions, int):
+                token_positions = torch.tensor([token_positions], device=input_ids.device, dtype=torch.long)
+        
+        if not isinstance(input_ids, torch.Tensor):
+             raise TypeError(f"input_ids must be a torch.Tensor, got {type(input_ids)}")
+
+        batch_size = input_ids.shape[0]
+
+        if attention_mask is None and self.model.config.pad_token_id is not None:
+            attention_mask = input_ids.ne(self.model.config.pad_token_id).long()
+
+        calculated_positions: torch.Tensor
+        if token_positions is not None:
+            if isinstance(token_positions, int):
+                calculated_positions = torch.tensor([token_positions] * batch_size, device=input_ids.device, dtype=torch.long)
+            elif isinstance(token_positions, torch.Tensor):
+                if token_positions.ndim == 0:
+                    calculated_positions = token_positions.repeat(batch_size).to(input_ids.device, dtype=torch.long)
+                elif token_positions.ndim == 1 and token_positions.shape[0] == 1 and batch_size > 1:
+                     calculated_positions = token_positions.repeat(batch_size).to(input_ids.device, dtype=torch.long)
+                elif token_positions.ndim == 1 and token_positions.shape[0] == batch_size:
+                    calculated_positions = token_positions.to(input_ids.device, dtype=torch.long)
+                else:
+                    raise ValueError(
+                        f"token_positions tensor shape {token_positions.shape} "
+                        f"is incompatible with batch size {batch_size}."
+                    )
+            else:
+                raise TypeError(f"token_positions must be int, torch.Tensor, or None, got {type(token_positions)}")
+        elif min_pos_to_select_from is not None:
+            pad_token_id = self.model.config.pad_token_id
+            if pad_token_id is None:
+                nonpad_lengths = torch.full((batch_size,), input_ids.shape[1], device=input_ids.device, dtype=torch.long)
+            else:
+                nonpad_lengths = (input_ids != pad_token_id).sum(dim=1)
+
+            upper_bounds = nonpad_lengths - 1
+            
+            _min_pos_tensor = torch.full_like(upper_bounds, min_pos_to_select_from)
+            effective_min_indices = torch.minimum(_min_pos_tensor, upper_bounds)
+            effective_min_indices = torch.maximum(effective_min_indices, torch.zeros_like(upper_bounds))
+            
+            safe_upper_bounds = torch.maximum(upper_bounds, effective_min_indices)
+            calculated_positions = (effective_min_indices + safe_upper_bounds) // 2
+            seq_len_minus_1 = max(input_ids.shape[1] - 1, 0)
+            calculated_positions = torch.clamp(calculated_positions, min=0, max=seq_len_minus_1)
+        else:
+            raise ValueError("Either `token_positions` or `min_pos_to_select_from` must be provided.")
+
+        # --- Hook-based activation extraction ---
+        captured_activations = None
+
+        def _capture_hook(_, __, output): # noqa: ANN001
+            nonlocal captured_activations
+            # Output of a transformer block is usually a tuple (hidden_state, present_key_value, ...)
+            # or just hidden_state. We are interested in the first element.
+            if isinstance(output, tuple):
+                captured_activations = output[0].detach()
+            else:
+                captured_activations = output.detach()
+            return output # Pass through the output
+
+        try:
+            target_block = self.model.get_submodule(f"model.layers.{layer_idx}")
+        except AttributeError:
+            try:
+                target_block = self.model.transformer.h[layer_idx] # type: ignore[attr-defined]
+            except AttributeError:
+                target_block = self.model.get_submodule(f"transformer.h.{layer_idx}")
+        
+        handle = target_block.register_forward_hook(_capture_hook)
+        
+        grad_ctx = torch.no_grad() if no_grad else nullcontext()
+        with grad_ctx:
+            _ = self.model( # We don't need the model's final output here
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=False, # Not needed as we use a hook
+            )
+        
+        handle.remove()
+
+        if captured_activations is None:
+            raise RuntimeError(
+                f"Hook did not capture activations from layer {layer_idx}. "
+                "This might indicate an issue with the model structure or hook registration."
+            )
+        
+        # captured_activations is (B, seq_len, dim)
+        batch_indices = torch.arange(batch_size, device=captured_activations.device)
+        selected_activations = captured_activations[batch_indices, calculated_positions] # (B, dim)
+        # --- End hook-based activation extraction ---
+
+        if was_1d_input:
+            selected_activations = selected_activations.squeeze(0)
+            # calculated_positions = calculated_positions.squeeze(0) # Already (1,) or scalar
+
+        return selected_activations, calculated_positions
+
+    def get_all_activations_at_layer(
+        self,
+        input_ids: torch.Tensor, # Expected shape (seq_len,) or (1, seq_len)
+        layer_idx: int,
+        *,
+        attention_mask: Optional[torch.Tensor] = None, # Expected shape (seq_len,) or (1, seq_len)
+        no_grad: bool = True,
+    ) -> torch.Tensor:
+        """
+        Extracts all hidden state activations from a specified layer for a single sequence
+        using a forward hook.
+
+        Args:
+            input_ids: Input token ids, shape (seq_len,) or (1, seq_len).
+            layer_idx: 0-indexed layer to extract activations from.
+            attention_mask: Optional attention mask, shape (seq_len,) or (1, seq_len).
+                            If None and pad_token_id is configured, it's created.
+            no_grad: Whether to run in no_grad context.
+
+        Returns:
+            torch.Tensor: Hidden states for the layer, shape (seq_len, hidden_dim).
+        """
+        self._validate_layer_idx(layer_idx)
+
+        if not isinstance(input_ids, torch.Tensor):
+             raise TypeError(f"input_ids must be a torch.Tensor, got {type(input_ids)}")
+
+        _processed_input_ids = input_ids
+        _processed_attention_mask = attention_mask
+
+        if input_ids.ndim == 1: # Shape (seq_len,)
+            _processed_input_ids = input_ids.unsqueeze(0) # Convert to (1, seq_len)
+            if attention_mask is not None and attention_mask.ndim == 1:
+                if attention_mask.shape[0] != input_ids.shape[0]:
+                    raise ValueError(
+                        f"1D attention_mask length {attention_mask.shape[0]} "
+                        f"does not match 1D input_ids length {input_ids.shape[0]}"
+                    )
+                _processed_attention_mask = attention_mask.unsqueeze(0)
+        elif input_ids.ndim == 2: # Shape (possibly 1, seq_len)
+            if input_ids.shape[0] != 1:
+                raise ValueError(
+                    f"For 2D input_ids, batch size must be 1. Got shape {input_ids.shape}"
+                )
+            if attention_mask is not None and attention_mask.ndim == 1:
+                 raise ValueError(
+                    f"Cannot use 1D attention_mask with 2D input_ids. Mask shape: {attention_mask.shape}, "
+                    f"Input shape: {input_ids.shape}"
+                 )
+        else: # ndim is 0 or > 2
+            raise ValueError(
+                f"input_ids must be 1D (seq_len,) or 2D (1, seq_len). "
+                f"Got {input_ids.ndim}D tensor with shape {input_ids.shape}"
+            )
+        
+        # At this point, _processed_input_ids is (1, seq_len)
+
+        if _processed_attention_mask is None and self.model.config.pad_token_id is not None:
+            _processed_attention_mask = _processed_input_ids.ne(self.model.config.pad_token_id).long()
+        elif _processed_attention_mask is not None:
+            if not isinstance(_processed_attention_mask, torch.Tensor):
+                 raise TypeError(f"attention_mask must be a torch.Tensor or None, got {type(_processed_attention_mask)}")
+            
+            is_valid_mask_shape = (
+                _processed_attention_mask.ndim == 2 and
+                _processed_attention_mask.shape[0] == 1 and
+                _processed_attention_mask.shape[1] == _processed_input_ids.shape[1]
+            )
+            if not is_valid_mask_shape:
+                raise ValueError(
+                    f"Final attention_mask shape {_processed_attention_mask.shape} is incompatible with "
+                    f"processed input_ids shape {_processed_input_ids.shape} (expected (1, {_processed_input_ids.shape[1]}))."
+                )
+
+        captured_layer_activations = None
+
+        def _capture_all_hook(_, __, output):  # noqa: ANN001
+            nonlocal captured_layer_activations
+            if isinstance(output, tuple):
+                captured_layer_activations = output[0].detach()
+            else:
+                captured_layer_activations = output.detach()
+            return output 
+
+        try:
+            target_block = self.model.get_submodule(f"model.layers.{layer_idx}")
+        except AttributeError:
+            try:
+                target_block = self.model.transformer.h[layer_idx]  # type: ignore[attr-defined]
+            except AttributeError:
+                target_block = self.model.get_submodule(f"transformer.h.{layer_idx}")
+        
+        handle = target_block.register_forward_hook(_capture_all_hook)
+        
+        grad_ctx = torch.no_grad() if no_grad else nullcontext()
+        with grad_ctx:
+            _ = self.model( 
+                input_ids=_processed_input_ids,
+                attention_mask=_processed_attention_mask,
+                output_hidden_states=False, 
+            )
+        
+        handle.remove()
+
+        if captured_layer_activations is None:
+            raise RuntimeError(
+                f"Hook did not capture activations from layer {layer_idx}. "
+                "This might indicate an issue with the model structure or hook registration."
+            )
+        
+        return captured_layer_activations.squeeze(0)
+
     # ------------------------------------------------------------------
     # Convenience ----------------------------------------------------------------
     # ------------------------------------------------------------------
@@ -164,6 +428,7 @@ class OrigWrapper:
         """HF tiny GPT-2 lacks ``reshape_inputs`` – tests expect it."""
 
         if not hasattr(self.model, "reshape_inputs"):
-            self.model.reshape_inputs = lambda x, **__: {"input_ids": x}  # type: ignore[attr-defined]
+            # Assign the static method instead of a lambda
+            self.model.reshape_inputs = OrigWrapper._static_reshape_inputs  # type: ignore[attr-defined]
 
     # Called in __init__

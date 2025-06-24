@@ -1,6 +1,7 @@
 """Pads and transfers batch to GPU."""
 
-from typing import List
+from typing import List, Dict, Any, Union
+from collections.abc import Mapping
 
 import torch
 
@@ -16,25 +17,50 @@ def _pad_1d(t: torch.Tensor, length: int, pad_val: int) -> torch.Tensor:
     return torch.cat([t, pad], dim=0)
 
 
-def collate(batch: List[dict]) -> dict:  # noqa: D401
-    """Pad variable-length sequences and stack the batch.
-
-    Keys ending with ``_ids`` are assumed to be 1-D token sequences that need
-    padding.  Everything else is stacked verbatim.
+def collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
+    Collate a list of samples into a batch.
+    Handles tensors and scalar Python numbers (int, float) by converting them to tensors.
+    Other types are returned as lists.
+    """
+    if not batch:
+        return {}
 
-    out: dict[str, torch.Tensor] = {}
-    keys = batch[0].keys()
+    # Use the first element to determine keys and types
+    elem = batch[0]
+    batch_keys = elem.keys()
+    collated_batch: Dict[str, Any] = {key: [] for key in batch_keys}
 
-    for k in keys:
-        values = [b[k] for b in batch]
+    # Group values for each key
+    for sample in batch:
+        for key in batch_keys:
+            collated_batch[key].append(sample[key])
 
-        # if k.endswith("_ids") or k.endswith("token_pos"):
-        #     pad_id = int(values[0].new_tensor(0).item())  # assume 0 is pad
-        #     max_len = max(v.size(0) for v in values)
-        #     padded = [_pad_1d(v, max_len, pad_id) for v in values]
-        #     out[k] = torch.stack(padded)
-        # else:
-        out[k] = torch.stack(values)
+    # Process each key based on the type of its first element
+    for key in batch_keys:
+        example_value = elem[key]
+        values_list = collated_batch[key]
 
-    return out
+        if isinstance(example_value, torch.Tensor):
+            # Stack if elements are tensors
+            try:
+                collated_batch[key] = torch.stack(values_list)
+            except Exception as e:
+                # Handle cases like list of tensors with different shapes if necessary
+                # For now, assume tensors are stackable or raise
+                # print(f"Warning: Could not stack tensors for key '{key}'. Returning as list. Error: {e}")
+                # collated_batch[key] = values_list # Keep as list of tensors if stacking fails
+                raise RuntimeError(f"Failed to stack tensors for key '{key}'. Check tensor shapes. Values: {[v.shape for v in values_list if isinstance(v, torch.Tensor)]}") from e
+        elif isinstance(example_value, (int, float)):
+            # Convert list of Python numbers (int, float) to a tensor
+            if isinstance(example_value, int):
+                collated_batch[key] = torch.tensor(values_list, dtype=torch.long)
+            else: # float
+                collated_batch[key] = torch.tensor(values_list, dtype=torch.float)
+        else:
+            # For any other types (e.g., list of strings, or complex objects not handled above),
+            # they remain as a list of those objects.
+            # If `values_list` was already prepared (e.g. list of strings), this is fine.
+            pass # `collated_batch[key]` is already the list of values
+
+    return collated_batch

@@ -104,7 +104,7 @@ def test_training_performance():
     
     for batch_size in batch_sizes:
         for t_text in t_text_values:
-            print(f"\nTesting batch_size={batch_size}, T_text={t_text}")
+            print(f"\nTesting batch_size={batch_size}, t_text={t_text}")
             print("-"*60)
             
             # Create fresh models for each test
@@ -138,7 +138,7 @@ def test_training_performance():
             
             # Loss function parameters
             loss_fns = {
-                "T_text": t_text,
+                "t_text": t_text,
                 "tau": 1.0,
                 "alpha": 0.1,
                 "kl_base_weight": 1.0,
@@ -234,7 +234,7 @@ def test_training_performance():
         
         if len(t_speedups) >= 2:
             # Check if speedup increases with sequence length
-            print("  T_text -> Speedup:")
+            print("  t_text -> Speedup:")
             for t, speedup in t_speedups:
                 print(f"    {t} -> {speedup:.2f}x")
             

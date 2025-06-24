@@ -159,7 +159,7 @@ def test_generation_equivalence():
     
     # Set loss functions
     loss_fns = {
-        "T_text": max_length,
+        "t_text": max_length,
         "tau": gumbel_tau,
         "alpha": 0.1,
         "lm_base_weight": 1.0,

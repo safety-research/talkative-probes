@@ -249,7 +249,7 @@ class Encoder(nn.Module):
         # The Encoder base model processes the embeddings from the Decoder
         # to obtain hidden states.
         # We expect `embeddings` to be `decoder_output.generated_text_embeddings`
-        # which are (B, T_text, d_model).
+        # which are (B, t_text, d_model).
         
         # Prepend soft prompt tokens if configured
         if self.soft_prompt_embeddings is not None:
@@ -259,10 +259,10 @@ class Encoder(nn.Module):
             if self.soft_prompt_embeddings_postfix is not None:
                 soft_prompt_expanded_postfix = self.soft_prompt_embeddings_postfix.unsqueeze(0).expand(B, -1, -1)
                 # Concatenate: [soft_prompt, decoder_generated_tokens]
-                embeddings = torch.cat([soft_prompt_expanded, embeddings, soft_prompt_expanded_postfix], dim=1)  # (B, soft_prompt_length + T_text, d_model)
+                embeddings = torch.cat([soft_prompt_expanded, embeddings, soft_prompt_expanded_postfix], dim=1)  # (B, soft_prompt_length + t_text, d_model)
             else:
                 # Concatenate: [soft_prompt, decoder_generated_tokens]
-                embeddings = torch.cat([soft_prompt_expanded, embeddings], dim=1)  # (B, soft_prompt_length + T_text, d_model)
+                embeddings = torch.cat([soft_prompt_expanded, embeddings], dim=1)  # (B, soft_prompt_length + t_text, d_model)
         
         if self.config.add_current_token and current_token_ids is not None:
             current_token_vectors = self.base.get_input_embeddings().weight[current_token_ids]

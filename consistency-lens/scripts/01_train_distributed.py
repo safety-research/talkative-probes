@@ -6,9 +6,14 @@ import math
 import os
 import sys
 import time
+import signal # Added for preemption handling
 from collections import deque
 from contextlib import nullcontext
 from pathlib import Path
+
+# Add this for multiprocessing start method
+import torch.multiprocessing as mp
+#mp.set_sharing_strategy('file_system')
 
 try:
     import GPUtil
@@ -24,7 +29,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 
 # Enable TF32 for better performance on Ampere GPUs (A100, H100)
 torch.set_float32_matmul_precision('high')
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Dict, Any, Callable # Added Dict, Any, Callable
 
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -63,11 +68,11 @@ from lens.utils.logging import log as log_metrics
 from lens.utils.logging import summary_log as summary_log_metrics
 from lens.utils.param_utils import log_parameter_counts, log_parameter_drift
 
-if TYPE_CHECKING:
-    from tuned_lens import TunedLens
+# Import the new map-style cache dataset
+#from lens.data.on_the_fly_datasets import RankInMemoryTrainingCache, InMemoryValidationDataset
+from tuned_lens import TunedLens
 
 # Import all the utility functions from the original training script
-sys.path.insert(0, str(Path(__file__).parent))
 import importlib
 import dotenv
 dotenv.load_dotenv()
@@ -85,11 +90,55 @@ from lens.training.train_aux import (
     get_initial_model_state,
     Timer,
     convert_batch_dtype,
-    check_model_dtypes
+    #check_model_dtypes
+)
+from lens.training.model_utils import (
+    should_move_orig_to_cpu,
+    validate_model_setup,
+    #sync_model_devices,
+    log_device_info,
 )
 
 # Track if we've logged the first conversion
 _first_conversion_logged = False
+print("Setting up mp", flush=True)
+
+# Global flags for preemption handling
+_preemption_requested = False
+_preemption_slurm_id = "unknown" # Stores SLURM job ID at the time of signal
+
+def handle_preemption_signal(signum, frame):
+    """Signal handler for SIGTERM to request graceful shutdown and checkpoint."""
+    global _preemption_requested, _preemption_slurm_id
+    slurm_job_id = os.environ.get('SLURM_JOB_ID')
+    # Use a basic logger instance if main one isn't available yet during signal handling
+    log = logging.getLogger(__name__) 
+    
+    _preemption_slurm_id = slurm_job_id if slurm_job_id else "unknown"
+    
+    msg = (
+        f"Signal ({signum}) received. Likely preemption or shutdown request "
+        f"(SLURM Job ID: {_preemption_slurm_id}). "
+        f"Requesting graceful shutdown and checkpoint."
+    )
+    
+    # Try to print and log, as logging might not be fully configured
+    print(msg, flush=True) 
+    log.warning(msg)
+    
+    _preemption_requested = True
+
+try:
+    if mp.get_start_method(allow_none=True) != 'spawn':
+        mp.set_start_method('spawn', force=True)
+        print("Successfully set multiprocessing start method to 'spawn'.") 
+except RuntimeError as e:
+    current_method = mp.get_start_method(allow_none=True)
+    if current_method == 'spawn':
+        print(f"Multiprocessing start method already set to 'spawn'.")
+    else:
+        print(f"Warning: Could not set start_method to 'spawn'. Current method: {current_method}. Error: {e}")
+        print("CUDA with multiprocessing might still face issues if method is not 'spawn'.")
 
 def distributed_train_step(
     decoder,
@@ -142,7 +191,7 @@ def distributed_train_step(
         entropy_weight = config.get('entropy_weight', 0.0)
     
     loss_fns = {
-        "T_text": config.get('t_text', 8),
+        "t_text": config.get('t_text', 8),
         "tau": get_schedule_value(config['gumbel_tau_schedule'], step, config['max_train_steps'], 
                                 current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0, 
                                 steps_per_epoch=steps_per_epoch, 
@@ -354,27 +403,17 @@ def setup_distributed_models(decoder, encoder, orig_model, device, rank, world_s
 
 
 def get_dataloader_for_distributed(dataset, batch_size, world_size, rank, shuffle=True, **kwargs):
-    """Create a DataLoader with DistributedSampler if needed.
+    """Create a DataLoader with DistributedSampler if needed."""
+    # Check if dataset is already sharded (like RankInMemoryTrainingCache)
+    is_pre_sharded = hasattr(dataset, 'rank') and hasattr(dataset, 'world_size')
     
-    Args:
-        dataset: Dataset to load
-        batch_size: Batch size per GPU
-        world_size: Total number of processes
-        rank: Current process rank
-        shuffle: Whether to shuffle data
-        **kwargs: Additional arguments for DataLoader
-        
-    Returns:
-        DataLoader configured for distributed training
-    """
-    if world_size > 1:
+    if world_size > 1 and not is_pre_sharded:
         sampler = FastDistributedSampler(
             dataset,
             num_replicas=world_size,
             rank=rank,
             shuffle=shuffle
         )
-        # Remove shuffle from kwargs since we're using a sampler
         kwargs.pop('shuffle', None)
         dataloader = DataLoader(dataset, batch_size=batch_size, sampler=sampler, **kwargs)
     else:
@@ -442,7 +481,7 @@ def generate_verbose_samples_from_batch(
     #                              current_epoch=current_epoch, 
     #                              steps_per_epoch=steps_per_epoch, 
     #                              grad_accum_steps=gradient_accumulation_steps),
-    #     "T_text": config.get('t_text', 8),
+    #     "t_text": config.get('t_text', 8),
     #     "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps,
     #                                current_epoch=current_epoch, 
     #                                steps_per_epoch=steps_per_epoch, 
@@ -476,76 +515,77 @@ def generate_verbose_samples_from_batch(
         "group_n": config['group_n'],
     }
 
-    # Set models to eval mode
-    decoder_base.eval()
-    encoder_base.eval()
-    orig_model.model.eval()
-
-    try:
-        # Ensure we're in no_grad mode to prevent gradient accumulation
-        with nullcontext():#torch.profiler.profile(
-            #   activities=[torch.profiler.ProfilerActivity.CUDA],
-            #   profile_memory=True,
-            #   record_shapes=True) as prof:
-            with torch.no_grad():
-                # Generate verbose samples
-                num_printed, captured_text = process_and_print_verbose_batch_samples(
-                    batch=batch,
-                    cfg=config,
-                    models={"dec": decoder_base, "enc": encoder_base},
-                    orig=orig_model,
-                    tok=tokenizer,
-                    sch_args=sch_args_verbose,
-                    device=device,
-                    num_samples=verbose_config.get('num_samples', 2),
-                    top_n_analysis=verbose_config.get('top_n_predictions', 3),
-                    printed_count_so_far=0,
-                    generate_continuation=verbose_config.get('generate_continuation', True),
-                    continuation_tokens=verbose_config.get('continuation_tokens', 30),
-                    return_structured_data=False,
-                    capture_output=True,
-                    cached_prefix_ids=cached_prefix_ids,
-                    resample_ablation=config.get('resample_ablation', True),
-                    comparison_tuned_lens=comparison_tuned_lens # Pass it down
-                )
-        
-            # Log to wandb
-            if captured_text and current_wandb_run_id:
-                table_name = f"{data_source}_verbose_samples_dist"
-                verbose_samples_logger.log_verbose_samples(
-                    captured_text,
-                    step=step,
-                    table_name=table_name,
-                    limit_rows=verbose_config.get('wandb_table_limit', False)
-                )
-        #print(prof.key_averages().table(sort_by="cuda_memory_usage", row_limit=10))
-            
-    finally:
-        # Always restore training mode
-        decoder_base.train()
-        encoder_base.train()
-        # orig_model.model stays in eval mode
+    if verbose_config.get('num_samples', 2) > 1:
+        # Set models to eval mode
+        decoder_base.eval()
+        encoder_base.eval()
         orig_model.model.eval()
-        
-        # Clear any potential internal model caches
-        # Some models (like Llama, Gemma) might have internal KV caches
-        if hasattr(orig_model.model, 'past_key_values'):
-            log.error("Clearing orig_model.model.past_key_values")  
-            orig_model.model.past_key_values = None
-        
-        # Clear decoder's base model cache if it exists
-        if hasattr(decoder_base, 'base') and hasattr(decoder_base.base, 'past_key_values'):
-            log.error("Clearing decoder_base.base.past_key_values")
-            decoder_base.base.past_key_values = None
-            
-        # Clear encoder's base model cache if it exists  
-        if hasattr(encoder_base, 'base') and hasattr(encoder_base.base, 'past_key_values'):
-            log.error("Clearing encoder_base.base.past_key_values")
-            encoder_base.base.past_key_values = None
-        
-        # Force cleanup of any GPU memory that might have been allocated
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        try:
+            # Ensure we're in no_grad mode to prevent gradient accumulation
+            with nullcontext():#torch.profiler.profile(
+                #   activities=[torch.profiler.ProfilerActivity.CUDA],
+                #   profile_memory=True,
+                #   record_shapes=True) as prof:
+                with torch.no_grad():
+                    # Generate verbose samples
+                    num_printed, captured_text = process_and_print_verbose_batch_samples(
+                        batch=batch,
+                        cfg=config,
+                        models={"dec": decoder_base, "enc": encoder_base},
+                        orig=orig_model,
+                        tok=tokenizer,
+                        sch_args=sch_args_verbose,
+                        device=device,
+                        num_samples=verbose_config.get('num_samples', 2),
+                        top_n_analysis=verbose_config.get('top_n_predictions', 3),
+                        printed_count_so_far=0,
+                        generate_continuation=verbose_config.get('generate_continuation', True),
+                        continuation_tokens=verbose_config.get('continuation_tokens', 30),
+                        return_structured_data=False,
+                        capture_output=True,
+                        cached_prefix_ids=cached_prefix_ids,
+                        resample_ablation=config.get('resample_ablation', True),
+                        comparison_tuned_lens=comparison_tuned_lens, # Pass it down
+                        do_soft_token_embeds=config.get('do_soft_token_embeds', True)
+                    )
+
+                # Log to wandb
+                if captured_text and current_wandb_run_id:
+                    table_name = f"{data_source}_verbose_samples_dist"
+                    verbose_samples_logger.log_verbose_samples(
+                        str(captured_text) if captured_text else "No verbose samples captured",
+                        step=step,
+                        table_name=table_name,
+                        limit_rows=verbose_config.get('wandb_table_limit', False)
+                    )
+            #print(prof.key_averages().table(sort_by="cuda_memory_usage", row_limit=10))
+
+        finally:
+            # Always restore training mode
+            decoder_base.train()
+            encoder_base.train()
+            # orig_model.model stays in eval mode
+            orig_model.model.eval()
+
+            # Clear any potential internal model caches
+            # Some models (like Llama, Gemma) might have internal KV caches
+            if hasattr(orig_model.model, 'past_key_values'):
+                log.error("Clearing orig_model.model.past_key_values")  
+                orig_model.model.past_key_values = None
+
+            # Clear decoder's base model cache if it exists
+            if hasattr(decoder_base, 'base') and hasattr(decoder_base.base, 'past_key_values'):
+                log.error("Clearing decoder_base.base.past_key_values")
+                decoder_base.base.past_key_values = None
+
+            # Clear encoder's base model cache if it exists  
+            if hasattr(encoder_base, 'base') and hasattr(encoder_base.base, 'past_key_values'):
+                log.error("Clearing encoder_base.base.past_key_values")
+                encoder_base.base.past_key_values = None
+
+            # Force cleanup of any GPU memory that might have been allocated
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 def _check_and_generate_verbose_samples(
     decoder_base,
@@ -675,7 +715,7 @@ def validate_distributed(
     
     # # Loss function parameters (use same as training)
     # loss_fns = {
-    #     "T_text": config.get('t_text', 8),
+    #     "t_text": config.get('t_text', 8),
     #     "tau": get_schedule_value(config['gumbel_tau_schedule'], step, config['max_train_steps'], 
     #                             current_epoch=step // steps_per_epoch if steps_per_epoch and steps_per_epoch > 0 else 0, 
     #                             steps_per_epoch=steps_per_epoch, 
@@ -705,7 +745,7 @@ def validate_distributed(
         entropy_weight = config.get('entropy_weight', 0.0)
     
     loss_fns = {
-        "T_text": config.get('t_text', 8),
+        "t_text": config.get('t_text', 8),
         "tau": get_schedule_value(config['gumbel_tau_schedule'], step, config['max_train_steps'], 
                                 current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0, 
                                 steps_per_epoch=steps_per_epoch, 
@@ -762,7 +802,8 @@ def validate_distributed(
     # Run interventions on a subset of validation batches
     max_intervention_batches = min(10, max_val_batches)  # Limit interventions to first 10 batches
     
-    if config['GRPO_beta'] == 0 and config['lm_base_weight'] == 0 and shared_base_model is None:
+    # Move orig_model to device if needed for validation
+    if should_move_orig_to_cpu(config, shared_base_model, is_validation=True):
         orig_model.to(device)
     # No gradients needed for validation
     with torch.no_grad():
@@ -1031,13 +1072,13 @@ def validate_distributed(
 
     # Generate verbose samples if on main process and conditions are met
     if is_main_process and all(v is not None for v in [current_epoch, max_steps, gradient_accumulation_steps, val_interval]):
-        active_comparison_tuned_lens = None
         if comparison_tuned_lens:
             try:
-                active_comparison_tuned_lens = comparison_tuned_lens.to(device)
+                comparison_tuned_lens = comparison_tuned_lens.to(device)
+                log.info(f"Moved comparison_tuned_lens to device {device}")
             except Exception as e:
                 log.error(f"Failed to move comparison_tuned_lens to device {device}: {e}")
-                active_comparison_tuned_lens = None
+                comparison_tuned_lens = None
 
         try:
             _check_and_generate_verbose_samples(
@@ -1057,97 +1098,205 @@ def validate_distributed(
                 device=device,
                 wandb_run_id=wandb_run_id,
                 log=log,
-                comparison_tuned_lens=active_comparison_tuned_lens
+                comparison_tuned_lens=comparison_tuned_lens
             )
         finally:
             # Move back to cpu instead of just deleting
-            if active_comparison_tuned_lens is not None:
+            if comparison_tuned_lens is not None:
                 try:
-                    active_comparison_tuned_lens = active_comparison_tuned_lens.to('cpu')
-                    log.info("Moved active_comparison_tuned_lens back to cpu")
+                    comparison_tuned_lens = comparison_tuned_lens.to('cpu')
+                    log.info("Moved comparison_tuned_lens back to cpu")
                 except Exception as e:
-                    log.warning(f"Failed to move active_comparison_tuned_lens back to cpu: {e}")
-                del active_comparison_tuned_lens
+                    log.warning(f"Failed to move comparison_tuned_lens back to cpu: {e}")
+                #del comparison_tuned_lens
                 torch.cuda.empty_cache()
-                log.info("Cleared active_comparison_tuned_lens and emptied cache")
+                log.info("Cleared comparison_tuned_lens and emptied cuda cache")
     
     # Put models back in train mode
     decoder_base.train()
     encoder_base.train()
     orig_model.model.eval()
     # orig_model.model stays in eval mode
-    if shared_base_model is None:
+    
+    # Move orig_model back to CPU if appropriate
+    if should_move_orig_to_cpu(config, shared_base_model, is_validation=True):
         orig_model.to('cpu')
-        log.info("Moved orig_model to cpu")
+        log.info("Moved orig_model back to CPU after validation")
     
     # Return the average validation loss
     return avg_mse
 
 # Load checkpoint BEFORE moving models to device if resuming
 def maybe_resume_from_checkpoint(
-    config, decoder, encoder, log, is_main, decoder_train_cfg, encoder_train_cfg, gradient_accumulation_steps
+    config, decoder, encoder, log, is_main, decoder_train_cfg, encoder_train_cfg, gradient_accumulation_steps, current_run_checkpoint_dir=None
 ):
     start_step = 0
     checkpoint_data = None
 
-    if not config.get('resume'):
-        return start_step, checkpoint_data
+    # Python-side auto-resume logic for SLURM requeued jobs
+    successful_preemption_checkpoint = False
+    if os.environ.get('SLURM_RESTART_COUNT', '0') != '0':
+        # Get the CURRENT SLURM job ID after restart
+        current_slurm_job_id_for_resume = os.environ.get('SLURM_JOB_ID')
 
-    checkpoint_path_str = config['resume']
-    checkpoint_path = Path(checkpoint_path_str)
-
-    # If the resume path is a directory, find the latest checkpoint file within it.
-    if checkpoint_path.is_dir():
         if is_main():
-            log.info(f"Resume path is a directory. Searching for the latest checkpoint in {checkpoint_path}...")
-        checkpoint_files = [f for f in checkpoint_path.glob('*.pt') if f.is_file()]
+            log.info(
+                f"SLURM restart detected (SLURM_RESTART_COUNT > 0). Current SLURM Job ID: {current_slurm_job_id_for_resume}. "
+                f"Attempting to find a preemption checkpoint for this specific job."
+            )
+        
+        run_checkpoint_base_dir_str = config.get('checkpoint', {}).get('base_output_dir')
+
+        if run_checkpoint_base_dir_str and current_slurm_job_id_for_resume: # Ensure we have the dir and current ID
+            run_checkpoint_base_dir = Path(run_checkpoint_base_dir_str)
+            if run_checkpoint_base_dir.is_dir():
+                # Construct the specific pattern using the current SLURM Job ID.
+                # This assumes the job ID at preemption is the same as the current job ID on requeue.
+                preemption_pattern = f'interrupt_slurm{current_slurm_job_id_for_resume}.pt'
+                if is_main():
+                    log.info(f"Searching for preemption checkpoint pattern: '{preemption_pattern}' in {run_checkpoint_base_dir}")
+
+                preempt_checkpoints = sorted(
+                    list(run_checkpoint_base_dir.glob(preemption_pattern)),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True
+                )
+                if preempt_checkpoints:
+                    autoresume_path = str(preempt_checkpoints[0])
+                    if is_main():
+                        log.info(f"Found preemption checkpoint: {autoresume_path}. Setting this as resume path.")
+                    config['resume'] = autoresume_path 
+                    successful_preemption_checkpoint = True
+                else:
+                    # If not found, look for a folder with slurm{job_id} in its name
+                    slurm_folder_pattern = f"*slurm{current_slurm_job_id_for_resume}*"
+                    slurm_folders = sorted(
+                        [p for p in run_checkpoint_base_dir.glob(slurm_folder_pattern) if p.is_dir()],
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True
+                    )
+                    if slurm_folders:
+                        autoresume_path = str(slurm_folders[0]) if str(slurm_folders[0]) != current_run_checkpoint_dir else None
+                        if is_main():
+                            log.info(f"No preemption checkpoint found, but found folder: {autoresume_path}. Setting this as resume path.")
+                        config['resume'] = autoresume_path
+                        successful_preemption_checkpoint = True
+                    elif is_main():
+                        log.info(f"No preemption checkpoints or slurm folders found in {run_checkpoint_base_dir}.")
+            elif is_main():
+                log.warning(f"Run checkpoint directory '{run_checkpoint_base_dir_str}' for auto-resume does not exist.")
+        elif is_main():
+            log.warning("Could not determine run checkpoint directory for SLURM auto-resume. Ensure config['checkpoint']['output_dir'] is set.")
+
+    if not config.get('resume'):
+        return start_step, checkpoint_data, None, None
+
+    resume_path_config = config['resume']
+    resume_path_obj = Path(resume_path_config)
+    
+    potential_checkpoint_paths = []
+
+    if resume_path_obj.is_dir():
+        if is_main():
+            log.info(f"Resume path is a directory. Searching for checkpoints in {resume_path_obj}...")
+        # Sort by modification time, newest first
+        checkpoint_files = sorted(
+            [f for f in resume_path_obj.glob('*.pt') if f.is_file()],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True
+        )
         if not checkpoint_files:
             if is_main():
-                log.warning(f"No checkpoint files (.pt) found in directory: {checkpoint_path}. Cannot resume.")
-            checkpoint_path_str = None
+                log.warning(f"No checkpoint files (.pt) found in directory: {resume_path_obj}.")
         else:
-            latest_checkpoint = max(checkpoint_files, key=lambda p: p.stat().st_mtime)
-            checkpoint_path_str = str(latest_checkpoint)
+            potential_checkpoint_paths = [str(f) for f in checkpoint_files]
             if is_main():
-                log.info(f"Found latest checkpoint to resume from: {checkpoint_path_str}")
-
-    if checkpoint_path_str and Path(checkpoint_path_str).is_file():
+                log.info(f"Found {len(potential_checkpoint_paths)} potential checkpoint(s). Will try in order of recency.")
+    elif resume_path_obj.is_file():
+        potential_checkpoint_paths = [str(resume_path_obj)]
+    else:
+        # Path is neither a file nor a directory (or doesn't exist as specified)
         if is_main():
-            log.info(f"Loading checkpoint before device setup: {checkpoint_path_str}")
+            log.error(f"Resume path '{resume_path_config}' is not a valid file or directory.")
+        raise FileNotFoundError(f"Resume checkpoint path not found or invalid: {resume_path_config}")
 
-        models_to_load = {"decoder": decoder, "encoder": encoder}
-        reset_steps = config.get('resume_reset_steps', False)
+    if not potential_checkpoint_paths:
+        if is_main():
+            log.error(f"No checkpoint candidates found to resume from path: {resume_path_config}")
+        raise FileNotFoundError(f"No checkpoint candidates found to resume from path: {resume_path_config}")
+
+    actual_paths_to_attempt = []
+    if resume_path_obj.is_dir():
+        actual_paths_to_attempt = potential_checkpoint_paths[:2] # Try up to two most recent for a directory
+        if is_main() and len(potential_checkpoint_paths) > 0:
+            log.info(f"Will attempt to load from up to {len(actual_paths_to_attempt)} most recent checkpoint(s) found in directory {resume_path_obj}.")
+    else: # It's a file path
+        actual_paths_to_attempt = potential_checkpoint_paths[:1] # Should be exactly one path
+
+    loaded_successfully = False
+    last_exception = None
+    checkpoint_path_str = None # Will be set to the path of the successfully loaded checkpoint
+
+    for idx, current_ckpt_path_str in enumerate(actual_paths_to_attempt):
+        if is_main():
+            log.info(f"Attempting to load checkpoint: {current_ckpt_path_str} (Attempt {idx + 1}/{len(actual_paths_to_attempt)})")
+
+        if not Path(current_ckpt_path_str).is_file():
+            if is_main():
+                log.warning(f"Checkpoint candidate path is not a file: {current_ckpt_path_str}. Skipping.")
+            last_exception = FileNotFoundError(f"Checkpoint candidate path is not a file: {current_ckpt_path_str}")
+            continue
 
         try:
+            if is_main():
+                log.info(f"Loading checkpoint before device setup: {current_ckpt_path_str}")
+
+            models_to_load = {"decoder": decoder, "encoder": encoder}
+            reset_steps = config.get('resume_reset_steps', False)
+            
             temp_ckpt_mgr = CheckpointManager({'checkpoint': {'enabled': True, 'strict_load': config['checkpoint'].get('strict_load', True)}}, log, None, gradient_accumulation_steps)
 
             if is_main():
-                log.info(f"Loading checkpoint from exact path: {checkpoint_path_str}")
-                log.info(f"File exists: {Path(checkpoint_path_str).exists()}")
-                log.info(f"File size: {Path(checkpoint_path_str).stat().st_size / 1024 / 1024:.1f} MB")
+                log.info(f"Loading checkpoint from exact path: {current_ckpt_path_str}")
+                log.info(f"File exists: {Path(current_ckpt_path_str).exists()}")
+                log.info(f"File size: {Path(current_ckpt_path_str).stat().st_size / 1024 / 1024:.1f} MB")
 
-                raw_ckpt = torch.load(checkpoint_path_str, map_location='cpu', weights_only=False)
-                if 'models' in raw_ckpt and 'decoder' in raw_ckpt['models']:
-                    decoder_state = raw_ckpt['models']['decoder']
-                    if 'prompt_left_emb' in decoder_state:
-                        emb = decoder_state['prompt_left_emb']
-                        log.info(f"RAW checkpoint prompt_left_emb: shape={emb.shape}, norm={emb.norm().item():.6f}, mean={emb.mean().item():.6f}")
-                    if 'prompt_right_emb' in decoder_state:
-                        emb = decoder_state['prompt_right_emb']
-                        log.info(f"RAW checkpoint prompt_right_emb: shape={emb.shape}, norm={emb.norm().item():.6f}, mean={emb.mean().item():.6f}")
+                # # This raw_ckpt load is primarily for detailed logging of specific tensor properties.
+                # # The main loading is done by temp_ckpt_mgr.load_checkpoint.
+                # raw_ckpt = torch.load(current_ckpt_path_str, map_location='cpu', weights_only=False)
+                # if 'models' in raw_ckpt and 'decoder' in raw_ckpt['models']:
+                #     decoder_state_from_raw = raw_ckpt['models']['decoder']
+                #     if 'prompt_left_emb' in decoder_state_from_raw:
+                #         emb = decoder_state_from_raw['prompt_left_emb']
+                #         log.info(f"RAW checkpoint (from torch.load) prompt_left_emb: shape={emb.shape}, norm={emb.norm().item():.6f}, mean={emb.mean().item():.6f}")
+                #     if 'prompt_right_emb' in decoder_state_from_raw:
+                #         emb = decoder_state_from_raw['prompt_right_emb']
+                #         log.info(f"RAW checkpoint (from torch.load) prompt_right_emb: shape={emb.shape}, norm={emb.norm().item():.6f}, mean={emb.mean().item():.6f}")
 
-            dec_left_raw_norm = decoder.prompt_left_emb.norm().item()
-            dec_right_raw_norm = decoder.prompt_right_emb.norm().item()
-            enc_raw_norm = encoder.soft_prompt_embeddings.norm().item()
-            log.info(f"RAW checkpoint decoder left prompt norm: {dec_left_raw_norm:.6f}, decoder right prompt norm: {dec_right_raw_norm:.6f}, encoder soft prompt norm: {enc_raw_norm:.6f}")
+
+            # Log current model state norms *before* this specific load attempt
+            dec_pre_load_left_norm = decoder.prompt_left_emb.norm().item() if hasattr(decoder, 'prompt_left_emb') and decoder.prompt_left_emb is not None else 0.0
+            dec_pre_load_right_norm = decoder.prompt_right_emb.norm().item() if hasattr(decoder, 'prompt_right_emb') and decoder.prompt_right_emb is not None else 0.0
+            enc_pre_load_norm = encoder.soft_prompt_embeddings.norm().item() if hasattr(encoder, 'soft_prompt_embeddings') and encoder.soft_prompt_embeddings is not None else 0.0
+            log.info(f"Model state BEFORE attempting load of {current_ckpt_path_str}: decoder_left_norm={dec_pre_load_left_norm:.6f}, decoder_right_norm={dec_pre_load_right_norm:.6f}, encoder_norm={enc_pre_load_norm:.6f}")
 
             rec = temp_ckpt_mgr.load_checkpoint(
-                checkpoint_path_str,
+                current_ckpt_path_str,
                 models=models_to_load,
                 optimizer=None,
                 map_location="cpu"
             )
+            wandb_run_id_for_resumption = rec.get('wandb_run_id', None)
+            if is_main():
+                if wandb_run_id_for_resumption:
+                    log.info(f"WandB run ID for resumption: {wandb_run_id_for_resumption}, we may or may not use this for resuming, depending on passed args.")
+                else:
+                    log.info("No WandB run ID found in checkpoint. Will use wandb_resume_id from config if set.")
 
+            # If load_checkpoint was successful:
+            checkpoint_path_str = current_ckpt_path_str # Set the successfully loaded path
+            loaded_successfully = True
+            
             if is_main():
                 if hasattr(decoder, 'prompt_left_emb') and decoder.prompt_left_emb is not None:
                     log.info(f"After checkpoint load - Decoder left prompt norm: {decoder.prompt_left_emb.norm().item():.6f}")
@@ -1162,7 +1311,7 @@ def maybe_resume_from_checkpoint(
                 start_step = int(rec.get("step", -1)) + 1
 
             if is_main():
-                log.info(f"Checkpoint loaded successfully. Will resume from step {start_step}")
+                log.info(f"Checkpoint loaded successfully from {checkpoint_path_str}. Will resume from step {start_step}")
                 if 'tau' in rec:
                     log.info(f"Checkpoint tau: {rec['tau']}")
                 if 'alpha' in rec:
@@ -1170,13 +1319,14 @@ def maybe_resume_from_checkpoint(
                 if 'metrics' in rec and rec['metrics']:
                     log.info(f"Checkpoint metrics: {rec['metrics']}")
 
-            checkpoint_data = rec
+            checkpoint_data = rec # Assign data from successful load
 
             if is_main():
                 log.info("Verifying checkpoint compatibility...")
 
-                checkpoint_models = checkpoint_data.get('models', {})
-                checkpoint_decoder_state = checkpoint_models.get('decoder', {})
+                # Compatibility checks use checkpoint_data (from rec), not raw_ckpt directly for critical model structure.
+                checkpoint_models_state = checkpoint_data.get('models', {}) 
+                checkpoint_decoder_state = checkpoint_models_state.get('decoder', {})
 
                 ckpt_has_per_layer = 'proj_weight' in checkpoint_decoder_state and 'proj_bias' in checkpoint_decoder_state
                 ckpt_has_single = 'proj.weight' in checkpoint_decoder_state and 'proj.bias' in checkpoint_decoder_state
@@ -1200,6 +1350,7 @@ def maybe_resume_from_checkpoint(
                 decoder_has_left = hasattr(decoder, 'prompt_left_emb') and decoder.prompt_left_emb is not None
                 decoder_has_right = hasattr(decoder, 'prompt_right_emb') and decoder.prompt_right_emb is not None
 
+                # These 'ckpt_has_left/right' checks refer to keys in the state_dict from the checkpoint.
                 ckpt_has_left = 'prompt_left_emb' in checkpoint_decoder_state
                 ckpt_has_right = 'prompt_right_emb' in checkpoint_decoder_state
 
@@ -1207,20 +1358,28 @@ def maybe_resume_from_checkpoint(
                     log.info("Checkpoint contains trained decoder prompt embeddings")
                     if decoder_has_left and ckpt_has_left:
                         loaded_norm = decoder.prompt_left_emb.norm().item()
-                        ckpt_norm = checkpoint_decoder_state['prompt_left_emb'].norm().item()
-                        log.info(f"Decoder prompt_left_emb - loaded norm: {loaded_norm:.4f}, Checkpoint norm: {ckpt_norm:.4f}")
-                        if abs(loaded_norm - ckpt_norm) > 1e-6:
-                            log.warning("WARNING: Decoder left prompt embeddings might not have been loaded correctly!")
-                        if abs(loaded_norm - dec_left_raw_norm) > 1e-6:
-                            log.warning("WARNING: Decoder prompt norm did not change after loading checkpoint!")
+                        # Compare loaded norm with the norm from the checkpoint's state_dict.
+                        # Note: checkpoint_decoder_state['prompt_left_emb'] is the tensor from the checkpoint file.
+                        ckpt_tensor_norm = checkpoint_decoder_state['prompt_left_emb'].norm().item()
+                        log.info(f"Decoder prompt_left_emb - loaded norm: {loaded_norm:.4f}, Checkpoint tensor norm: {ckpt_tensor_norm:.4f}")
+                        if abs(loaded_norm - ckpt_tensor_norm) > 1e-6: # Compare model's current norm to the norm of the tensor in the checkpoint file
+                            log.warning("WARNING: Decoder left prompt embeddings norm in model differs significantly from checkpoint tensor norm!")
+                        
+                        # Warn if the norm didn't change much from its pre-load value.
+                        # Original warning condition `abs(loaded_norm - dec_pre_load_left_norm) > 1e-6` was contradictory to its message.
+                        # Corrected to warn if norms are very similar (i.e., did not change significantly).
+                        if abs(loaded_norm - dec_pre_load_left_norm) < 1e-6 and dec_pre_load_left_norm > 1e-9 : # Check if it didn't change, and avoid warning for zero/unset prompts
+                            log.warning(f"WARNING: Decoder left prompt norm ({loaded_norm:.6f}) is very similar to pre-load norm ({dec_pre_load_left_norm:.6f}), indicating it might not have changed as expected.")
+                    
                     if decoder_has_right and ckpt_has_right:
                         loaded_norm = decoder.prompt_right_emb.norm().item()
-                        ckpt_norm = checkpoint_decoder_state['prompt_right_emb'].norm().item()
-                        log.info(f"Decoder prompt_right_emb - loaded norm: {loaded_norm:.4f}, Checkpoint norm: {ckpt_norm:.4f}")
-                        if abs(loaded_norm - ckpt_norm) > 1e-6:
-                            log.warning("WARNING: Decoder right prompt embeddings might not have been loaded correctly!")
-                        if abs(loaded_norm - dec_right_raw_norm) > 1e-6:
-                            log.warning("WARNING: Decoder prompt norm did not change after loading checkpoint!")
+                        ckpt_tensor_norm = checkpoint_decoder_state['prompt_right_emb'].norm().item()
+                        log.info(f"Decoder prompt_right_emb - loaded norm: {loaded_norm:.4f}, Checkpoint tensor norm: {ckpt_tensor_norm:.4f}")
+                        if abs(loaded_norm - ckpt_tensor_norm) > 1e-6:
+                            log.warning("WARNING: Decoder right prompt embeddings norm in model differs significantly from checkpoint tensor norm!")
+                        if abs(loaded_norm - dec_pre_load_right_norm) < 1e-6 and dec_pre_load_right_norm > 1e-9:
+                            log.warning(f"WARNING: Decoder right prompt norm ({loaded_norm:.6f}) is very similar to pre-load norm ({dec_pre_load_right_norm:.6f}), indicating it might not have changed as expected.")
+
 
                 if (ckpt_has_left and not decoder_has_left) or (ckpt_has_right and not decoder_has_right):
                     error_msg = (
@@ -1232,8 +1391,8 @@ def maybe_resume_from_checkpoint(
                     log.error(error_msg)
                     raise RuntimeError(error_msg)
 
-                encoder_has_soft = hasattr(encoder, 'soft_prompt_embeddings')
-                checkpoint_encoder_state = checkpoint_models.get('encoder', {})
+                encoder_has_soft = hasattr(encoder, 'soft_prompt_embeddings') and encoder.soft_prompt_embeddings is not None
+                checkpoint_encoder_state = checkpoint_models_state.get('encoder', {})
                 ckpt_has_soft = 'soft_prompt_embeddings' in checkpoint_encoder_state
 
                 if ckpt_has_soft and not encoder_has_soft:
@@ -1248,22 +1407,67 @@ def maybe_resume_from_checkpoint(
 
                 log.info("Checkpoint compatibility verification passed!")
 
-                if ckpt_has_left and decoder_has_left:
+                if ckpt_has_left and decoder_has_left: # Store expected norms from checkpoint state for later verification if needed
                     rec['_expected_left_norm'] = checkpoint_decoder_state['prompt_left_emb'].norm().item()
-                    rec['_expected_right_norm'] = checkpoint_decoder_state['prompt_right_emb'].norm().item() if ckpt_has_right else None
+                if ckpt_has_right and decoder_has_right:
+                    rec['_expected_right_norm'] = checkpoint_decoder_state['prompt_right_emb'].norm().item()
+            
+            break # Successful load and checks, exit the loop
+        
+        except RuntimeError as e:
+            last_exception = e
+            if is_main():
+                log.warning(f"Failed to load or verify checkpoint from {current_ckpt_path_str}: {str(e)}")
 
-        except Exception as e:
-            error_msg = f"Failed to load checkpoint from {checkpoint_path_str}: {str(e)}"
+            is_pytorch_stream_error = "PytorchStreamReader failed locating file" in str(e)
+            
+            # Condition to try next candidate:
+            # 1. The error is "PytorchStreamReader failed locating file".
+            # 2. The original resume path was a directory.
+            # 3. This was the first attempt (idx == 0 for the directory's candidates).
+            # 4. There is a second candidate available in actual_paths_to_attempt.
+            should_try_next_candidate = (
+                is_pytorch_stream_error and
+                resume_path_obj.is_dir() and 
+                idx == 0 and # This was the first attempt from the directory list
+                (idx + 1) < len(actual_paths_to_attempt) # A second attempt is available
+            )
+
+            if should_try_next_candidate:
+                if is_main():
+                    log.info(f"Specific error encountered with {current_ckpt_path_str}. Will try next available checkpoint: {actual_paths_to_attempt[idx+1]}")
+                continue # Try the next checkpoint
+            else:
+                # If not the specific error allowing a retry, or no more retries allowed for this error,
+                # then this error is fatal for the loading process. Re-raise it.
+                raise e 
+        
+        except Exception as e: # Catch other non-RuntimeError exceptions during the process
+            last_exception = e
+            error_msg = f"An unexpected non-RuntimeError occurred while processing checkpoint {current_ckpt_path_str}: {str(e)}"
             if is_main():
                 log.error(error_msg)
-            raise RuntimeError(error_msg) from e
-    else:
-        error_msg = f"Resume checkpoint path not found: {checkpoint_path_str}"
-        if is_main():
-            log.error(error_msg)
-        raise FileNotFoundError(error_msg)
+            raise # Re-raise to stop processing.
 
-    return start_step, checkpoint_data
+    # After the loop for attempts
+    if not loaded_successfully:
+        final_error_msg = f"Failed to load any checkpoint from configured path: {resume_path_config}."
+        if last_exception:
+            # If an exception was caught during the attempts, raise a new error wrapping the last one.
+            if is_main():
+                log.error(f"{final_error_msg} Last error: {str(last_exception)}")
+            raise RuntimeError(final_error_msg) from last_exception
+        else:
+            # This case implies actual_paths_to_attempt was empty or paths were invalid before try block.
+            # (already handled by earlier checks, but as a safeguard)
+            if is_main():
+                log.error(f"{final_error_msg} No valid checkpoint files were found or attempted.")
+            raise FileNotFoundError(f"{final_error_msg} No valid checkpoint files were found or attempted.")
+
+    if checkpoint_data and successful_preemption_checkpoint:
+        successful_preemption_checkpoint = True
+            
+    return start_step, checkpoint_data, wandb_run_id_for_resumption, successful_preemption_checkpoint
 
 def setup_wandb_and_save_config(
     config, 
@@ -1272,23 +1476,50 @@ def setup_wandb_and_save_config(
     world_size, 
     run_checkpoint_dir, 
     log, 
-    cfg
+    cfg,
+    wandb_run_id_for_resumption,
+    successful_preemption_checkpoint
 ):
+    requeue_count = os.environ.get('SLURM_RESTART_COUNT', '0')
+    is_requeue = requeue_count != '0'
+
+    # Determine the display name for WandB
+    wandb_display_name = run_name # Original run_name from argument
+    if is_requeue:
+        wandb_display_name = f"{run_name}_requeue{requeue_count}"
+        if is_main(): # Only log modification info on main process
+            log.info(f"Modifying WandB display name for requeued job (requeue count: {requeue_count}): {wandb_display_name}")
+
     wandb_config = config.get('wandb', {})
-    wandb_run_id = config.get('wandb_resume_id')
-    force_disable_wandb = False
-    if wandb_run_id is not None and str(wandb_run_id).lower() == 'none':
-        wandb_run_id = None
-        force_disable_wandb = True
-        log.info("Explicitly disabling WandB run resumption (wandb_resume_id=None)")
-    wandb_resume_mode = None
+    if is_requeue:
+        wandb_run_id = wandb_run_id_for_resumption if successful_preemption_checkpoint else None
+        wandb_resume_mode = "allow"
+        force_disable_wandb = False
+        if is_main():
+            log.info(f"WandB run ID for resumption: {wandb_run_id_for_resumption}, we are resuming as we are in a restart, count: {requeue_count}")
+    else:
+        wandb_run_id = config.get('wandb_resume_id')
+        should_resume_wandb = wandb_run_id is None or wandb_run_id not in ['false']
+        if str(wandb_run_id).lower() in ['true']:
+            wandb_run_id = wandb_run_id_for_resumption if wandb_run_id_for_resumption else None
+            should_resume_wandb = True if wandb_run_id_for_resumption else False
+        if str(wandb_run_id).lower()=='none':
+            log.error("Please do not pass 'none' pass 'false' if you don't want to resume the checkpoint wandb")
+            wandb_run_id = None
+            should_resume_wandb = False
+        force_disable_wandb = False
+        if not should_resume_wandb:
+            wandb_run_id = None
+            force_disable_wandb = True
+            log.info("Explicitly disabling WandB run resumption (wandb_resume_id=None)")
+        wandb_resume_mode = None
 
     wandb_init_kwargs = {
         'project': wandb_config.get('project', 'consistency-lens'),
-        'name': run_name,
+        'name': wandb_display_name, # Use the potentially modified name
         'config': config,
         'mode': wandb_config.get('mode', 'online'),
-        'tags': []
+        'tags': [f"requeue_{requeue_count}"] if is_requeue else []   
     }
 
     if dataset_info.get('dataset'):
@@ -1575,8 +1806,9 @@ def main(cfg: DictConfig) -> None:
     # Parse flexible schedule notations
     config = parse_schedule_config(config)
     if world_size == 1:
-        torch.cuda.memory._record_memory_history()
+        # torch.cuda.memory._record_memory_history() # Keep commented out unless debugging memory
         # Analyze using https://pytorch.org/memory_viz
+        pass # Placeholder for potential single GPU memory debugging
     
     
     # Logging setup (only on main process)
@@ -1591,11 +1823,21 @@ def main(cfg: DictConfig) -> None:
     
     log = logging.getLogger(__name__)
 
+    # Register the signal handler for SIGTERM (preemption)
+    signal.signal(signal.SIGTERM, handle_preemption_signal)
+
+    if is_main(): # Log signal handler registration here
+        log.info("Registered signal handler for SIGTERM to allow for preemption checkpointing.")
+
     log.warning("L2 loss grows quadratically with the norm which increases with layer depth. Change coefficients accordingly.") 
     log.info("L2 loss grows quadratically with the norm which increases with layer depth. Change coefficients accordingly.") 
     print("L2 loss grows quadratically with the norm which increases with layer depth. Change coefficients accordingly.") 
 
-    # --- Timer for Initial Setup ---
+    # --- Determine if using on-the-fly dataset generation ---
+    on_the_fly_generation_enabled = config.get('dataset', {}).get('on_the_fly', {}).get('enabled', False)
+    on_the_fly_config_params = config.get('dataset', {}).get('on_the_fly', {}) if on_the_fly_generation_enabled else None
+
+    # --- Timer for Initial Setup (Paths, Tokenizer, Run Name) ---
     with Timer("Initial Setup (Paths, Tokenizer, Run Name)", log, main_process=is_main()):
         # Load tokenizer (all processes will have it, but primarily used by main for logging unless train_step needs it)
         tokenizer_name = config.get("tokenizer_name", config['model_name'])
@@ -1616,7 +1858,12 @@ def main(cfg: DictConfig) -> None:
         
         # Extract configuration values
         model_name = config['model_name']
-        layer_l = config.get('layer_l', 5)
+        # layer_l for activation dumping/generation is now part of on_the_fly_config if enabled,
+        # or still used for activation_dir path construction if not.
+        # Let's keep a general layer_l for path construction for consistency.
+        # If on_the_fly is enabled, its specific layer_l will be used by the datasets.
+        layer_l_for_paths = config.get('layer_l', 5) # Used for constructing activation_dir if loading from disk
+        
         out_layer = config['trainable_components']['encoder']['output_layer']
         
         # Setup paths (same as original)
@@ -1624,15 +1871,23 @@ def main(cfg: DictConfig) -> None:
         base_activation_dir_str = cli_activation_dir if cli_activation_dir is not None else config['activation_dumper']['output_dir']
         base_activation_path = resolve_path(base_activation_dir_str)
         model_name_clean = config['model_name'].replace("/", "_")
-        activation_dir = str(base_activation_path.parent / model_name_clean / f"layer_{layer_l}" / base_activation_path.name)
+        
+        # activation_dir is primarily for loading from disk.
+        # If on_the_fly is enabled, this path might not be directly used for data,
+        # but could still be relevant for other metadata or if there's a fallback.
+        activation_dir = str(base_activation_path.parent / model_name_clean / f"layer_{layer_l_for_paths}" / base_activation_path.name)
         
         # Validation activation directory
-        base_val_activation_dir_str = config.get('val_activation_dir')
+        base_val_activation_dir_str = config['activation_dumper']['val_output_dir']
         effective_val_activation_dir = None
         if base_val_activation_dir_str:
             base_val_path = resolve_path(base_val_activation_dir_str)
-            effective_val_activation_dir = str(base_val_path.parent / model_name_clean / f"layer_{layer_l}" / base_val_path.name)
-        
+            effective_val_activation_dir = str(base_val_path.parent / model_name_clean / f"layer_{layer_l_for_paths}" / base_val_path.name)
+
+        if effective_val_activation_dir is None:
+            log.warning(f"No validation activation directory provided. Using training activation directory: {activation_dir}")
+            effective_val_activation_dir = activation_dir
+
         # Training parameters
         max_steps = config['max_train_steps']
         learning_rate = config['learning_rate']
@@ -1650,14 +1905,30 @@ def main(cfg: DictConfig) -> None:
             log.info(f"Effective batch size: {effective_batch_size}")
             log.info(f"Gradient sync: Every {gradient_accumulation_steps} steps")
             log.info(f"Group n: {group_n}")
-        
+            if on_the_fly_generation_enabled:
+                log.info("On-the-fly activation generation is ENABLED.")
+                log.info(f"On-the-fly config: {on_the_fly_config_params}")
+            else:
+                log.info("On-the-fly activation generation is DISABLED (loading from disk).")
+
         # Set random seed for reproducibility
-        seed = config.get('seed', 42)
-        set_seed(seed + rank)  # Different seed per rank
+        seed_val = config.get('seed', 42) # Renamed to avoid conflict if 'seed' is in on_the_fly_config_params
+        set_seed(seed_val + rank)  # Different seed per rank
         
-        # Dataset info
-        dataset_info = extract_dataset_info(activation_dir)
-        
+        # Dataset info (primarily for disk loading, may need adjustment for on-the-fly)
+        if not on_the_fly_generation_enabled:
+            dataset_info = extract_dataset_info(activation_dir)
+        else:
+            # For on-the-fly, dataset info might come from pretokenized dataset metadata
+            # or be less relevant if not directly using activation_dir for data.
+            # For run name, we can simplify or use parts of the on_the_fly config.
+            dataset_info = {
+                'dataset': on_the_fly_config_params.get('pretokenized_path', 'on-the-fly').split('/')[-1], # type: ignore
+                'model_name': model_name, # From main config
+                'layer': on_the_fly_config_params.get('layer_l', layer_l_for_paths) # type: ignore
+            }
+            log.info(f"Using simplified dataset_info for on-the-fly run name: {dataset_info}")
+
         # Run name generation (only on main process)
         if is_main():
             config_name = _get_hydra_config_name()
@@ -1666,7 +1937,11 @@ def main(cfg: DictConfig) -> None:
             if run_name_override:
                 run_name = run_name_override
             else:
-                run_name = generate_run_name(config, dataset_info, config.get('resume'), config_name, config.get('run_suffix'))
+                run_name_suffix = config.get('run_suffix', '')
+                if on_the_fly_generation_enabled:
+                    run_name_suffix += "_OTF" # Add a marker for on-the-fly runs
+                
+                run_name = generate_run_name(config, dataset_info, config.get('resume'), config_name, run_name_suffix)
                 run_name = f"{run_name}_dist{world_size}"
                 
                 # Add SLURM job ID to run name if running under SLURM
@@ -1687,7 +1962,7 @@ def main(cfg: DictConfig) -> None:
         
         # Setup checkpoint directory
         checkpoint_config = config.get('checkpoint', {})
-        base_checkpoint_dir = resolve_path(checkpoint_config.get('output_dir', 'outputs'))
+        base_checkpoint_dir = resolve_path(checkpoint_config.get('base_output_dir', 'outputs'))
         run_checkpoint_dir = base_checkpoint_dir / run_name
         
         if is_main():
@@ -1695,8 +1970,12 @@ def main(cfg: DictConfig) -> None:
             log.info(f"Checkpoints will be saved to: {run_checkpoint_dir}")
             summary_log_metrics({"checkpoint_dir": str(run_checkpoint_dir)})
         
-        if 'checkpoint' not in cfg: # For original DictConfig
-            cfg.checkpoint = OmegaConf.create()
+        # if 'checkpoint' not in cfg: # For original DictConfig
+        #     OmegaConf.set_struct(cfg, False) # Allow adding new keys
+        #     cfg.checkpoint = OmegaConf.create()
+        #     OmegaConf.set_struct(cfg, True)
+
+
         cfg.checkpoint.output_dir = str(run_checkpoint_dir)
         
         # Update the config dict to include the run-specific checkpoint directory
@@ -1704,8 +1983,8 @@ def main(cfg: DictConfig) -> None:
             config['checkpoint'] = {}
         config['checkpoint']['output_dir'] = str(run_checkpoint_dir)
 
-    # --- Timer for Model Setup ---
-    with Timer("Model Setup (Init, DDP)", log, main_process=is_main()):
+    # --- Setup shared base model and OrigWrapper ---
+    with Timer("Shared Base Model and OrigWrapper Setup", log, main_process=is_main()):
         # Extract trainable components configuration
         trainable_components_config = config['trainable_components']
         decoder_train_cfg = trainable_components_config['decoder']
@@ -1713,41 +1992,60 @@ def main(cfg: DictConfig) -> None:
         
         # Check if we should share the base model for memory efficiency
         share_base_model = (
-            not decoder_train_cfg.get('base_model', False) and  # Decoder not training base
-            not (encoder_train_cfg.get('base_model', True) and encoder_train_cfg.get('use_base_model', False))  # Encoder not training base
+            not decoder_train_cfg.get('base_model', False) and
+            not (encoder_train_cfg.get('base_model', True) and encoder_train_cfg.get('use_base_model', False))
         )
 
         # Load base model once if sharing
-        shared_base_model = None
+        shared_base_model_obj = None
         if share_base_model:
             if is_main():
                 log.info(f"Loading shared base model '{model_name}' for memory efficiency (base models are frozen)")
-            shared_base_model = AutoModelForCausalLM.from_pretrained(model_name, load_in_8bit=False)
-            shared_base_model.eval()
-            for p in shared_base_model.parameters():
+            shared_base_model_obj = AutoModelForCausalLM.from_pretrained(model_name, load_in_8bit=False)
+            shared_base_model_obj.eval()
+            for p in shared_base_model_obj.parameters():
                 p.requires_grad = False
+
+        # Create single OrigWrapper instance for both on-the-fly generation and training/validation
+        if is_main():
+            log.info(f"Initializing OrigWrapper ({model_name}) with{'out' if shared_base_model_obj is None else ''} shared base model")
+        orig_model = OrigWrapper(model_name, load_in_8bit=False, base_to_use=shared_base_model_obj)
+        
+        # Move to device early if on-the-fly generation is enabled
+        if on_the_fly_generation_enabled:
+            orig_model.to(device)
+            if is_main():
+                log.info("OrigWrapper moved to device for on-the-fly data generation")
+        
+        # Synchronize all processes after orig_model setup
+        if world_size > 1:
+            torch.distributed.barrier()
+            if is_main():
+                log.info("All ranks synchronized after orig_model setup")
+
+
+    # --- Timer for Model Setup (Decoder, Encoder) ---
+    with Timer("Model Setup (Decoder, Encoder)", log, main_process=is_main()):
 
         # Initialize models with optional shared base
         decoder_config_obj = DecoderConfig(
             model_name=model_name,
             **decoder_train_cfg
         )
-        decoder = Decoder(decoder_config_obj, base_to_use=shared_base_model)
+        decoder = Decoder(decoder_config_obj, base_to_use=shared_base_model_obj)
         
         encoder_config_obj = EncoderConfig(
             model_name=model_name,
             **encoder_train_cfg
         )
-        encoder = Encoder(encoder_config_obj, base_to_use=shared_base_model)
-        
-        orig_model = OrigWrapper(model_name, load_in_8bit=False, base_to_use=shared_base_model)
+        encoder = Encoder(encoder_config_obj, base_to_use=shared_base_model_obj)
         
         # Initialize Decoder prompt
-        decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
+        decoder_base_for_init = decoder.module if hasattr(decoder, 'module') else decoder # Use temp var for clarity
         if 'decoder_prompt' in config and config['decoder_prompt']:
             if is_main():
                 log.info(f"Setting decoder prompt: \"{config['decoder_prompt']}\"")
-            decoder_base.set_prompt(config['decoder_prompt'], tokenizer)
+            decoder_base_for_init.set_prompt(config['decoder_prompt'], tokenizer)
         elif is_main():
             log.warning("Decoder prompt ('decoder_prompt') not found in config or is empty. Decoder soft prompts will not be initialized from text.")
         
@@ -1755,47 +2053,68 @@ def main(cfg: DictConfig) -> None:
 
         # Initialize Encoder soft prompt
         # Check if soft_prompt_init_text is configured for the encoder
+        encoder_base_for_init = encoder.module if hasattr(encoder, 'module') else encoder # Use temp var
         if encoder_config_obj.soft_prompt_init_text:
             if is_main():
                 log.info(f"Setting encoder soft prompt from text: \"{encoder_config_obj.soft_prompt_init_text}\"")
-            encoder.set_soft_prompt_from_text(encoder_config_obj.soft_prompt_init_text, tokenizer)
+            encoder_base_for_init.set_soft_prompt_from_text(encoder_config_obj.soft_prompt_init_text, tokenizer)
         elif encoder_config_obj.soft_prompt_length > 0:
             if is_main():
                 log.info(f"Encoder using randomly initialized soft prompt of length {encoder_config_obj.soft_prompt_length}.")
         elif is_main(): # No text and length is 0 (default)
             log.warning("Encoder soft prompt not configured (neither 'soft_prompt_init_text' nor 'soft_prompt_length > 0'). Encoder soft prompts will be empty.")
+        
+        # Conditional initialization logging (already present)
         if is_main():
-            log.info(f"Before init: traces of each proj factor: {[p.trace().item() for p in decoder.proj_weight]}")
-            log.info(f"Before init: sum of abs of biases: {[p.abs().sum().item() for p in decoder.proj_bias]}")
+            # Ensure using the correct decoder instance for logging these:
+            # If decoder is already DDP wrapped at this conceptual point (it shouldn't be yet, but to be safe)
+            # We'd need decoder.module.proj_weight. For now, assume it's pre-DDP.
+            # If per_layer_projections is false, decoder.proj_weight will be a single tensor.
+            # The original code here used decoder.proj_weight which implies per_layer_projections=True
+            # and proj_weight is a list of tensors. We need to handle both cases or make it clear.
+            # For now, assuming the original intent was for per_layer_projections=True.
+            # If not, this logging needs adjustment.
+            # Let's assume decoder.proj_weight exists and is a list as per original context.
+            # This needs to be robust if proj_weight is not a list (i.e. not per_layer)
+            if hasattr(decoder, 'proj_weight') and isinstance(decoder.proj_weight, torch.Tensor) and len(decoder.proj_weight.shape) == 3:
+                 log.info(f"Before init: traces of each proj factor: {[p.trace().item() for p in decoder.proj_weight if p is not None]}")
+                 log.info(f"Before init: sum of abs of biases: {[p.abs().sum().item() for p in decoder.proj_bias if p is not None]}")
+            elif hasattr(decoder, 'proj_weight') and isinstance(decoder.proj_weight, torch.Tensor): # Single projection
+                 log.info(f"Before init: trace of proj factor: {decoder.proj_weight.trace().item()}")
+                 log.info(f"Before init: sum of abs of bias: {decoder.proj_bias.abs().sum().item()}")
+
+
         if is_main(): # Perform initialization only on the main process
             log.info("Attempting tuned lens initialization for decoder")
-            # Initialize Decoder's projection layer  
             initialize_consistency_lens_projection(
-                    model_component=decoder,
-                    component_config=config['trainable_components']['decoder'],  # Changed from config_dict
+                    model_component=decoder, # Pass the actual decoder instance
+                    component_config=trainable_components_config['decoder'],
                     component_name="Decoder", 
-                    main_run_config=config,  # Changed from config_dict
+                    main_run_config=config,
                     log=log,
                     is_main_process=True,
-                    resolve_path_fn=resolve_path  # Added this parameter
+                    resolve_path_fn=resolve_path
                 )
-            # Initialize Encoder's projection layer (if applicable)
+            log.info("Attempting tuned lens initialization for encoder")
             initialize_consistency_lens_projection(
-                    model_component=encoder,
-                    component_config=config['trainable_components']['encoder'],  # Changed from config_dict
+                    model_component=encoder, # Pass the actual encoder instance
+                    component_config=trainable_components_config['encoder'],
                     component_name="Encoder",
-                    main_run_config=config,  # Changed from config_dict
+                    main_run_config=config,
                     log=log,
                     is_main_process=True,
-                    resolve_path_fn=resolve_path  # Added this parameter
+                    resolve_path_fn=resolve_path
                 )
-        if is_main():
-            log.info(f"After init: traces of each proj factor: {[p.trace().item() for p in decoder.proj_weight]}")
-            log.info(f"After init: sum of abs of biases: {[p.abs().sum().item() for p in decoder.proj_bias]}")
-        
+        if is_main(): # Logging after init (similar robustness needed as above)
+            if hasattr(decoder, 'proj_weight') and isinstance(decoder.proj_weight, torch.Tensor) and len(decoder.proj_weight.shape) == 3:
+                log.info(f"After init: traces of each proj factor: {[p.trace().item() for p in decoder.proj_weight if p is not None]}")
+                log.info(f"After init: sum of abs of biases: {[p.abs().sum().item() for p in decoder.proj_bias if p is not None]}")
+            elif hasattr(decoder, 'proj_weight') and isinstance(decoder.proj_weight, torch.Tensor):
+                log.info(f"After init: trace of proj factor: {decoder.proj_weight.trace().item()}")
+                log.info(f"After init: sum of abs of bias: {decoder.proj_bias.abs().sum().item()}")
 
-        start_step, checkpoint_data = maybe_resume_from_checkpoint(
-            config, decoder, encoder, log, is_main, decoder_train_cfg, encoder_train_cfg, gradient_accumulation_steps
+        start_step, checkpoint_data, wandb_run_id_for_resumption, successful_preemption_checkpoint = maybe_resume_from_checkpoint(
+            config, decoder, encoder, log, is_main, decoder_train_cfg, encoder_train_cfg, gradient_accumulation_steps, current_run_checkpoint_dir=run_checkpoint_dir
         )
 
         # Determine if models have trainable parameters BEFORE DDP setup
@@ -1808,6 +2127,7 @@ def main(cfg: DictConfig) -> None:
 
         
         log.info('At start time, param counts:')
+        # Pass the correct orig_model (the one for training loop, not datagen)
         log_parameter_counts(decoder, encoder, orig_model, decoder_config_obj, encoder_config_obj, log)
         
         # NOW move models to device and set up DDP
@@ -1818,6 +2138,26 @@ def main(cfg: DictConfig) -> None:
             compile_models=config['compile_models'],
             log=log
         )
+        # From now on, use decoder, encoder, orig_model for training/validation steps
+        
+        # Validate model setup
+        if is_main():
+            log.info("Validating model setup...")
+            validate_model_setup(
+                decoder=decoder,
+                encoder=encoder,
+                orig_model=orig_model,
+                shared_base_model=shared_base_model_obj,
+                config=config,
+                log=log
+            )
+            
+            # Log device information
+            log_device_info(
+                models={'decoder': decoder, 'encoder': encoder, 'orig': orig_model},
+                shared_base_model=shared_base_model_obj,
+                log=log
+            )
         
         if is_main():
             decoder_base_timer = decoder.module if hasattr(decoder, 'module') else decoder
@@ -1829,111 +2169,165 @@ def main(cfg: DictConfig) -> None:
             
             # Final verification of prompt embeddings after DDP setup
             if checkpoint_data and '_expected_left_norm' in checkpoint_data:
-                decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
-                actual_left_norm = decoder_base.prompt_left_emb.norm().item()
-                expected_left_norm = checkpoint_data['_expected_left_norm']
-                
-                if abs(actual_left_norm - expected_left_norm) > 1e-4:
-                    log.error("CRITICAL: Decoder prompt embeddings lost after DDP setup!")
-                    log.error(f"Expected left norm: {expected_left_norm:.6f}, Actual: {actual_left_norm:.6f}")
-                    log.error("This is causing the KL loss jump on resume!")
-                    raise RuntimeError("Decoder prompt embeddings were corrupted during model setup")
+                # Use the DDP-wrapped decoder to get to the base module for checking
+                decoder_base_for_check = decoder.module if hasattr(decoder, 'module') else decoder
+                if hasattr(decoder_base_for_check, 'prompt_left_emb') and decoder_base_for_check.prompt_left_emb is not None:
+                    actual_left_norm = decoder_base_for_check.prompt_left_emb.norm().item()
+                    expected_left_norm = checkpoint_data['_expected_left_norm']
+                    
+                    if abs(actual_left_norm - expected_left_norm) > 1e-4:
+                        log.error("CRITICAL: Decoder prompt embeddings lost after DDP setup!")
+                        log.error(f"Expected left norm: {expected_left_norm:.6f}, Actual: {actual_left_norm:.6f}")
+                        log.error("This is causing the KL loss jump on resume!")
+                        # raise RuntimeError("Decoder prompt embeddings were corrupted during model setup") # Potentially too strict, log as error
+                    else:
+                        log.info(f"✓ Decoder prompt embeddings preserved after DDP (norm: {actual_left_norm:.6f})")
                 else:
-                    log.info(f"✓ Decoder prompt embeddings preserved after DDP (norm: {actual_left_norm:.6f})")
+                    log.warning("Checkpoint expected 'prompt_left_emb', but decoder base does not have it after DDP setup.")
+
             
             if checkpoint_data and '_expected_right_norm' in checkpoint_data:
-                decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
-                actual_right_norm = decoder_base.prompt_right_emb.norm().item()
-                expected_right_norm = checkpoint_data['_expected_right_norm']
-                
-                if abs(actual_right_norm - expected_right_norm) > 1e-4:
-                    log.error("CRITICAL: Decoder prompt embeddings lost after DDP setup!")
-                    log.error(f"Expected right norm: {expected_right_norm:.6f}, Actual: {actual_right_norm:.6f}")
-                    raise RuntimeError("Decoder prompt embeddings were corrupted during model setup")
-        
+                decoder_base_for_check = decoder.module if hasattr(decoder, 'module') else decoder
+                if hasattr(decoder_base_for_check, 'prompt_right_emb') and decoder_base_for_check.prompt_right_emb is not None:
+                    actual_right_norm = decoder_base_for_check.prompt_right_emb.norm().item()
+                    expected_right_norm = checkpoint_data['_expected_right_norm']
+                    
+                    if abs(actual_right_norm - expected_right_norm) > 1e-4:
+                        log.error("CRITICAL: Decoder prompt embeddings lost after DDP setup!")
+                        log.error(f"Expected right norm: {expected_right_norm:.6f}, Actual: {actual_right_norm:.6f}")
+                        # raise RuntimeError("Decoder prompt embeddings were corrupted during model setup")
+                    # No else log needed here, covered by left prompt check.
+                # else:
+                    # log.warning("Checkpoint expected 'prompt_right_emb', but decoder base does not have it after DDP setup.") # Covered by left
+
         # Test decoder generation now that models are on the correct device
-        # IMPORTANT: Skip this test when resuming from checkpoint as it calls set_prompt() 
-        # which overwrites the loaded prompt embeddings with fresh initialization values
         if is_main() and not config['resume']:
             log.info("Running decoder generation tests (new training run)")
-            original_prompt = config.get('decoder_prompt', '')
-            test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main(), original_prompt)
+            original_prompt_text = config.get('decoder_prompt', '') # Use a different var name
+            # Pass the DDP-wrapped decoder to test_decoder_generation
+            test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main(), original_prompt_text)
         elif is_main() and config['resume']:
             log.info("Skipping decoder generation tests when resuming from checkpoint (preserves loaded prompt embeddings)")
             
-
     # --- Timer for Dataset and DataLoader Setup ---
     with Timer("Dataset and DataLoader Setup", log, main_process=is_main()):
-        train_loader, val_loader, train_ds, val_ds = prepare_dataset_and_loaders(
+        # orig_model is already initialized. If OTF, it's on device.
+        # _prepare_dataloaders now returns RankInMemoryTrainingCache for train_ds if on-the-fly.
+        
+        train_ds, val_ds = _prepare_dataloaders(
             config=config,
-            activation_dir=activation_dir,
+            activation_dir=activation_dir, 
             effective_val_activation_dir=effective_val_activation_dir,
-            max_train_samples_req=config.get('max_train_samples'),
+            max_train_samples_req=config.get('max_train_samples'), # For OTF, this influences initial cache size
             max_val_samples_req=config.get('max_val_samples'),
-            log=log
+            log=log, # Pass the main logger
+            orig_model_for_gen=orig_model if on_the_fly_generation_enabled else None, 
+            tokenizer_for_gen=tokenizer if on_the_fly_generation_enabled else None, # For OTF val
+            generation_device=device if on_the_fly_generation_enabled else None,
+            rank=rank if on_the_fly_generation_enabled else None,
+            world_size=world_size if on_the_fly_generation_enabled else None
         )
         
         # Determine num_workers based on CPU count and world size
-        num_dataloader_workers = 0 # Default to 0
-        if world_size > 0 and os.cpu_count() is not None:
-            workers_per_gpu = os.cpu_count() // world_size
-            num_dataloader_workers = max(1, 2)#workers_per_gpu // 4) # Heuristic: half of available CPUs per GPU, at least 1. Adjust as needed.
-            log.warning(f"Setting num_workers for DataLoaders to: {num_dataloader_workers} (hardcoded right now - to be resolved) (os.cpu_count()={os.cpu_count()}, world_size={world_size})") #TODO remove hardcoding, but not sure if the //4 is correct. It might be crashing the servers.
-            if is_main():
-                log.info(f"Setting num_workers for DataLoaders to: {num_dataloader_workers} (os.cpu_count()={os.cpu_count()}, world_size={world_size})")
-        elif is_main():
-            log.warning(f"Could not determine optimal num_workers. Defaulting to 0. os.cpu_count()={os.cpu_count()}, world_size={world_size}")
+        num_dataloader_workers = 0 # Defaulting to 0 based on previous observation of issues.
+        if world_size > 0 : 
+            cpu_count = os.cpu_count()
+            if cpu_count is not None:
+                workers_per_gpu = cpu_count // world_size
+                if workers_per_gpu >= 4: num_dataloader_workers = 2 # Simplified heuristic
+                elif workers_per_gpu >=2: num_dataloader_workers = 1
+            if is_main(): log.info(f"Num DataLoader workers set to: {num_dataloader_workers}")
+        elif is_main(): # world_size is 0 or less, which is unusual.
+            log.warning(f"Could not determine optimal num_workers (world_size={world_size}). Defaulting to 0.")
 
-        train_loader = get_dataloader_for_distributed(
-            train_ds, batch_size=batch_size, world_size=world_size, rank=rank, shuffle=True,
-            collate_fn=collate, num_workers=num_dataloader_workers, pin_memory=True,
-            persistent_workers=True if num_dataloader_workers > 0 else False,
-        )
-        
-        if val_ds is not None:
-            val_loader = get_dataloader_for_distributed(
-                val_ds, batch_size=batch_size, world_size=world_size, rank=rank, shuffle=False,
+
+        if train_ds is not None and len(train_ds) > 0:
+            # RankInMemoryTrainingCache is a map-style dataset, so FastDistributedSampler is appropriate
+            train_loader = get_dataloader_for_distributed(
+                train_ds, batch_size=batch_size, world_size=world_size, rank=rank, 
+                shuffle=True, # Shuffle the cache content each epoch/pass
                 collate_fn=collate, num_workers=num_dataloader_workers, pin_memory=True,
-                persistent_workers=True if num_dataloader_workers > 0 else False,
+                persistent_workers=num_dataloader_workers > 0
+            )
+        elif train_ds is not None and len(train_ds) == 0 and on_the_fly_generation_enabled:
+            log.error(f"Rank {rank}: On-the-fly training cache (train_ds) is empty after setup. This indicates an issue with initial data generation or pretokenized source. Cannot create train_loader.")
+            raise ValueError("On-the-fly training dataset is critically empty after _prepare_dataloaders.")
+        elif train_ds is None:
+            log.error(f"Rank {rank}: Training dataset is None after setup. Cannot create train_loader.")
+            raise ValueError("Training dataset is None after _prepare_dataloaders.")
+        else: # train_ds is not None, but len is 0 (e.g. disk dataset was empty)
+            log.error(f"Rank {rank}: Training dataset from disk is empty. Cannot create train_loader.")
+            raise ValueError("Training dataset from disk is critically empty.")
+
+        if val_ds is not None and len(val_ds) > 0:
+            val_loader = get_dataloader_for_distributed(
+                val_ds, batch_size=batch_size, world_size=world_size, rank=rank, shuffle=False, # No shuffle for validation
+                collate_fn=collate, num_workers=num_dataloader_workers, pin_memory=True,
+                persistent_workers=num_dataloader_workers > 0
             )
         else:
-            val_loader = None
+            if is_main() and on_the_fly_generation_enabled and on_the_fly_config_params.get('validation_samples_override', config.get('max_val_samples',0)) > 0: # type: ignore
+                 log.warning("Validation dataset is None or empty even though on-the-fly validation was configured. Check pretokenized data / config.")
+            elif is_main() and not on_the_fly_generation_enabled and effective_val_activation_dir:
+                 log.warning("Validation dataset (from disk) is None or empty. Check val_activation_dir / max_val_samples.")
+            elif is_main():
+                 log.info("Validation dataset is None or empty (either not configured or 0 samples requested).")
+            val_loader = None # Explicitly set to None
         
-        steps_per_epoch = len(train_loader) if train_loader else 0
+        # After dataset creation, ensure orig_model is on CPU if not needed
+        if not on_the_fly_generation_enabled and should_move_orig_to_cpu(config, shared_base_model_obj):
+            current_device = next(orig_model.model.parameters()).device
+            if current_device.type != 'cpu':
+                orig_model.to('cpu')
+                if is_main():
+                    log.info("Moved orig_model to CPU for memory optimization (not needed for data generation)")
+
+        # Calculate steps_per_epoch based on the current (initial) training dataset size
+        if train_loader and hasattr(train_loader.dataset, '__len__') and len(train_loader.dataset) > 0: # type: ignore
+            if hasattr(train_loader, 'batch_sampler') and train_loader.batch_sampler is not None:
+                steps_per_epoch = len(train_loader.batch_sampler)
+            else: # Should have batch_sampler if DDP or shuffle=True
+                steps_per_epoch = (len(train_loader.dataset) + batch_size -1) // batch_size # type: ignore
+            if is_main():
+                log.info(f"Initial steps_per_epoch based on training cache size {len(train_loader.dataset)}: {steps_per_epoch}") # type: ignore
+        else: # Should be caught by errors above
+            steps_per_epoch = 0 
+            if is_main(): log.error("steps_per_epoch is 0, training may not proceed.")
+        
+        config['calculated_steps_per_epoch'] = steps_per_epoch
+
         # Determine max_steps, similar to 01_train.py
-        max_steps = config['max_train_steps']  # Read from config first
+        max_steps_from_config = config['max_train_steps']  # Read from config first
         num_train_epochs = config.get('num_train_epochs', 0)
         num_epochs_total_approx = 0 # For logging
 
         if steps_per_epoch == 0:
             if is_main():
-                log.warning("Train loader is empty or batch_size is too large for dataset; steps_per_epoch is 0.")
-            # If loader is empty, max_steps from config (or 0 if not set for epoch training) will be used.
-            # If max_steps is 0, training loop won't run.
-            num_epochs_total_approx = 0 if max_steps == 0 else 1 # Basic approximation for logging
-            if num_train_epochs > 0 and max_steps == 0: # Epoch training specified but loader empty
+                # If max_steps_from_config is also 0, then no training will occur.
+                # If max_steps_from_config > 0, it will be used directly.
+                log.warning(f"Train loader is empty or batch_size is too large for dataset; steps_per_epoch is 0. Effective max_steps will be {max_steps_from_config}.")
+            max_steps = max_steps_from_config
+            num_epochs_total_approx = 0 if max_steps == 0 else 1 
+            if num_train_epochs > 0 and max_steps_from_config == 0:
                  if is_main():
                     log.warning(f"Epoch-based training ({num_train_epochs} epochs) requested, but train loader is empty. Effective max_steps will be 0.")
-                 max_steps = 0 # Ensure no training
+                 max_steps = 0 
         else: # steps_per_epoch > 0
-            if num_train_epochs > 0 and max_steps == 0:
+            if num_train_epochs > 0 and max_steps_from_config == 0:
                 # Epoch-based training: calculate max_steps from num_train_epochs
                 max_steps = steps_per_epoch * num_train_epochs
                 num_epochs_total_approx = num_train_epochs
                 if is_main():
                     log.info(f"Epoch-based training: {num_train_epochs} epochs × {steps_per_epoch} steps/epoch = {max_steps} total steps")
-            elif max_steps > 0:
-                # Step-based training: calculate approximate epochs from max_steps
+            elif max_steps_from_config > 0:
+                max_steps = max_steps_from_config
                 num_epochs_total_approx = (max_steps - 1) // steps_per_epoch + 1
-            else:
-                # Neither epochs nor steps specified, and loader is not empty. This is an error.
+            else: # Neither epochs nor steps specified, and loader is not empty. This is an error.
                 if is_main():
-                    # This error should ideally stop all ranks.
-                    # For now, log error and set max_steps to 0 to prevent training.
                     log.error("Config Error: If train_loader is not empty, either 'num_train_epochs' or 'max_train_steps' must be > 0.")
                 max_steps = 0 # Prevent training loop
 
-        config['max_train_steps'] = max_steps # Update config dict with calculated max_steps for consistency if other parts rely on it
+        config['max_train_steps'] = max_steps # Update config dict with calculated max_steps for consistency
 
         # Handle early termination if configured
         early_termination_config = config.get('early_termination', {})
@@ -1947,32 +2341,36 @@ def main(cfg: DictConfig) -> None:
                 max_steps = early_term_steps
                 config['max_train_steps'] = max_steps  # Update config with early termination limit
                 
-                # Recalculate approximate epochs with early termination
                 if steps_per_epoch > 0:
                     num_epochs_total_approx = (max_steps - 1) // steps_per_epoch + 1
 
         # Calculate the number of optimizer steps
-        max_optimizer_steps = max_steps // gradient_accumulation_steps
-        if max_steps % gradient_accumulation_steps != 0: # Account for any remaining steps
+        max_optimizer_steps = max_steps // gradient_accumulation_steps if gradient_accumulation_steps > 0 else max_steps
+        if gradient_accumulation_steps > 0 and max_steps % gradient_accumulation_steps != 0: 
             max_optimizer_steps +=1
+        
         if is_main():
             log.info(f"Total micro-steps (fwd/bwd passes): {max_steps}")
             log.info(f"Total optimizer steps (scheduler steps): {max_optimizer_steps}")
 
         # Parse flexible interval settings (log / wandb / val) now that steps_per_epoch is known
-        # These intervals are based on micro-steps (main loop steps)
         log_interval = _resolve_schedule_to_steps(config['log_interval'], steps_per_epoch, log, "log_interval", gradient_accumulation_steps)
         wandb_log_interval = _resolve_schedule_to_steps(config['wandb_log_interval'], steps_per_epoch, log, "wandb_log_interval", gradient_accumulation_steps)
-        val_interval = _resolve_schedule_to_steps(config['val_interval'], steps_per_epoch, log, "val_interval", gradient_accumulation_steps)
+        val_interval_str = config.get('val_interval', "0s") # Default to 0s if not present
+        val_interval = _resolve_schedule_to_steps(val_interval_str, steps_per_epoch, log, "val_interval", gradient_accumulation_steps)
         
         if is_main():
             log.info(f"Validation setup: val_loader={'exists' if val_loader else 'None'}, interval={val_interval} steps")
+            if val_loader is None and val_interval > 0:
+                log.warning(f"val_interval is {val_interval} but val_loader is None. No validation will occur.")
+
 
         # -------- Drift-logging configuration --------
         drift_cfg = config.get('parameter_drift', {})
         drift_enabled = drift_cfg.get('enabled', True)
+        drift_log_interval_str = drift_cfg.get('interval', "0s")
         drift_log_interval = _resolve_schedule_to_steps(
-            drift_cfg['interval'], steps_per_epoch, log, "parameter_drift.interval",
+            drift_log_interval_str, steps_per_epoch, log, "parameter_drift.interval",
             gradient_accumulation_steps
         ) if drift_enabled else -1
         if drift_enabled and drift_log_interval <= 0:
@@ -2024,7 +2422,7 @@ def main(cfg: DictConfig) -> None:
                 # Check if we should be unfrozen at this step
                 if start_step >= unfreeze_step:
                     # We're past the unfreeze point - need to unfreeze base models
-                    current_epoch = start_step // steps_per_epoch if steps_per_epoch > 0 else 0
+                    current_epoch_for_unfreeze = start_step // steps_per_epoch if steps_per_epoch > 0 else 0
                     
                     # Apply unfreezing using the same logic as during training
                     # Note: unfreeze_non_adapters returns (optimizer, trainable_params, newly_unfrozen_params) tuple
@@ -2041,7 +2439,7 @@ def main(cfg: DictConfig) -> None:
                         overall_encoder_lr_multiplier,
                         opt_state_dict=None,  # We'll handle optimizer state later
                         current_step=start_step,
-                        current_epoch=current_epoch,
+                        current_epoch=current_epoch_for_unfreeze, # Use correct epoch
                         grad_accum_steps=gradient_accumulation_steps
                     )
                     
@@ -2125,7 +2523,11 @@ def main(cfg: DictConfig) -> None:
     # Initialize CheckpointManager (after steps_per_epoch is known)
     # It uses the updated config dict with the run-specific checkpoint directory.
     checkpoint_manager = CheckpointManager(config, log, steps_per_epoch, gradient_accumulation_steps)
-    
+   
+    # --- Timer for Optimizer and Scheduler Setup ---
+    # ... (rest of the optimizer, scheduler, checkpoint manager, WandB setup) ...
+    # IMPORTANT: Ensure `orig_model` is used for validation steps later in the loop,
+    # and `shared_base_model_obj` is correctly handled if `orig_model.to('cpu')` is called. 
     # --- Load Comparison TunedLens for Verbose Samples (Main Process Only for Loading) ---
     comparison_tuned_lens_cpu = None
     verbose_sample_config = config.get('verbose_samples', {})
@@ -2153,7 +2555,7 @@ def main(cfg: DictConfig) -> None:
     
     if is_main():
         current_wandb_run_id = setup_wandb_and_save_config(
-            config, run_name, dataset_info, world_size, run_checkpoint_dir, log, cfg
+            config, run_name, dataset_info, world_size, run_checkpoint_dir, log, cfg, wandb_run_id_for_resumption, successful_preemption_checkpoint
         )
     else:
         current_wandb_run_id = None
@@ -2165,8 +2567,8 @@ def main(cfg: DictConfig) -> None:
         lr_scheduler=lr_scheduler,
         decoder=decoder,
         encoder=encoder,
-        decoder_base=decoder_base,
-        encoder_base=encoder_base,
+        decoder_base=decoder_base_for_init,
+        encoder_base=encoder_base_for_init,
         param_groups_fn=param_groups,
         projection_lr_multiplier=projection_lr_multiplier,
         embedding_lr_multiplier=embedding_lr_multiplier,
@@ -2184,7 +2586,7 @@ def main(cfg: DictConfig) -> None:
         is_main=is_main,
         SmoothTransitionScheduler=SmoothTransitionScheduler,
         get_lr_scheduler=get_lr_scheduler,
-        _resolve_schedule_to_steps=_resolve_schedule_to_steps,
+        _resolve_schedule_to_steps=_resolve_schedule_to_steps,  
     )
     
     # Capture initial model states for drift calculation after model setup and potential checkpoint loading
@@ -2223,14 +2625,29 @@ def main(cfg: DictConfig) -> None:
     reset_steps = config.get('resume_reset_steps', False)
     skip_batches_on_resume = config.get('skip_batches_on_resume', False)  # Make it optional
     
+    samples_processed_since_last_regen = 0
+    # Get config for regeneration cycle, ensuring it's positive if enabled
+    samples_per_regeneration_cycle = -1 # Default to disabled
+    if on_the_fly_generation_enabled:
+        on_the_fly_specific_cfg = config.get('dataset', {}).get('on_the_fly', {})
+        samples_per_regeneration_cycle = on_the_fly_specific_cfg.get('samples_to_generate_per_cycle', -1)
+        if samples_per_regeneration_cycle is None or samples_per_regeneration_cycle <= 0:
+            # Fallback if not configured or invalid: regenerate cache size worth of samples
+            samples_per_regeneration_cycle = len(train_ds) if train_ds and len(train_ds) > 0 else 10000 # type: ignore
+            if is_main(): 
+                log.info(f"OTF: 'samples_to_generate_per_cycle' not set or invalid. Defaulting to current cache size or 10k: {samples_per_regeneration_cycle}")
+        elif is_main():
+            log.info(f"OTF: Will regenerate cache with {samples_per_regeneration_cycle} new samples when triggerred.")
+
     if start_step > 0 and not reset_steps:
         resume_epoch = start_step // steps_per_epoch if steps_per_epoch > 0 else 0
         
-        # Always set the correct epoch for the sampler when resuming
-        if world_size > 1 and hasattr(train_loader.sampler, 'set_epoch') and resume_epoch > 0:
-            train_loader.sampler.set_epoch(resume_epoch)
-            if is_main():
-                log.info(f"Set DistributedSampler epoch to {resume_epoch} for resuming")
+        # Always set the correct epoch for the sampler when resuming for Map-style datasets
+        if not (on_the_fly_generation_enabled):# and isinstance(train_ds, OnTheFlyIterableTrainingDataset)):
+            if world_size > 1 and hasattr(train_loader.sampler, 'set_epoch') and resume_epoch > 0:
+                train_loader.sampler.set_epoch(resume_epoch)
+                if is_main():
+                    log.info(f"Set DistributedSampler epoch to {resume_epoch} for resuming")
         
         # Optionally skip batches within the epoch
         if skip_batches_on_resume:
@@ -2242,7 +2659,9 @@ def main(cfg: DictConfig) -> None:
                     log.info(f"Skipping {batches_to_skip} batches to resume from step {start_step}")
                 for _ in range(batches_to_skip):
                     try:
-                        _ = next(iter_loader)
+                        raw_batch = next(iter_loader)
+                        if on_the_fly_generation_enabled: # Count samples skipped
+                             samples_processed_since_last_regen += raw_batch['A'].size(0) * world_size # Assuming 'A' key exists and indicates batch items
                     except StopIteration:
                         if is_main():
                             log.warning(f"Dataset ended while skipping batches. Expected to skip {batches_to_skip} batches.")
@@ -2271,13 +2690,29 @@ def main(cfg: DictConfig) -> None:
                     initial=start_step, 
                     total=max_steps, miniters=log_interval)
     else:
-        pbar = range(start_step, max_steps)
+        pbar_initial_step = int(start_step) if start_step > 0 else 0
+        pbar_total_steps = int(max_steps) if max_steps > 0 else 0
+        pbar = range(pbar_initial_step, pbar_total_steps)
 
-    if config['GRPO_beta'] == 0 and config['lm_base_weight'] == 0 and shared_base_model is None:
-        orig_model.to('cpu')
-        log.info("Moved orig_model to cpu")
+
+    # orig_model is the one for training/validation
+    # shared_base_model_obj is the CPU copy if sharing is enabled
+    # orig_model is on GPU if OTF is enabled
+    
+    # Device placement for orig_model is now handled by validate_distributed
+    # and other functions using the should_move_orig_to_cpu helper.
+    # This avoids unnecessary device transfers during training.
+    final_ckpt_name_override = None # Used if KeyboardInterrupt or Preemption occurs
+
     try: 
         for step in pbar:
+            if _preemption_requested: # Check for preemption signal
+                if is_main():
+                    # _preemption_slurm_id is set by the signal handler
+                    log.warning(f"SIGTERM received (preemption). Breaking loop to save checkpoint as 'preempt_slurm{_preemption_slurm_id}'.")
+                    final_ckpt_name_override = f"preempt_slurm{_preemption_slurm_id}"
+                # All ranks should break the loop if preemption is requested
+                break
             if step ==gradient_accumulation_steps and world_size==1:
                 # Stop recording
                 # Dump memory snapshot
@@ -2291,21 +2726,86 @@ def main(cfg: DictConfig) -> None:
             step_start_time = time.time()
 
             current_epoch = step // steps_per_epoch if steps_per_epoch > 0 else 0
+            
+            # --- Cache Regeneration Logic ---
+            if on_the_fly_generation_enabled and \
+               samples_per_regeneration_cycle > 0 and \
+               samples_processed_since_last_regen >= samples_per_regeneration_cycle:
+                
+                if is_main():
+                    log.info(f"Rank {rank}: Triggering training cache regeneration at step {step}. "
+                             f"Processed ~{samples_processed_since_last_regen} samples from cache.")
+                
+                num_to_generate_this_cycle = samples_per_regeneration_cycle 
+
+                with Timer(f"Rank {rank} Cache Regeneration", log, main_process=(is_main()), log_wandb=True, wandb_step=step):
+                     train_ds.regenerate_cache(num_samples_to_generate=num_to_generate_this_cycle) 
+                
+                if len(train_ds) == 0:
+                    log.error(f"Rank {rank}: Cache is empty after regeneration at step {step}. Stopping training.")
+                    if is_main() and current_wandb_run_id: summary_log_metrics({"training_status": "error_empty_cache_regen"}, current_wandb_run_id)
+                    break 
+                samples_processed_since_last_regen = 0 
+
+                if is_main(): log.info(f"Rank {rank}: Re-initializing train_loader. New cache size: {len(train_ds)}")
+                
+                if 'iter_loader' in locals(): del iter_loader
+                if torch.cuda.is_available(): torch.cuda.empty_cache()
+                if world_size > 1: dist.barrier()
+
+                train_loader = get_dataloader_for_distributed(
+                    train_ds, batch_size=batch_size, world_size=world_size, rank=rank, 
+                    shuffle=True, collate_fn=collate, num_workers=num_dataloader_workers, 
+                    pin_memory=True, persistent_workers=num_dataloader_workers > 0,
+                )
+                if hasattr(train_loader.dataset, '__len__') and len(train_loader.dataset) > 0: # type: ignore
+                    if hasattr(train_loader, 'batch_sampler') and train_loader.batch_sampler is not None:
+                        new_spe = len(train_loader.batch_sampler)
+                    else: 
+                        new_spe = (len(train_loader.dataset) + batch_size -1) // batch_size # type: ignore
+                else:
+                    new_spe = 0
+                
+                if new_spe != steps_per_epoch and is_main():
+                    log.info(f"Steps per epoch updated from {steps_per_epoch} to {new_spe} after cache regen.")
+                steps_per_epoch = new_spe if new_spe > 0 else 1 
+                config['calculated_steps_per_epoch'] = steps_per_epoch 
+                
+                if world_size > 1 and hasattr(train_loader.sampler, "set_epoch"):
+                    train_loader.sampler.set_epoch(current_epoch) # type: ignore # Use current main loop epoch
+                    if is_main(): log.info(f"Set FastDistributedSampler epoch to {current_epoch} after cache regeneration.")
+                
+                iter_loader = iter(train_loader)
 
             # Training step with optimized gradient accumulation
             # Advance iterator – restart when exhausted
             try:
                 raw_batch = next(iter_loader)
             except StopIteration:
+                if is_main():
+                    log.info(f"Train loader iterator exhausted at step {step} (end of pass over cache). Current training epoch: {current_epoch}.")
+                
+                # current_epoch is based on micro-steps. Sampler epoch should advance per pass over data.
+                # If using FastDistributedSampler, its epoch is managed internally based on set_epoch calls.
+                # For other samplers, or if we want to be explicit:
                 if world_size > 1 and hasattr(train_loader.sampler, "set_epoch"):
-                    current_epoch += 1
-                    train_loader.sampler.set_epoch(current_epoch)
-                else:
-                    current_epoch += 1
-                    if not hasattr(train_loader.sampler, "set_epoch"):
-                        log.warning("train_loader.sampler does not have set_epoch method. Distributed samplers should have this.")
-                iter_loader = iter(train_loader)
+                    # The sampler's epoch should reflect the number of times it has been iterated over.
+                    # If current_epoch is micro_step // steps_per_epoch, it might not align perfectly if steps_per_epoch changes.
+                    # It's safer to increment the sampler's own epoch counter if it has one.
+                    new_sampler_epoch = train_loader.sampler.epoch + 1 if hasattr(train_loader.sampler, 'epoch') else current_epoch + 1 # type: ignore
+                    train_loader.sampler.set_epoch(new_sampler_epoch) # type: ignore
+                    if is_main(): log.info(f"Set DistributedSampler epoch to {new_sampler_epoch} for next pass over cache.")
+                # For non-DDP or if sampler doesn't have set_epoch, current_epoch (based on micro-steps) will naturally increment.
+                # No explicit current_epoch += 1 here, as it's tied to micro-steps.
+                
+                iter_loader = iter(train_loader) 
                 raw_batch = next(iter_loader)
+            
+            if on_the_fly_generation_enabled: # Count samples from the current batch
+                # This counts samples *per GPU* fetched from the cache.
+                # samples_per_regeneration_cycle is a per-rank target for generation.
+                samples_processed_since_last_regen += raw_batch['A'].size(0) # Assuming 'A' key exists and indicates batch items
+
 
             if step == 0:
                 #log warning the first 10 tokens of the first element of the batch, on all gpus
@@ -2324,12 +2824,13 @@ def main(cfg: DictConfig) -> None:
             batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
 
             if step == 0 and is_main():
-                if config['GRPO_beta'] == 0 and config['lm_base_weight'] == 0:
+                # Temporarily move orig_model to device for initial validation if needed
+                if should_move_orig_to_cpu(config, shared_base_model_obj):
                     orig_model.to(device)
                 do_all_initial_validation(batch, orig_model, tokenizer, device, log, activation_dir)
-                if config['GRPO_beta'] == 0 and config['lm_base_weight'] == 0 and shared_base_model is None:
+                if should_move_orig_to_cpu(config, shared_base_model_obj):
                     orig_model.to('cpu')
-                    log.info("Moved orig_model to cpu")
+                    log.info("Moved orig_model back to CPU after initial validation")
 
             metrics = distributed_train_step(
                 decoder,
@@ -2506,16 +3007,17 @@ def main(cfg: DictConfig) -> None:
 
 
             # Validation and Verbose Samples
-            val_loss = None
+            val_loss = None # Reset val_loss for the current step
+            most_recent_val_loss=None # This will store the actual loss from validation if it runs
             if val_loader and val_interval > 0 and (step % val_interval == 0):
                 should_print_val = step % (10*val_interval) == 0
                 if is_main():
                     log.info(f"Running validation at step {step}")
                 with Timer("Validation", log, main_process=is_main(), log_wandb=True, wandb_step=step):
-                    val_loss = validate_distributed(
+                    val_loss_from_fn = validate_distributed( # Use a different variable name to avoid confusion
                         decoder=decoder,
                         encoder=encoder,
-                        orig_model=orig_model,
+                        orig_model=orig_model, # Pass the DDP wrapped (or direct) orig_model
                         val_loader=val_loader,
                         config=config,
                         step=step,
@@ -2533,10 +3035,10 @@ def main(cfg: DictConfig) -> None:
                         val_interval=val_interval,
                         comparison_tuned_lens=comparison_tuned_lens_cpu, # Pass CPU version
                         should_print_val = should_print_val,
-                        shared_base_model=shared_base_model
+                        shared_base_model=shared_base_model_obj # Pass the potentially shared base
                     )
-                    most_recent_val_loss = val_loss
-                if is_main() and (math.isnan(val_loss)):
+                    most_recent_val_loss = val_loss_from_fn # Store the returned validation loss
+                if is_main() and (most_recent_val_loss is not None and math.isnan(most_recent_val_loss)):
                     consecutive_nan_losses += 1
                     if consecutive_nan_losses >= max_consecutive_nan_losses:
                         log.info(f"Stopping training at step {step} because of {consecutive_nan_losses} consecutive nan val_loss or loss.")
@@ -2549,7 +3051,7 @@ def main(cfg: DictConfig) -> None:
                 # Get current tau and alpha for checkpointing, similar to 01_train.py
                 # Checkpointing metadata should reflect the state at the current *micro-step*
                 # but schedules are evaluated based on optimizer steps.
-                current_optimizer_step_for_ckpt = step // gradient_accumulation_steps
+                # current_optimizer_step_for_ckpt = step // gradient_accumulation_steps # Not needed directly for get_schedule_value if passing micro_step
                 current_tau_ckpt = get_schedule_value(config['gumbel_tau_schedule'], step, max_steps, 
                                                current_epoch=current_epoch, 
                                                steps_per_epoch=steps_per_epoch, 
@@ -2562,22 +3064,30 @@ def main(cfg: DictConfig) -> None:
                 # Epoch for checkpoint filename/metadata: based on micro-steps or optimizer steps?
                 # 01_train.py uses current_epoch_num = (micro_step // steps_per_epoch) + 1. Let's stick to that for filename.
                 current_epoch_num_for_ckpt_filename = (step // steps_per_epoch) + 1 if steps_per_epoch > 0 else 1
-                if not math.isnan(most_recent_val_loss):
+                
+                # Use most_recent_val_loss for checkpointing, which could be None if validation didn't run
+                # or if it returned None (e.g. error during validation).
+                # Checkpoint manager might handle None val_loss appropriately (e.g. by not including it or using a placeholder)
+                # For the NaN check, we only proceed if most_recent_val_loss is NOT NaN.
+                # If most_recent_val_loss is None (validation didn't run this step), we can still save.
+                can_save_checkpoint = most_recent_val_loss is None or not math.isnan(most_recent_val_loss)
+
+                if can_save_checkpoint:
                     saved_path = checkpoint_manager.save_checkpoint(
                         step=step, # Save with micro-step
                         epoch=current_epoch_num_for_ckpt_filename, # Use 1-based epoch based on micro-steps
-                        models={'decoder': decoder_base, 'encoder': encoder_base},
+                        models={'decoder': decoder_base_for_init, 'encoder': encoder_base_for_init},
                         optimizer=optimizer,
                         scheduler=lr_scheduler, # Scheduler state is based on optimizer steps
                         metrics=metrics, 
                         config=config, 
-                        val_loss=most_recent_val_loss,
+                        val_loss=most_recent_val_loss, # This could be None
                         tau=current_tau_ckpt,
                         alpha=current_alpha_ckpt,
                         wandb_run_id=current_wandb_run_id,
                         additional_name="",
                         # Add additional metadata for proper resuming
-                        current_epoch=current_epoch,
+                        current_epoch=current_epoch, # 0-based epoch for internal tracking
                         batch_within_epoch=step % steps_per_epoch if steps_per_epoch > 0 else step,
                         steps_per_epoch=steps_per_epoch,
                         # Save gradient scaler state if using mixed precision
@@ -2589,66 +3099,132 @@ def main(cfg: DictConfig) -> None:
                         log.info(f"Checkpoint saved: {saved_path}")
                     else:
                         log.info(f"Checkpoint not saved at step {step} (e.g., max_checkpoints reached or interval not met).")
-                else:
-                    log.info(f"Checkpoint not saved at step {step} (e.g., val_loss is nan).")
-    except KeyboardInterrupt:
+                else: # This means most_recent_val_loss was NaN
+                    log.info(f"Checkpoint not saved at step {step} because validation loss is NaN.")
+    except KeyboardInterrupt as e:
         if is_main():
-            log.warning("KeyboardInterrupt detected! Saving checkpoint before exit. {e}")
-        # Use a different name for the checkpoint to indicate interruption
-        final_ckpt_name = "interrupt"
-        min_to_save_ckpt = 1500  
-        if step < min_to_save_ckpt:
-            log.warning(f"KeyboardInterrupt detected! Not saving as step is less than {min_to_save_ckpt}.")
-            raise KeyboardInterrupt(f"KeyboardInterrupt detected! Not saving as step is less than {min_to_save_ckpt}.")
-    else:
-        final_ckpt_name = "final"
+            log.warning("KeyboardInterrupt detected! Preparing to save checkpoint if applicable. {e}")
+        
+        # If preemption was also requested, let that naming take precedence.
+        if _preemption_requested:
+            if is_main():
+                log.info("KeyboardInterrupt occurred during preemption handling. "
+                         f"Checkpoint name will be 'preempt_slurm{_preemption_slurm_id}'.")
+            final_ckpt_name_override = f"preempt_slurm{_preemption_slurm_id}"
+        else:
+            current_slurm_id = os.environ.get('SLURM_JOB_ID', 'unknown')
+            final_ckpt_name_override = f"interrupt_slurm{current_slurm_id}"
+            min_to_save_ckpt = 1500  
+            
+            # Check if 'step' is defined and its value
+            current_step_for_interrupt_check = -1
+            if 'step' in locals() and step is not None:
+                current_step_for_interrupt_check = step
 
-    # Final checkpoint (also used for KeyboardInterrupt)
+            if current_step_for_interrupt_check < min_to_save_ckpt:
+                log.warning(
+                    f"KeyboardInterrupt: Training duration too short (step {current_step_for_interrupt_check} < {min_to_save_ckpt}). "
+                    "Not saving interrupt checkpoint."
+                )
+                raise # Re-raise to skip final save and ensure script terminates
+            elif is_main():
+                log.info(f"KeyboardInterrupt: Proceeding to save checkpoint as '{final_ckpt_name_override}'.")
+    except Exception as e:
+        if is_main():
+            log.error(f"Error in train loop: {e}")
+        else:
+            log.error(f"Error in train loop on rank {rank}: {e}")
+        if _preemption_requested:
+            log.info(f"Preemption, loop broken but continuing to save final checkpoint")
+            final_ckpt_name_override = f"preempt_slurm{_preemption_slurm_id}"
+            log.info(f"Proceeding to save final checkpoint as {final_ckpt_name_override}")
+        else:
+            raise e
+    
+    # Determine the actual name for the final checkpoint
+    actual_final_save_name = "final" # Default for normal completion
+
+    if _preemption_requested: # This takes precedence
+        actual_final_save_name = f"preempt_slurm{_preemption_slurm_id}"
+    elif final_ckpt_name_override: # Set by KeyboardInterrupt (and potentially preemption if KbdInt happened during it)
+        actual_final_save_name = final_ckpt_name_override
+    
+    if is_main():
+        log.info(f"Final checkpoint name determined as: '{actual_final_save_name}'.")
+
+
+    # Final checkpoint (handles normal finish, keyboard interrupt, preemption)
     if is_main() and checkpoint_manager.save_at_end:
-        current_epoch_for_ckpt = max_steps // steps_per_epoch if steps_per_epoch > 0 else 0
-        current_epoch_num_for_ckpt = current_epoch_for_ckpt + 1 if max_steps > 0 else 1
-        step_for_ckpt = max_steps - 1 if max_steps > 0 else -1
+        # 'step' variable from the loop will hold the last completed step if interrupted/preempted, 
+        # or max_steps-1 if loop completed fully.
+        # If loop never ran a step (e.g. immediate interrupt/preempt), 'step' might not be defined.
+        
+        step_for_final_ckpt = -1 # Default if step is not defined
+        if 'step' in locals() and step is not None:
+            step_for_final_ckpt = step
+        
+        # If loop completed fully and normally, step_for_final_ckpt should be max_steps -1
+        if actual_final_save_name == "final" and max_steps > 0 :
+            step_for_final_ckpt = max_steps -1 
+        elif max_steps == 0: # Handle edge case of no training steps configured
+             step_for_final_ckpt = -1
 
-        final_micro_step_for_sched = max_steps - 1 if max_steps > 0 else 0
-        final_epoch_for_sched = final_micro_step_for_sched // steps_per_epoch if steps_per_epoch > 0 else 0
+
+        current_epoch_for_final_ckpt = step_for_final_ckpt // steps_per_epoch if steps_per_epoch > 0 and step_for_final_ckpt >=0 else 0
+        current_epoch_num_for_final_ckpt = current_epoch_for_final_ckpt + 1 if step_for_final_ckpt >=0 else 1
+
 
         final_tau = get_schedule_value(
             config['gumbel_tau_schedule'],
-            final_micro_step_for_sched,
+            step_for_final_ckpt if step_for_final_ckpt >=0 else 0, # Use 0 if step is -1
             max_steps,
-            current_epoch=final_epoch_for_sched,
+            current_epoch=current_epoch_for_final_ckpt,
             steps_per_epoch=steps_per_epoch,
             grad_accum_steps=gradient_accumulation_steps
         )
         final_alpha = get_schedule_value(
             config['alpha_schedule'],
-            final_micro_step_for_sched,
+            step_for_final_ckpt if step_for_final_ckpt >=0 else 0, # Use 0 if step is -1
             max_steps,
-            current_epoch=final_epoch_for_sched,
+            current_epoch=current_epoch_for_final_ckpt,
             steps_per_epoch=steps_per_epoch,
             grad_accum_steps=gradient_accumulation_steps
         )
 
-        final_metrics_to_save = metrics if 'metrics' in locals() else {}
+        final_metrics_to_save = metrics if 'metrics' in locals() and metrics is not None else {}
+        
+        # Use most_recent_val_loss which holds the last validation result
+        # Check for NaN before saving final checkpoint as well
+        can_save_final_checkpoint = most_recent_val_loss is None or not math.isnan(most_recent_val_loss)
 
-        final_checkpoint_path = checkpoint_manager.save_checkpoint(
-            step=step_for_ckpt,
-            epoch=current_epoch_num_for_ckpt,
-            models={'decoder': decoder_base, 'encoder': encoder_base},
-            optimizer=optimizer,
-            scheduler=lr_scheduler,
-            metrics=final_metrics_to_save,
-            config=config,
-            tau=final_tau,
-            alpha=final_alpha,
-            val_loss=most_recent_val_loss,
-            wandb_run_id=current_wandb_run_id,
-            additional_name=final_ckpt_name
-        )
-        if final_checkpoint_path:
-            log.info(f"Final checkpoint saved: {final_checkpoint_path}")
+        if can_save_final_checkpoint:
+            final_checkpoint_path = checkpoint_manager.save_checkpoint(
+                step=step_for_final_ckpt,
+                epoch=current_epoch_num_for_final_ckpt,
+                models={'decoder': decoder_base_for_init, 'encoder': encoder_base_for_init},
+                optimizer=optimizer,
+                scheduler=lr_scheduler,
+                metrics=final_metrics_to_save,
+                config=config,
+                tau=final_tau,
+                alpha=final_alpha,
+                val_loss=most_recent_val_loss, # This could be None
+                wandb_run_id=current_wandb_run_id,
+                additional_name=actual_final_save_name, # Use the determined name
+                # Add additional metadata for proper resuming
+                current_epoch=current_epoch_for_final_ckpt, # 0-based epoch
+                batch_within_epoch=step_for_final_ckpt % steps_per_epoch if steps_per_epoch > 0 and step_for_final_ckpt >=0 else (step_for_final_ckpt if step_for_final_ckpt >=0 else 0) ,
+                steps_per_epoch=steps_per_epoch,
+                scaler=scaler.state_dict() if scaler is not None else None,
+                accumulation_step= (step_for_final_ckpt % gradient_accumulation_steps) + 1 if step_for_final_ckpt >=0 else 1
+            )
+            if final_checkpoint_path:
+                log.info(f"{final_ckpt_name_override.capitalize()} checkpoint saved: {final_checkpoint_path}")
+            else:
+                log.info(f"{final_ckpt_name_override.capitalize()} checkpoint not saved (e.g. disabled or error).")
         else:
-            log.info("Final checkpoint not saved (e.g. disabled).")
+            log.info(f"{final_ckpt_name_override.capitalize()} checkpoint not saved because validation loss is NaN.")
+
 
     if is_main():
         log.info("Training completed!")

@@ -158,14 +158,14 @@ class InteractiveLensAnalyzer:
             
             # Generate explanation
             tau = self.config.get("gumbel_tau_schedule", {}).get("end_value", 1.0)
-            T_text = self.config.get("t_text", 5)
+            t_text = self.config.get("t_text", 5)
             
             if self.models["dec"].config.use_flash_attention:
-                gen = self.models["dec"].generate_soft_kv_flash(A, max_length=T_text, gumbel_tau=tau)
+                gen = self.models["dec"].generate_soft_kv_flash(A, max_length=t_text, gumbel_tau=tau)
             elif self.models["dec"].config.use_kv_cache:
-                gen = self.models["dec"].generate_soft_kv_cached(A, max_length=T_text, gumbel_tau=tau)
+                gen = self.models["dec"].generate_soft_kv_cached(A, max_length=t_text, gumbel_tau=tau)
             else:
-                gen = self.models["dec"].generate_soft(A, max_length=T_text, gumbel_tau=tau)
+                gen = self.models["dec"].generate_soft(A, max_length=t_text, gumbel_tau=tau)
             
             # Get reconstruction
             A_hat = self.models["enc"](gen.generated_text_embeddings)
@@ -384,7 +384,7 @@ Commands:
   • Tokenizer: {self.config.get('tokenizer_name', 'Unknown')}
   • Layer: {self.layer_l}
   • Decoder Prompt: '{self.config.get('decoder_prompt', 'Unknown')}'
-  • T_text: {self.config.get('t_text', 'Unknown')}
+  • t_text: {self.config.get('t_text', 'Unknown')}
   • Device: {self.device}
   
 [bold]Checkpoint Info:[/bold]

@@ -54,7 +54,7 @@ def test_delayed_epoch_boundary_error():
     }
     
     loss_fns = {
-        "T_text": 8,
+        "t_text": 8,
         "tau": 1.0,
         "alpha": 0.1,
         "lm_base_weight": 0.0,

@@ -90,7 +90,7 @@ def measure_training_step(method, batch_size, seq_length, device):
     
     # Loss parameters
     loss_fns = {
-        "T_text": seq_length,
+        "t_text": seq_length,
         "tau": 1.0,
         "alpha": 0.1,
         "kl_base_weight": 1.0,

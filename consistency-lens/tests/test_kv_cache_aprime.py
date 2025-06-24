@@ -63,7 +63,7 @@ def test_aprime_path():
     # Test with different KL weights to trigger A' path
     print("\nTesting with kl_base_weight = 0 (no A' generation):")
     loss_fns_no_kl = {
-        "T_text": 8,
+        "t_text": 8,
         "tau": 1.0,
         "alpha": 0.1,
         "lm_base_weight": 0.0,
@@ -80,7 +80,7 @@ def test_aprime_path():
     
     print("\nTesting with kl_base_weight > 0 (triggers A' generation):")
     loss_fns_with_kl = {
-        "T_text": 8,
+        "t_text": 8,
         "tau": 1.0,
         "alpha": 0.1,
         "lm_base_weight": 0.0,

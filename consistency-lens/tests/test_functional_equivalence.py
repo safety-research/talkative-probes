@@ -116,7 +116,7 @@ def test_functional_equivalence():
             
             # Loss parameters
             loss_fns = {
-                "T_text": seq_length,
+                "t_text": seq_length,
                 "tau": 1.0,  # Use deterministic generation
                 "alpha": 0.1,
                 "kl_base_weight": 1.0,

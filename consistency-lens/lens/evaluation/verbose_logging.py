@@ -70,7 +70,7 @@ def log_verbose_samples_if_needed(
         sch_args = {
             "tau": get_schedule_value(config['gumbel_tau_schedule'], step, max_steps,
                                      current_epoch, steps_per_epoch),
-            "T_text": config['t_text'],
+            "t_text": config['t_text'],
             "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps,
                                        current_epoch, steps_per_epoch),
             "lm_base_weight": config['lm_base_weight'],

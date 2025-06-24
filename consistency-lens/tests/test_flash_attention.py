@@ -43,13 +43,13 @@ def test_flash_attention_generation():
         # Test parameters
         batch_size = 2
         d_model = decoder.base.config.hidden_size
-        T_text = 16
+        t_text = 16
         
         # Create test activation
         activation = torch.randn(batch_size, d_model, device=device, requires_grad=True)
         
         try:
-            gen = decoder.generate_soft_kv_flash(activation, max_length=T_text, gumbel_tau=1.0)
+            gen = decoder.generate_soft_kv_flash(activation, max_length=t_text, gumbel_tau=1.0)
             print("✗ ERROR: Flash Attention fallback should not happen!")
         except RuntimeError as e:
             print(f"✓ Correctly raised error: {e}")
@@ -60,14 +60,14 @@ def test_flash_attention_generation():
     # Test parameters
     batch_size = 2
     d_model = decoder.base.config.hidden_size
-    T_text = 16
+    t_text = 16
     
     # Create test activation
     activation = torch.randn(batch_size, d_model, device=device, requires_grad=True)
     
     try:
         # Generate with Flash Attention
-        gen = decoder.generate_soft_kv_flash(activation, max_length=T_text, gumbel_tau=1.0)
+        gen = decoder.generate_soft_kv_flash(activation, max_length=t_text, gumbel_tau=1.0)
         
         print(f"✓ Generation successful!")
         print(f"  Output shape: {gen.generated_text_embeddings.shape}")
@@ -135,7 +135,7 @@ def test_flash_vs_standard_equivalence():
     # Test parameters
     batch_size = 1
     d_model = decoder_flash.base.config.hidden_size
-    T_text = 8
+    t_text = 8
     
     # Create test activation
     torch.manual_seed(42)
@@ -148,12 +148,12 @@ def test_flash_vs_standard_equivalence():
         # Generate with both methods
         print("Generating with Flash Attention...")
         gen_flash = decoder_flash.generate_soft_kv_flash(
-            activation.clone(), max_length=T_text, gumbel_tau=0.0  # tau=0 for deterministic
+            activation.clone(), max_length=t_text, gumbel_tau=0.0  # tau=0 for deterministic
         )
         
         print("Generating with standard KV cache...")
         gen_kv = decoder_kv.generate_soft_kv_cached(
-            activation.clone(), max_length=T_text, gumbel_tau=0.0
+            activation.clone(), max_length=t_text, gumbel_tau=0.0
         )
         
         # Compare outputs
@@ -225,15 +225,15 @@ def test_flash_performance():
     
     # Test configurations
     test_configs = [
-        (2, 16),   # batch_size, T_text
+        (2, 16),   # batch_size, t_text
         (4, 32),
         (8, 64),
     ]
     
     d_model = decoder_flash.base.config.hidden_size
     
-    for batch_size, T_text in test_configs:
-        print(f"\nBatch size: {batch_size}, Sequence length: {T_text}")
+    for batch_size, t_text in test_configs:
+        print(f"\nBatch size: {batch_size}, Sequence length: {t_text}")
         
         # Create activation
         activation = torch.randn(batch_size, d_model, device=device)
@@ -246,7 +246,7 @@ def test_flash_performance():
         torch.cuda.synchronize() if torch.cuda.is_available() else None
         start = time.time()
         for _ in range(5):
-            _ = decoder_flash.generate_soft_kv_flash(activation, max_length=T_text, gumbel_tau=1.0)
+            _ = decoder_flash.generate_soft_kv_flash(activation, max_length=t_text, gumbel_tau=1.0)
         torch.cuda.synchronize() if torch.cuda.is_available() else None
         flash_time = (time.time() - start) / 5
         
@@ -254,7 +254,7 @@ def test_flash_performance():
         torch.cuda.synchronize() if torch.cuda.is_available() else None
         start = time.time()
         for _ in range(5):
-            _ = decoder_kv.generate_soft_kv_cached(activation, max_length=T_text, gumbel_tau=1.0)
+            _ = decoder_kv.generate_soft_kv_cached(activation, max_length=t_text, gumbel_tau=1.0)
         torch.cuda.synchronize() if torch.cuda.is_available() else None
         kv_time = (time.time() - start) / 5
         

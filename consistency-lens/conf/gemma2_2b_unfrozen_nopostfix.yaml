@@ -33,14 +33,14 @@ trainable_components:
     per_layer_projections: true 
     use_dropout: false
     use_gumbel_for_LMorig: false # shouldn't matter too much
-    projection_init_method: "tuned_lens_composition"  # Options: "default", "tuned_lens_composition"
+    projection_init_method: "default"  # Options: "default", "tuned_lens_composition"
     projection_init_tl_comp_use_composed_bias: true
     projection_init_tl_checkpoint: "/workspace/kitf/talkative-probes/consistency-lens/tuned-lens/my_lenses/google/gemma-2-2b"
     subtract_add_pos_embeddings: false 
     extra_pos_embeddings: false
     clamp_entropy: 0.8
   encoder:
-    base_model: true                 # FROZEN throughout
+    base_model: false                 # FROZEN throughout
     pos_embeddings: false
     use_base_model: true
     projection_layer:  true           # Train projection
@@ -52,6 +52,7 @@ trainable_components:
     subtract_add_pos_embeddings: false 
     extra_pos_embeddings: false    
     special_last_token_vector: true
+    add_current_token: true
 
 
 
@@ -68,7 +69,7 @@ activation_dumper:
   # Validation split
   val_hf_split: "train"               # OpenWebText only has train split
   val_output_dir: "./data/openwebtext_val"
-  val_num_samples: 50000        
+  val_num_samples: 5000       
 
 alpha_schedule: 
   type: "constant"
@@ -115,9 +116,10 @@ gradient_accumulation_steps: 16
 
 custom_lr_multipliers:
   overall_encoder: 0.1
+  base_models: 0.0
 
 freeze_schedule:
-  enabled: true                 # Enable freeze schedule
+  enabled: false                 # Enable freeze schedule
   
   # Global unfreeze timing (applies to all components unless overridden)
   unfreeze_at: "256os"         # When to unfreeze non-adapter parameters
@@ -171,3 +173,12 @@ do_lm_computation: false
 wandb:
   project: "consistency-lens-gemma2-2b"
   mode: "online"
+
+dataset:
+  # ... existing dataset configs like train_split, val_split ...
+  on_the_fly:
+    pretokenized_path: "/workspace/kitf/talkative-probes/consistency-lens/data/pretokenized/openwebtext_seq256/" # 
+    generation_batch_size: 64
+
+  train_split: "train"
+  val_split: "train"

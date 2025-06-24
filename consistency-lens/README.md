@@ -745,7 +745,7 @@ for step, batch in enumerate(loader): # loader uses lens.data.dataset.Activation
         #   .discrete_token_ids (for L_LM)
         generated_output_D_A = D_model.generate_soft(
             activation_input=batch.A,
-            max_length=config.T_text,
+            max_length=config.t_text,
             gumbel_tau=gumbel_temperature_schedule(step, config.lens_yaml) # from config/lens.yaml
         )
         A_reconstructed = E_model(generated_output_D_A.generated_text_embeddings)  # Encoder may prepend soft prompt tokens
@@ -753,7 +753,7 @@ for step, batch in enumerate(loader): # loader uses lens.data.dataset.Activation
         # --- Auxiliary Path ---
         generated_output_D_A_prime = D_model.generate_soft(
             activation_input=batch.A_prime, # ...
-            max_length=config.T_text, # ensure same length for consistency if needed
+            max_length=config.t_text, # ensure same length for consistency if needed
             gumbel_tau=gumbel_temperature_schedule(step, config.lens_yaml)
         )
         A_prime_reconstructed = E_model(generated_output_D_A_prime.generated_text_embeddings)
@@ -793,32 +793,32 @@ for step, batch in enumerate(loader): # loader uses lens.data.dataset.Activation
         # 'lm_loss_natural_prefix' config option (e.g., "Short explanation of something:").
         # Both models generate explanations, but the base model provides a natural reference without
         # privileged access to the actual activation.
-        if T_text > 1:  # need a next-token target for KL divergence
+        if t_text > 1:  # need a next-token target for KL divergence
             # Logits from D_model for its own generation (predicting token t+1 given prefix 0..t from D)
-            # generated_output_D_A.token_logits are (B, T_text, V)
-            d_model_pred_logits = generated_output_D_A.token_logits[:, :-1, :] # Shape: (B, T_text-1, V)
+            # generated_output_D_A.token_logits are (B, t_text, V)
+            d_model_pred_logits = generated_output_D_A.token_logits[:, :-1, :] # Shape: (B, t_text-1, V)
 
             # Logits from LLM_orig_model for D_model's generated sequence
             # (predicting token t+1 given prefix 0..t from D)
             # LLM_orig_model.model is assumed to be causal and takes full input_ids
             with torch.no_grad(): # Ensure orig model isn't updated by this loss component
                 orig_model_pred_logits_all_pos = LLM_orig_model.model(
-                    input_ids=generated_output_D_A.discrete_token_ids # discrete_token_ids is (B, T_text)
-                ).logits # Shape: (B, T_text, V)
+                    input_ids=generated_output_D_A.discrete_token_ids # discrete_token_ids is (B, t_text)
+                ).logits # Shape: (B, t_text, V)
             # We need the logits that predict the same tokens as d_model_pred_logits
-            orig_model_pred_logits = orig_model_pred_logits_all_pos[:, :-1, :] # Shape: (B, T_text-1, V)
+            orig_model_pred_logits = orig_model_pred_logits_all_pos[:, :-1, :] # Shape: (B, t_text-1, V)
 
             # log_P_D: Log-distribution from D_model (this is the distribution we are training, q).
             # This will be the `input` to F.kl_div.
-            # These are log-probabilities for tokens 1...T_text-1.
+            # These are log-probabilities for tokens 1...t_text-1.
             log_P_D_log_probs = F.log_softmax(d_model_pred_logits, dim=-1)
 
             # P_Orig: Distribution from LLM_orig_model (this is the reference distribution, p).
             # This will be the `target` for F.kl_div.
-            # These are probabilities for tokens 1...T_text-1 (since log_target=False for kl_div).
+            # These are probabilities for tokens 1...t_text-1 (since log_target=False for kl_div).
             P_Orig_probs = F.softmax(orig_model_pred_logits, dim=-1)
             
-            # Reshape for kl_div to (N, C) where N = B * (T_text-1), C = V.
+            # Reshape for kl_div to (N, C) where N = B * (t_text-1), C = V.
             # This ensures 'batchmean' reduction averages over token positions.
             V = d_model_pred_logits.size(-1) # Vocabulary size
             log_P_D_log_probs_flat = log_P_D_log_probs.reshape(-1, V)
@@ -866,12 +866,12 @@ for step, batch in enumerate(loader): # loader uses lens.data.dataset.Activation
 ```
 
 **Key Details:**
-*   **`D.generate_soft`:** Implemented in `lens.models.decoder.DecoderModel`. This method handles the autoregressive generation of `T_text` tokens using Gumbel-Softmax and STE. It returns necessary outputs like token logits and discrete IDs for `L_LM`, and text embeddings for `E`.
+*   **`D.generate_soft`:** Implemented in `lens.models.decoder.DecoderModel`. This method handles the autoregressive generation of `t_text` tokens using Gumbel-Softmax and STE. It returns necessary outputs like token logits and discrete IDs for `L_LM`, and text embeddings for `E`.
 *   **Schedules (`gumbel_temperature_schedule`, `alpha_schedule`):** Defined in `config/lens.yaml`, applied in `lens.training.loop`.
 *   **Optimizer (`lens.training.optim`):** Fused AdamW from DeepSpeed, differential LRs for projections vs. transformer blocks.
 *   **Backpropagation through D's Autoregression:**
     *   **`L_LM` (Language Modeling Loss):** Standard backpropagation. The loss for `token_t` (derived from `logits_t` computed by `D`) backpropagates through `D`'s computation of `logits_t`. Since `logits_t` depends on `A_proj` (the projected input activation) and all previously generated tokens (`token_1`...`token_{t-1}`), gradients flow back through this dependency chain. This trains `D` to predict tokens sequentially and coherently, conditioned on the input activation `A`.
-    *   **`L_KL` (KL Divergence Loss):** Full backpropagation through all `T_text` steps of `D`'s autoregressive generation is crucial.
+    *   **`L_KL` (KL Divergence Loss):** Full backpropagation through all `t_text` steps of `D`'s autoregressive generation is crucial.
         *   `A_reconstructed` is produced by `E` from the *entire* sequence `text = [token_1, ..., token_T_text]` generated by `D`.
         *   Gradients from `L_KL` (via `dL_KL / d(A_reconstructed)`) flow back through `E` to all `token_embedding_t` that form the input `text` to `E`.
         *   Through the Straight-Through Estimator (STE), these gradients `dL_KL / d(token_embedding_t)` are passed to `dL_KL / d(soft_token_probabilities_t)` and subsequently to `dL_KL / d(logits_t)` for each generation step `t` in `D`.

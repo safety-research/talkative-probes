@@ -90,7 +90,7 @@ def test_backward_memory():
             }
             
             loss_fns = {
-                "T_text": seq_length,
+                "t_text": seq_length,
                 "tau": 1.0,
                 "alpha": 0.1,
                 "lm_base_weight": 0.0,  # Disable to focus on generation memory

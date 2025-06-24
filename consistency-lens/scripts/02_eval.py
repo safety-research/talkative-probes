@@ -341,15 +341,15 @@ def evaluate_custom_strings(
         
         # Generate explanation through decoder
         tau = cfg.get("gumbel_tau_schedule", {}).get("end_value", 1.0)
-        T_text = cfg.get("t_text", 5)
+        t_text = cfg.get("t_text", 5)
         
         # Use the same generation method as in training
         if models["dec"].config.use_flash_attention:
-            gen = models["dec"].generate_soft_kv_flash(A, max_length=T_text, gumbel_tau=tau)
+            gen = models["dec"].generate_soft_kv_flash(A, max_length=t_text, gumbel_tau=tau)
         elif models["dec"].config.use_kv_cache:
-            gen = models["dec"].generate_soft_kv_cached(A, max_length=T_text, gumbel_tau=tau)
+            gen = models["dec"].generate_soft_kv_cached(A, max_length=t_text, gumbel_tau=tau)
         else:
-            gen = models["dec"].generate_soft(A, max_length=T_text, gumbel_tau=tau)
+            gen = models["dec"].generate_soft(A, max_length=t_text, gumbel_tau=tau)
         
         # Get reconstruction
         A_hat = models["enc"](gen.generated_text_embeddings)
@@ -381,11 +381,11 @@ def evaluate_custom_strings(
             
             # Generate for this position
             if models["dec"].config.use_flash_attention:
-                gen_pos = models["dec"].generate_soft_kv_flash(A_pos, max_length=T_text, gumbel_tau=tau)
+                gen_pos = models["dec"].generate_soft_kv_flash(A_pos, max_length=t_text, gumbel_tau=tau)
             elif models["dec"].config.use_kv_cache:
-                gen_pos = models["dec"].generate_soft_kv_cached(A_pos, max_length=T_text, gumbel_tau=tau)
+                gen_pos = models["dec"].generate_soft_kv_cached(A_pos, max_length=t_text, gumbel_tau=tau)
             else:
-                gen_pos = models["dec"].generate_soft(A_pos, max_length=T_text, gumbel_tau=tau)
+                gen_pos = models["dec"].generate_soft(A_pos, max_length=t_text, gumbel_tau=tau)
             
             pos_tokens = gen_pos.hard_token_ids[0].cpu().tolist()
             pos_text = tok.decode(pos_tokens, skip_special_tokens=True)
@@ -460,7 +460,7 @@ def _evaluate_model(
 
             sch_args = {
                 "tau": cfg["gumbel_tau_schedule"]["end_value"],
-                "T_text": cfg["t_text"],
+                "t_text": cfg["t_text"],
                 "alpha": cfg["alpha_schedule"].get("value", 0.1),
                 "ce_weight": cfg.get("ce_weight", 0.01),
                 "kl_base_weight": cfg.get("kl_base_weight", 1.0),

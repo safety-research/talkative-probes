@@ -262,7 +262,7 @@ def test_full_training_step():
     models_kv = {"dec": decoder_kv, "enc": encoder_kv, "orig": None}
     
     loss_fns = {
-        "T_text": 8,
+        "t_text": 8,
         "tau": 1.0,
         "alpha": 0.1,
         "lm_base_weight": 0.0,

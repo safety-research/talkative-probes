@@ -235,7 +235,7 @@ def distributed_train_step(
     
     # Loss function parameters
     loss_fns = {
-        "T_text": config.get('t_text', 8),
+        "t_text": config.get('t_text', 8),
         "tau": get_schedule_value(config['gumbel_tau_schedule'], step, config['max_train_steps'], 
                                 current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0, 
                                 steps_per_epoch=steps_per_epoch, 
@@ -525,7 +525,7 @@ def generate_verbose_samples_from_batch(
                                  current_epoch=current_epoch, 
                                  steps_per_epoch=steps_per_epoch, 
                                  grad_accum_steps=gradient_accumulation_steps),
-        "T_text": config.get('t_text', 8),
+        "t_text": config.get('t_text', 8),
         "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps,
                                    current_epoch=current_epoch, 
                                    steps_per_epoch=steps_per_epoch, 
@@ -704,7 +704,7 @@ def validate_distributed(
     
     # Loss function parameters (use same as training)
     loss_fns = {
-        "T_text": config.get('t_text', 8),
+        "t_text": config.get('t_text', 8),
         "tau": get_schedule_value(config['gumbel_tau_schedule'], step, config['max_train_steps'], 
                                 current_epoch=step // steps_per_epoch if steps_per_epoch and steps_per_epoch > 0 else 0, 
                                 steps_per_epoch=steps_per_epoch, 

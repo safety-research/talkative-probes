@@ -260,7 +260,7 @@ def analyze_full_training_step():
     }
     
     loss_fns = {
-        "T_text": t_text,
+        "t_text": t_text,
         "tau": 1.0,
         "alpha": 0.1,
         "lm_base_weight": 1.0,

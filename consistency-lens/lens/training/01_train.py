@@ -528,7 +528,7 @@ def run_validation_step(
             sch_args = {
                 "tau": get_schedule_value(config['gumbel_tau_schedule'], current_step, max_steps,
                                          current_epoch, steps_per_epoch),
-                "T_text": t_text,
+                "t_text": t_text,
                 "alpha": get_schedule_value(config['alpha_schedule'], current_step, max_steps,
                                            current_epoch, steps_per_epoch),
                 "lm_base_weight": lm_base_weight,

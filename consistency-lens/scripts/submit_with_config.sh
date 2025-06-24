@@ -32,6 +32,7 @@ USE_DISTRIBUTED="false"  # Whether to use distributed training
 RUN_SUFFIX=""  # Optional suffix to add to run name
 HYDRA_OVERRIDES=""
 ALWAYS_DISTRIBUTED="true"
+NICE_JOB="false" # Default for nice job (requeueable SLURM job)
 
 # Store the original command for logging
 export SUBMIT_SCRIPT_COMMAND="$0 $@"
@@ -73,6 +74,9 @@ for arg in "$@"; do
         run_suffix=*)
             RUN_SUFFIX="${arg#*=}"
             ;;
+        nice=*) # New argument for nice/requeueable jobs
+            NICE_JOB="${arg#*=}"
+            ;;
         # Special handling for positional config file (backwards compatibility)
         *.yaml)
             if [ -z "$CONFIG_FILE" ]; then
@@ -108,6 +112,7 @@ if [ -z "$CONFIG_FILE" ]; then
     echo "  num_gpus_train=<n>        Number of GPUs for training (default: 1)"
     echo "  use_distributed=true      Force distributed training (auto-enabled if num_gpus_train>1)"
     echo "  run_suffix=<suffix>       Suffix to add to run name"
+    echo "  nice=true                 Submit as a low-priority, requeueable SLURM job (sets --requeue, --qos=preemptable, --nice, --signal)"
     echo ""
     echo "Examples:"
     echo "  $0 conf/simplestories_frozen.yaml                    # New experiment (backwards compatible)"
@@ -132,6 +137,7 @@ fi
 echo "Extracting settings from $CONFIG_FILE..."
 # Ensure environment is set up
 source scripts/ensure_env.sh
+ulimit -n 65536
 if ! source <(uv_run python scripts/extract_config_settings.py "$CONFIG_FILE" --all); then
     echo "Error: Failed to extract settings from config file"
     exit 1
@@ -388,6 +394,7 @@ submit_train_job() {
     local wandb_resume_id=$4
     local config_file=$5
     local run_suffix=$6
+    local nice_flag=$7 # Added nice_flag argument
     
     if [ "$USE_SLURM" = true ]; then
         echo -e "${YELLOW}Submitting training job via SLURM...${NC}" >&2
@@ -415,7 +422,7 @@ submit_train_job() {
         fi
         
         # Build command based on distributed mode
-        local base_cmd="cd $CONSISTENCY_LENS_DIR && source scripts/ensure_env.sh && "
+        local base_cmd="cd $CONSISTENCY_LENS_DIR && source scripts/ensure_env.sh && ulimit -n 65536 && "
         if [ "$USE_DISTRIBUTED" = "true" ] || [ "$NUM_GPUS_TRAIN" -gt 1 ] || [ "$ALWAYS_DISTRIBUTED" = "true" ]; then
             # Use torchrun for distributed training with random port to avoid conflicts
             # Generate random port between 29500-29999
@@ -448,7 +455,7 @@ submit_train_job() {
         local sbatch_args=(
             --parsable
             --job-name="${job_name}-train"
-            --time=48:00:00
+            --time=168:00:00 # Consider if nice jobs need different default time
             --output="logs/${job_name}_train_%j.out"
             --error="logs/${job_name}_train_%j.err"
         )
@@ -498,6 +505,18 @@ submit_train_job() {
         if [ -n "$dependency" ] && [ "$dependency" != "completed" ]; then
             sbatch_args+=(--dependency=afterok:"$dependency")
             echo -e "${YELLOW}Will start after job $dependency completes${NC}" >&2
+        fi
+
+        # Add SLURM options for nice/requeueable jobs
+        if [[ "$nice_flag" =~ ^[0-9]+$ ]] || [ "$nice_flag" = "true" ]; then
+            echo -e "${YELLOW}Configuring SLURM job as low-priority and requeueable.${NC}" >&2
+            sbatch_args+=(--requeue --qos=preemptable --open-mode=append)
+            if [[ "$nice_flag" =~ ^[0-9]+$ ]]; then
+                sbatch_args+=(--nice="$nice_flag")
+            else
+                sbatch_args+=(--nice=10000)
+            fi
+            sbatch_args+=(--signal=B:TERM@120) #Request SIGTERM 120 seconds before preemption/kill, to allow checkpointing
         fi
         
         sbatch_args+=(--wrap "$train_cmd")
@@ -600,17 +619,6 @@ submit_train_job() {
         fi
     fi
 }
-#         fi
-        
-#         if eval "$train_cmd"; then
-#             echo -e "${GREEN}Training completed successfully${NC}" >&2
-#             echo "completed"
-#         else
-#             echo -e "${RED}ERROR: Training failed${NC}" >&2
-#             exit 1
-#         fi
-#     fi
-# }
 
 # Main logic
 echo -e "${BLUE}=== Running experiment from $CONFIG_FILE ===${NC}"
@@ -650,7 +658,7 @@ echo -e "${BLUE}Using pretokenization for 5x faster dumping${NC}"
 # Check if activations exist
 if check_activations "$MODEL_NAME" "$LAYER" "$OUTPUT_DIR" && [ "$FORCE_REDUMP" != "true" ]; then
     echo -e "${GREEN}Activations already exist, submitting training only${NC}"
-    train_job=$(submit_train_job "$JOB_NAME" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE" "$RUN_SUFFIX")
+    train_job=$(submit_train_job "$JOB_NAME" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE" "$RUN_SUFFIX" "$NICE_JOB")
 else
     echo -e "${YELLOW}Activations not found or force redump requested${NC}"
     # Only force pretokenization if FORCE_RETOKENIZE is true
@@ -660,7 +668,7 @@ else
     else
         dump_job=$(submit_dump_job "$CONFIG_FILE" "$LAYER" "$JOB_NAME")
     fi
-    train_job=$(submit_train_job "$JOB_NAME" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE" "$RUN_SUFFIX")
+    train_job=$(submit_train_job "$JOB_NAME" "$dump_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE" "$RUN_SUFFIX" "$NICE_JOB")
 fi
 
 # Summary
@@ -680,6 +688,9 @@ if [ "$USE_DISTRIBUTED" = "true" ] || [ "$NUM_GPUS_TRAIN" -gt 1 ]; then
     echo "Training mode: Distributed (DDP)"
 else  
     echo "Training mode: Single GPU"
+fi
+if [ "$NICE_JOB" = "true" ] || [ "$NICE_JOB" != "" ]; then
+    echo "SLURM Nice Job: Yes (requeueable, low priority) ${NICE_JOB}"
 fi
 if [ "$USE_SLURM" = true ]; then
     echo "Nodelist: $NODELIST"

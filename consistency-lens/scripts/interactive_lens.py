@@ -174,7 +174,7 @@ def run_full_train_step(batch: Dict[str, torch.Tensor], decoder: Decoder, encode
     # Prepare loss function arguments
     loss_fns = {
         "tau": tau,
-        "T_text": t_text,
+        "t_text": t_text,
         "alpha": alpha,
         "lm_base_weight": lm_base_weight,
         "kl_base_weight": kl_base_weight,

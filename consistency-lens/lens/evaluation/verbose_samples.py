@@ -362,7 +362,7 @@ def compute_single_sample_losses(
     # }
     _loss_fns = sch_args
     
-    # Override T_text from config if available
+    # Override t_text from config if available
     if config and "t_text" in config:
         _loss_fns["t_text"] = config["t_text"]
     
@@ -385,11 +385,12 @@ def compute_single_sample_losses(
     verbose_intermediate = losses.get("verbose_intermediate", {})
     
     # Get the generation results and reconstructions from train_step
-    gen_A_single = verbose_intermediate["gen"].detach()
-    A_hat_A_single = verbose_intermediate["A_hat"].detach()
-    A_train = verbose_intermediate["A_train"].detach()
-    logits_A_single_pos = verbose_intermediate["logits_orig"].detach()
-    logits_A_train_kl_pos = verbose_intermediate["logits_approx"].detach()
+    gen_A_single = verbose_intermediate["gen"].detach().clone()
+    A_hat_A_single = verbose_intermediate["A_hat"].detach().clone()
+    A_train = verbose_intermediate["A_train"].detach().clone()
+    logits_A_single_pos = verbose_intermediate["logits_orig"].detach().clone()
+    logits_A_train_kl_pos = verbose_intermediate["logits_approx"].detach().clone()  
+    del verbose_intermediate    
     
     # Compute additional MSEs that train_step doesn't provide
     mse_A_vs_zero = torch.nn.functional.mse_loss(A_single, torch.zeros_like(A_single)).item()
@@ -415,6 +416,7 @@ def compute_single_sample_losses(
         "mse_A_vs_Ahat": mse_A_vs_Ahat,
         "mse_A_vs_A_train": losses["mse"].item() if torch.is_tensor(losses["mse"]) else losses["mse"],
     }
+    del losses
     
     computed_values_dict = {
         "gen_A_single": gen_A_single,
@@ -474,484 +476,494 @@ def process_and_print_verbose_batch_samples(
         If return_structured_data is True: Tuple of (num_printed, structured_samples_list)
         If capture_output is True: Tuple of (num_printed, captured_output_string)
     """
-    dec = models["dec"]
-    enc = models["enc"]
-    num_printed_this_batch = 0
-    structured_samples = [] if return_structured_data else None
-    captured_output = [] if capture_output else None
-    if random_from_batch:
-        num_samples = min(num_samples, batch["A"].size(0))
-        sample_indices = torch.randperm(batch["A"].size(0), device=device)[:num_samples]
-    else:
-        sample_indices = range(min(num_samples - printed_count_so_far, batch["A"].size(0)))
-
-    for i in sample_indices:
-        l = int(batch["layer_idx"][i].item())
-        p = int(batch["token_pos_A"][i].item())
-
-        input_ids_seq = batch["input_ids_A"][i].unsqueeze(0).to(device)
-        A_i = batch["A"][i : i + 1].to(device) 
-        
-        A_prime_i = None
-        idx_for_aprime = -1
-        if batch["A_prime"].size(0) > 0:
-            idx_for_aprime = i % batch["A_prime"].size(0)
-            A_prime_i = batch["A_prime"][idx_for_aprime : idx_for_aprime + 1].to(device)
-        
-        # Create models dict with orig included for train_step
-        models_with_orig = {
-            "dec": dec,
-            "enc": enc,
-            "orig": orig
-        }
-        
-        results_from_compute = compute_single_sample_losses(
-            A_single=A_i,
-            A_prime_single=A_prime_i,
-            input_ids_single=batch["input_ids_A"][i].to(device),
-            layer_idx=l,
-            token_pos=p,
-            models=models_with_orig,
-            orig=orig,
-            sch_args=sch_args,
-            device=device,
-            cached_prefix_ids=cached_prefix_ids,
-            config=cfg,
-            resample_ablation=resample_ablation,
-            tokenizer=tok,
-        )
-        sample_losses = results_from_compute["losses"]
-        computed_tensors = results_from_compute["computed_values"]
-
-        gen_single = computed_tensors["gen_A_single"].detach()
-        A_hat_single = computed_tensors["A_hat_A_single"].detach()
-        logits_orig_at_p_batched = computed_tensors["logits_A_single_pos"].detach() 
-        A_train_i_for_kl = computed_tensors["A_train_kl"].detach()
-        logits_train_at_p_batched = computed_tensors["logits_A_train_kl_pos"].detach()
-
-        A_i_cast = A_i.to(orig.model.lm_head.weight.dtype)
-        logit_lens_logits_from_A_i = orig.model.lm_head(A_i_cast)
-        top_n_logit_lens_tokens = get_top_n_tokens(logit_lens_logits_from_A_i.squeeze(0), tok, top_n_analysis)
-        del A_i_cast
-        
-        with torch.no_grad():
-            logits_natural_all_pos = orig.model(input_ids=input_ids_seq).logits
-            logits_natural_at_p_batched = logits_natural_all_pos[:, p]
-        
-        zero_activation = torch.zeros_like(A_i)
-        logits_zero_all_pos = orig.forward_with_replacement(input_ids_seq, zero_activation, l, p).logits
-        logits_zero_at_p_batched = logits_zero_all_pos[:, p]
-        top_n_zero_tokens = get_top_n_tokens(logits_zero_at_p_batched.squeeze(0), tok, top_n_analysis)
-        
-        top_n_orig_A_tokens = get_top_n_tokens(logits_orig_at_p_batched.squeeze(0), tok, top_n_analysis)
-        
-        top_n_aprime_tokens = ["N/A (A_prime not avail)"] * top_n_analysis
-        logits_aprime_at_p_batched = None
-        if A_prime_i is not None:
-            logits_aprime_all_pos = orig.forward_with_replacement(input_ids_seq, A_prime_i, l, p).logits
-            logits_aprime_at_p_batched = logits_aprime_all_pos[:, p]
-            top_n_aprime_tokens = get_top_n_tokens(logits_aprime_at_p_batched.squeeze(0), tok, top_n_analysis)
-        
-        logits_approx_all_pos = orig.forward_with_replacement(input_ids_seq, A_hat_single.to(device), l, p).logits
-        logits_approx_at_p_batched = logits_approx_all_pos[:, p]
-        top_n_lens_recon_tokens = get_top_n_tokens(logits_approx_at_p_batched.squeeze(0), tok, top_n_analysis)
-
-        top_n_train_ablation_tokens = ["N/A (A_train_kl not avail)"] * top_n_analysis
-        if A_train_i_for_kl is not None and logits_train_at_p_batched is not None:
-            top_n_train_ablation_tokens = get_top_n_tokens(logits_train_at_p_batched.squeeze(0), tok, top_n_analysis)
-        
-        raw_prefix_ids = input_ids_seq[0].tolist()
-        base_model_full_logits = logits_natural_all_pos
-        
-        top_n_natural_base_preds_for_p_plus_1: List[str]
-        if p < base_model_full_logits.size(1): 
-            natural_base_logits_at_p = base_model_full_logits[0, p]
-            top_n_natural_base_preds_for_p_plus_1 = get_top_n_tokens(natural_base_logits_at_p, tok, top_n_analysis)
+    with torch.no_grad():
+        dec = models["dec"]
+        enc = models["enc"]
+        num_printed_this_batch = 0
+        structured_samples = [] if return_structured_data else None
+        captured_output = [] if capture_output else None
+        if random_from_batch:
+            num_samples = min(num_samples, batch["A"].size(0))
+            sample_indices = torch.randperm(batch["A"].size(0), device=device)[:num_samples]
         else:
-            top_n_natural_base_preds_for_p_plus_1 = ["N/A"] * top_n_analysis
+            sample_indices = range(min(num_samples - printed_count_so_far, batch["A"].size(0)))
 
-        # Compute baseline using previous t_text tokens as encoder input
-        T_text = cfg.get("t_text", 8)
-        # Get the previous T_text tokens from position p
-        start_token_idx = max(0, p - T_text + 1)  # Include token at position p
-        end_token_idx = p + 1
-        
-        # Extract previous tokens (may be less than T_text if near beginning)
-        prev_token_ids = raw_prefix_ids[start_token_idx:end_token_idx]
-        
-        # Pad with BOS token if needed
-        if len(prev_token_ids) < T_text:
-            bos_id = tok.bos_token_id if tok.bos_token_id is not None else tok.eos_token_id
-            padding_needed = T_text - len(prev_token_ids)
-            prev_token_ids = [bos_id] * padding_needed + prev_token_ids
-        
-        # Convert token IDs to embeddings
-        prev_token_ids_tensor = torch.tensor(prev_token_ids, device=device).unsqueeze(0)  # [1, T_text]
-        
-        # Get embeddings from the base model
-        if hasattr(enc, 'base') and enc._use_base:
-            emb_table = enc.base.get_input_embeddings().weight
-        else:
-            # Use original model's embeddings
-            emb_table = orig.model.get_input_embeddings().weight
-        
-        prev_token_embeddings = emb_table[prev_token_ids_tensor]  # [1, T_text, d_model]
-        
-        # Pass through encoder to get A_hat_baseline
-        A_hat_baseline = enc(prev_token_embeddings, current_token_ids=batch["input_ids_A"][i][p].to(device).unsqueeze(0) if enc.config.add_current_token else None)
-        
-        # Compute predictions and metrics for baseline
-        logits_baseline_all_pos = orig.forward_with_replacement(input_ids_seq, A_hat_baseline.to(device), l, p).logits
-        logits_baseline_at_p_batched = logits_baseline_all_pos[:, p]
-        top_n_baseline_tokens = get_top_n_tokens(logits_baseline_at_p_batched.squeeze(0), tok, top_n_analysis)
-        
-        # Compute MSE for baseline
-        mse_baseline_vs_A = torch.nn.functional.mse_loss(A_i, A_hat_baseline.to(A_i.device)).item()
-        
-        # Clean up baseline tensors
-        del prev_token_embeddings, A_hat_baseline
-        
-        # Compute shuffle intervention: shuffle first (n-3) tokens of decoder output
-        T_text = cfg.get("t_text", 8)
-        shuffle_count = max(0, T_text - 3)
-        shuffled_embeds = gen_single.generated_text_embeddings.clone().to(device)
-        
-        if shuffle_count > 0:
-            # Shuffle the first shuffle_count tokens - indices on same device as embeddings
-            indices = torch.randperm(shuffle_count, device=shuffled_embeds.device)
-            shuffled_embeds[0, :shuffle_count] = shuffled_embeds[0, indices]
-        
-        # Pass shuffled embeddings through encoder
-        A_hat_shuffled = enc(shuffled_embeds, current_token_ids=batch["input_ids_A"][i][p].to(device).unsqueeze(0) if enc.config.add_current_token else None)
-        
-        # Compute predictions for shuffled reconstruction
-        logits_shuffled_all_pos = orig.forward_with_replacement(input_ids_seq, A_hat_shuffled.to(device), l, p).logits
-        logits_shuffled_at_p_batched = logits_shuffled_all_pos[:, p]
-        top_n_shuffled_tokens = get_top_n_tokens(logits_shuffled_at_p_batched.squeeze(0), tok, top_n_analysis)
-        
-        # Compute MSE for shuffled
-        mse_shuffled_vs_A = torch.nn.functional.mse_loss(A_i, A_hat_shuffled.to(A_i.device)).item()
-        
-        # Clean up shuffle tensors
-        del shuffled_embeds, A_hat_shuffled
-        
-        # Compute full shuffle intervention: shuffle ALL tokens of decoder output
-        full_shuffled_embeds = gen_single.generated_text_embeddings.clone().to(device)
-        indices_full = torch.randperm(T_text, device=full_shuffled_embeds.device)
-        full_shuffled_embeds[0] = full_shuffled_embeds[0, indices_full]
-        
-        # Pass full shuffled embeddings through encoder
-        A_hat_full_shuffled = enc(full_shuffled_embeds, current_token_ids=batch["input_ids_A"][i][p].to(device).unsqueeze(0) if enc.config.add_current_token else None)
-        
-        # Compute predictions for full shuffled reconstruction
-        logits_full_shuffled_all_pos = orig.forward_with_replacement(input_ids_seq, A_hat_full_shuffled.to(device), l, p).logits
-        logits_full_shuffled_at_p_batched = logits_full_shuffled_all_pos[:, p]
-        top_n_full_shuffled_tokens = get_top_n_tokens(logits_full_shuffled_at_p_batched.squeeze(0), tok, top_n_analysis)
-        
-        # Compute MSE for full shuffled
-        mse_full_shuffled_vs_A = torch.nn.functional.mse_loss(A_i, A_hat_full_shuffled.to(A_i.device)).item()
-        
-        # Clean up full shuffle tensors
-        del full_shuffled_embeds, A_hat_full_shuffled
+        for i in sample_indices:
+            l = int(batch["layer_idx"][i].item())
+            p = int(batch["token_pos_A"][i].item())
 
-        # Clean up full logits tensors that are no longer needed
-        del logits_natural_all_pos, logits_zero_all_pos, logits_approx_all_pos, logits_baseline_all_pos, logits_shuffled_all_pos, logits_full_shuffled_all_pos
-        if A_prime_i is not None and 'logits_aprime_all_pos' in locals():
-            del logits_aprime_all_pos
-
-        # TunedLens predictions
-        top_n_tuned_lens_tokens = ["N/A"] * top_n_analysis
-        logits_tuned_lens_at_p_batched = None
-        tuned_lens_prediction_key = f"TunedLens (L{l})"
-
-        if comparison_tuned_lens is not None:
-            # comparison_tuned_lens is already on the correct device (moved by the caller)
-            # A_i is also on the correct device.
-            if hasattr(comparison_tuned_lens, 'config') and hasattr(comparison_tuned_lens.config, 'num_hidden_layers') and l < comparison_tuned_lens.config.num_hidden_layers:
-                try:
-                    with torch.no_grad():
-                        # Ensure A_i has the dtype TunedLens expects if there's a specific one
-                        # Always cast A_i to float32 for TunedLens to avoid dtype mismatch
-                        A_i_casted = A_i.to(torch.float32)
-                        logits_tuned_lens_at_p_batched = comparison_tuned_lens(A_i_casted, idx=l)
-
-                    top_n_tuned_lens_tokens = get_top_n_tokens(logits_tuned_lens_at_p_batched.squeeze(0), tok, top_n_analysis)
-                    del A_i_casted
-                except Exception as e:
-                    # import logging
-                    # logging.getLogger(__name__).error(f"Error during TunedLens prediction for layer {l}: {e}", exc_info=True)
-                    #log.error(f"Error during TunedLens prediction for layer {l}: {e}", exc_info=True)
-                    top_n_tuned_lens_tokens = [f"ERR TL L{l}"] * top_n_analysis 
-                    print(f"error during tuned lens prediction for layer {l}: {e}")
-            else:
-                 top_n_tuned_lens_tokens = [f"L{l} OOB TL"] * top_n_analysis
-
-        analysis_preds_dict = {
-            "Base Model's natural prediction": top_n_natural_base_preds_for_p_plus_1,
-            "Zero Vector Baseline": top_n_zero_tokens,
-            "Prev Tokens Baseline (Enc[prev t tokens])": top_n_baseline_tokens,
-            "Shuffled Decoder Output (first n-3)": top_n_shuffled_tokens,
-            "Shuffled Decoder Output (ALL tokens)": top_n_full_shuffled_tokens,
-            "Logit Lens (from A_i)": top_n_logit_lens_tokens,
-            "Base Model (orig A)": top_n_orig_A_tokens,
-            "Base Model (A')": top_n_aprime_tokens,
-            tuned_lens_prediction_key: top_n_tuned_lens_tokens,
-            "Log w/o Ablation (A_hat)" + ("train" if resample_ablation else ""): top_n_lens_recon_tokens,
-            "Log training " + ("(A_hat+Δ)" if resample_ablation else "(A_hat)"): top_n_train_ablation_tokens,
-        }
-
-        a_prime_string_cropped = None
-        if A_prime_i is not None and "input_ids_A_prime" in batch and "token_pos_A_prime" in batch and \
-           idx_for_aprime < batch["input_ids_A_prime"].size(0) and idx_for_aprime < batch["token_pos_A_prime"].size(0) :
-            input_ids_A_prime_seq = batch["input_ids_A_prime"][idx_for_aprime].to(device)
-            p_prime = int(batch["token_pos_A_prime"][idx_for_aprime].item())
-            raw_prime_ids = input_ids_A_prime_seq.tolist()
-            crop_start_idx_prime = max(0, p_prime - 100)
-            crop_end_idx_prime = min(len(raw_prime_ids), p_prime + 30 + 1)
-            before_p_prime = tok.decode(raw_prime_ids[crop_start_idx_prime:p_prime]) if p_prime > crop_start_idx_prime else ""
-            token_at_p_prime = tok.decode([raw_prime_ids[p_prime]]) if p_prime < len(raw_prime_ids) else ""
-            after_p_prime = tok.decode(raw_prime_ids[p_prime+1:crop_end_idx_prime]) if p_prime+1 < crop_end_idx_prime else ""
-            a_prime_string_cropped = escape_newlines(before_p_prime + "*" + token_at_p_prime + "*" + after_p_prime)
-            if crop_start_idx_prime > 0: a_prime_string_cropped = "..." + a_prime_string_cropped
-            if crop_end_idx_prime < len(raw_prime_ids): a_prime_string_cropped = a_prime_string_cropped + "..."
-        
-        display_start_idx = max(0, p - 10)
-        display_end_idx = min(len(raw_prefix_ids), p + 3 + 1)
-        displayed_raw_ids = raw_prefix_ids[display_start_idx:display_end_idx]
-        displayed_prefix_tokens = [escape_newlines(tok.decode([tid])) for tid in displayed_raw_ids]
-        displayed_positions = [str(k) for k in range(display_start_idx, display_end_idx)]
-
-        crop_start_idx = max(0, p - 100)
-        crop_end_idx = min(len(raw_prefix_ids), p + 30 + 1)
-        before_p = tok.decode(raw_prefix_ids[crop_start_idx:p]) if p > crop_start_idx else ""
-        token_at_p_val = tok.decode([raw_prefix_ids[p]]) if p < len(raw_prefix_ids) else ""
-        after_p = tok.decode(raw_prefix_ids[p+1:crop_end_idx]) if p+1 < crop_end_idx else ""
-        original_string_cropped = escape_newlines(before_p + "*" + token_at_p_val + "*" + after_p)
-        if crop_start_idx > 0: original_string_cropped = "..." + original_string_cropped
-        if crop_end_idx < len(raw_prefix_ids): original_string_cropped = original_string_cropped + "..."
-        original_token_at_p_str = escape_newlines(tok.decode([raw_prefix_ids[p]])) if p < len(raw_prefix_ids) else "N/A"
-
-        gen_token_ids_full = gen_single.hard_token_ids[0].cpu().tolist()
-        gen_tokens = [escape_newlines(tok.decode([tid])) for tid in gen_token_ids_full]
-        k_for_decoder_preds = min(top_n_analysis, gen_single.raw_lm_logits.size(-1))
-        decoder_preds_by_rank = build_topk_preds_by_rank(
-            gen_single.raw_lm_logits.cpu(), len(gen_tokens), k_for_decoder_preds, tok
-        )
-
-        base_gen_single = dec.generate_soft_kv_cached_nondiff(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, use_projection=True, return_logits=True  )
-        base_token_ids_full = base_gen_single.hard_token_ids[0].cpu().tolist()
-        base_gen_tokens = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full]
-        base_preds_by_rank = build_topk_preds_by_rank(
-            base_gen_single.raw_lm_logits.cpu(), len(base_gen_tokens), k_for_decoder_preds, tok
-        )
-        # Clean up generation results
-        del base_gen_single
-
-        left_ids, right_ids, _, _ = dec.tokenize_and_embed_prompt(cfg["decoder_prompt"], tok)
-        base_gen_single_hard = dec.generate_soft_kv_cached_nondiff(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, hard_left_emb=left_ids, hard_right_emb=right_ids, use_projection=True, return_logits=True)
-        base_token_ids_full_hard = base_gen_single_hard.hard_token_ids[0].cpu().tolist()
-        base_gen_tokens_hard = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full_hard]
-        base_preds_by_rank_hard = build_topk_preds_by_rank(
-            base_gen_single_hard.raw_lm_logits.cpu(), len(base_gen_tokens_hard), k_for_decoder_preds, tok
-        )
-        # Clean up generation results
-        del base_gen_single_hard
-
-        base_gen_single_hard_no_map = dec.generate_soft_kv_cached_nondiff(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, hard_left_emb=left_ids, hard_right_emb=right_ids, use_projection=False, return_logits=True)
-        base_token_ids_full_hard_no_map = base_gen_single_hard_no_map.hard_token_ids[0].cpu().tolist()
-        base_gen_tokens_hard_no_map = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full_hard_no_map]
-        base_preds_by_rank_hard_no_map = build_topk_preds_by_rank(
-            base_gen_single_hard_no_map.raw_lm_logits.cpu(), len(base_gen_tokens_hard_no_map), k_for_decoder_preds, tok
-        )
-        # Clean up generation results
-        del base_gen_single_hard_no_map
-        
-        context_display_range = f"{display_start_idx}-{display_end_idx-1}" if displayed_positions else "empty"
-        context_labels = ["Position:", "Token:", "BaseLM (shift):"]
-        preds_prefix_full_single_top = [
-            escape_newlines(tok.decode([base_model_full_logits[0, t_idx].argmax().item()]))
-            if t_idx < base_model_full_logits.size(1) else "N/A"
-            for t_idx in range(len(raw_prefix_ids))
-        ]
-        del base_model_full_logits  # No longer needed
-        shifted_preds_for_display = [
-            preds_prefix_full_single_top[display_start_idx + k_rel - 1] 
-            if display_start_idx + k_rel > 0 and display_start_idx + k_rel -1 < len(preds_prefix_full_single_top) 
-            else ("" if display_start_idx + k_rel == 0 else "ERR_IDX")
-            for k_rel in range(len(displayed_prefix_tokens))
-        ]
-        context_data_rows = [list(displayed_positions), list(displayed_prefix_tokens), list(shifted_preds_for_display)]
-        del preds_prefix_full_single_top  # No longer needed
-        relative_p = p - display_start_idx
-        if 0 <= relative_p < len(displayed_prefix_tokens):
-            context_data_rows[0][relative_p] = f"[{context_data_rows[0][relative_p]}]P"
-            context_data_rows[1][relative_p] = f"*{context_data_rows[1][relative_p]}*"
-
-        def safe_kl(l1, l2):
-            if l1 is None or l2 is None: return None
-            return compute_kl_divergence_robust(l1, l2).item()
-
-        kl_zero_from_natural = safe_kl(logits_zero_at_p_batched, logits_natural_at_p_batched)
-        kl_orig_from_natural = safe_kl(logits_orig_at_p_batched, logits_natural_at_p_batched)
-        kl_aprime_from_natural = safe_kl(logits_aprime_at_p_batched, logits_natural_at_p_batched)
-        kl_ahat_from_natural = safe_kl(logits_approx_at_p_batched, logits_natural_at_p_batched)
-        kl_ahat_delta_from_natural = safe_kl(logits_train_at_p_batched, logits_natural_at_p_batched)
-        kl_baseline_from_natural = safe_kl(logits_baseline_at_p_batched, logits_natural_at_p_batched)
-        kl_shuffled_from_natural = safe_kl(logits_shuffled_at_p_batched, logits_natural_at_p_batched)
-        kl_full_shuffled_from_natural = safe_kl(logits_full_shuffled_at_p_batched, logits_natural_at_p_batched)
-        kl_tuned_lens_from_natural = safe_kl(logits_tuned_lens_at_p_batched, logits_natural_at_p_batched)
-
-        kl_zero_from_orig = safe_kl(logits_zero_at_p_batched, logits_orig_at_p_batched)
-        kl_aprime_from_orig = safe_kl(logits_aprime_at_p_batched, logits_orig_at_p_batched)
-        kl_ahat_from_orig = safe_kl(logits_approx_at_p_batched, logits_orig_at_p_batched)
-        kl_baseline_from_orig = safe_kl(logits_baseline_at_p_batched, logits_orig_at_p_batched)
-        kl_shuffled_from_orig = safe_kl(logits_shuffled_at_p_batched, logits_orig_at_p_batched)
-        kl_full_shuffled_from_orig = safe_kl(logits_full_shuffled_at_p_batched, logits_orig_at_p_batched)
-        training_kl_loss_value = sample_losses['kl'] 
-        kl_tuned_lens_from_orig = safe_kl(logits_tuned_lens_at_p_batched, logits_orig_at_p_batched)
-
-        kl_divergences_for_print_section = {
-            "From Natural Prediction (no intervention)": {
-                "KL(Natural || Zero)": kl_zero_from_natural,
-                "KL(Natural || Prev Tokens Baseline)": kl_baseline_from_natural,
-                "KL(Natural || Shuffled Decoder - first n-3)": kl_shuffled_from_natural,
-                "KL(Natural || Shuffled Decoder - ALL tokens)": kl_full_shuffled_from_natural,
-                "KL(Natural || A)": kl_orig_from_natural, 
-                "KL(Natural || A')": kl_aprime_from_natural,
-                "KL(Natural || A_hat)": kl_ahat_from_natural,
-                "KL(Natural || A_hat+Δ)": kl_ahat_delta_from_natural,
-                f"KL(Natural || {tuned_lens_prediction_key})": kl_tuned_lens_from_natural,
-            },
-            "From Original Activation A (training objective)": {
-                "KL(A || Zero)": kl_zero_from_orig,
-                "KL(A || Prev Tokens Baseline)": kl_baseline_from_orig,
-                "KL(A || Shuffled Decoder - first n-3)": kl_shuffled_from_orig,
-                "KL(A || Shuffled Decoder - ALL tokens)": kl_full_shuffled_from_orig,
-                "KL(A || A')": kl_aprime_from_orig,
-                "KL(A || A_hat)": kl_ahat_from_orig,
-                ("KL(A || A_hat+Δ) [TRAINING LOSS]" if resample_ablation else "KL(A || A_hat) [TRAINING LOSS]"): training_kl_loss_value,
-                f"KL(A || {tuned_lens_prediction_key})": kl_tuned_lens_from_orig,
+            input_ids_seq = batch["input_ids_A"][i].unsqueeze(0).to(device)
+            A_i = batch["A"][i : i + 1].to(device) 
+            
+            A_prime_i = None
+            idx_for_aprime = -1
+            if batch["A_prime"].size(0) > 0:
+                idx_for_aprime = i % batch["A_prime"].size(0)
+                A_prime_i = batch["A_prime"][idx_for_aprime : idx_for_aprime + 1].to(device)
+            
+            # Create models dict with orig included for train_step
+            models_with_orig = {
+                "dec": dec,
+                "enc": enc,
+                "orig": orig
             }
-        }
-        
-        analysis_metrics_for_print = {
-            "Base Model's natural prediction": { 
-                "mse_vs_A": 0.0, 
-                "kl_vs_A": safe_kl(logits_natural_at_p_batched, logits_orig_at_p_batched), 
-                "kl_vs_natural": 0.0,
-            },
-            "Zero Vector Baseline": {
-                "mse_vs_A": sample_losses["mse_A_vs_zero"],
-                "kl_vs_A": kl_zero_from_orig,
-                "kl_vs_natural": kl_zero_from_natural,
-            },
-            "Prev Tokens Baseline (Enc[prev t tokens])": {
-                "mse_vs_A": mse_baseline_vs_A,
-                "kl_vs_A": kl_baseline_from_orig,
-                "kl_vs_natural": kl_baseline_from_natural,
-            },
-            "Shuffled Decoder Output (first n-3)": {
-                "mse_vs_A": mse_shuffled_vs_A,
-                "kl_vs_A": kl_shuffled_from_orig,
-                "kl_vs_natural": kl_shuffled_from_natural,
-            },
-            "Shuffled Decoder Output (ALL tokens)": {
-                "mse_vs_A": mse_full_shuffled_vs_A,
-                "kl_vs_A": kl_full_shuffled_from_orig,
-                "kl_vs_natural": kl_full_shuffled_from_natural,
-            },
-            "Base Model (orig A)": { 
-                "mse_vs_A": 0.0, 
-                "kl_vs_A": 0.0, 
-                "kl_vs_natural": kl_orig_from_natural,
-            },
-            "Base Model (A')": { 
-                "mse_vs_A": sample_losses["mse_A_vs_aprime"], 
-                "kl_vs_A": kl_aprime_from_orig, 
-                "kl_vs_natural": kl_aprime_from_natural, 
-            },
-            "Log w/o Ablation (A_hat)": { 
-                "mse_vs_A": sample_losses["mse_A_vs_Ahat"], 
-                "kl_vs_A": kl_ahat_from_orig,
-                "kl_vs_natural": kl_ahat_from_natural,
-            },
-            "Log w/Resample Ablation (A_hat+Δ)": { 
-                "mse_vs_A": sample_losses["mse_A_vs_A_train"], 
-                "kl_vs_A": training_kl_loss_value, 
-                "kl_vs_natural": kl_ahat_delta_from_natural, 
-            },
-            tuned_lens_prediction_key: {
-                "mse_vs_A": None,
-                "kl_vs_A": kl_tuned_lens_from_orig,
-                "kl_vs_natural": kl_tuned_lens_from_natural,
-            },
-        }
-        
-        autoregressive_continuation = None
-        if generate_continuation:
-            autoregressive_continuation = generate_autoregressive_continuation(
-                orig, input_ids_seq, p, num_tokens=continuation_tokens, tok=tok, device=device
+            
+            results_from_compute = compute_single_sample_losses(
+                A_single=A_i,
+                A_prime_single=A_prime_i,
+                input_ids_single=batch["input_ids_A"][i].to(device),
+                layer_idx=l,
+                token_pos=p,
+                models=models_with_orig,
+                orig=orig,
+                sch_args=sch_args,
+                device=device,
+                cached_prefix_ids=cached_prefix_ids,
+                config=cfg,
+                resample_ablation=resample_ablation,
+                tokenizer=tok,
             )
-        
-        if return_structured_data:
-            # Simplified structured data based on available variables for print
-            # If original (token, prob) pairs are needed, logic from earlier versions needs to be re-added
-            original_logits_topk_for_structured = []
-            if logits_orig_at_p_batched is not None:
-                orig_probs = torch.softmax(logits_orig_at_p_batched.squeeze(0), dim=-1)
-                orig_top_values, orig_top_indices = torch.topk(orig_probs, k=min(top_n_analysis, orig_probs.size(-1)))
-                for val_idx in range(len(orig_top_indices)):
-                    token_id = orig_top_indices[val_idx].item()
-                    prob = orig_top_values[val_idx].item()
-                    token_str = escape_newlines(tok.decode([token_id]))
-                    original_logits_topk_for_structured.append((token_str, prob))
+            sample_losses = results_from_compute["losses"]
+            computed_tensors = results_from_compute["computed_values"]
 
-            reconstructed_logits_topk_for_structured = [] # For A_hat
-            if logits_approx_at_p_batched is not None: # Logits from A_hat intervention
-                recon_probs = torch.softmax(logits_approx_at_p_batched.squeeze(0), dim=-1)
-                recon_top_values, recon_top_indices = torch.topk(recon_probs, k=min(top_n_analysis, recon_probs.size(-1)))
-                for val_idx in range(len(recon_top_indices)):
-                    token_id = recon_top_indices[val_idx].item()
-                    prob = recon_top_values[val_idx].item()
-                    token_str = escape_newlines(tok.decode([token_id]))
-                    reconstructed_logits_topk_for_structured.append((token_str, prob))
-            
-            # Decoder predictions (top-k for each generated token position)
-            # For structured output, let's take the top-1 prediction for each token from the decoder
-            # and its associated top-k probabilities for the first position if needed.
-            # For simplicity, using the already built decoder_preds_by_rank (list of lists of top tokens)
-            # and gen_tokens (list of generated tokens)
-            
-            decoder_top_preds_structured = [] # List of (token_str, prob) for the *first* generated position by decoder
-            if gen_single.raw_lm_logits.numel() > 0 and gen_single.raw_lm_logits.size(1) > 0 : # Check if any logits generated
-                first_pos_logits = gen_single.raw_lm_logits[0, 0]
-                first_pos_probs = torch.softmax(first_pos_logits, dim=-1)
-                top_vals, top_ids = torch.topk(first_pos_probs, k=min(top_n_analysis, first_pos_probs.size(-1)))
-                for k_idx in range(len(top_ids)):
-                    decoder_top_preds_structured.append(
-                        (escape_newlines(tok.decode([top_ids[k_idx].item()])), top_vals[k_idx].item())
-                    )
+            gen_single = computed_tensors["gen_A_single"].detach()
+            A_hat_single = computed_tensors["A_hat_A_single"].detach()
+            logits_orig_at_p_batched = computed_tensors["logits_A_single_pos"].detach() 
+            A_train_i_for_kl = computed_tensors["A_train_kl"].detach()
+            logits_train_at_p_batched = computed_tensors["logits_A_train_kl_pos"].detach()
 
-            sample_data = {
-                "input_text": escape_newlines(original_string_cropped),
-                "chosen_token": escape_newlines(original_token_at_p_str),
-                "position": p,
-                "decoded_text": escape_newlines(" ".join(gen_tokens)), # Decoder generated text
-                "decoder_top_predictions_first_pos": decoder_top_preds_structured, # Top-k for first token by decoder
-                "continuation": escape_newlines(autoregressive_continuation) if autoregressive_continuation else None,
-                "original_model_top_predictions_at_p": original_logits_topk_for_structured, # Top-k from A_i intervention
-                "reconstructed_A_hat_top_predictions_at_p": reconstructed_logits_topk_for_structured, # Top-k from A_hat intervention
-                "metrics_at_p": analysis_metrics_for_print, # Contains MSEs and KLs for various conditions
-                "all_losses": sample_losses, # Full loss dictionary
+            A_i_cast = A_i.to(orig.model.lm_head.weight.dtype)
+            logit_lens_logits_from_A_i = orig.model.lm_head(A_i_cast)
+            top_n_logit_lens_tokens = get_top_n_tokens(logit_lens_logits_from_A_i.squeeze(0), tok, top_n_analysis)
+            del A_i_cast
+            
+            with torch.no_grad():
+                logits_natural_all_pos = orig.model(input_ids=input_ids_seq).logits.detach().clone()
+                logits_natural_at_p_batched = logits_natural_all_pos[:, p]
+
+            preds_prefix_full_single_top = [
+                escape_newlines(tok.decode([logits_natural_all_pos[0,t_idx].argmax().item()]))
+                if t_idx < logits_natural_all_pos.size(1) else "N/A"
+                for t_idx in range(input_ids_seq.size(-1))
+            ]
+            
+            
+            zero_activation = torch.zeros_like(A_i)
+            logits_zero_at_p_batched = orig.forward_with_replacement(input_ids_seq, zero_activation, l, p).logits[:, p].detach().clone()
+            top_n_zero_tokens = get_top_n_tokens(logits_zero_at_p_batched.squeeze(0), tok, top_n_analysis)
+            
+            
+            top_n_orig_A_tokens = get_top_n_tokens(logits_orig_at_p_batched.squeeze(0), tok, top_n_analysis)
+            
+            top_n_aprime_tokens = ["N/A (A_prime not avail)"] * top_n_analysis
+            logits_aprime_at_p_batched = None
+            if A_prime_i is not None:
+                logits_aprime_at_p_batched = orig.forward_with_replacement(input_ids_seq, A_prime_i, l, p).logits[:, p].detach().clone()
+                top_n_aprime_tokens = get_top_n_tokens(logits_aprime_at_p_batched.squeeze(0), tok, top_n_analysis)
+            
+            logits_approx_at_p_batched = orig.forward_with_replacement(input_ids_seq, A_hat_single.to(device), l, p).logits[:, p].detach().clone()
+            top_n_lens_recon_tokens = get_top_n_tokens(logits_approx_at_p_batched.squeeze(0), tok, top_n_analysis)
+
+            top_n_train_ablation_tokens = ["N/A (A_train_kl not avail)"] * top_n_analysis
+            if A_train_i_for_kl is not None and logits_train_at_p_batched is not None:
+                top_n_train_ablation_tokens = get_top_n_tokens(logits_train_at_p_batched.squeeze(0), tok, top_n_analysis)
+            
+            raw_prefix_ids = input_ids_seq[0].tolist()
+            
+            top_n_natural_base_preds_for_p_plus_1: List[str]
+            natural_base_logits_at_p = logits_natural_at_p_batched[0]
+            top_n_natural_base_preds_for_p_plus_1 = get_top_n_tokens(natural_base_logits_at_p, tok, top_n_analysis)
+
+            # Compute baseline using previous t_text tokens as encoder input
+            t_text = cfg.get("t_text", 8)
+            # Get the previous t_text tokens from position p
+            start_token_idx = max(0, p - t_text + 1)  # Include token at position p
+            end_token_idx = p + 1
+            
+            # Extract previous tokens (may be less than t_text if near beginning)
+            prev_token_ids = raw_prefix_ids[start_token_idx:end_token_idx]
+            
+            # Pad with BOS token if needed
+            if len(prev_token_ids) < t_text:
+                bos_id = tok.bos_token_id if tok.bos_token_id is not None else tok.eos_token_id
+                padding_needed = t_text - len(prev_token_ids)
+                prev_token_ids = [bos_id] * padding_needed + prev_token_ids
+            
+            # Convert token IDs to embeddings
+            prev_token_ids_tensor = torch.tensor(prev_token_ids, device=device).unsqueeze(0)  # [1, t_text]
+            
+            # Get embeddings from the base model
+            if hasattr(enc, 'base') and enc._use_base:
+                emb_table = enc.base.get_input_embeddings().weight
+            else:
+                # Use original model's embeddings
+                emb_table = orig.model.get_input_embeddings().weight
+            
+            prev_token_embeddings = emb_table[prev_token_ids_tensor]  # [1, t_text, d_model]
+            
+            # Pass through encoder to get A_hat_baseline
+            A_hat_baseline = enc(prev_token_embeddings, current_token_ids=batch["input_ids_A"][i][p].to(device).unsqueeze(0) if enc.config.add_current_token else None).detach().clone()
+            
+            # Compute predictions and metrics for baseline
+            logits_baseline_at_p_batched = orig.forward_with_replacement(input_ids_seq, A_hat_baseline.to(device), l, p).logits[:, p].detach().clone()
+            top_n_baseline_tokens = get_top_n_tokens(logits_baseline_at_p_batched.squeeze(0), tok, top_n_analysis)
+            
+            # Compute MSE for baseline
+            mse_baseline_vs_A = torch.nn.functional.mse_loss(A_i, A_hat_baseline.to(A_i.device)).item()
+            
+            # Clean up baseline tensors
+            del prev_token_embeddings, A_hat_baseline
+            
+            # Compute shuffle intervention: shuffle first (n-3) tokens of decoder output
+            t_text = cfg.get("t_text", 8)
+            shuffle_count = max(0, t_text - 3)
+            shuffled_embeds = gen_single.generated_text_embeddings.detach().clone().to(device)
+            
+            if shuffle_count > 0:
+                # Shuffle the first shuffle_count tokens - indices on same device as embeddings
+                indices = torch.randperm(shuffle_count, device=shuffled_embeds.device)
+                shuffled_embeds[0, :shuffle_count] = shuffled_embeds[0, indices]
+            
+            # Pass shuffled embeddings through encoder
+            A_hat_shuffled = enc(shuffled_embeds, current_token_ids=batch["input_ids_A"][i][p].to(device).unsqueeze(0) if enc.config.add_current_token else None).detach().clone()
+            
+            # Compute predictions for shuffled reconstruction
+            logits_shuffled_all_pos = orig.forward_with_replacement(input_ids_seq, A_hat_shuffled.to(device), l, p).logits.detach().clone()
+            logits_shuffled_at_p_batched = logits_shuffled_all_pos[:, p]
+            top_n_shuffled_tokens = get_top_n_tokens(logits_shuffled_at_p_batched.squeeze(0), tok, top_n_analysis)
+            
+            # Compute MSE for shuffled
+            mse_shuffled_vs_A = torch.nn.functional.mse_loss(A_i, A_hat_shuffled.to(A_i.device)).item()
+            
+            # Clean up shuffle tensors
+            del shuffled_embeds, A_hat_shuffled
+            
+            # Compute full shuffle intervention: shuffle ALL tokens of decoder output
+            full_shuffled_embeds = gen_single.generated_text_embeddings.clone().to(device)
+            indices_full = torch.randperm(t_text, device=full_shuffled_embeds.device)
+            full_shuffled_embeds[0] = full_shuffled_embeds[0, indices_full]
+            
+            # Pass full shuffled embeddings through encoder
+            A_hat_full_shuffled = enc(full_shuffled_embeds, current_token_ids=batch["input_ids_A"][i][p].to(device).unsqueeze(0) if enc.config.add_current_token else None).detach().clone()
+            
+            # Compute predictions for full shuffled reconstruction
+            logits_full_shuffled_all_pos = orig.forward_with_replacement(input_ids_seq, A_hat_full_shuffled.to(device), l, p).logits.detach().clone()   
+            logits_full_shuffled_at_p_batched = logits_full_shuffled_all_pos[:, p]
+            top_n_full_shuffled_tokens = get_top_n_tokens(logits_full_shuffled_at_p_batched.squeeze(0), tok, top_n_analysis)
+            
+            # Compute MSE for full shuffled
+            mse_full_shuffled_vs_A = torch.nn.functional.mse_loss(A_i, A_hat_full_shuffled.to(A_i.device)).item()
+            
+            # Clean up full shuffle tensors
+            del full_shuffled_embeds, A_hat_full_shuffled
+
+            # Clean up full logits tensors that are no longer needed
+            del logits_shuffled_all_pos, logits_full_shuffled_all_pos
+
+            # TunedLens predictions
+            top_n_tuned_lens_tokens = ["N/A"] * top_n_analysis
+            logits_tuned_lens_at_p_batched = None
+            tuned_lens_prediction_key = f"TunedLens (L{l})"
+
+            if comparison_tuned_lens is not None:
+                # comparison_tuned_lens is already on the correct device (moved by the caller)
+                # A_i is also on the correct device.
+                if hasattr(comparison_tuned_lens, 'config') and hasattr(comparison_tuned_lens.config, 'num_hidden_layers') and l < comparison_tuned_lens.config.num_hidden_layers:
+                    try:
+                        with torch.no_grad():
+                            # Ensure A_i has the dtype TunedLens expects if there's a specific one
+                            # Always cast A_i to float32 for TunedLens to avoid dtype mismatch
+                            A_i_casted = A_i.to(torch.float32)
+                            logits_tuned_lens_at_p_batched = comparison_tuned_lens(A_i_casted, idx=l).detach().clone()
+
+                        top_n_tuned_lens_tokens = get_top_n_tokens(logits_tuned_lens_at_p_batched.squeeze(0), tok, top_n_analysis)
+                        del A_i_casted
+                    except Exception as e:
+                        # import logging
+                        # logging.getLogger(__name__).error(f"Error during TunedLens prediction for layer {l}: {e}", exc_info=True)
+                        #log.error(f"Error during TunedLens prediction for layer {l}: {e}", exc_info=True)
+                        top_n_tuned_lens_tokens = [f"ERR TL L{l}"] * top_n_analysis 
+                        print(f"error during tuned lens prediction for layer {l}: {e}")
+                else:
+                     top_n_tuned_lens_tokens = [f"L{l} OOB TL"] * top_n_analysis
+
+            analysis_preds_dict = {
+                "Base Model's natural prediction": top_n_natural_base_preds_for_p_plus_1,
+                "Zero Vector Baseline": top_n_zero_tokens,
+                "Prev Tokens Baseline (Enc[prev t tokens])": top_n_baseline_tokens,
+                "Shuffled Decoder Output (first n-3)": top_n_shuffled_tokens,
+                "Shuffled Decoder Output (ALL tokens)": top_n_full_shuffled_tokens,
+                "Logit Lens (from A_i)": top_n_logit_lens_tokens,
+                "Base Model (orig A)": top_n_orig_A_tokens,
+                "Base Model (A')": top_n_aprime_tokens,
+                tuned_lens_prediction_key: top_n_tuned_lens_tokens,
+                "Log w/o Ablation (A_hat)" + ("train" if resample_ablation else ""): top_n_lens_recon_tokens,
+                "Log training " + ("(A_hat+Δ)" if resample_ablation else "(A_hat)"): top_n_train_ablation_tokens,
             }
-            sample_data = {k: v.cpu().numpy() if isinstance(v, torch.Tensor) else v for k, v in sample_data.items()}
-            structured_samples.append(sample_data)
-        
-        if capture_output:
-            import io
-            from contextlib import redirect_stdout
-            output_buffer = io.StringIO()
-            with redirect_stdout(output_buffer):
+
+            a_prime_string_cropped = None
+            if A_prime_i is not None and "input_ids_A_prime" in batch and "token_pos_A_prime" in batch and \
+               idx_for_aprime < batch["input_ids_A_prime"].size(0) and idx_for_aprime < batch["token_pos_A_prime"].size(0) :
+                input_ids_A_prime_seq = batch["input_ids_A_prime"][idx_for_aprime].to(device)
+                p_prime = int(batch["token_pos_A_prime"][idx_for_aprime].item())
+                raw_prime_ids = input_ids_A_prime_seq.tolist()
+                crop_start_idx_prime = max(0, p_prime - 100)
+                crop_end_idx_prime = min(len(raw_prime_ids), p_prime + 30 + 1)
+                before_p_prime = tok.decode(raw_prime_ids[crop_start_idx_prime:p_prime]) if p_prime > crop_start_idx_prime else ""
+                token_at_p_prime = tok.decode([raw_prime_ids[p_prime]]) if p_prime < len(raw_prime_ids) else ""
+                after_p_prime = tok.decode(raw_prime_ids[p_prime+1:crop_end_idx_prime]) if p_prime+1 < crop_end_idx_prime else ""
+                a_prime_string_cropped = escape_newlines(before_p_prime + "*" + token_at_p_prime + "*" + after_p_prime)
+                if crop_start_idx_prime > 0: a_prime_string_cropped = "..." + a_prime_string_cropped
+                if crop_end_idx_prime < len(raw_prime_ids): a_prime_string_cropped = a_prime_string_cropped + "..."
+            
+            display_start_idx = max(0, p - 10)
+            display_end_idx = min(len(raw_prefix_ids), p + 3 + 1)
+            displayed_raw_ids = raw_prefix_ids[display_start_idx:display_end_idx]
+            displayed_prefix_tokens = [escape_newlines(tok.decode([tid])) for tid in displayed_raw_ids]
+            displayed_positions = [str(k) for k in range(display_start_idx, display_end_idx)]
+
+            crop_start_idx = max(0, p - 100)
+            crop_end_idx = min(len(raw_prefix_ids), p + 30 + 1)
+            before_p = tok.decode(raw_prefix_ids[crop_start_idx:p]) if p > crop_start_idx else ""
+            token_at_p_val = tok.decode([raw_prefix_ids[p]]) if p < len(raw_prefix_ids) else ""
+            after_p = tok.decode(raw_prefix_ids[p+1:crop_end_idx]) if p+1 < crop_end_idx else ""
+            original_string_cropped = escape_newlines(before_p + "*" + token_at_p_val + "*" + after_p)
+            if crop_start_idx > 0: original_string_cropped = "..." + original_string_cropped
+            if crop_end_idx < len(raw_prefix_ids): original_string_cropped = original_string_cropped + "..."
+            original_token_at_p_str = escape_newlines(tok.decode([raw_prefix_ids[p]])) if p < len(raw_prefix_ids) else "N/A"
+
+            gen_token_ids_full = gen_single.hard_token_ids[0].cpu().tolist()
+            gen_tokens = [escape_newlines(tok.decode([tid])) for tid in gen_token_ids_full]
+            k_for_decoder_preds = min(top_n_analysis, gen_single.raw_lm_logits.size(-1))
+            decoder_preds_by_rank = build_topk_preds_by_rank(
+                gen_single.raw_lm_logits.cpu(), len(gen_tokens), k_for_decoder_preds, tok
+            )
+
+            base_gen_single = dec.generate_soft_kv_cached_nondiff(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, use_projection=True,return_logits=True ).detach().clone()
+            base_token_ids_full = base_gen_single.hard_token_ids[0].cpu().tolist()
+            base_gen_tokens = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full]
+            base_preds_by_rank = build_topk_preds_by_rank(
+                base_gen_single.raw_lm_logits.cpu(), len(base_gen_tokens), k_for_decoder_preds, tok
+            )
+            # Clean up generation results
+            del base_gen_single
+
+            left_ids, right_ids, _, _ = dec.tokenize_and_embed_prompt(cfg["decoder_prompt"], tok)
+            base_gen_single_hard = dec.generate_soft_kv_cached_nondiff(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, hard_left_emb=left_ids, hard_right_emb=right_ids, use_projection=True,return_logits=True).detach().clone()
+            base_token_ids_full_hard = base_gen_single_hard.hard_token_ids[0].cpu().tolist()
+            base_gen_tokens_hard = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full_hard]
+            base_preds_by_rank_hard = build_topk_preds_by_rank(
+                base_gen_single_hard.raw_lm_logits.cpu(), len(base_gen_tokens_hard), k_for_decoder_preds, tok
+            )
+            # Clean up generation results
+            del base_gen_single_hard
+
+            base_gen_single_hard_no_map = dec.generate_soft_kv_cached_nondiff(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, hard_left_emb=left_ids, hard_right_emb=right_ids, use_projection=False,return_logits=True).detach().clone()
+            base_token_ids_full_hard_no_map = base_gen_single_hard_no_map.hard_token_ids[0].cpu().tolist()
+            base_gen_tokens_hard_no_map = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full_hard_no_map]
+            base_preds_by_rank_hard_no_map = build_topk_preds_by_rank(
+                base_gen_single_hard_no_map.raw_lm_logits.cpu(), len(base_gen_tokens_hard_no_map), k_for_decoder_preds, tok
+            )
+            # Clean up generation results
+            del base_gen_single_hard_no_map
+            
+            context_display_range = f"{display_start_idx}-{display_end_idx-1}" if displayed_positions else "empty"
+            context_labels = ["Position:", "Token:", "BaseLM (shift):"]
+            
+            shifted_preds_for_display = [
+                preds_prefix_full_single_top[display_start_idx + k_rel - 1] 
+                if display_start_idx + k_rel > 0 and display_start_idx + k_rel -1 < len(preds_prefix_full_single_top) 
+                else ("" if display_start_idx + k_rel == 0 else "ERR_IDX")
+                for k_rel in range(len(displayed_prefix_tokens))
+            ]
+            context_data_rows = [list(displayed_positions), list(displayed_prefix_tokens), list(shifted_preds_for_display)]
+            del preds_prefix_full_single_top  # No longer needed
+            relative_p = p - display_start_idx
+            if 0 <= relative_p < len(displayed_prefix_tokens):
+                context_data_rows[0][relative_p] = f"[{context_data_rows[0][relative_p]}]P"
+                context_data_rows[1][relative_p] = f"*{context_data_rows[1][relative_p]}*"
+
+            def safe_kl(l1, l2):
+                if l1 is None or l2 is None: return None
+                return compute_kl_divergence_robust(l1, l2).item()
+
+            kl_zero_from_natural = safe_kl(logits_zero_at_p_batched, logits_natural_at_p_batched)
+            kl_orig_from_natural = safe_kl(logits_orig_at_p_batched, logits_natural_at_p_batched)
+            kl_aprime_from_natural = safe_kl(logits_aprime_at_p_batched, logits_natural_at_p_batched)
+            kl_ahat_from_natural = safe_kl(logits_approx_at_p_batched, logits_natural_at_p_batched)
+            kl_ahat_delta_from_natural = safe_kl(logits_train_at_p_batched, logits_natural_at_p_batched)
+            kl_baseline_from_natural = safe_kl(logits_baseline_at_p_batched, logits_natural_at_p_batched)
+            kl_shuffled_from_natural = safe_kl(logits_shuffled_at_p_batched, logits_natural_at_p_batched)
+            kl_full_shuffled_from_natural = safe_kl(logits_full_shuffled_at_p_batched, logits_natural_at_p_batched)
+            kl_tuned_lens_from_natural = safe_kl(logits_tuned_lens_at_p_batched, logits_natural_at_p_batched)
+
+            kl_zero_from_orig = safe_kl(logits_zero_at_p_batched, logits_orig_at_p_batched)
+            kl_aprime_from_orig = safe_kl(logits_aprime_at_p_batched, logits_orig_at_p_batched)
+            kl_ahat_from_orig = safe_kl(logits_approx_at_p_batched, logits_orig_at_p_batched)
+            kl_baseline_from_orig = safe_kl(logits_baseline_at_p_batched, logits_orig_at_p_batched)
+            kl_shuffled_from_orig = safe_kl(logits_shuffled_at_p_batched, logits_orig_at_p_batched)
+            kl_full_shuffled_from_orig = safe_kl(logits_full_shuffled_at_p_batched, logits_orig_at_p_batched)
+            training_kl_loss_value = sample_losses['kl'] 
+            kl_tuned_lens_from_orig = safe_kl(logits_tuned_lens_at_p_batched, logits_orig_at_p_batched)
+
+            kl_divergences_for_print_section = {
+                "From Natural Prediction (no intervention)": {
+                    "KL(Natural || Zero)": kl_zero_from_natural,
+                    "KL(Natural || Prev Tokens Baseline)": kl_baseline_from_natural,
+                    "KL(Natural || Shuffled Decoder - first n-3)": kl_shuffled_from_natural,
+                    "KL(Natural || Shuffled Decoder - ALL tokens)": kl_full_shuffled_from_natural,
+                    "KL(Natural || A)": kl_orig_from_natural, 
+                    "KL(Natural || A')": kl_aprime_from_natural,
+                    "KL(Natural || A_hat)": kl_ahat_from_natural,
+                    "KL(Natural || A_hat+Δ)": kl_ahat_delta_from_natural,
+                    f"KL(Natural || {tuned_lens_prediction_key})": kl_tuned_lens_from_natural,
+                },
+                "From Original Activation A (training objective)": {
+                    "KL(A || Zero)": kl_zero_from_orig,
+                    "KL(A || Prev Tokens Baseline)": kl_baseline_from_orig,
+                    "KL(A || Shuffled Decoder - first n-3)": kl_shuffled_from_orig,
+                    "KL(A || Shuffled Decoder - ALL tokens)": kl_full_shuffled_from_orig,
+                    "KL(A || A')": kl_aprime_from_orig,
+                    "KL(A || A_hat)": kl_ahat_from_orig,
+                    ("KL(A || A_hat+Δ) [TRAINING LOSS]" if resample_ablation else "KL(A || A_hat) [TRAINING LOSS]"): training_kl_loss_value,
+                    f"KL(A || {tuned_lens_prediction_key})": kl_tuned_lens_from_orig,
+                }
+            }
+            
+            analysis_metrics_for_print = {
+                "Base Model's natural prediction": { 
+                    "mse_vs_A": 0.0, 
+                    "kl_vs_A": safe_kl(logits_natural_at_p_batched, logits_orig_at_p_batched), 
+                    "kl_vs_natural": 0.0,
+                },
+                "Zero Vector Baseline": {
+                    "mse_vs_A": sample_losses["mse_A_vs_zero"],
+                    "kl_vs_A": kl_zero_from_orig,
+                    "kl_vs_natural": kl_zero_from_natural,
+                },
+                "Prev Tokens Baseline (Enc[prev t tokens])": {
+                    "mse_vs_A": mse_baseline_vs_A,
+                    "kl_vs_A": kl_baseline_from_orig,
+                    "kl_vs_natural": kl_baseline_from_natural,
+                },
+                "Shuffled Decoder Output (first n-3)": {
+                    "mse_vs_A": mse_shuffled_vs_A,
+                    "kl_vs_A": kl_shuffled_from_orig,
+                    "kl_vs_natural": kl_shuffled_from_natural,
+                },
+                "Shuffled Decoder Output (ALL tokens)": {
+                    "mse_vs_A": mse_full_shuffled_vs_A,
+                    "kl_vs_A": kl_full_shuffled_from_orig,
+                    "kl_vs_natural": kl_full_shuffled_from_natural,
+                },
+                "Base Model (orig A)": { 
+                    "mse_vs_A": 0.0, 
+                    "kl_vs_A": 0.0, 
+                    "kl_vs_natural": kl_orig_from_natural,
+                },
+                "Base Model (A')": { 
+                    "mse_vs_A": sample_losses["mse_A_vs_aprime"], 
+                    "kl_vs_A": kl_aprime_from_orig, 
+                    "kl_vs_natural": kl_aprime_from_natural, 
+                },
+                "Log w/o Ablation (A_hat)": { 
+                    "mse_vs_A": sample_losses["mse_A_vs_Ahat"], 
+                    "kl_vs_A": kl_ahat_from_orig,
+                    "kl_vs_natural": kl_ahat_from_natural,
+                },
+                "Log w/Resample Ablation (A_hat+Δ)": { 
+                    "mse_vs_A": sample_losses["mse_A_vs_A_train"], 
+                    "kl_vs_A": training_kl_loss_value, 
+                    "kl_vs_natural": kl_ahat_delta_from_natural, 
+                },
+                tuned_lens_prediction_key: {
+                    "mse_vs_A": None,
+                    "kl_vs_A": kl_tuned_lens_from_orig,
+                    "kl_vs_natural": kl_tuned_lens_from_natural,
+                },
+            }
+            
+            autoregressive_continuation = None
+            if generate_continuation:
+                autoregressive_continuation = generate_autoregressive_continuation(
+                    orig, input_ids_seq, p, num_tokens=continuation_tokens, tok=tok, device=device
+                )
+            
+            if return_structured_data:
+                # Simplified structured data based on available variables for print
+                # If original (token, prob) pairs are needed, logic from earlier versions needs to be re-added
+                original_logits_topk_for_structured = []
+                if logits_orig_at_p_batched is not None:
+                    orig_probs = torch.softmax(logits_orig_at_p_batched.squeeze(0), dim=-1)
+                    orig_top_values, orig_top_indices = torch.topk(orig_probs, k=min(top_n_analysis, orig_probs.size(-1)))
+                    for val_idx in range(len(orig_top_indices)):
+                        token_id = orig_top_indices[val_idx].item()
+                        prob = orig_top_values[val_idx].item()
+                        token_str = escape_newlines(tok.decode([token_id]))
+                        original_logits_topk_for_structured.append((token_str, prob))
+
+                reconstructed_logits_topk_for_structured = [] # For A_hat
+                if logits_approx_at_p_batched is not None: # Logits from A_hat intervention
+                    recon_probs = torch.softmax(logits_approx_at_p_batched.squeeze(0), dim=-1)
+                    recon_top_values, recon_top_indices = torch.topk(recon_probs, k=min(top_n_analysis, recon_probs.size(-1)))
+                    for val_idx in range(len(recon_top_indices)):
+                        token_id = recon_top_indices[val_idx].item()
+                        prob = recon_top_values[val_idx].item()
+                        token_str = escape_newlines(tok.decode([token_id]))
+                        reconstructed_logits_topk_for_structured.append((token_str, prob))
+                
+                # Decoder predictions (top-k for each generated token position)
+                # For structured output, let's take the top-1 prediction for each token from the decoder
+                # and its associated top-k probabilities for the first position if needed.
+                # For simplicity, using the already built decoder_preds_by_rank (list of lists of top tokens)
+                # and gen_tokens (list of generated tokens)
+                
+                decoder_top_preds_structured = [] # List of (token_str, prob) for the *first* generated position by decoder
+                if gen_single.raw_lm_logits.numel() > 0 and gen_single.raw_lm_logits.size(1) > 0 : # Check if any logits generated
+                    first_pos_logits = gen_single.raw_lm_logits[0, 0]
+                    first_pos_probs = torch.softmax(first_pos_logits, dim=-1)
+                    top_vals, top_ids = torch.topk(first_pos_probs, k=min(top_n_analysis, first_pos_probs.size(-1)))
+                    for k_idx in range(len(top_ids)):
+                        decoder_top_preds_structured.append(
+                            (escape_newlines(tok.decode([top_ids[k_idx].item()])), top_vals[k_idx].item())
+                        )
+
+                sample_data = {
+                    "input_text": escape_newlines(original_string_cropped),
+                    "chosen_token": escape_newlines(original_token_at_p_str),
+                    "position": p,
+                    "decoded_text": escape_newlines(" ".join(gen_tokens)), # Decoder generated text
+                    "decoder_top_predictions_first_pos": decoder_top_preds_structured, # Top-k for first token by decoder
+                    "continuation": escape_newlines(autoregressive_continuation) if autoregressive_continuation else None,
+                    "original_model_top_predictions_at_p": original_logits_topk_for_structured, # Top-k from A_i intervention
+                    "reconstructed_A_hat_top_predictions_at_p": reconstructed_logits_topk_for_structured, # Top-k from A_hat intervention
+                    "metrics_at_p": analysis_metrics_for_print, # Contains MSEs and KLs for various conditions
+                    "all_losses": sample_losses, # Full loss dictionary
+                }
+                sample_data = {k: v.cpu().numpy() if isinstance(v, torch.Tensor) else v for k, v in sample_data.items()}
+                structured_samples.append(sample_data)
+            
+            if capture_output:
+                import io
+                from contextlib import redirect_stdout
+                output_buffer = io.StringIO()
+                with redirect_stdout(output_buffer):
+                    print_verbose_sample_details(
+                        l=l, p=p, original_token_at_p_str=original_token_at_p_str,
+                        context_display_range=context_display_range, context_labels=context_labels, context_data_rows=context_data_rows,
+                        analysis_predictions=analysis_preds_dict,
+                        analysis_metrics=analysis_metrics_for_print, 
+                        decoder_tokens=gen_tokens, decoder_preds_by_rank=decoder_preds_by_rank,
+                        base_tokens=base_gen_tokens, base_tokens_hard=base_gen_tokens_hard, base_tokens_hard_no_map=base_gen_tokens_hard_no_map,
+                        base_preds_by_rank=base_preds_by_rank, base_preds_by_rank_hard=base_preds_by_rank_hard, base_preds_by_rank_hard_no_map=base_preds_by_rank_hard_no_map,
+                        top_n_analysis_val=top_n_analysis, original_string_cropped=original_string_cropped,
+                        autoregressive_continuation=autoregressive_continuation, a_prime_string_cropped=a_prime_string_cropped,
+                        cfg=cfg, sample_losses=sample_losses, kl_divergences=kl_divergences_for_print_section, 
+                        resample_ablation=resample_ablation
+                    )
+                captured_output.append(output_buffer.getvalue())
+                print(captured_output[-1], end='')
+            else:
                 print_verbose_sample_details(
                     l=l, p=p, original_token_at_p_str=original_token_at_p_str,
                     context_display_range=context_display_range, context_labels=context_labels, context_data_rows=context_data_rows,
@@ -962,76 +974,60 @@ def process_and_print_verbose_batch_samples(
                     base_preds_by_rank=base_preds_by_rank, base_preds_by_rank_hard=base_preds_by_rank_hard, base_preds_by_rank_hard_no_map=base_preds_by_rank_hard_no_map,
                     top_n_analysis_val=top_n_analysis, original_string_cropped=original_string_cropped,
                     autoregressive_continuation=autoregressive_continuation, a_prime_string_cropped=a_prime_string_cropped,
-                    cfg=cfg, sample_losses=sample_losses, kl_divergences=kl_divergences_for_print_section, 
+                    cfg=cfg, sample_losses=sample_losses, kl_divergences=kl_divergences_for_print_section,
                     resample_ablation=resample_ablation
                 )
-            captured_output.append(output_buffer.getvalue())
-            print(captured_output[-1], end='')
-        else:
-            print_verbose_sample_details(
-                l=l, p=p, original_token_at_p_str=original_token_at_p_str,
-                context_display_range=context_display_range, context_labels=context_labels, context_data_rows=context_data_rows,
-                analysis_predictions=analysis_preds_dict,
-                analysis_metrics=analysis_metrics_for_print, 
-                decoder_tokens=gen_tokens, decoder_preds_by_rank=decoder_preds_by_rank,
-                base_tokens=base_gen_tokens, base_tokens_hard=base_gen_tokens_hard, base_tokens_hard_no_map=base_gen_tokens_hard_no_map,
-                base_preds_by_rank=base_preds_by_rank, base_preds_by_rank_hard=base_preds_by_rank_hard, base_preds_by_rank_hard_no_map=base_preds_by_rank_hard_no_map,
-                top_n_analysis_val=top_n_analysis, original_string_cropped=original_string_cropped,
-                autoregressive_continuation=autoregressive_continuation, a_prime_string_cropped=a_prime_string_cropped,
-                cfg=cfg, sample_losses=sample_losses, kl_divergences=kl_divergences_for_print_section,
-                resample_ablation=resample_ablation
+            num_printed_this_batch += 1
+            
+            # Force cleanup after each sample to prevent accumulation
+            del (
+                A_i, input_ids_seq, gen_single, A_hat_single, A_train_i_for_kl,
+                logits_orig_at_p_batched, logits_train_at_p_batched,
+                logits_natural_at_p_batched, logits_zero_at_p_batched,
+                logits_approx_at_p_batched, logits_baseline_at_p_batched,
+                logits_shuffled_at_p_batched, logits_full_shuffled_at_p_batched,
+                logit_lens_logits_from_A_i, zero_activation, prev_token_ids_tensor,
+                base_gen_tokens, base_gen_tokens_hard, base_gen_tokens_hard_no_map,
+                results_from_compute, computed_tensors,
+                analysis_preds_dict, analysis_metrics_for_print, sample_losses, kl_divergences_for_print_section,
+                gen_tokens, decoder_preds_by_rank, base_preds_by_rank, base_preds_by_rank_hard, base_preds_by_rank_hard_no_map,
+                context_data_rows,
             )
-        num_printed_this_batch += 1
-        
-        # Force cleanup after each sample to prevent accumulation
-        del (
-            A_i, input_ids_seq, gen_single, A_hat_single, A_train_i_for_kl,
-            logits_orig_at_p_batched, logits_train_at_p_batched,
-            logits_natural_at_p_batched, logits_zero_at_p_batched,
-            logits_approx_at_p_batched, logits_baseline_at_p_batched,
-            logits_shuffled_at_p_batched, logits_full_shuffled_at_p_batched,
-            logit_lens_logits_from_A_i, zero_activation, prev_token_ids_tensor,
-            base_gen_tokens, base_gen_tokens_hard, base_gen_tokens_hard_no_map,
-            results_from_compute, computed_tensors,
-            analysis_preds_dict, analysis_metrics_for_print, sample_losses, kl_divergences_for_print_section,
-            gen_tokens, decoder_preds_by_rank, base_preds_by_rank, base_preds_by_rank_hard, base_preds_by_rank_hard_no_map,
-            context_data_rows,
-        )
-        if A_prime_i is not None:
-            del A_prime_i
-        if 'natural_base_logits_at_p' in locals():
-            del natural_base_logits_at_p
-        if logits_aprime_at_p_batched is not None:
-            del logits_aprime_at_p_batched
-        if logits_tuned_lens_at_p_batched is not None:
-            del logits_tuned_lens_at_p_batched
-        if autoregressive_continuation is not None:
-            del autoregressive_continuation
-        if a_prime_string_cropped is not None:
-            del a_prime_string_cropped
-        
-        # Force GPU memory cleanup after each sample
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
-        if (printed_count_so_far + num_printed_this_batch) >= num_samples:
-            break
+            if A_prime_i is not None:
+                del A_prime_i
+            if 'natural_base_logits_at_p' in locals():
+                del natural_base_logits_at_p
+            if logits_aprime_at_p_batched is not None:
+                del logits_aprime_at_p_batched
+            if logits_tuned_lens_at_p_batched is not None:
+                del logits_tuned_lens_at_p_batched
+            if autoregressive_continuation is not None:
+                del autoregressive_continuation
+            if a_prime_string_cropped is not None:
+                del a_prime_string_cropped
+            
+            # Force GPU memory cleanup after each sample
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            if (printed_count_so_far + num_printed_this_batch) >= num_samples:
+                break
     
-    if num_printed_this_batch > 0 and do_soft_token_embeds:
-        soft_prompt_projections = get_soft_prompt_projections(dec, enc, orig, tok)
-        soft_prompt_text = format_soft_prompt_projections(soft_prompt_projections)
-        
-        if capture_output:
-            captured_output.append(soft_prompt_text)
-            print(soft_prompt_text)
-        else:
-            print(soft_prompt_text)
+        if num_printed_this_batch > 0 and do_soft_token_embeds:
+            soft_prompt_projections = get_soft_prompt_projections(dec, enc, orig, tok)
+            soft_prompt_text = format_soft_prompt_projections(soft_prompt_projections)
+            
+            if capture_output:
+                captured_output.append(soft_prompt_text)
+                print(soft_prompt_text)
+            else:
+                print(soft_prompt_text)
     
-    if return_structured_data:
-        return num_printed_this_batch, structured_samples
-    elif capture_output:
-        return num_printed_this_batch, "\n".join(captured_output)
-    return num_printed_this_batch
+        if return_structured_data:
+            return num_printed_this_batch, structured_samples
+        elif capture_output:
+            return num_printed_this_batch, "\n".join(captured_output)
+        return num_printed_this_batch
 
 
 # -----------------------------------------------------------------------------

@@ -333,7 +333,7 @@ def test_realistic_training_step():
         
         # Loss function parameters
         loss_fns = {
-            "T_text": seq_length,
+            "t_text": seq_length,
             "tau": 1.0,
             "alpha": 0.1,
             "kl_base_weight": 1.0,

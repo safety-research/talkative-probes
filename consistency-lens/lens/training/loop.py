@@ -93,7 +93,7 @@ def compute_kl_divergence_robust(logits_approx: torch.Tensor, logits_orig: torch
 def train_step(  # noqa: D401
     batch: Dict[str, torch.Tensor],
     models: Dict[str, nn.Module],
-    _loss_fns: Dict[str, nn.Module] | None = None,  # (e.g. {"T_text": 8, "tau": 1.0, "alpha": 0.1})
+    _loss_fns: Dict[str, nn.Module] | None = None,  # (e.g. {"t_text": 8, "tau": 1.0, "alpha": 0.1})
     lm_loss_natural_prefix: str | None = None,  # Natural language prefix for base model in LM loss
     tokenizer = None,  # Tokenizer for natural prefix
     cached_prefix_ids: torch.Tensor | None = None,  # Pre-tokenized prefix to avoid re-tokenization
@@ -180,7 +180,7 @@ def train_step(  # noqa: D401
     A_hat = enc(gen.generated_text_embeddings, original_token_pos=original_token_pos_A, current_token_ids=current_token_ids if enc.config.add_current_token else None)
 
     # Extract decoded token IDs for logging popularity
-    # gen.hard_token_ids is (Batch, T_text)
+    # gen.hard_token_ids is (Batch, t_text)
     # We flatten it to count all tokens produced in the batch
     decoded_token_ids_batch = gen.hard_token_ids.detach().cpu().view(-1)
     
@@ -218,7 +218,7 @@ def train_step(  # noqa: D401
     if do_lm_computation or lm_w > 0:
         with grad_context_lm:
             # Compute LM loss, using no_grad if weight is 0
-            d_model_pred_logits = gen.raw_lm_logits # Shape is (B, T_text, V) as per decoder.py
+            d_model_pred_logits = gen.raw_lm_logits # Shape is (B, t_text, V) as per decoder.py
             if d_model_pred_logits is None:
                 log.error("d_model_pred_logits is None")
                 raise ValueError(f"d_model_pred_logits is None: {GRPO_validate_mode}, {GRPO_training}, {lm_w}, {do_lm_computation}, {eval_mode}, {resample_ablation}, {kl_base}, {mse_w}, {ent_w}, {GRPO_w}, {GRPO_training}, {group_n}, {t_text}, {tau}, {alpha}")
@@ -233,27 +233,27 @@ def train_step(  # noqa: D401
                 # Embed the natural prefix using the original model's embeddings
                 prefix_embeds = orig.model.get_input_embeddings()(natural_prefix_expanded) # (B, prefix_len, D_model)
                 # Get the decoder's generated embeddings (output of Gumbel-Softmax STE)
-                decoder_generated_embeds = gen.generated_text_embeddings #(B, T_text, D_model)
+                decoder_generated_embeds = gen.generated_text_embeddings #(B, t_text, D_model)
 
                 # Concatenate embedded prefix with decoder's generated embeddings
-                base_model_input_embeds = torch.cat([prefix_embeds, decoder_generated_embeds], dim=1)# length of embedded sequence: prefix_len + T_text
+                base_model_input_embeds = torch.cat([prefix_embeds, decoder_generated_embeds], dim=1)# length of embedded sequence: prefix_len + t_text
                 # Logits from LLM_orig_model conditioned on embedded prefix + decoder's generated embeddings.
                 # Gradients ARE allowed to flow through decoder_generated_embeds back to the decoder.
                 orig_model_pred_logits_all_pos = orig.model(
                     inputs_embeds=base_model_input_embeds
-                ).logits # Shape: (B, prefix_len + T_text, V)
+                ).logits # Shape: (B, prefix_len + t_text, V)
                 
                 prefix_len_for_slicing = prefix_embeds.shape[1]
 
             else: # Original behavior: use hard token IDs and no_grad for orig model
-                base_model_input_ids = torch.cat([natural_prefix_expanded, gen.hard_token_ids], dim=1)  # Shape: (B, prefix_len + T_text)
+                base_model_input_ids = torch.cat([natural_prefix_expanded, gen.hard_token_ids], dim=1)  # Shape: (B, prefix_len + t_text)
 
                 # Logits from LLM_orig_model conditioned on natural language prefix + generated tokens
                 # (predicting token t+1 given natural prefix + generated tokens 0..t)
                 with torch.no_grad(): # Ensure orig model isn't updated by this loss component
                     orig_model_pred_logits_all_pos = orig.model(
                         input_ids=base_model_input_ids
-                    ).logits # Shape: (B, prefix_len + T_text, V)
+                    ).logits # Shape: (B, prefix_len + t_text, V)
                 
                 prefix_len_for_slicing = natural_prefix_expanded.shape[1]
 
@@ -262,7 +262,7 @@ def train_step(  # noqa: D401
             num_generated_tokens = d_model_pred_logits.shape[1]
             end_idx = prefix_len_for_slicing + num_generated_tokens -1 # ending here ensures we predict the last token of the generated sequence
             
-            orig_model_pred_logits = orig_model_pred_logits_all_pos[:, start_idx:end_idx, :].clone() # Shape: (B, T_text, V)
+            orig_model_pred_logits = orig_model_pred_logits_all_pos[:, start_idx:end_idx, :].clone() # Shape: (B, t_text, V)
             del orig_model_pred_logits_all_pos
          
 
@@ -270,7 +270,7 @@ def train_step(  # noqa: D401
             # P_Orig is the reference distribution from the original LLM (p).
             # P_D is the distribution from the decoder we are training (q).
             
-            # Reshape logits to (N, C) for KL divergence, where N = B * T_text,
+            # Reshape logits to (N, C) for KL divergence, where N = B * t_text,
             # to average KL over all token positions.
             V_lm = d_model_pred_logits.size(-1)
             d_model_pred_logits_flat = d_model_pred_logits.reshape(-1, V_lm)
@@ -301,7 +301,7 @@ def train_step(  # noqa: D401
         B=A.shape[0]
         natural_prefix_expanded = cached_prefix_ids.expand(B, -1).to(A.device)  # Shape: (B, prefix_len)
         prefix_len_for_slicing = natural_prefix_expanded.shape[-1]
-        base_model_input_ids = torch.cat([natural_prefix_expanded, gen.hard_token_ids], dim=1)  # Shape: (B, prefix_len + T_text)
+        base_model_input_ids = torch.cat([natural_prefix_expanded, gen.hard_token_ids], dim=1)  # Shape: (B, prefix_len + t_text)
         slice_index = prefix_len_for_slicing-1
         # Logits from LLM_orig_model conditioned on natural language prefix + generated tokens
         # (predicting token t+1 given natural prefix + generated tokens 0..t)
@@ -309,7 +309,7 @@ def train_step(  # noqa: D401
             num_generated_tokens = gen.hard_token_ids.shape[-1]
             orig_model_pred_logits_all_pos = orig.model(
                 input_ids=base_model_input_ids,
-            ).logits[:, slice_index:slice_index+num_generated_tokens, :] # Shape: (B, T_text, V)
+            ).logits[:, slice_index:slice_index+num_generated_tokens, :] # Shape: (B, t_text, V)
             orig_model_pred_logprobs_all_pos = torch.log_softmax(orig_model_pred_logits_all_pos, dim=-1)
             trimmed_orig_model_pred_logprobs_of_interest = torch.gather(
                 orig_model_pred_logprobs_all_pos,
@@ -512,7 +512,7 @@ def train_step(  # noqa: D401
             detach_entropy=ent_w==0,
             calculate_entropy=ent_w!=0 or GRPO_validate_mode,
             return_logits=False
-        )#probs shape (B,T_text
+        )#probs shape (B,t_text
         if ent_w==0:
             if entropy is not None and ent_w==0:
                 entropy = entropy.detach()

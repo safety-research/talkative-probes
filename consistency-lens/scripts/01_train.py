@@ -528,7 +528,7 @@ def run_validation_step(
             sch_args = {
                 "tau": get_schedule_value(config['gumbel_tau_schedule'], current_step, max_steps,
                                          current_epoch, steps_per_epoch),
-                "T_text": t_text,
+                "t_text": t_text,
                 "alpha": get_schedule_value(config['alpha_schedule'], current_step, max_steps,
                                            current_epoch, steps_per_epoch),
                 "lm_base_weight": lm_base_weight,
@@ -1428,7 +1428,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                 {"dec": dec, "enc": enc, "orig": orig},
                 {
                     "tau": current_tau,
-                    "T_text": t_text,
+                    "t_text": t_text,
                     "alpha": current_alpha,
                     "lm_base_weight": lm_base_weight,
                     "kl_base_weight": kl_base_weight,
@@ -1743,7 +1743,7 @@ def main(cfg: DictConfig) -> None:  # noqa: D401
                 sch_args = {
                     "tau": get_schedule_value(config['gumbel_tau_schedule'], step, max_steps,
                                              current_epoch, steps_per_epoch),
-                    "T_text": t_text,
+                    "t_text": t_text,
                     "alpha": get_schedule_value(config['alpha_schedule'], step, max_steps,
                                                current_epoch, steps_per_epoch),
                     "lm_base_weight": lm_base_weight,

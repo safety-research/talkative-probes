@@ -71,7 +71,7 @@ training:
       decay_steps: 5000
   
   # Generation length
-  T_text: 32
+  t_text: 32
 
 # Evaluation configuration
 evaluation:

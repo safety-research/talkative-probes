@@ -23,7 +23,7 @@ def run_eval_interventions(
     where we just take the original tokens from the sequence that produced A.
     
     Args:
-        generated_embeddings: Decoder output embeddings (B, T_text, D)
+        generated_embeddings: Decoder output embeddings (B, t_text, D)
         enc: Encoder model
         orig_A: Original activations (B, D) from position p in layer L
         A_hat_decoder: Already computed decoder reconstruction (B, D)
@@ -34,7 +34,7 @@ def run_eval_interventions(
     Returns:
         Dictionary with intervention results
     """
-    B, T_text, D = generated_embeddings.shape
+    B, t_text, D = generated_embeddings.shape
     results = {}
     
     # Get the position p where activation A was taken from
@@ -44,15 +44,15 @@ def run_eval_interventions(
         token_pos_batch=token_pos_batch.repeat(2)
         input_ids=input_ids.repeat(2,1)
     
-    # Baseline: Take T_text tokens from the original sequence up to and including position p
+    # Baseline: Take t_text tokens from the original sequence up to and including position p
     baseline_embeddings_list = []
     
     for b in range(B):
         p = int(token_pos_batch[b].item())
 
         # Get tokens ending at position p (inclusive)
-        # We want T_text tokens, so we take from (p - T_text + 1) to p (inclusive)
-        start_pos = max(0, p - T_text + 1)
+        # We want t_text tokens, so we take from (p - t_text + 1) to p (inclusive)
+        start_pos = max(0, p - t_text + 1)
         end_pos = p + 1  # +1 because we want inclusive
 
         # Extract those token IDs
@@ -61,8 +61,8 @@ def run_eval_interventions(
         # Get embeddings for these tokens
         token_embeddings = orig_model.model.get_input_embeddings()(baseline_token_ids)  # (actual_len, D)
 
-        # If we got fewer than T_text tokens (because p is near the start), pad with EOS token
-        if token_embeddings.shape[0] < T_text:
+        # If we got fewer than t_text tokens (because p is near the start), pad with EOS token
+        if token_embeddings.shape[0] < t_text:
             eos_token_id = orig_model.model.config.eos_token_id
             if eos_token_id is None:
                 eos_token_id = orig_model.model.config.pad_token_id
@@ -74,13 +74,13 @@ def run_eval_interventions(
                 torch.tensor([eos_token_id], device=token_embeddings.device)
             ).squeeze(0)  # (D,)
 
-            num_pad = T_text - token_embeddings.shape[0]
+            num_pad = t_text - token_embeddings.shape[0]
             padding = eos_embedding.unsqueeze(0).expand(num_pad, -1)  # (num_pad, D)
             token_embeddings = torch.cat([padding, token_embeddings], dim=0)
 
         baseline_embeddings_list.append(token_embeddings)
 
-    # Stack to get (B, T_text, D)
+    # Stack to get (B, t_text, D)
     baseline_embeddings = torch.stack(baseline_embeddings_list, dim=0)
 
     # Gather current_token_ids for each sample using token_pos_batch
@@ -104,7 +104,7 @@ def run_eval_interventions(
     results["mse_decoder"] = mse_decoder
 
     # 3. Shuffle intervention: shuffle first (n-3) tokens of decoder output
-    n_tokens = T_text
+    n_tokens = t_text
     shuffled_embeds = generated_embeddings.clone()
     shuffle_count = max(0, n_tokens - 3)
 
@@ -123,7 +123,7 @@ def run_eval_interventions(
     # 4. Full shuffle intervention: shuffle ALL tokens of decoder output
     full_shuffled_embeds = generated_embeddings.clone()
     for b in range(B):
-        indices = torch.randperm(T_text, device=generated_embeddings.device)
+        indices = torch.randperm(t_text, device=generated_embeddings.device)
         full_shuffled_embeds[b] = generated_embeddings[b, indices]
 
     if enc.config.add_current_token:
@@ -217,7 +217,7 @@ def run_eval_interventions(
         verbose_data = []
         for b in range(B):
             p = int(token_pos_batch[b].item())
-            start_pos = max(0, p - T_text + 1)
+            start_pos = max(0, p - t_text + 1)
             end_pos = p + 1
             
             sample_data = {

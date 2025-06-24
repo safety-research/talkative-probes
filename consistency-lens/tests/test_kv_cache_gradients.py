@@ -44,16 +44,16 @@ def test_gradient_flow():
     # Test parameters
     batch_size = 2
     d_model = decoder.base.config.hidden_size
-    T_text = 8
+    t_text = 8
     
     # Create activation that requires grad
     activation = torch.randn(batch_size, d_model, device=device, requires_grad=True)
     
     # Forward pass with different generation methods
     methods = [
-        ("naive", lambda: decoder.generate_soft(activation, max_length=T_text, gumbel_tau=1.0)),
-        ("checkpoint", lambda: decoder.generate_soft_chkpt(activation, max_length=T_text, gumbel_tau=1.0, checkpoint_every_n_tokens=1)),
-        ("kv_cache", lambda: decoder.generate_soft_kv_cached(activation, max_length=T_text, gumbel_tau=1.0)),
+        ("naive", lambda: decoder.generate_soft(activation, max_length=t_text, gumbel_tau=1.0)),
+        ("checkpoint", lambda: decoder.generate_soft_chkpt(activation, max_length=t_text, gumbel_tau=1.0, checkpoint_every_n_tokens=1)),
+        ("kv_cache", lambda: decoder.generate_soft_kv_cached(activation, max_length=t_text, gumbel_tau=1.0)),
     ]
     
     for method_name, gen_fn in methods:
@@ -113,8 +113,8 @@ def test_gradient_flow():
             A_prime = activation_kl + 0.1 * torch.randn_like(activation_kl)
             
             # Generate from both
-            gen_A = decoder.generate_soft_kv_cached(A, max_length=T_text, gumbel_tau=1.0)
-            gen_Ap = decoder.generate_soft_kv_cached(A_prime, max_length=T_text, gumbel_tau=1.0)
+            gen_A = decoder.generate_soft_kv_cached(A, max_length=t_text, gumbel_tau=1.0)
+            gen_Ap = decoder.generate_soft_kv_cached(A_prime, max_length=t_text, gumbel_tau=1.0)
             
             # Reconstruct
             A_hat = encoder(gen_A.generated_text_embeddings)
@@ -164,11 +164,11 @@ def test_gradient_flow():
             
         # Forward + backward
         if method_name == "naive":
-            gen = decoder.generate_soft(test_activation, max_length=T_text, gumbel_tau=1.0)
+            gen = decoder.generate_soft(test_activation, max_length=t_text, gumbel_tau=1.0)
         elif method_name == "checkpoint":
-            gen = decoder.generate_soft_chkpt(test_activation, max_length=T_text, gumbel_tau=1.0, checkpoint_every_n_tokens=1)
+            gen = decoder.generate_soft_chkpt(test_activation, max_length=t_text, gumbel_tau=1.0, checkpoint_every_n_tokens=1)
         else:  # kv_cache
-            gen = decoder.generate_soft_kv_cached(test_activation, max_length=T_text, gumbel_tau=1.0)
+            gen = decoder.generate_soft_kv_cached(test_activation, max_length=t_text, gumbel_tau=1.0)
             
         reconstructed = encoder(gen.generated_text_embeddings)
         loss = torch.nn.functional.mse_loss(reconstructed, test_activation.detach())

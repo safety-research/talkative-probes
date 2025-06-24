@@ -69,10 +69,38 @@ from datasets import load_from_disk, Dataset as HFDataset
 
 from lens.data.on_the_fly_datasets import (
     InMemoryValidationDataset,
-    OnTheFlyTrainingActivationGenerator,
-    TrainingActivationCache,
-    OnTheFlyCachedTrainingDataset
+    RankInMemoryTrainingCache,
+    _generate_activations_batched,
+    _dataset_log_fn
 )
+from typing import Optional, Callable
+from transformers import PreTrainedTokenizer
+
+# Make _rank_log_fn a top-level function
+def global_rank_log_fn(message: str, level: str = "info", current_rank: Optional[int] = None, logger_instance: Optional[logging.Logger] = None):
+    """
+    A picklable logging function that can be used by worker processes.
+    """
+    if logger_instance is None:
+        # Fallback if no logger is passed, though it's better to pass one.
+        # This might not integrate perfectly with Hydra's logging if used directly by workers without setup.
+        logger_instance = logging.getLogger(__name__) # Or a specific name
+        if not logger_instance.hasHandlers(): # Basic setup if no handlers
+            handler = logging.StreamHandler()
+            formatter = logging.Formatter(f"[Rank {current_rank if current_rank is not None else 'N/A'}] %(levelname)s | %(message)s")
+            handler.setFormatter(formatter)
+            logger_instance.addHandler(handler)
+            logger_instance.setLevel(logging.INFO)
+
+
+    prefix = f"[Rank {current_rank}] " if current_rank is not None else ""
+    
+    if level == "error":
+        logger_instance.error(f"{prefix}{message}")
+    elif level == "warning":
+        logger_instance.warning(f"{prefix}{message}")
+    else:
+        logger_instance.info(f"{prefix}{message}")
 
 
 def _resolve_schedule_to_steps(schedule_str: str | int, steps_per_epoch: int, log: logging.Logger, setting_name: str, grad_accum_steps: int) -> int:
@@ -119,7 +147,7 @@ def _log_epoch_token_statistics(epoch_decoded_tokens: list[int], tokenizer: Auto
 def get_project_root() -> Path:
     """Get the project root directory (consistency-lens folder)."""
     # This script is in consistency-lens/scripts/, so go up one level
-    script_dir = Path(__file__).parent.absolute()
+    script_dir = Path(__file__).parent.parent.absolute()
     project_root = script_dir.parent
     return project_root
 
@@ -353,7 +381,6 @@ def generate_run_name(config: dict, dataset_info: dict, resume_from: str = None,
     return "_".join(components)
 
 
-# Helper function to prepare datasets and dataloaders
 def _prepare_dataloaders(
     config: dict,
     activation_dir: str,
@@ -361,156 +388,104 @@ def _prepare_dataloaders(
     max_train_samples_req: int | None,
     max_val_samples_req: int | None,
     log: logging.Logger,
-    # New parameters for on-the-fly generation
-    orig_model_for_gen: Optional[OrigWrapper] = None,
+    orig_model_for_gen: Optional["OrigWrapper"] = None,
     tokenizer_for_gen: Optional[PreTrainedTokenizer] = None,
-    generation_device: Optional[torch.device] = None,
+    generation_device: Optional["torch.device"] = None,
     rank: Optional[int] = None,
     world_size: Optional[int] = None,
 ):
-    """
-    Prepares and returns train and validation datasets and dataloaders.
-    Supports both loading from disk and on-the-fly generation.
-    """
     on_the_fly_cfg = config.get('dataset', {}).get('on_the_fly', {'enabled': False})
-    dataset_cfg = config.get('dataset', {}) # General dataset config for splits, etc.
+    dataset_cfg = config.get('dataset', {})
 
     train_ds, val_ds = None, None
 
     if on_the_fly_cfg.get('enabled', False):
-        log.info("Preparing datasets for on-the-fly activation generation.")
-        if not all([orig_model_for_gen, tokenizer_for_gen, generation_device is not None, rank is not None, world_size is not None]):
-            error_msg = "Missing required arguments for on-the-fly dataset generation (model, tokenizer, device, rank, world_size)."
-            log.error(error_msg)
-            raise ValueError(error_msg)
-
-        pretok_path = on_the_fly_cfg.get('pretokenized_path')
-        if not pretok_path:
-            error_msg = "On-the-fly generation enabled, but 'dataset.on_the_fly.pretokenized_path' is not set."
-            log.error(error_msg)
-            raise ValueError(error_msg)
-
-        # ---- Validation Dataset (On-the-fly) ----
-        val_split_name = dataset_cfg.get('val_split', 'validation') # Or get from a more specific on_the_fly_cfg if needed
+        _dataset_log_fn(log, "Preparing datasets for on-the-fly activation generation (Map-style Cache model).", rank=rank)
         
-        num_val_samples_to_generate = on_the_fly_cfg.get('validation_samples_override', max_val_samples_req)
-        if num_val_samples_to_generate is None: # Fallback if neither override nor max_val_samples_req is set
-            num_val_samples_to_generate = config.get('activation_dumper',{}).get('val_num_samples', 5000) # A reasonable default
-            log.info(f"Using default num_val_samples_to_generate: {num_val_samples_to_generate} for on-the-fly validation.")
+        pretok_path_config = on_the_fly_cfg.get('pretokenized_path') # Store in a variable for check
 
-        if num_val_samples_to_generate > 0 :
-            log.info(f"Attempting to generate {num_val_samples_to_generate} validation samples on-the-fly using '{val_split_name}' split from {pretok_path}.")
-            val_ds = InMemoryValidationDataset(
-                orig_model_for_gen=orig_model_for_gen,
-                tokenizer=tokenizer_for_gen,
-                pretok_dataset_path=pretok_path,
-                pretok_split_name=val_split_name,
-                num_val_samples_to_generate=num_val_samples_to_generate,
-                on_the_fly_config=on_the_fly_cfg, # Pass the relevant sub-config
-                generation_device=generation_device,
-                rank=rank,
-                world_size=world_size,
-            )
-            log.info(f"On-the-fly validation dataset created with {len(val_ds)} samples.")
-            if len(val_ds) == 0 and num_val_samples_to_generate > 0:
-                log.warning("On-the-fly validation dataset is empty after creation. Check pretokenized data and config.")
+        if not all([orig_model_for_gen, 
+                    pretok_path_config, # Use the variable here
+                    generation_device is not None, rank is not None, world_size is not None]):
+            missing_args_map = {
+                    "orig_model_for_gen": orig_model_for_gen,
+                    "pretok_path": pretok_path_config, 
+                    "generation_device": generation_device, 
+                    "rank": rank, 
+                    "world_size": world_size,
+                }
+            missing_args = [ arg_name for arg_name, arg_val in missing_args_map.items() if arg_val is None ]
+            error_msg = f"Missing required arguments for on-the-fly Map-style Cache: {missing_args}."
+            _dataset_log_fn(log, error_msg, "error", rank=rank)
+            raise ValueError(error_msg)
+        
+        # pretok_path is guaranteed to be non-None here due to the check above
+        pretok_path: str = pretok_path_config # type: ignore 
+
+        if tokenizer_for_gen: 
+            val_split_name = dataset_cfg.get('val_split', 'validation')
+            num_val_samples_to_generate = on_the_fly_cfg.get('validation_samples_override', max_val_samples_req)
+            if num_val_samples_to_generate is None: 
+                num_val_samples_to_generate = config.get('activation_dumper',{}).get('val_num_samples', 5000)
+            
+            if num_val_samples_to_generate > 0 :
+                val_ds = InMemoryValidationDataset(
+                    orig_model_for_gen=orig_model_for_gen, tokenizer=tokenizer_for_gen,
+                    pretok_dataset_path=pretok_path, pretok_split_name=val_split_name, 
+                    num_val_samples_to_generate=num_val_samples_to_generate,
+                    on_the_fly_config=on_the_fly_cfg, generation_device=generation_device, 
+                    rank=rank, world_size=world_size 
+                )
+                if len(val_ds) == 0 and num_val_samples_to_generate > 0: # Added check for num_val_samples_to_generate
+                     _dataset_log_fn(log, f"InMemoryValidationDataset is empty after creation, despite requesting {num_val_samples_to_generate} samples. Check pretokenized data '{pretok_path}/{val_split_name}' and config.", "warning", rank=rank)
+            else: 
+                _dataset_log_fn(log, f"Validation samples to generate is {num_val_samples_to_generate}, so val_ds will be None.", "info", rank=rank)
+                val_ds = None
         else:
-            log.info("Skipping on-the-fly validation dataset generation as num_val_samples_to_generate is 0 or not specified positively.")
+            _dataset_log_fn(log, "tokenizer_for_gen not provided for on-the-fly validation; skipping val_ds.", "warning", rank=rank)
             val_ds = None
-
-
-        # ---- Training Dataset (On-the-fly with Cache) ----
-        train_split_name = dataset_cfg.get('train_split', 'train') # Or get from a more specific on_the_fly_cfg
         
-        # Determine total_unique_samples_on_rank for the training dataset
-        total_unique_train_samples_on_rank = 0
-        try:
-            full_train_pretok_path = Path(pretok_path) / train_split_name
-            if full_train_pretok_path.exists():
-                temp_train_pretok_ds: HFDataset = load_from_disk(str(full_train_pretok_path))
-                if world_size > 1: # type: ignore
-                    sharded_temp_train_ds = temp_train_pretok_ds.shard(num_shards=world_size, index=rank, contiguous=True) # type: ignore
-                    total_unique_train_samples_on_rank = len(sharded_temp_train_ds)
-                else:
-                    total_unique_train_samples_on_rank = len(temp_train_pretok_ds)
-                log.info(f"Rank {rank}: Pretokenized training split '{train_split_name}' has {total_unique_train_samples_on_rank} unique samples for this rank.")
-            else:
-                log.warning(f"Rank {rank}: Pretokenized training data not found at {full_train_pretok_path}. Training dataset will be empty.")
-        except Exception as e:
-            log.error(f"Rank {rank}: Error loading pretokenized training data info from {pretok_path}/{train_split_name} for length calculation: {e}")
+        train_split_name = dataset_cfg.get('train_split', 'train')
         
-        if total_unique_train_samples_on_rank > 0:
-            train_generator = OnTheFlyTrainingActivationGenerator(
-                orig_model_for_gen=orig_model_for_gen, # type: ignore
-                tokenizer=tokenizer_for_gen, # type: ignore
-                pretok_dataset_path=pretok_path,
-                pretok_split_name=train_split_name,
-                on_the_fly_config=on_the_fly_cfg,
-                generation_device=generation_device, # type: ignore
-                rank=rank, # type: ignore
-                world_size=world_size, # type: ignore
-            )
-            train_cache = TrainingActivationCache(
-                generator=train_generator,
-                cache_config=on_the_fly_cfg.get('training_cache', {}),
-                rank=rank, # type: ignore
-            )
-            # Override max_train_samples_req if it's smaller than the epoch length
-            # The dataset length defines an epoch. If max_train_samples_req is set,
-            # the training loop will stop earlier, but the dataset itself still represents a full pass.
-            effective_epoch_len = total_unique_train_samples_on_rank
-            if max_train_samples_req is not None and max_train_samples_req < total_unique_train_samples_on_rank:
-                 log.warning(f"max_train_samples ({max_train_samples_req}) is less than the on-the-fly dataset's epoch length for this rank ({total_unique_train_samples_on_rank}). Training will stop before a full pass.")
-                 # The dataset len should still be the full epoch len. The sampler/training loop handles `max_train_samples`.
-
-            train_ds = OnTheFlyCachedTrainingDataset(
-                cache=train_cache,
-                total_unique_samples_on_rank=effective_epoch_len,
-                rank=rank, # type: ignore
-            )
-            log.info(f"Rank {rank}: On-the-fly cached training dataset created with epoch length {len(train_ds)}.")
-            if len(train_ds) == 0:
-                 log.warning(f"Rank {rank}: On-the-fly training dataset is empty after creation.")
-        else:
-            log.warning(f"Rank {rank}: Skipping on-the-fly training dataset creation as total_unique_train_samples_on_rank is 0.")
-            train_ds = None
-
-    else:
-        log.info("Loading datasets from disk (standard behavior).")
-        # ---- Training Dataset (from Disk) ----
-        train_dataset_path = Path(activation_dir)
-        log.info(f"Loading training dataset from: {train_dataset_path}")
-        train_ds = ActivationDataset(
-            train_dataset_path,
-            max_samples=max_train_samples_req,
-            log=log,
-            subset_proportion=config.get('subset_proportion')
+        initial_cache_fill_size = max_train_samples_req 
+        if initial_cache_fill_size is None or initial_cache_fill_size <= 0:
+            initial_cache_fill_size = on_the_fly_cfg.get('training_initial_cache_size_per_rank', 10000)
+            _dataset_log_fn(log, f"max_train_samples not specified or <=0 for on-the-fly. Using training_initial_cache_size_per_rank: {initial_cache_fill_size}", "info", rank=rank)
+        
+        train_ds = RankInMemoryTrainingCache(
+            orig_model_for_gen=orig_model_for_gen, 
+            pretok_dataset_path=pretok_path, 
+            pretok_split_name=train_split_name,
+            on_the_fly_config=on_the_fly_cfg, 
+            generation_device=generation_device, 
+            rank=rank, world_size=world_size, 
+            initial_cache_size=initial_cache_fill_size, # Correctly passed
+            logger=log
         )
-        log.info(f"Training dataset loaded: {len(train_ds)} samples")
+        # The initial fill is now handled by RankInMemoryTrainingCache's __init__
+        # No need for: train_ds.regenerate_cache() here.
+
+        if len(train_ds) == 0 and initial_cache_fill_size > 0:
+             _dataset_log_fn(log, f"On-the-fly training cache (RankInMemoryTrainingCache) is empty after initial population attempt. Training might not proceed if data source is exhausted or too small.", "warning", rank=rank)
+        elif len(train_ds) > 0:
+             _dataset_log_fn(log, f"On-the-fly training cache (RankInMemoryTrainingCache) initially populated with {len(train_ds)} samples.", "info", rank=rank)
+
+    else: 
+        _dataset_log_fn(log, "Loading datasets from disk (standard behavior).", rank=rank)
+        train_dataset_path = Path(activation_dir)
+        train_ds = ActivationDataset(train_dataset_path, max_samples=max_train_samples_req, desc="Loading train dataset")
         if len(train_ds) == 0 and (max_train_samples_req is None or max_train_samples_req > 0):
-             log.warning("Training dataset from disk is empty. Check activation_dir and max_train_samples.")
+             _dataset_log_fn(log, "Training dataset from disk is empty.", "warning", rank=rank)
 
-
-        # ---- Validation Dataset (from Disk) ----
         if effective_val_activation_dir:
             val_dataset_path = Path(effective_val_activation_dir)
-            log.info(f"Loading validation dataset from: {val_dataset_path}")
-            val_ds = ActivationDataset(
-                val_dataset_path,
-                max_samples=max_val_samples_req,
-                log=log,
-                # No subset_proportion for validation typically
-            )
-            log.info(f"Validation dataset loaded: {len(val_ds)} samples")
+            val_ds = ActivationDataset(val_dataset_path, max_samples=max_val_samples_req, desc="Loading val dataset")
             if len(val_ds) == 0 and (max_val_samples_req is None or max_val_samples_req > 0):
-                log.warning("Validation dataset from disk is empty. Check effective_val_activation_dir and max_val_samples.")
-
+                _dataset_log_fn(log, "Validation dataset from disk is empty.", "warning", rank=rank)
         else:
-            log.info("No validation activation directory provided, skipping validation dataset loading.")
             val_ds = None
             
     return train_ds, val_ds
-
 
 def run_validation_step(
     dec: nn.Module,
@@ -544,7 +519,7 @@ def run_validation_step(
             sch_args = {
                 "tau": get_schedule_value(config['gumbel_tau_schedule'], current_step, max_steps,
                                          current_epoch, steps_per_epoch),
-                "T_text": t_text,
+                "t_text": t_text,
                 "alpha": get_schedule_value(config['alpha_schedule'], current_step, max_steps,
                                            current_epoch, steps_per_epoch),
                 "lm_base_weight": lm_base_weight,
