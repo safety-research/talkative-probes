@@ -1,6 +1,6 @@
 """Evaluation interventions for decoder outputs."""
 
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 import torch
 from torch import nn
 import random
@@ -16,6 +16,11 @@ def run_eval_interventions(
     batch: Dict[str, torch.Tensor],
     orig_model: nn.Module,
     verbose: bool = False,
+    number_of_examples: int = 8,
+    decoder_prompt: Optional[str] = None,  # New argument for hard prompt
+    dec: Optional[nn.Module] = None,  # New argument for decoder model
+    tok: Optional[Any] = None,  # New argument for tokenizer
+    sch_args: Optional[Dict[str, Any]] = None,  # New argument for schedule args
 ) -> Dict[str, torch.Tensor]:
     """Run interventions comparing decoder output to baseline token embeddings.
     
@@ -30,6 +35,10 @@ def run_eval_interventions(
         batch: Batch data containing input_ids_A, token_pos_A
         orig_model: Original model to get token embeddings
         verbose: Whether to include per-sample verbose data
+        decoder_prompt: Decoder prompt text for hard prompt intervention
+        dec: Decoder model for hard prompt generation
+        tok: Tokenizer for hard prompt generation
+        sch_args: Schedule arguments including 'tau' for generation
         
     Returns:
         Dictionary with intervention results
@@ -43,6 +52,15 @@ def run_eval_interventions(
     if B == 1:
         token_pos_batch=token_pos_batch.repeat(2)
         input_ids=input_ids.repeat(2,1)
+    
+    # Restrict to at most 10 examples for efficiency
+    if B > number_of_examples:
+        B = number_of_examples
+        generated_embeddings = generated_embeddings[:B]
+        token_pos_batch = token_pos_batch[:B]
+        input_ids = input_ids[:B]
+        orig_A = orig_A[:B]
+        A_hat_decoder = A_hat_decoder[:B]
     
     # Baseline: Take t_text tokens from the original sequence up to and including position p
     baseline_embeddings_list = []
@@ -97,11 +115,11 @@ def run_eval_interventions(
     else:
         A_hat_baseline = enc(baseline_embeddings, current_token_ids=None)
     mse_baseline = torch.nn.functional.mse_loss(A_hat_baseline, orig_A)
-    results["mse_baseline"] = mse_baseline
+    results["mse_baseline"] = mse_baseline.item()
 
     # 2. Decoder reconstruction: use the already computed reconstruction
     mse_decoder = torch.nn.functional.mse_loss(A_hat_decoder, orig_A)
-    results["mse_decoder"] = mse_decoder
+    results["mse_decoder"] = mse_decoder.item()
 
     # 3. Shuffle intervention: shuffle first (n-3) tokens of decoder output
     n_tokens = t_text
@@ -118,7 +136,7 @@ def run_eval_interventions(
     else:
         A_hat_shuffled = enc(shuffled_embeds, current_token_ids=None)
     mse_shuffled = torch.nn.functional.mse_loss(A_hat_shuffled, orig_A)
-    results["mse_shuffle"] = mse_shuffled
+    results["mse_shuffle"] = mse_shuffled.item()
 
     # 4. Full shuffle intervention: shuffle ALL tokens of decoder output
     full_shuffled_embeds = generated_embeddings.clone()
@@ -131,7 +149,7 @@ def run_eval_interventions(
     else:
         A_hat_full_shuffled = enc(full_shuffled_embeds, current_token_ids=None)
     mse_full_shuffled = torch.nn.functional.mse_loss(A_hat_full_shuffled, orig_A)
-    results["mse_shuffle_all"] = mse_full_shuffled
+    results["mse_shuffle_all"] = mse_full_shuffled.item()
     
     # Compute KL divergences if we have the necessary components
     if all(k in batch for k in ["layer_idx"]):
@@ -165,7 +183,7 @@ def run_eval_interventions(
                 torch.log_softmax(logits_baseline.float(), dim=-1),
                 torch.softmax(logits_orig.float(), dim=-1)
             )
-            results["kl_baseline"] = kl_baseline
+            results["kl_baseline"] = kl_baseline.item()
             
             # Decoder KL
             logits_decoder = orig_model.forward_with_replacement_vectorized(
@@ -180,7 +198,7 @@ def run_eval_interventions(
                 torch.log_softmax(logits_decoder.float(), dim=-1),
                 torch.softmax(logits_orig.float(), dim=-1)
             )
-            results["kl_decoder"] = kl_decoder
+            results["kl_decoder"] = kl_decoder.item()
             
             # Shuffle KL
             logits_shuffled = orig_model.forward_with_replacement_vectorized(
@@ -195,7 +213,7 @@ def run_eval_interventions(
                 torch.log_softmax(logits_shuffled.float(), dim=-1),
                 torch.softmax(logits_orig.float(), dim=-1)
             )
-            results["kl_shuffle"] = kl_shuffled
+            results["kl_shuffle"] = kl_shuffled.item()
             
             # Full shuffle KL
             logits_full_shuffled = orig_model.forward_with_replacement_vectorized(
@@ -210,7 +228,56 @@ def run_eval_interventions(
                 torch.log_softmax(logits_full_shuffled.float(), dim=-1),
                 torch.softmax(logits_orig.float(), dim=-1)
             )
-            results["kl_shuffle_all"] = kl_full_shuffled
+            results["kl_shuffle_all"] = kl_full_shuffled.item()
+            
+            # Hard prompt KL
+            if decoder_prompt is not None and dec is not None and tok is not None and sch_args is not None:
+                # Tokenize the hard prompt
+                left_ids, right_ids, _, _ = dec.tokenize_and_embed_prompt(decoder_prompt, tok)
+                
+                # Generate using hard prompts with the same activation input
+                # Get t_text from config if available, otherwise use shape
+                t_text_config = sch_args.get("t_text", t_text)
+                tau = sch_args.get("tau", 1.0)
+                
+                # Generate with hard prompts for the whole batch at once, no fallback
+                gen_hard = dec.generate_soft_kv_cached_nondiff(
+                    orig_A,
+                    max_length=t_text_config,
+                    gumbel_tau=tau,
+                    override_model_base_and_out=orig_model,
+                    hard_left_emb=left_ids,
+                    hard_right_emb=right_ids,
+                    use_projection=True,
+                    return_logits=True
+                ).detach()
+                hard_prompt_embeddings = gen_hard.generated_text_embeddings
+                # Pass through encoder
+                if enc.config.add_current_token:
+                    A_hat_hard_prompt = enc(hard_prompt_embeddings, current_token_ids=current_token_ids)
+                else:
+                    A_hat_hard_prompt = enc(hard_prompt_embeddings, current_token_ids=None)
+                
+                mse_hard_prompt = torch.nn.functional.mse_loss(A_hat_hard_prompt, orig_A)
+                results["mse_hard_prompt"] = mse_hard_prompt.item()
+                
+                # Hard prompt KL
+                logits_hard_prompt = orig_model.forward_with_replacement_vectorized(
+                    input_ids=input_ids,
+                    new_activations=A_hat_hard_prompt,
+                    layer_idx=layer_idx,
+                    token_positions=token_pos_batch,
+                    no_grad=True,
+                ).logits
+                
+                batch_indices = torch.arange(B, device=orig_A.device)
+                logits_hard_prompt = logits_hard_prompt[batch_indices, token_pos_batch]
+                
+                kl_hard_prompt = kl_fn(
+                    torch.log_softmax(logits_hard_prompt.float(), dim=-1),
+                    torch.softmax(logits_orig.float(), dim=-1)
+                )
+                results["kl_hard_prompt"] = kl_hard_prompt.item()
     
     # Add verbose data if requested
     if verbose:
@@ -235,6 +302,11 @@ def run_eval_interventions(
                 sample_data["kl_decoder"] = kl_decoder.item()
                 sample_data["kl_shuffle"] = kl_shuffled.item()
                 sample_data["kl_shuffle_all"] = kl_full_shuffled.item()
+            
+            if "mse_hard_prompt" in results:
+                sample_data["mse_hard_prompt"] = mse_hard_prompt.item()
+                if "kl_hard_prompt" in results:
+                    sample_data["kl_hard_prompt"] = kl_hard_prompt.item()
                 
             verbose_data.append(sample_data)
         

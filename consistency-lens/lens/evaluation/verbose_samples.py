@@ -376,7 +376,7 @@ def compute_single_sample_losses(
             tokenizer=tokenizer,
             cached_prefix_ids=cached_prefix_ids,
             resample_ablation=resample_ablation,
-            eval_mode=False,  # Normal mode, not intervention mode
+            should_run_interventions=False,  # Normal mode, not intervention mode
             verbose_eval=True,  # Get intermediate values
             GRPO_validate_mode=True,
         )
@@ -657,6 +657,25 @@ def process_and_print_verbose_batch_samples(
             # Clean up full shuffle tensors
             del full_shuffled_embeds, A_hat_full_shuffled
 
+            # Compute hard prompt intervention
+            if cfg.get("decoder_prompt"):
+                left_ids, right_ids, _, _ = dec.tokenize_and_embed_prompt(cfg["decoder_prompt"], tok)
+                base_gen_single_hard = dec.generate_soft_kv_cached_nondiff(
+                    A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], 
+                    override_model_base_and_out=orig, hard_left_emb=left_ids, 
+                    hard_right_emb=right_ids, use_projection=True, return_logits=True
+                ).detach().clone()
+                
+                A_hat_hard_prompt = enc(base_gen_single_hard.generated_text_embeddings, current_token_ids=batch["input_ids_A"][i][p].to(device).unsqueeze(0) if enc.config.add_current_token else None).detach().clone()
+                logits_hard_prompt_at_p_batched = orig.forward_with_replacement(input_ids_seq, A_hat_hard_prompt.to(device), l, p).logits[:, p].detach().clone()
+                top_n_hard_prompt_tokens = get_top_n_tokens(logits_hard_prompt_at_p_batched.squeeze(0), tok, top_n_analysis)
+                mse_hard_prompt_vs_A = torch.nn.functional.mse_loss(A_i, A_hat_hard_prompt.to(A_i.device)).item()
+                del base_gen_single_hard, A_hat_hard_prompt
+            else:
+                top_n_hard_prompt_tokens = ["N/A (no prompt)"] * top_n_analysis
+                logits_hard_prompt_at_p_batched = None
+                mse_hard_prompt_vs_A = None
+
             # Clean up full logits tensors that are no longer needed
             del logits_shuffled_all_pos, logits_full_shuffled_all_pos
 
@@ -693,6 +712,7 @@ def process_and_print_verbose_batch_samples(
                 "Prev Tokens Baseline (Enc[prev t tokens])": top_n_baseline_tokens,
                 "Shuffled Decoder Output (first n-3)": top_n_shuffled_tokens,
                 "Shuffled Decoder Output (ALL tokens)": top_n_full_shuffled_tokens,
+                "Hard Prompt Baseline": top_n_hard_prompt_tokens,
                 "Logit Lens (from A_i)": top_n_logit_lens_tokens,
                 "Base Model (orig A)": top_n_orig_A_tokens,
                 "Base Model (A')": top_n_aprime_tokens,
@@ -795,6 +815,7 @@ def process_and_print_verbose_batch_samples(
             kl_baseline_from_natural = safe_kl(logits_baseline_at_p_batched, logits_natural_at_p_batched)
             kl_shuffled_from_natural = safe_kl(logits_shuffled_at_p_batched, logits_natural_at_p_batched)
             kl_full_shuffled_from_natural = safe_kl(logits_full_shuffled_at_p_batched, logits_natural_at_p_batched)
+            kl_hard_prompt_from_natural = safe_kl(logits_hard_prompt_at_p_batched, logits_natural_at_p_batched)
             kl_tuned_lens_from_natural = safe_kl(logits_tuned_lens_at_p_batched, logits_natural_at_p_batched)
 
             kl_zero_from_orig = safe_kl(logits_zero_at_p_batched, logits_orig_at_p_batched)
@@ -803,6 +824,7 @@ def process_and_print_verbose_batch_samples(
             kl_baseline_from_orig = safe_kl(logits_baseline_at_p_batched, logits_orig_at_p_batched)
             kl_shuffled_from_orig = safe_kl(logits_shuffled_at_p_batched, logits_orig_at_p_batched)
             kl_full_shuffled_from_orig = safe_kl(logits_full_shuffled_at_p_batched, logits_orig_at_p_batched)
+            kl_hard_prompt_from_orig = safe_kl(logits_hard_prompt_at_p_batched, logits_orig_at_p_batched)
             training_kl_loss_value = sample_losses['kl'] 
             kl_tuned_lens_from_orig = safe_kl(logits_tuned_lens_at_p_batched, logits_orig_at_p_batched)
 
@@ -812,6 +834,7 @@ def process_and_print_verbose_batch_samples(
                     "KL(Natural || Prev Tokens Baseline)": kl_baseline_from_natural,
                     "KL(Natural || Shuffled Decoder - first n-3)": kl_shuffled_from_natural,
                     "KL(Natural || Shuffled Decoder - ALL tokens)": kl_full_shuffled_from_natural,
+                    "KL(Natural || Hard Prompt)": kl_hard_prompt_from_natural,
                     "KL(Natural || A)": kl_orig_from_natural, 
                     "KL(Natural || A')": kl_aprime_from_natural,
                     "KL(Natural || A_hat)": kl_ahat_from_natural,
@@ -823,6 +846,7 @@ def process_and_print_verbose_batch_samples(
                     "KL(A || Prev Tokens Baseline)": kl_baseline_from_orig,
                     "KL(A || Shuffled Decoder - first n-3)": kl_shuffled_from_orig,
                     "KL(A || Shuffled Decoder - ALL tokens)": kl_full_shuffled_from_orig,
+                    "KL(A || Hard Prompt)": kl_hard_prompt_from_orig,
                     "KL(A || A')": kl_aprime_from_orig,
                     "KL(A || A_hat)": kl_ahat_from_orig,
                     ("KL(A || A_hat+Δ) [TRAINING LOSS]" if resample_ablation else "KL(A || A_hat) [TRAINING LOSS]"): training_kl_loss_value,
@@ -855,6 +879,11 @@ def process_and_print_verbose_batch_samples(
                     "mse_vs_A": mse_full_shuffled_vs_A,
                     "kl_vs_A": kl_full_shuffled_from_orig,
                     "kl_vs_natural": kl_full_shuffled_from_natural,
+                },
+                "Hard Prompt Baseline": {
+                    "mse_vs_A": mse_hard_prompt_vs_A,
+                    "kl_vs_A": kl_hard_prompt_from_orig,
+                    "kl_vs_natural": kl_hard_prompt_from_natural,
                 },
                 "Base Model (orig A)": { 
                     "mse_vs_A": 0.0, 

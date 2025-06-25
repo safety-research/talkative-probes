@@ -12,7 +12,7 @@
 # %%
 # Imports and setup
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import torch
 import sys
 from pathlib import Path
@@ -85,6 +85,9 @@ CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/che
 CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_2b_unfrozen_nopostfix_google_gemma-2-2b_L20_e20_frozen_lr3e-4_t64_4ep_resume_0623_0209_frozenenc_actual_add_DBL_HUGE_dist8_slurm1266"
 CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_2b_unfrozen_nopostfix_google_gemma-2-2b_L20_e20_frozen_lr3e-4_t16_4ep_resume_0623_0129_frozenenc_actual_add_DBL_dist8/"
 CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_2b_unfrozen_nopostfix_google_gemma-2-2b_L20_e20_frozen_lr1e-4_t8_2ep_resume_0623_1612_frozenenc_actual_add_DBL_HUGE_dist8_slurm1285"
+BAD_CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_2b_unfrozen_nopostfix_gemma-2-2b_L5_e20_frozen_lr1e-3_t8_4ep_0624_1601_frozenenc_actual_add_OTF_dist8"
+CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_2b_unfrozen_nopostfix_gemma-2-2b_L20_e20_frozen_lr1e-3_t8_4ep_resume_0624_2322_frozenenc_actual_add_OTF_dist8"
+CHECKPOINT_PATH_32 = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_2b_unfrozen_nopostfix_google_gemma-2-2b_L20_e20_frozen_lr1e-3_t32_4ep_resume_0625_1223_frozenenc_actual_add_DBL_HUGE_groupn_dist8_slurm1413"
 # Optional: specify device
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -450,7 +453,7 @@ class LensAnalyzer:
                     # Relative RMSE: sqrt(MSE(A, A_hat) / MSE(A, 0)). This is a scale-invariant error metric.
                     # This is equivalent to ||A - A_hat|| / ||A|| (relative L2 error).
                     A_norm_sq_mean = (A_batch**2).mean(dim=-1)
-                    relative_rmse_batch = torch.sqrt(mses_batch / (A_norm_sq_mean + 1e-9))
+                    relative_rmse_batch = (mses_batch / (A_norm_sq_mean + 1e-9))
                     all_relative_rmses.append(relative_rmse_batch)
 
         # Concatenate results from all batches
@@ -882,6 +885,19 @@ class LensAnalyzer:
             comparison_tuned_lens=self.comparison_tuned_lens, # Pass the loaded TunedLens
             do_soft_token_embeds=False,
         )
+    
+    def generate_continuation(self, text: str, num_tokens: int = 100, num_completions: int = 10) -> list[str]:
+        encodestring = self.tokenizer.encode(text)
+        listouts = []
+        n_tok=num_tokens
+        for i in range(num_completions):
+            generateddirectly = self.orig_model.model.generate(torch.tensor([encodestring]).to(self.device),attention_mask=torch.ones_like(torch.tensor([encodestring], device=self.device), dtype=torch.bool), max_new_tokens=n_tok, min_new_tokens=n_tok, do_sample=True)
+            tokenizerstring = self.tokenizer.decode(generateddirectly[0][-n_tok:]).replace("\n","\\n")
+            listouts.append(tokenizerstring)
+        for i, tx in enumerate(listouts):
+            print(f"{i}: {tx}")
+        return listouts
+
 
 def quick_analyze(text: str, show_plot: bool = True, analyzer: LensAnalyzer = None):
     """Quick analysis function with optional visualization."""
@@ -946,45 +962,47 @@ def quick_analyze(text: str, show_plot: bool = True, analyzer: LensAnalyzer = No
 
     return df
 
-#analyzer = LensAnalyzer(CHECKPOINT_PATH, 'cpu', do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=False, t_text=8, old_lens=analyzer if 'analyzer' in globals() else None, batch_size=4)
+analyzer = LensAnalyzer(CHECKPOINT_PATH, DEVICE, do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=True, old_lens=analyzer if 'analyzer' in globals() else None, batch_size=64)
+analyzer32 = LensAnalyzer(CHECKPOINT_PATH_32, DEVICE, do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=True, old_lens=analyzer32 if 'analyzer32' in globals() else None, batch_size=64, shared_base_model=analyzer.shared_base_model)
 
 # %%
 # Initialize the analyzer
 #analyzer = LensAnalyzer(CHECKPOINT_PATH, DEVICE)
-CHECKPOINT_PATH_10 = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_2b_unfrozen_nopostfix_google_gemma-2-2b_L20_e10_frozen_lr1e-3_t8_2ep_resume_0623_1657_frozenenc_actual_add_out10_dist8"
-CHECKPOINT_PATH_20 = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_2b_unfrozen_nopostfix_google_gemma-2-2b_L20_e20_frozen_lr3e-5_t8_2ep_resume_0623_1819_frozenenc_actual_add_DBL_HUGE_dist8_slurm1287"
-analyzer_10 = LensAnalyzer(CHECKPOINT_PATH_10, 'cpu', do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=False, old_lens=analyzer_10 if 'analyzer_10' in globals() else None, batch_size=4)
+# CHECKPOINT_PATH_10 = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_2b_unfrozen_nopostfix_google_gemma-2-2b_L20_e10_frozen_lr1e-3_t8_2ep_resume_0623_1657_frozenenc_actual_add_out10_dist8"
+# CHECKPOINT_PATH_20 = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_2b_unfrozen_nopostfix_google_gemma-2-2b_L20_e20_frozen_lr3e-5_t8_2ep_resume_0623_1819_frozenenc_actual_add_DBL_HUGE_dist8_slurm1287"
+# analyzer_10 = LensAnalyzer(CHECKPOINT_PATH_10, 'cpu', do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=False, old_lens=analyzer_10 if 'analyzer_10' in globals() else None, batch_size=4)
 
-analyzer_20 = LensAnalyzer(CHECKPOINT_PATH_20, 'cpu', do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=False, old_lens=analyzer_20 if 'analyzer_20' in globals() else None, batch_size=4, shared_base_model=analyzer_10.shared_base_model)
+# analyzer_20 = LensAnalyzer(CHECKPOINT_PATH_20, 'cpu', do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=False, old_lens=analyzer_20 if 'analyzer_20' in globals() else None, batch_size=4, shared_base_model=analyzer_10.shared_base_model)
 # %% [markdown]
 # ## Single String Analysis
 
-analyzer_10.decoder.to(DEVICE)
-analyzer_10.encoder.to(DEVICE)
-analyzer_10.orig_model.model.to(DEVICE)
-analyzer_10.device = DEVICE
-analyzer_10.comparison_tuned_lens = analyzer_10.comparison_tuned_lens.to(DEVICE) if analyzer_10.comparison_tuned_lens is not None else None
-analyzer_20.decoder.to(DEVICE)
-analyzer_20.encoder.to(DEVICE)
-analyzer_20.orig_model.model.to(DEVICE)
-analyzer_20.device = DEVICE
-analyzer_20.comparison_tuned_lens = analyzer_20.comparison_tuned_lens.to(DEVICE) if analyzer_20.comparison_tuned_lens is not None else None
-# %%
+# analyzer_10.decoder.to(DEVICE)
+# analyzer_10.encoder.to(DEVICE)
+# analyzer_10.orig_model.model.to(DEVICE)
+# analyzer_10.device = DEVICE
+# analyzer_10.comparison_tuned_lens = analyzer_10.comparison_tuned_lens.to(DEVICE) if analyzer_10.comparison_tuned_lens is not None else None
+# analyzer_20.decoder.to(DEVICE)
+# analyzer_20.encoder.to(DEVICE)
+# analyzer_20.orig_model.model.to(DEVICE)
+# analyzer_20.device = DEVICE
+# analyzer_20.comparison_tuned_lens = analyzer_20.comparison_tuned_lens.to(DEVICE) if analyzer_20.comparison_tuned_lens is not None else None
+# # %%
+batch_size= 64
 # Analyze a test string
 TEST_STRING = "The cat sat on the mat."
-TEST_STRING = "<|endoftext|>No less than three sources (who wish to remain anonymous) have indicated to PPP that the Leafs are close to a contract extension with goaltender Jonas Gustavsson that will keep him in Toronto for the foreseeable future. I'm sort of at a loss for words. I mean, Gustavsson did have that one month where he wasn't hot"
+TEST_STRING = "No less than three sources (who wish to remain anonymous) have indicated to PPP that the Leafs are close to a contract extension with goaltender Jonas Gustavsson that will keep him in Toronto for the foreseeable future. I'm sort of at a loss for words. I mean, Gustavsson did have that one month where he wasn't hot"
 TEST_STRING = "A paper butterfly is displayed on a coffin during Asia Funeral Expo (AFE) in Hong Kong May 19, 2011. REUTERS/Bobby Yip\n\nLONDON (Reuters) - A sharp increase in the number of deaths in Britain in 2015 compared with the previous year helped funeral services firm Dignity post a 16-*percent* profit increase, the firm said on Wednesday.\n\nDignity said the 7-percent year-on-year rise in the number of deaths..."
 
 TEST_STRING = """This photo shows an image of a cougar in Wyoming. Animal control officers in Fairfax County have set up cameras this week in hopes of capturing the image of a cougar reported in the Alexandria section of the county. (Neil Wight/AP)\n\nMultiple sightings of what animal control officials are calling "possibly a cougar" have authorities in Fairfax County on high alert.\n\nOfficials received two reports this week of a "large cat" with an orange"""
 # TEST_STRING = "India fearing Chinese submarines is not unwarranted. In 2014, the Chinese Navy frequently docked its submarines in Sri Lanka, saying they were goodwill visits and to replenish ships on deployment to the Arabian Sea.\n\nLater, in 2015, the Chinese Navy, or the People's Liberation Army Navy (PLAN), was seen docking in vessels Pakistan. The frequent visits and the constant reporting on them has led Indian Navy to get the best aircraft in its inventory, P-8I"
-TEST_STRING = "<|endoftext|>On a third-down in 11-on-11 scrimmage, he zoomed past starting left tackle Jake Matthews and sacked quarterback Matt Ryan. Well, he tagged him down, since they don't tackle to the ground anymore in NFL practices.\n\nBut that's a practice sack and the Falcons are hoping their first-round pick, who has recovered from offseason shoulder surgery, has plenty of real sacks in his 6-foot, 2-inch and 250-pound"
+TEST_STRING = "On a third-down in 11-on-11 scrimmage, he zoomed past starting left tackle Jake Matthews and sacked quarterback Matt Ryan. Well, he tagged him down, since they don't tackle to the ground anymore in NFL practices.\n\nBut that's a practice sack and the Falcons are hoping their first-round pick, who has recovered from offseason shoulder surgery, has plenty of real sacks in his 6-foot, 2-inch and 250-pound"
 # TEST_STRING = "Israel Accused of Suppressing Terror Evidence to Help Out New Pal China\n\nIsrael is a country desperate for friends. Isolated in the Middle East and hated in large parts of the Arab world, it struggles to make alliances. The few it has, it guards fiercely. So it should perhaps come as no surprise that for years Israel has been courting China, inking trade deals and fêting one another over champagne. But that process now finds Israel in an awkward bind"
 analyzer.decoder = analyzer.decoder.to(DEVICE)
 analyzer.encoder = analyzer.encoder.to(DEVICE)
 analyzer.orig_model.model = analyzer.orig_model.model.to(DEVICE)
 analyzer.device = DEVICE
 analyzer.comparison_tuned_lens = analyzer.comparison_tuned_lens.to(DEVICE) if analyzer.comparison_tuned_lens is not None else None
-df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=12, no_eval=True)
+df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=batch_size, no_eval=False)
 
 # Display the results
 print(f"Analysis of: '{TEST_STRING}'")
@@ -1457,7 +1475,7 @@ result = analyzer.causal_intervention(
 
 # %%
 # Example 1: Simple pronoun intervention
-#original = "<|endoftext|>No less than three sources (who wish to remain anonymous) have indicated to PPP that the Leafs are close to a contract extension with goaltender Jonas Gustavsson that will keep him in Toronto for the foreseeable future. I'm sort of at a loss for words. I mean, Gustavsson did have that one month where he wasn't hot\n\nThe woman was sitting on the plane. She worked as a"
+#original = "No less than three sources (who wish to remain anonymous) have indicated to PPP that the Leafs are close to a contract extension with goaltender Jonas Gustavsson that will keep him in Toronto for the foreseeable future. I'm sort of at a loss for words. I mean, Gustavsson did have that one month where he wasn't hot\n\nThe woman was sitting on the plane. She worked as a"
 #original = "The man was sitting on the plane. He worked as a"
 original = "The woman was sitting on the plane. She worked as a"
 intervention_result = analyzer.causal_intervention(
@@ -1485,7 +1503,7 @@ print(Avecs[0,0:10])
 print(torch.var(Avecs[0,-1], dim=0))
 # # %%
 # for i in range(10):
-#     analyzer.run_verbose_sample("<|endoftext|>The woman was sitting on the plane. She worked as a", position_to_analyze=12)
+#     analyzer.run_verbose_sample("The woman was sitting on the plane. She worked as a", position_to_analyze=12)
 
 #75.668
 # %%
@@ -1570,7 +1588,7 @@ print(df.to_string(index=False))
 # %%
 
 TEST_STRING = (
-    "<|endoftext|>c a t = cat\n\n"
+    "c a t = cat\n\n"
     "d o g = dog\n\n"
     "b i r d = bird\n\n"
     "f i s h = fish\n\n"
@@ -1735,7 +1753,7 @@ print(df.to_string(index=False))
 # %%
 
 TEST_STRING = (
-    "<|endoftext|>I love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it"
+    "I love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it"
 )
 
 df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=True)
@@ -1765,15 +1783,15 @@ text = "Hello world"
 encoded_input = tokenizer(text)
 print(encoded_input)
 print(tokenizer.decode(encoded_input["input_ids"]))
-# Expected output might be something like: "<|endoftext|>Hello world"
+# Expected output might be something like: "Hello world"
 # (if not also adding EOS at the end for this specific call type)
 
 # encoded_input_for_model = tokenizer(text, padding="max_length", truncation=True, max_length=10)
 # print(tokenizer.decode(encoded_input_for_model["input_ids"]))
-# Should show <|endoftext|> at the beginning, then text, then padding tokens
+# Should show  at the beginning, then text, then padding tokens
 # %%
 
-TEST_STRING = "The following article makes no mention of pink elephants. None at all.\n\nLooking to leave a two-fight winless streak behind him, Manny Gamburyan will return to the UFC octagon on Sept. 27 in Las Vegas at UFC 178 in a new weight class.\n\nGamburyan is set to make his 135-pound men's bantamweight debut against Cody \"The Renegade\" Gibson at the MGM Grand Arena on a pay-per-view card headlined by the UFC light heavyweight title fight between champion Jon Jones and Daniel Cormierr"
+TEST_STRING = "The following article makes no mention of pink elephants. None at all.\n\nLooking to leave a two-fight winless streak behind him, Manny Gamburyan will return to the UFC octagon on Sept. 27 in Las Vegas at UFC 178 in a new weight class.\n\nGamburyan is set to make his 135-pound men's bantamweight debut against Cody \"The Renegade\" Gibson at the MGM Grand Arena on a pay-per-view card headlined by the UFC light heavyweight title fight between champion Jon Jones and Daniel Cormierr. There was a pink"
 df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=True)
 print(df.to_string(index=False))
 
@@ -1879,7 +1897,7 @@ print(df.to_string(index=False))
 
 # %%
 
-TEST_STRING = "<|endoftext|>The moment has come,\" said Dumbledore, smiling around at the sea of upturned faces. \"The Triwizard Tournament is about to start.\" The character Dumbledore is the head"
+TEST_STRING = "The moment has come,\" said Dumbledore, smiling around at the sea of upturned faces. \"The Triwizard Tournament is about to start.\" The character Dumbledore is the head"
 encodestring = analyzer.tokenizer.encode(TEST_STRING)
 n_tok= 30
 gens = []       
@@ -2066,7 +2084,7 @@ TEST_STRING = "x = 5\ny = x + 3\nx = 2\nz = x + y\nThe value of z is"
 df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=True)
 print(df.to_string(index=False))
 # %%
-TEST_STRING = """```python
+TEST_STRING = """```
 # We track the values of each variable in this program
 "x = 5
 y = 3
@@ -2354,3 +2372,27 @@ print("20")
 df = analyzer_20.analyze_all_tokens(TEST_STRING, no_eval=True)
 print(df.to_string(index=False))
 # %%    
+TEST_STRING = """This photo shows an image of a cougar in Wyoming. Animal control officers in Fairfax County have set up cameras this week in hopes of capturing the image of a cougar reported in the Alexandria section of the county. (Neil Wight/AP)\n\nMultiple sightings of what animal control officials are calling "possibly a cougar" have authorities in Fairfax County on high alert.\n\nOfficials received two reports this week of a "large cat" with an orange"""
+df = analyzer_10.analyze_all_tokens(TEST_STRING, no_eval=True)
+print(df.to_string(index=False))
+# %%
+df = analyzer_20.analyze_all_tokens(TEST_STRING, no_eval=True)
+print(df.to_string(index=False))
+# %%
+TEST_STRING = """This photo shows an image of a cougar in Wyoming. Animal control officers in Fairfax County have set up cameras this week in hopes of capturing the image of a cougar reported in the Alexandria section of the county. (Neil Wight/AP)\n\nMultiple sightings of what animal control officials are calling "possibly a cougar" have authorities in Fairfax County on high alert.\n\nOfficials received two reports this week of a "large cat" with an orange"""
+df = analyzer_10.analyze_all_tokens(TEST_STRING, no_eval=True)
+print(df.to_string(index=False))
+# %%
+df = analyzer_20.analyze_all_tokens(TEST_STRING, no_eval=True)
+print(df.to_string(index=False))
+# %%
+TEST_STRING = "Le chat est noir. = The cat is black.\n\nJ'aime les pommes. = I like apples.\n\nElle lit un livre. = She reads a book.\n\nNous allons au parc. = We go to the park.\n\nIl fait beau aujourd'hui. = It's nice weather today.\n\nTu as un chien? = Do you have a dog?\n\nLes enfants jouent dehors. = The children play outside.\n\nJe mange du pain. = I eat bread.\n\nMa maison est grande. = My house is big.\n\nIls regardent la télé. = They watch TV.\n\nElle porte une robe rouge. = She wears a red dress.\n\nLe garçon court vite. = The boy runs fast.\n\nNous buvons de l'eau. = We drink water."
+df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False)
+print(df.to_string(index=False))
+# # %%
+# df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False)
+# print(df.to_string(index=False))
+# %%
+
+analyzer.generate_continuation("Janus, aka repligate, is a", num_tokens=10, num_completions=10)
+# %%

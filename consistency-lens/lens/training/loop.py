@@ -98,12 +98,13 @@ def train_step(  # noqa: D401
     tokenizer = None,  # Tokenizer for natural prefix
     cached_prefix_ids: torch.Tensor | None = None,  # Pre-tokenized prefix to avoid re-tokenization
     resample_ablation: bool = True,
-    eval_mode: bool = False,  # Whether we're in evaluation mode
+    should_run_interventions: bool = False,  # Whether we're in evaluation mode
     verbose_eval: bool = False,  # Whether to collect verbose evaluation data
     do_kl_computation: bool = True,
     do_lm_computation: bool = True,
     GRPO_validate_mode: bool = False,
     debug_mode: bool = False,
+    return_reconstruction: bool = False,
 ) -> Dict[str, torch.Tensor]:
     """Composite loss (MSE + LM + KL + entropy) with flexible weighting.
 
@@ -186,24 +187,30 @@ def train_step(  # noqa: D401
     
     # If in eval mode, run interventions (but continue with normal loss computation)
     intervention_results = {}
-    if eval_mode:
+    if should_run_interventions:
         from lens.training.eval_interventions import run_eval_interventions
         
         # Run the intervention analysis
-        intervention_results = run_eval_interventions(
-            generated_embeddings=gen.generated_text_embeddings,
-            enc=enc,
-            orig_A=A,
-            A_hat_decoder=A_hat,  # Pass the already computed decoder reconstruction
-            batch=batch,
-            orig_model=orig,
-            verbose=verbose_eval,
-        )
+        with torch.no_grad():
+            intervention_results = run_eval_interventions(
+                generated_embeddings=gen.generated_text_embeddings,
+                enc=enc,
+                orig_A=A,
+                A_hat_decoder=A_hat,  # Pass the already computed decoder reconstruction
+                batch=batch,
+                orig_model=orig,
+                verbose=verbose_eval,
+                number_of_examples=8,
+                decoder_prompt=dec.prompt_text,
+                dec=dec,
+                tok=tokenizer,
+                sch_args=_loss_fns,
+            )
         
-        # Store verbose data separately if present
-        if "verbose_data" in intervention_results:
-            verbose_data = intervention_results.pop("verbose_data")
-            intervention_results["verbose_data"] = verbose_data
+            # Store verbose data separately if present
+            if "verbose_data" in intervention_results:
+                verbose_data = intervention_results.pop("verbose_data")
+                intervention_results["verbose_data"] = verbose_data
 
     
 
@@ -221,7 +228,7 @@ def train_step(  # noqa: D401
             d_model_pred_logits = gen.raw_lm_logits # Shape is (B, t_text, V) as per decoder.py
             if d_model_pred_logits is None:
                 log.error("d_model_pred_logits is None")
-                raise ValueError(f"d_model_pred_logits is None: {GRPO_validate_mode}, {GRPO_training}, {lm_w}, {do_lm_computation}, {eval_mode}, {resample_ablation}, {kl_base}, {mse_w}, {ent_w}, {GRPO_w}, {GRPO_training}, {group_n}, {t_text}, {tau}, {alpha}")
+                raise ValueError(f"d_model_pred_logits is None: {GRPO_validate_mode}, {GRPO_training}, {lm_w}, {do_lm_computation}, {resample_ablation}, {kl_base}, {mse_w}, {ent_w}, {GRPO_w}, {GRPO_training}, {group_n}, {t_text}, {tau}, {alpha}")
             B = A.shape[0] # Batch size from input A
             natural_prefix_expanded = cached_prefix_ids.expand(B, -1).to(A.device)  # Shape: (B, prefix_len)
 
@@ -375,8 +382,10 @@ def train_step(  # noqa: D401
             log.warning("A is 2D and batch size is 1, so we cannot compute variance")
             A_variance = torch.tensor(1.0)
             residual_variance = torch.tensor(0)
-
-        fraction_variance_explained = 1 - (residual_variance / A_variance)
+        with torch.no_grad():
+            fraction_variance_explained = 1 - (residual_variance / A_variance)
+            mean_normalised_rmse = (A_train.detach()-A).pow(2).sum(dim=0).mean()/A_variance
+        
 
         input_ids_batch = batch["input_ids_A"]
         layer_idx_batch = batch.get("layer_idx")  # Don't squeeze yet
@@ -600,6 +609,7 @@ def train_step(  # noqa: D401
         "entropy": entropy,
         "decoded_tokens_batch": decoded_token_ids_batch,  # Add this for epoch-level aggregation
         "fraction_variance_explained": fraction_variance_explained,
+        "mean_normalised_rmse": mean_normalised_rmse,
         "advantages_mean": advantage.mean() if GRPO_training and not GRPO_validate_mode else torch.tensor(0.0),
         "advantages_std": advantage.std() if GRPO_training and not GRPO_validate_mode else torch.tensor(0.0),
         "mean_reward": mean_reward if GRPO_training and not GRPO_validate_mode else torch.tensor(0.0),
@@ -607,6 +617,9 @@ def train_step(  # noqa: D401
         "KL_GRPO": KL_GRPO if GRPO_training else torch.tensor(0.0),
         "loss_GRPO": loss_GRPO,
     }
+    
+    if return_reconstruction:
+        result_dict["reconstruction"] = A_hat.detach().cpu()
     
     # Add intervention results if we're in eval mode
     if intervention_results:

@@ -393,6 +393,7 @@ def _prepare_dataloaders(
     generation_device: Optional["torch.device"] = None,
     rank: Optional[int] = None,
     world_size: Optional[int] = None,
+    samples_per_regeneration_cycle: Optional[int] = None
 ):
     on_the_fly_cfg = config.get('dataset', {}).get('on_the_fly', {'enabled': False})
     dataset_cfg = config.get('dataset', {})
@@ -424,9 +425,10 @@ def _prepare_dataloaders(
 
         if tokenizer_for_gen: 
             val_split_name = dataset_cfg.get('val_split', 'validation')
-            num_val_samples_to_generate = on_the_fly_cfg.get('validation_samples_override', max_val_samples_req)
-            if num_val_samples_to_generate is None: 
-                num_val_samples_to_generate = config.get('activation_dumper',{}).get('val_num_samples', 5000)
+            #num_val_samples_to_generate = on_the_fly_cfg.get('validation_samples_override', max_val_samples_req)
+            num_val_samples_to_generate = max_val_samples_req
+            #if num_val_samples_to_generate is None: 
+            #    num_val_samples_to_generate = config.get('activation_dumper',{}).get('val_num_samples', 5000)
             
             if num_val_samples_to_generate > 0 :
                 val_ds = InMemoryValidationDataset(
@@ -447,10 +449,10 @@ def _prepare_dataloaders(
         
         train_split_name = dataset_cfg.get('train_split', 'train')
         
-        initial_cache_fill_size = max_train_samples_req 
-        if initial_cache_fill_size is None or initial_cache_fill_size <= 0:
-            initial_cache_fill_size = on_the_fly_cfg.get('training_initial_cache_size_per_rank', 10000)
-            _dataset_log_fn(log, f"max_train_samples not specified or <=0 for on-the-fly. Using training_initial_cache_size_per_rank: {initial_cache_fill_size}", "info", rank=rank)
+        initial_cache_fill_size = samples_per_regeneration_cycle
+        # if initial_cache_fill_size is None or initial_cache_fill_size <= 0:
+        #     initial_cache_fill_size = on_the_fly_cfg.get('training_initial_cache_size_per_rank', 100000)
+        #     _dataset_log_fn(log, f"max_train_samples not specified or <=0 for on-the-fly. Using training_initial_cache_size_per_rank: {initial_cache_fill_size}", "info", rank=rank)
         
         train_ds = RankInMemoryTrainingCache(
             orig_model_for_gen=orig_model_for_gen, 

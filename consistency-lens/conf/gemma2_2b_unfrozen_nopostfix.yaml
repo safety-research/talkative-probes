@@ -179,6 +179,11 @@ dataset:
   on_the_fly:
     pretokenized_path: "/workspace/kitf/talkative-probes/consistency-lens/data/pretokenized/openwebtext_seq256/" # 
     generation_batch_size: 64
+    layer_l: ${layer_l}
+    samples_per_regeneration_cycle: 100000
+    training_initial_cache_size_per_rank: ${dataset.on_the_fly.samples_per_regeneration_cycle}
+    max_val_samples: 50000 # this is used
 
+  validation_samples_override: 50000
   train_split: "train"
   val_split: "train"

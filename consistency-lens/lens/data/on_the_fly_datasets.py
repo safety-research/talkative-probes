@@ -200,6 +200,15 @@ class InMemoryValidationDataset(Dataset):
     def __len__(self) -> int:
         return len(self.data_store)
 
+    def __getstate__(self):
+        """Drop heavy / non-picklable objects when the dataset is pickled for
+        DataLoader worker processes.  Workers only need the already-built
+        CPU `data_store`."""
+        st = self.__dict__.copy()
+        st['orig_model_for_gen'] = None      # avoid CUDA tensors & huge model
+        st['tokenizer'] = None               # not needed in workers
+        return st
+
 # --- Training Dataset Components ---
 #from lens.training.train_aux import _dataset_log_fn
 
@@ -231,6 +240,7 @@ class RankInMemoryTrainingCache(Dataset):
         self.generation_batch_size = self.config.get('generation_batch_size', 32)
 
         self.data_store: List[Dict[str, Any]] = []
+        self.total_samples_in_pretokenised_dataset = 0
         
         # Load the pretokenized shard once
         self.pretok_dataset_shard: Optional[HFDataset] = self._load_pretok_shard()
@@ -250,6 +260,7 @@ class RankInMemoryTrainingCache(Dataset):
                 return None
             
             dataset_to_shard: HFDataset = load_from_disk(str(full_pretok_path))
+            self.total_samples_in_pretokenised_dataset = len(dataset_to_shard)
             
             if self.world_size > 1:
                 shard = dataset_to_shard.shard(

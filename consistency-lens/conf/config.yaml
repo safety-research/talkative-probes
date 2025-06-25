@@ -406,7 +406,7 @@ dataset:
     layer_l: 5 # Layer from which to extract activations (e.g., 0 for first layer after embeddings)
     min_pos: 8 # Minimum token position (0-indexed) to consider for activation extraction
     # seq_len will be taken from activation_dumper.seq_len or a global seq_len if defined
-
+    max_val_samples: 50000
     validation_samples_override: null # Or an integer, e.g., 1000. If null, uses max_val_samples or activation_dumper.val_num_samples.
                                      # Set to 0 to disable on-the-fly validation data generation specifically.
                                      
