@@ -647,7 +647,17 @@ def _check_and_generate_verbose_samples(
                 temp_val_iter = iter(val_loader)
                 val_batch = next(temp_val_iter)
                 val_batch = {k: v.to(device) for k, v in val_batch.items() if isinstance(v, torch.Tensor)}
-                
+            # Move back to cpu instead of just deleting
+                if comparison_tuned_lens is not None:
+                    try:
+                        comparison_tuned_lens = comparison_tuned_lens.to('cpu')
+                        log.info("Moved comparison_tuned_lens back to cpu")
+                    except Exception as e:
+                        log.warning(f"Failed to move comparison_tuned_lens back to cpu: {e}")
+                    #del comparison_tuned_lens
+                    torch.cuda.empty_cache()
+                    log.info("Cleared comparison_tuned_lens and emptied cuda cache")
+
                 generate_verbose_samples_from_batch(
                     decoder_base=decoder_base,
                     encoder_base=encoder_base,
@@ -667,6 +677,16 @@ def _check_and_generate_verbose_samples(
                     data_source="validation",
                     comparison_tuned_lens=comparison_tuned_lens # Pass it down
                 )
+                # Move back to cpu instead of just deleting
+                if comparison_tuned_lens is not None:
+                    try:
+                        comparison_tuned_lens = comparison_tuned_lens.to('cpu')
+                        log.info("Moved comparison_tuned_lens back to cpu")
+                    except Exception as e:
+                        log.warning(f"Failed to move comparison_tuned_lens back to cpu: {e}")
+                    #del comparison_tuned_lens
+                    torch.cuda.empty_cache()
+                    log.info("Cleared comparison_tuned_lens and emptied cuda cache")
             except Exception as e:
                 log.error(f"Failed to generate verbose samples from validation data: {e}")
                 raise
@@ -1010,6 +1030,7 @@ def validate_distributed(
     avg_kl = total_kl / heavy_batches if heavy_batches > 0 else None
 
     # Compute activation statistics (only on main process)
+    activation_stats = {}
     if is_main_process and act_n > 0:
         # Original activation statistics
         act_mean = act_sum / act_n
@@ -1028,55 +1049,64 @@ def validate_distributed(
         # Reconstruction error (should match avg_mse)
         reconstruction_mse = mse_sum / act_n
         
-        # Additional statistics
         # Correlation between original and reconstructed
         cov = (act_recon_sum_prod / act_n) - (act_mean * recon_mean)
-        if act_std > 0 and recon_std > 0:
-            correlation = cov / (act_std * recon_std)
-        else:
-            correlation = 0.0
+        correlation = cov / (act_std * recon_std) if act_std > 0 and recon_std > 0 else 0.0
+
+        improvement_over_zero = (zero_mse - reconstruction_mse) / zero_mse * 100 if zero_mse > 0 else 0.0
+        improvement_over_mean = (mean_mse - reconstruction_mse) / mean_mse * 100 if mean_mse > 0 else 0.0
+
+        activation_stats = {
+            'act_mean': act_mean, 'act_std': act_std, 'act_min': act_min, 'act_max': act_max,
+            'recon_mean': recon_mean, 'recon_std': recon_std, 'recon_min': recon_min, 'recon_max': recon_max,
+            'zero_mse': zero_mse, 'mean_mse': mean_mse, 'reconstruction_mse': reconstruction_mse,
+            'correlation': correlation,
+            'improvement_over_zero': improvement_over_zero,
+            'improvement_over_mean': improvement_over_mean,
+        }
+
+    # Compute average intervention metrics
+    avg_intervention_metrics = {}
+    if heavy_batches > 0:
+        for key, value in intervention_metrics.items():
+            avg_intervention_metrics[key] = value / heavy_batches
+
+    if is_main_process and should_print_val: 
+        log.info(f"\n{'='*60}")
+        log.info(f"Validation Results at Step {step}")
+        log.info(f"{'='*60}")
+        log.info("Average Losses:")
+        log.info(f"  Total Loss: {avg_loss:.4f}")
+        log.info(f"  MSE Loss: {avg_mse:.4f}")
+        log.info(f"  LM Loss: {avg_lm:.4f}" if avg_lm is not None else "  LM Loss: N/A")
+        log.info(f"  KL Loss: {avg_kl:.4f}" if avg_kl is not None else "  KL Loss: N/A")
+        log.info(f"  Entropy: {avg_entropy:.4f}")
+        log.info(f"  Fraction Variance Explained: {avg_fraction_variance_explained:.4f}")
+        log.info(f"  GRPO Loss: {avg_GRPO:.4f}")
+        log.info(f"  KL GRPO: {avg_KL_GRPO:.4f}")
+        log.info(f"  Advantages Mean: {avg_advantages_mean:.4f}")
+        log.info(f"  Advantages Std: {avg_advantages_std:.4f}")
+        log.info(f"  Mean Reward: {avg_mean_reward:.4f}")
+        log.info(f"  Mean Reward Std: {avg_mean_reward_std:.4f}")
+        log.info(f"  Mean Normalised RMSE: {avg_mean_normalised_rmse:.4f}")
         
-        # Relative error is difficult to compute this way, so it's omitted.
-        
-        # Compute average intervention metrics
-        avg_intervention_metrics = {}
-        if heavy_batches > 0:
-            for key, value in intervention_metrics.items():
-                avg_intervention_metrics[key] = value / heavy_batches
-        if should_print_val: 
-            log.info(f"\n{'='*60}")
-            log.info(f"Validation Results at Step {step}")
-            log.info(f"{'='*60}")
-            log.info("Average Losses:")
-            log.info(f"  Total Loss: {avg_loss:.4f}")
-            log.info(f"  MSE Loss: {avg_mse:.4f}")
-            log.info(f"  LM Loss: {avg_lm:.4f}")
-            log.info(f"  KL Loss: {avg_kl:.4f}")
-            log.info(f"  Entropy: {avg_entropy:.4f}")
-            log.info(f"  Fraction Variance Explained: {avg_fraction_variance_explained:.4f}")
-            log.info(f"  GRPO Loss: {avg_GRPO:.4f}")
-            log.info(f"  KL GRPO: {avg_KL_GRPO:.4f}")
-            log.info(f"  Advantages Mean: {avg_advantages_mean:.4f}")
-            log.info(f"  Advantages Std: {avg_advantages_std:.4f}")
-            log.info(f"  Mean Reward: {avg_mean_reward:.4f}")
-            log.info(f"  Mean Reward Std: {avg_mean_reward_std:.4f}")
-            log.info(f"  Mean Normalised RMSE: {avg_mean_normalised_rmse:.4f}")
+        if activation_stats:
             log.info("\nActivation Statistics:")
-            log.info(f"  Original - Mean: {act_mean:.4f}, Std: {act_std:.4f}")
-            log.info(f"  Original - Min: {act_min.item():.4f}, Max: {act_max.item():.4f}")
-            log.info(f"  Reconstructed - Mean: {recon_mean:.4f}, Std: {recon_std:.4f}")
-            log.info(f"  Reconstructed - Min: {recon_min.item():.4f}, Max: {recon_max.item():.4f}")
+            log.info(f"  Original - Mean: {activation_stats['act_mean']:.4f}, Std: {activation_stats['act_std']:.4f}")
+            log.info(f"  Original - Min: {activation_stats['act_min'].item():.4f}, Max: {activation_stats['act_max'].item():.4f}")
+            log.info(f"  Reconstructed - Mean: {activation_stats['recon_mean']:.4f}, Std: {activation_stats['recon_std']:.4f}")
+            log.info(f"  Reconstructed - Min: {activation_stats['recon_min'].item():.4f}, Max: {activation_stats['recon_max'].item():.4f}")
             log.info("\nBaseline Comparisons:")
-            log.info(f"  Zero MSE (predicting zeros): {zero_mse:.4f}")
-            log.info(f"  Mean MSE (predicting mean): {mean_mse:.4f}")
-            log.info(f"  Our Reconstruction MSE: {reconstruction_mse:.4f}")
-            log.info(f"  Improvement over zero baseline: {(zero_mse - reconstruction_mse) / zero_mse * 100:.1f}%")
-            log.info(f"  Improvement over mean baseline: {(mean_mse - reconstruction_mse) / mean_mse * 100:.1f}%")
+            log.info(f"  Zero MSE (predicting zeros): {activation_stats['zero_mse']:.4f}")
+            log.info(f"  Mean MSE (predicting mean): {activation_stats['mean_mse']:.4f}")
+            log.info(f"  Our Reconstruction MSE: {activation_stats['reconstruction_mse']:.4f}")
+            log.info(f"  Improvement over zero baseline: {activation_stats['improvement_over_zero']:.1f}%")
+            log.info(f"  Improvement over mean baseline: {activation_stats['improvement_over_mean']:.1f}%")
             log.info("\nAdditional Metrics:")
-            log.info(f"  Correlation (original vs reconstructed): {correlation:.4f}")
-        
+            log.info(f"  Correlation (original vs reconstructed): {activation_stats['correlation']:.4f}")
+    
         # Log intervention metrics if available
-        if heavy_batches > 0 and should_print_val:
+        if heavy_batches > 0:
             log.info(f"\nIntervention Analysis (on {heavy_batches} batches):")
             log.info(f"  MSE Baseline (original tokens): {avg_intervention_metrics['mse_baseline']:.4f}")
             log.info(f"  MSE Decoder (generated explanation): {avg_intervention_metrics['mse_decoder']:.4f}")
@@ -1090,12 +1120,6 @@ def validate_distributed(
             log.info(f"  KL Hard Prompt: {avg_intervention_metrics['kl_hard_prompt']:.4f}")
         
         log.info(f"{'='*60}\n")
-    else:
-        # Even without activation statistics, compute average intervention metrics
-        avg_intervention_metrics = {}
-        if heavy_batches > 0:
-            for key, value in intervention_metrics.items():
-                avg_intervention_metrics[key] = value / heavy_batches
     
     # Log to wandb (moved outside of activation statistics block)
     if is_main_process and wandb_run_id:
@@ -1116,40 +1140,26 @@ def validate_distributed(
         }
         
         # Add activation statistics if they were collected
-        if act_n > 0:
-            act_mean = act_sum / act_n
-            act_var = act_sum_sq / act_n - act_mean**2
-            act_std = math.sqrt(act_var) if act_var > 0 else 0.0
-            
-            recon_mean = recon_sum / act_n
-            recon_var = recon_sum_sq / act_n - recon_mean**2
-            recon_std = math.sqrt(recon_var) if recon_var > 0 else 0.0
-            
-            zero_mse = act_sum_sq / act_n
-            mean_mse = act_var
-            reconstruction_mse = mse_sum / act_n
-            
-            cov = (act_recon_sum_prod / act_n) - (act_mean * recon_mean)
-            if act_std > 0 and recon_std > 0:
-                correlation = cov / (act_std * recon_std)
-            else:
-                correlation = 0.0
-            
+        if activation_stats:
+            # Helper to safely call .item() on tensors
+            def get_item(v):
+                return v.item() if isinstance(v, torch.Tensor) else v
+
             val_metrics.update({
-                'val/activation_mean': act_mean.item() if hasattr(act_mean, 'item') else act_mean,
-                'val/activation_std': act_std.item() if isinstance(act_std, torch.Tensor) else act_std,
-                'val/activation_min': act_min.item() if hasattr(act_min, 'item') else act_min,
-                'val/activation_max': act_max.item() if hasattr(act_max, 'item') else act_max,
-                'val/reconstruction_mean': recon_mean.item() if hasattr(recon_mean, 'item') else recon_mean,
-                'val/reconstruction_std': recon_std.item() if isinstance(recon_std, torch.Tensor) else recon_std,
-                'val/reconstruction_min': recon_min.item() if hasattr(recon_min, 'item') else recon_min,
-                'val/reconstruction_max': recon_max.item() if hasattr(recon_max, 'item') else recon_max,
-                'val/baseline_zero_mse': zero_mse.item() if hasattr(zero_mse, 'item') else zero_mse,
-                'val/baseline_mean_mse': mean_mse.item() if hasattr(mean_mse, 'item') else mean_mse,
-                'val/reconstruction_mse': reconstruction_mse.item() if hasattr(reconstruction_mse, 'item') else reconstruction_mse,
-                'val/improvement_over_zero': ((zero_mse - reconstruction_mse) / zero_mse * 100).item() if hasattr(zero_mse, 'item') else ((zero_mse - reconstruction_mse) / zero_mse * 100),
-                'val/improvement_over_mean': ((mean_mse - reconstruction_mse) / mean_mse * 100).item() if (hasattr(mean_mse, 'item') and mean_mse > 0) else 0.0,
-                'val/correlation': correlation.item() if isinstance(correlation, torch.Tensor) else correlation,
+                'val/activation_mean': get_item(activation_stats['act_mean']),
+                'val/activation_std': get_item(activation_stats['act_std']),
+                'val/activation_min': get_item(activation_stats['act_min']),
+                'val/activation_max': get_item(activation_stats['act_max']),
+                'val/reconstruction_mean': get_item(activation_stats['recon_mean']),
+                'val/reconstruction_std': get_item(activation_stats['recon_std']),
+                'val/reconstruction_min': get_item(activation_stats['recon_min']),
+                'val/reconstruction_max': get_item(activation_stats['recon_max']),
+                'val/baseline_zero_mse': get_item(activation_stats['zero_mse']),
+                'val/baseline_mean_mse': get_item(activation_stats['mean_mse']),
+                'val/reconstruction_mse': get_item(activation_stats['reconstruction_mse']),
+                'val/improvement_over_zero': get_item(activation_stats['improvement_over_zero']),
+                'val/improvement_over_mean': get_item(activation_stats['improvement_over_mean']),
+                'val/correlation': get_item(activation_stats['correlation']),
             })
         
         # Add intervention metrics to wandb if available
@@ -1162,13 +1172,6 @@ def validate_distributed(
 
     # Generate verbose samples if on main process and conditions are met
     if is_main_process and all(v is not None for v in [current_epoch, max_steps, gradient_accumulation_steps, val_interval]):
-        if comparison_tuned_lens:
-            try:
-                comparison_tuned_lens = comparison_tuned_lens.to(device)
-                log.info(f"Moved comparison_tuned_lens to device {device}")
-            except Exception as e:
-                log.error(f"Failed to move comparison_tuned_lens to device {device}: {e}")
-                comparison_tuned_lens = None
 
         try:
             _check_and_generate_verbose_samples(
@@ -1190,17 +1193,10 @@ def validate_distributed(
                 log=log,
                 comparison_tuned_lens=comparison_tuned_lens
             )
-        finally:
-            # Move back to cpu instead of just deleting
-            if comparison_tuned_lens is not None:
-                try:
-                    comparison_tuned_lens = comparison_tuned_lens.to('cpu')
-                    log.info("Moved comparison_tuned_lens back to cpu")
-                except Exception as e:
-                    log.warning(f"Failed to move comparison_tuned_lens back to cpu: {e}")
-                #del comparison_tuned_lens
-                torch.cuda.empty_cache()
-                log.info("Cleared comparison_tuned_lens and emptied cuda cache")
+        except Exception as e:
+            log.error(f"Error in _check_and_generate_verbose_samples: {e}")
+            raise e
+
     
     # Put models back in train mode
     decoder_base.train()
@@ -1222,9 +1218,12 @@ def maybe_resume_from_checkpoint(
 ):
     start_step = 0
     checkpoint_data = None
+    slurm_autoresume_candidates = []
+    successful_preemption_checkpoint = False  # track if we resumed from SLURM
+    wandb_run_id_for_resumption = None        # default
+    resume_path_obj = None                    # will be set only if resume_path_config given
 
     # Python-side auto-resume logic for SLURM requeued jobs
-    successful_preemption_checkpoint = False
     if os.environ.get('SLURM_RESTART_COUNT', '0') != '0':
         # Get the CURRENT SLURM job ID after restart
         current_slurm_job_id_for_resume = os.environ.get('SLURM_JOB_ID')
@@ -1241,95 +1240,93 @@ def maybe_resume_from_checkpoint(
             run_checkpoint_base_dir = resolve_path(run_checkpoint_base_dir_str)
             if run_checkpoint_base_dir.is_dir():
                 # Construct the specific pattern using the current SLURM Job ID.
-                # This assumes the job ID at preemption is the same as the current job ID on requeue.
                 preemption_pattern = f'interrupt_slurm{current_slurm_job_id_for_resume}.pt'
                 if is_main():
                     log.info(f"Searching for preemption checkpoint pattern: '{preemption_pattern}' in {run_checkpoint_base_dir}")
 
                 preempt_checkpoints = sorted(
-                    list(run_checkpoint_base_dir.glob(preemption_pattern)),
-                    key=lambda p: p.stat().st_mtime,
+                    [str(p) for p in run_checkpoint_base_dir.glob(preemption_pattern)],
+                    key=lambda p: Path(p).stat().st_mtime,
                     reverse=True
                 )
                 if preempt_checkpoints:
-                    autoresume_path = str(preempt_checkpoints[0])
+                    slurm_autoresume_candidates.extend(preempt_checkpoints)
                     if is_main():
-                        log.info(f"Found preemption checkpoint: {autoresume_path}. Setting this as resume path.")
-                    config['resume'] = autoresume_path 
-                    successful_preemption_checkpoint = True
-                else:
-                    # If not found, look for a folder with slurm{job_id} in its name
-                    slurm_folder_pattern = f"*slurm{current_slurm_job_id_for_resume}*"
-                    slurm_folders = sorted(
-                        [p for p in run_checkpoint_base_dir.glob(slurm_folder_pattern) if p.is_dir()],
-                        key=lambda p: p.stat().st_mtime,
-                        reverse=True
-                    )
-                    if slurm_folders:
-                        # The most recent folder is the current run's, which is empty.
-                        # If there's a previous one, use that.
-                        if len(slurm_folders) > 1 and str(slurm_folders[0]) == current_run_checkpoint_dir_str:
-                            log.info(f"Found {len(slurm_folders)} slurm folders. Using the second most recent one as the resume path.")
-                            autoresume_path = str(slurm_folders[1])
-                        else:
-                            log.info(f"Found {len(slurm_folders)} slurm folders. Using the most recent one as the resume path.")
-                            autoresume_path = str(slurm_folders[0])
+                        log.info(f"Found {len(preempt_checkpoints)} preemption checkpoint(s). Adding to resume candidates.")
+                
+                # Also look for folders with slurm{job_id} in their name, regardless of whether a .pt was found
+                slurm_folder_pattern = f"*slurm{current_slurm_job_id_for_resume}*"
+                slurm_folders = sorted(
+                    [p for p in run_checkpoint_base_dir.glob(slurm_folder_pattern) if p.is_dir()],
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True
+                )
+                
+                if slurm_folders:
+                    if is_main():
+                        log.info(f"Found {len(slurm_folders)} SLURM folder(s). Searching for checkpoints within them.")
+                    for slurm_folder_path in slurm_folders:
+                        checkpoints_in_folder = sorted(
+                            [str(f) for f in slurm_folder_path.glob('*.pt') if f.is_file()],
+                            key=lambda p: Path(p).stat().st_mtime,
+                            reverse=True
+                        )
+                        if checkpoints_in_folder:
+                            if is_main():
+                                log.info(f"Found {len(checkpoints_in_folder)} checkpoint(s) in {slurm_folder_path}. Adding to resume candidates.")
+                            slurm_autoresume_candidates.extend(checkpoints_in_folder)
+                
+                if not slurm_autoresume_candidates and is_main():
+                    log.info(f"No preemption checkpoints or SLURM folder checkpoints found in {run_checkpoint_base_dir}.")
 
-                        if is_main():
-                            log.info(f"No preemption checkpoint found, but found folder: {autoresume_path}. Setting this as resume path.")
-                        config['resume'] = autoresume_path
-                        successful_preemption_checkpoint = True
-                    elif is_main():
-                        log.info(f"No preemption checkpoints or slurm folders found in {run_checkpoint_base_dir}.")
             elif is_main():
                 log.warning(f"Run checkpoint directory '{run_checkpoint_base_dir_str}' for auto-resume does not exist.")
         elif is_main():
             log.warning("Could not determine run checkpoint directory for SLURM auto-resume. Ensure config['checkpoint']['output_dir'] is set.")
 
-    if not config.get('resume'):
+    potential_checkpoint_paths = []
+    resume_path_config = config.get('resume')
+
+    if slurm_autoresume_candidates:
+        if is_main():
+            log.info(f"Prioritizing {len(slurm_autoresume_candidates)} SLURM auto-resume candidates.")
+        potential_checkpoint_paths = slurm_autoresume_candidates
+    elif resume_path_config:
+        resume_path_obj = Path(resume_path_config)
+        
+        if resume_path_obj.is_dir():
+            if is_main():
+                log.info(f"Resume path is a directory. Searching for checkpoints in {resume_path_obj}...")
+            # Sort by modification time, newest first
+            checkpoint_files = sorted(
+                [f for f in resume_path_obj.glob('*.pt') if f.is_file()],
+                key=lambda p: p.stat().st_mtime,
+                reverse=True
+            )
+            if not checkpoint_files:
+                if is_main():
+                    log.warning(f"No checkpoint files (.pt) found in directory: {resume_path_obj}.")
+            else:
+                potential_checkpoint_paths = [str(f) for f in checkpoint_files]
+                if is_main():
+                    log.info(f"Found {len(potential_checkpoint_paths)} potential checkpoint(s). Will try in order of recency.")
+        elif resume_path_obj.is_file():
+            potential_checkpoint_paths = [str(resume_path_obj)]
+        else:
+            # Path is neither a file nor a directory (or doesn't exist as specified)
+            if is_main():
+                log.error(f"Resume path '{resume_path_config}' is not a valid file or directory.")
+            raise FileNotFoundError(f"Resume checkpoint path not found or invalid: {resume_path_config}")
+    
+    if not potential_checkpoint_paths:
+        if not slurm_autoresume_candidates: # Only log error if not a SLURM attempt
+            log.info("No checkpoint found to resume from.")
         return start_step, checkpoint_data, None, None
 
-    resume_path_config = config['resume']
-    resume_path_obj = Path(resume_path_config)
-    
-    potential_checkpoint_paths = []
 
-    if resume_path_obj.is_dir():
-        if is_main():
-            log.info(f"Resume path is a directory. Searching for checkpoints in {resume_path_obj}...")
-        # Sort by modification time, newest first
-        checkpoint_files = sorted(
-            [f for f in resume_path_obj.glob('*.pt') if f.is_file()],
-            key=lambda p: p.stat().st_mtime,
-            reverse=True
-        )
-        if not checkpoint_files:
-            if is_main():
-                log.warning(f"No checkpoint files (.pt) found in directory: {resume_path_obj}.")
-        else:
-            potential_checkpoint_paths = [str(f) for f in checkpoint_files]
-            if is_main():
-                log.info(f"Found {len(potential_checkpoint_paths)} potential checkpoint(s). Will try in order of recency.")
-    elif resume_path_obj.is_file():
-        potential_checkpoint_paths = [str(resume_path_obj)]
-    else:
-        # Path is neither a file nor a directory (or doesn't exist as specified)
-        if is_main():
-            log.error(f"Resume path '{resume_path_config}' is not a valid file or directory.")
-        raise FileNotFoundError(f"Resume checkpoint path not found or invalid: {resume_path_config}")
-
-    if not potential_checkpoint_paths:
-        if is_main():
-            log.error(f"No checkpoint candidates found to resume from path: {resume_path_config}")
-        raise FileNotFoundError(f"No checkpoint candidates found to resume from path: {resume_path_config}")
-
-    actual_paths_to_attempt = []
-    if resume_path_obj.is_dir():
-        actual_paths_to_attempt = potential_checkpoint_paths[:2] # Try up to two most recent for a directory
-        if is_main() and len(potential_checkpoint_paths) > 0:
-            log.info(f"Will attempt to load from up to {len(actual_paths_to_attempt)} most recent checkpoint(s) found in directory {resume_path_obj}.")
-    else: # It's a file path
-        actual_paths_to_attempt = potential_checkpoint_paths[:1] # Should be exactly one path
+    actual_paths_to_attempt = potential_checkpoint_paths
+    if is_main() and len(potential_checkpoint_paths) > 0:
+        log.info(f"Will attempt to load from up to {len(actual_paths_to_attempt)} checkpoint(s).")
 
     loaded_successfully = False
     last_exception = None
@@ -1394,6 +1391,7 @@ def maybe_resume_from_checkpoint(
             # If load_checkpoint was successful:
             checkpoint_path_str = current_ckpt_path_str # Set the successfully loaded path
             loaded_successfully = True
+            successful_preemption_checkpoint = current_ckpt_path_str in slurm_autoresume_candidates
             
             if is_main():
                 if hasattr(decoder, 'prompt_left_emb') and decoder.prompt_left_emb is not None:
@@ -1511,13 +1509,12 @@ def maybe_resume_from_checkpoint(
                     rec['_expected_right_norm'] = checkpoint_decoder_state['prompt_right_emb'].norm().item()
             
             break # Successful load and checks, exit the loop
-        
         except RuntimeError as e:
             last_exception = e
             if is_main():
                 log.warning(f"Failed to load or verify checkpoint from {current_ckpt_path_str}: {str(e)}")
 
-            is_pytorch_stream_error = "PytorchStreamReader failed locating file" in str(e)
+            is_pytorch_stream_error = "PytorchStreamReader failed" in str(e)
             
             # Condition to try next candidate:
             # 1. The error is "PytorchStreamReader failed locating file".
@@ -1525,10 +1522,11 @@ def maybe_resume_from_checkpoint(
             # 3. This was the first attempt (idx == 0 for the directory's candidates).
             # 4. There is a second candidate available in actual_paths_to_attempt.
             should_try_next_candidate = (
-                is_pytorch_stream_error and
-                resume_path_obj.is_dir() and 
-                idx == 0 and # This was the first attempt from the directory list
-                (idx + 1) < len(actual_paths_to_attempt) # A second attempt is available
+                is_pytorch_stream_error
+                and resume_path_obj is not None
+                and resume_path_obj.is_dir()
+                and idx == 0
+                and (idx + 1) < len(actual_paths_to_attempt)
             )
 
             if should_try_next_candidate:
@@ -1538,8 +1536,8 @@ def maybe_resume_from_checkpoint(
             else:
                 # If not the specific error allowing a retry, or no more retries allowed for this error,
                 # then this error is fatal for the loading process. Re-raise it.
-                raise e 
-        
+                log.error(f"Fatal error encountered with {current_ckpt_path_str}: {str(e)}; trying next.")
+                #raise e 
         except Exception as e: # Catch other non-RuntimeError exceptions during the process
             last_exception = e
             error_msg = f"An unexpected non-RuntimeError occurred while processing checkpoint {current_ckpt_path_str}: {str(e)}"
@@ -1597,11 +1595,11 @@ def setup_wandb_and_save_config(
             log.info(f"WandB run ID for resumption: {wandb_run_id_for_resumption}, we are resuming as we are in a restart, count: {requeue_count}")
     else:
         wandb_run_id = config.get('wandb_resume_id')
-        should_resume_wandb = wandb_run_id is None or wandb_run_id not in ['false']
-        if str(wandb_run_id).lower() in ['true']:
+        should_resume_wandb = wandb_run_id is None or (wandb_run_id not in ['false', 'False'] and wandb_run_id!=True)
+        if wandb_run_id in ['true', 'True'] or wandb_run_id==True:
             wandb_run_id = wandb_run_id_for_resumption if wandb_run_id_for_resumption else None
             should_resume_wandb = True if wandb_run_id_for_resumption else False
-        if str(wandb_run_id).lower()=='none':
+        if wandb_run_id in ['none', 'None']:
             log.error("Please do not pass 'none' pass 'false' if you don't want to resume the checkpoint wandb")
             wandb_run_id = None
             should_resume_wandb = False
@@ -2782,6 +2780,10 @@ def main(cfg: DictConfig) -> None:
 
     # Handle resuming from checkpoint
     reset_steps = config.get('resume_reset_steps', False)
+    if successful_preemption_checkpoint:
+        log.info("Do not reset steps because of successful preemption checkpoint")
+        reset_steps = False
+    log.info(f"Reset steps: {reset_steps}")
     skip_batches_on_resume = config.get('skip_batches_on_resume', False)  # Make it optional
     
     samples_processed_since_last_regen=0
@@ -2893,6 +2895,21 @@ def main(cfg: DictConfig) -> None:
                         train_ds.regenerate_cache(num_samples_to_generate=num_to_generate_this_cycle) 
                         torch.cuda.empty_cache()
                         gc.collect()
+                
+                # Log cache regeneration statistics
+                if hasattr(train_ds, 'total_samples_in_pretokenised_dataset') and train_ds.total_samples_in_pretokenised_dataset > 0:
+                    shard_size = train_ds.total_samples_in_pretokenised_dataset // world_size
+                    if num_to_generate_this_cycle > shard_size:
+                        cycles_per_regen = num_to_generate_this_cycle / shard_size
+                        total_regens = step // (samples_per_regeneration_cycle // (batch_size * world_size))
+                        estimated_total_cycles = cycles_per_regen * total_regens
+                        if is_main():
+                            log_metrics({
+                                "cache/cycles_per_regeneration": cycles_per_regen,
+                                "cache/total_regenerations": total_regens,
+                                "cache/estimated_total_cycles": estimated_total_cycles,
+                                "cache/shard_size_per_rank": shard_size,
+                            }, step=step)
                 
                 if len(train_ds) == 0:
                     log.error(f"Rank {rank}: Cache is empty after regeneration at step {step}. Stopping training.")
@@ -3305,18 +3322,6 @@ def main(cfg: DictConfig) -> None:
             log.info(f"Proceeding to save final checkpoint as {final_ckpt_name_override}")
         else:
             raise e
-    
-    # Determine the actual name for the final checkpoint
-    actual_final_save_name = "final" # Default for normal completion
-
-    if _preemption_requested: # This takes precedence
-        actual_final_save_name = f"preempt_slurm{_preemption_slurm_id}"
-    elif final_ckpt_name_override: # Set by KeyboardInterrupt (and potentially preemption if KbdInt happened during it)
-        actual_final_save_name = final_ckpt_name_override
-    
-    if is_main():
-        log.info(f"Final checkpoint name determined as: '{actual_final_save_name}'.")
-
 
     # Final checkpoint (handles normal finish, keyboard interrupt, preemption)
     if is_main() and checkpoint_manager.save_at_end:
@@ -3400,5 +3405,4 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
-    main()
     main()

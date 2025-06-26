@@ -92,7 +92,7 @@ gumbel_tau_schedule:
   type: "cosine_decay_after_constant"
 
 lm_base_weight: 0.001
-kl_base_weight: 1.0
+kl_base_weight: 0
 mse_weight: 0.000001
 
 # Entropy weight configuration

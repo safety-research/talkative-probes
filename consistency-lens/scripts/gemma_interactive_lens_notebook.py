@@ -7,6 +7,7 @@
 
 # need to source the proper uv env /home/kitf/.cache/uv/envs/consistency-lens/bin/python
 # need to uv add jupyter seaborn
+#torch.set_float32_matmul_precision('high')
 # and install jupyter if necessary
 
 # %%
@@ -14,6 +15,7 @@
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import torch
+torch.set_float32_matmul_precision('high')
 import sys
 from pathlib import Path
 import numpy as np
@@ -86,8 +88,8 @@ CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/che
 CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_2b_unfrozen_nopostfix_google_gemma-2-2b_L20_e20_frozen_lr3e-4_t16_4ep_resume_0623_0129_frozenenc_actual_add_DBL_dist8/"
 CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_2b_unfrozen_nopostfix_google_gemma-2-2b_L20_e20_frozen_lr1e-4_t8_2ep_resume_0623_1612_frozenenc_actual_add_DBL_HUGE_dist8_slurm1285"
 BAD_CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_2b_unfrozen_nopostfix_gemma-2-2b_L5_e20_frozen_lr1e-3_t8_4ep_0624_1601_frozenenc_actual_add_OTF_dist8"
-CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_2b_unfrozen_nopostfix_gemma-2-2b_L20_e20_frozen_lr1e-3_t8_4ep_resume_0624_2322_frozenenc_actual_add_OTF_dist8"
-CHECKPOINT_PATH_32 = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_2b_unfrozen_nopostfix_google_gemma-2-2b_L20_e20_frozen_lr1e-3_t32_4ep_resume_0625_1223_frozenenc_actual_add_DBL_HUGE_groupn_dist8_slurm1413"
+CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_2b_unfrozen_nopostfix_google_gemma-2-2b_L20_e20_frozen_lr1e-3_t8_4ep_resume_0626_105820_frozenenc_actual_add_NOENTR_resume_dist8_slurm1461"
+CHECKPOINT_PATH_32 = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_2b_unfrozen_nopostfix_google_gemma-2-2b_L20_e20_frozen_lr5e-4_t32_4ep_resume_0626_113944_frozenenc_actual_add_DBL_HUGE_groupn_dist8_slurm1462"
 # Optional: specify device
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -100,7 +102,7 @@ class LensAnalyzer:
     
     def __init__(self, checkpoint_path: str, device: str = "cuda", comparison_tl_checkpoint: Union[str,bool] = True, 
                  do_not_load_weights: bool = False, make_xl: bool = False, use_bf16: bool = False, 
-                 t_text = None, strict_load = True, no_orig=False, old_lens=None, batch_size: int = 32, shared_base_model=None):
+                 t_text = None, strict_load = True, no_orig=False, old_lens=None, batch_size: int = 32, shared_base_model=None, different_activations_model=None):
         self.device = torch.device(device)
         self.use_bf16 = use_bf16 and torch.cuda.is_available() and torch.cuda.is_bf16_supported()
         self.default_batch_size = batch_size
@@ -200,8 +202,11 @@ class LensAnalyzer:
                 **encoder_train_cfg
             )
             self.encoder = Encoder(encoder_config_obj, base_to_use=self.shared_base_model)
-        
-            self.orig_model = OrigWrapper(self.model_name, load_in_8bit=False, base_to_use=self.shared_base_model)
+            if different_activations_model is not None:
+                different_activations_model = AutoModelForCausalLM.from_pretrained(different_activations_model, load_in_8bit=False)
+                self.orig_model = OrigWrapper(different_activations_model, load_in_8bit=False, base_to_use=different_activations_model)
+            else:
+                self.orig_model = OrigWrapper(self.model_name, load_in_8bit=False, base_to_use=self.shared_base_model)
         
             # Initialize Decoder prompt (before loading weights)
             if 'decoder_prompt' in self.config and self.config['decoder_prompt']:
@@ -309,7 +314,7 @@ class LensAnalyzer:
                 print(f"✓ Using shared base model - saved ~{shared_base_model.num_parameters() * 2 / 1e9:.1f}GB of GPU memory")
 
 
-    def analyze_all_tokens(self, text: str, seed=42, batch_size=None, no_eval=True, tuned_lens: bool = True, add_tokens = None) -> pd.DataFrame:
+    def analyze_all_tokens(self, text: str, seed=42, batch_size=None, no_eval=False, tuned_lens: bool = True, add_tokens = None, replace_left=None, replace_right=None, do_hard_tokens=False) -> pd.DataFrame:
         """Analyze all tokens in the text and return results as DataFrame.
         
         Args:
@@ -345,6 +350,9 @@ class LensAnalyzer:
         all_relative_rmses = []
         all_gen_hard_token_ids = []
         all_tuned_lens_predictions = [] if tuned_lens else None
+        if do_hard_tokens:
+            print("Using original hard tokens")
+            replace_left, replace_right, _ , _ = self.decoder.tokenize_and_embed_prompt(self.decoder.prompt_text, self.tokenizer)
         
         batch_size = min(batch_size, seq_len)
         with torch.no_grad():
@@ -369,9 +377,9 @@ class LensAnalyzer:
                 with torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=self.use_bf16):
                     # Generate explanations for all positions in the current batch.
                     if self.decoder.config.use_kv_cache:
-                        gen = self.decoder.generate_soft_kv_cached_nondiff(A_batch, max_length=self.t_text, gumbel_tau=self.tau, original_token_pos=token_positions_batch, return_logits=True, add_tokens=add_tokens)
+                        gen = self.decoder.generate_soft_kv_cached_nondiff(A_batch, max_length=self.t_text, gumbel_tau=self.tau, original_token_pos=token_positions_batch, return_logits=True, add_tokens=add_tokens, hard_left_emb=replace_left, hard_right_emb=replace_right)
                     else:
-                        gen = self.decoder.generate_soft(A_batch, max_length=self.t_text, gumbel_tau=self.tau, original_token_pos=token_positions_batch, return_logits=True, add_tokens=add_tokens)
+                        gen = self.decoder.generate_soft(A_batch, max_length=self.t_text, gumbel_tau=self.tau, original_token_pos=token_positions_batch, return_logits=True, add_tokens=add_tokens, hard_left_emb=replace_left, hard_right_emb=replace_right)
                     
                     all_gen_hard_token_ids.append(gen.hard_token_ids)
 
@@ -888,14 +896,29 @@ class LensAnalyzer:
     
     def generate_continuation(self, text: str, num_tokens: int = 100, num_completions: int = 10) -> list[str]:
         encodestring = self.tokenizer.encode(text)
+        n_tok = num_tokens
+        
+        # Create batched input
+        input_ids = torch.tensor([encodestring] * num_completions).to(self.device)
+        attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
+        
+        # Generate all completions in one batch
+        with torch.no_grad():
+            generated = self.orig_model.model.generate(
+                input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=n_tok,
+                min_new_tokens=n_tok,
+                do_sample=True
+            )
+        
+        # Extract and decode the generated tokens
         listouts = []
-        n_tok=num_tokens
         for i in range(num_completions):
-            generateddirectly = self.orig_model.model.generate(torch.tensor([encodestring]).to(self.device),attention_mask=torch.ones_like(torch.tensor([encodestring], device=self.device), dtype=torch.bool), max_new_tokens=n_tok, min_new_tokens=n_tok, do_sample=True)
-            tokenizerstring = self.tokenizer.decode(generateddirectly[0][-n_tok:]).replace("\n","\\n")
+            tokenizerstring = self.tokenizer.decode(generated[i][-n_tok:]).replace("\n", "\\n")
             listouts.append(tokenizerstring)
-        for i, tx in enumerate(listouts):
-            print(f"{i}: {tx}")
+            print(f"{i}: {tokenizerstring}")
+        
         return listouts
 
 
@@ -961,10 +984,13 @@ def quick_analyze(text: str, show_plot: bool = True, analyzer: LensAnalyzer = No
         plt.show()
 
     return df
+CHECKPOINT_PATH_LAYER_7 = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_2b_unfrozen_nopostfix_gemma-2-2b_L7_e7_frozen_lr1e-3_t8_4ep_resume_0625_162035_frozenenc_actual_add_OTF_dist8"
+CHECKPOINT_PATH_LAYER_13 = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_2b_unfrozen_nopostfix_gemma-2-2b_L13_e13_frozen_lr1e-3_t8_4ep_resume_0626_130051_frozenenc_actual_add_OTF_dist8_slurm1463"
 
 analyzer = LensAnalyzer(CHECKPOINT_PATH, DEVICE, do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=True, old_lens=analyzer if 'analyzer' in globals() else None, batch_size=64)
 analyzer32 = LensAnalyzer(CHECKPOINT_PATH_32, DEVICE, do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=True, old_lens=analyzer32 if 'analyzer32' in globals() else None, batch_size=64, shared_base_model=analyzer.shared_base_model)
-
+analyzer_layer_7 = LensAnalyzer(CHECKPOINT_PATH_LAYER_7, DEVICE, do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=True, old_lens=analyzer_layer_7 if 'analyzer_layer_7' in globals() else None, batch_size=64, shared_base_model=analyzer.shared_base_model)
+analyzer_layer_13 = LensAnalyzer(CHECKPOINT_PATH_LAYER_13, DEVICE, do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=True, old_lens=analyzer_layer_13 if 'analyzer_layer_13' in globals() else None, batch_size=64, shared_base_model=analyzer.shared_base_model)
 # %%
 # Initialize the analyzer
 #analyzer = LensAnalyzer(CHECKPOINT_PATH, DEVICE)
@@ -1281,7 +1307,7 @@ df_custom = quick_analyze(YOUR_TEXT)
 # %%
 TEST_STRING = " t h e   c a t   s a t   o n   t h e   m a t"
 TEST_STRING = " t h e   c a t   s a t   o n   t h e   m a t\n\n the cat sat on the"
-df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=True, batch_size=32)
+df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False, batch_size=32)
 
 # Display the results
 print(f"Analysis of: '{TEST_STRING}'")
@@ -1293,7 +1319,7 @@ print(df.to_string(index=False))
 
 # %%
 TEST_STRING = "John met Mary. He gave her a book. She thanked him."
-df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=True, batch_size=32)
+df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False, batch_size=32)
 
 # Display the results
 print(f"Analysis of: '{TEST_STRING}'")
@@ -1304,7 +1330,7 @@ print(df.to_string(index=False))
 
 # %%
 TEST_STRING = " a b c d e f g h i j k l n o p q r"
-df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=True, batch_size=32)
+df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False, batch_size=32)
 
 # Display the results
 print(f"Analysis of: '{TEST_STRING}'")
@@ -1316,7 +1342,7 @@ print(df.to_string(index=False))
 TEST_STRING = "John was a wrestler. He met Mary. He gave her a book. She thanked him. She said: \"John's job is a"
 TEST_STRING = "Richard was a wrestler. He met Mary. He gave her a book. She thanked him. She said: \"Richard's job is a"
 TEST_STRING = "Richard was a wrestler. He met Sophia. He gave her a book. She thanked him. She said: \"Richard's job is a"
-df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=True, batch_size=32)
+df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False, batch_size=32)
 
 # Display the results
 print(f"Analysis of: '{TEST_STRING}'")
@@ -1550,7 +1576,7 @@ print(torch.tensor([torch.max(torch.abs(p)) for p in posembedder[0:128]]))
 # %%
 
 TEST_STRING = " t h e   c a t   s a t   o n   t h e   m a t\n the cat sat on the mat\n\n t h e   d o g   a t e   t h e   f o o d\n\nthe dog ate the food\n\nt h e   q u e e n   k i l l e d   t h e   j o k e r\n\nthe queen killed the joker"
-df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=True, batch_size=32)
+df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False, batch_size=32)
 
 # Display the results
 print(f"Analysis of: '{TEST_STRING}'")
@@ -1577,7 +1603,7 @@ for l in listouts:
     print("-"*100+"\n")
 # %%
 TEST_STRING = "Le chat est noir. = The cat is black.\n\nJ'aime les pommes. = I like apples.\n\nElle lit un livre. = She reads a book.\n\nNous allons au parc. = We go to the park.\n\nIl fait beau aujourd'hui. = It's nice weather today.\n\nTu as un chien? = Do you have a dog?\n\nLes enfants jouent dehors. = The children play outside.\n\nJe mange du pain. = I eat bread.\n\nMa maison est grande. = My house is big.\n\nIls regardent la télé. = They watch TV.\n\nElle porte une robe rouge. = She wears a red dress.\n\nLe garçon court vite. = The boy runs fast.\n\nNous buvons de l'eau. = We drink water."
-df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=True)
+df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
 
 # %%
 print(f"Analysis of: '{TEST_STRING}'")
@@ -1756,7 +1782,7 @@ TEST_STRING = (
     "I love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it\nI love it"
 )
 
-df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=True)
+df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
 
 # %%
 print(df.to_string(index=False))
@@ -1792,12 +1818,12 @@ print(tokenizer.decode(encoded_input["input_ids"]))
 # %%
 
 TEST_STRING = "The following article makes no mention of pink elephants. None at all.\n\nLooking to leave a two-fight winless streak behind him, Manny Gamburyan will return to the UFC octagon on Sept. 27 in Las Vegas at UFC 178 in a new weight class.\n\nGamburyan is set to make his 135-pound men's bantamweight debut against Cody \"The Renegade\" Gibson at the MGM Grand Arena on a pay-per-view card headlined by the UFC light heavyweight title fight between champion Jon Jones and Daniel Cormierr. There was a pink"
-df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=True)
+df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
 print(df.to_string(index=False))
 
 # %%
 TEST_STRING = "MOSCOW (Reuters) - Russia's postal service was hit by Wannacry ransomware last week and some of its computers are still down, three employees in Moscow said, the latest sign of weaknesses that have made the country a major victim of the global extortion campaign.\n\nA man walks out of a branch of Russian Post in Moscow, Russia, May 24, 2017. REUTERS/Maxim Shemetov\n\nWannacry compromised the post office"
-df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=True)
+df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
 print(df.to_string(index=False))
 
 
@@ -1882,16 +1908,16 @@ print(df.to_string(index=False))
 
 
 TEST_STRING = "Happiness can be found even in the darkest of times if one only remembers to turn on the light."
-df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=True)
+df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False)
 print(df.to_string(index=False))
 
 # %%
 TEST_STRING = "Now, if you two don't mind, I'm going to bed, before either of you come up with another clever idea to get us killed or worse, expelled"
-df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=True)
+df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False)
 print(df.to_string(index=False))
 # %%
 TEST_STRING = "We've all got both light and dark inside us. What matters is the part we choose to act on. That's who we really are."
-df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=True)
+df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False)
 print(df.to_string(index=False))
 
 
@@ -2046,7 +2072,7 @@ lies = "- The American Civil War ended in 1845\n- Napoleon won the Battle of Wat
 
 
 
-df = analyzer.analyze_all_tokens(lies, no_eval=True)
+df = analyzer.analyze_all_tokens(lies, no_eval=False)
 print(df.to_string(index=False))
 
 # %%
@@ -2060,39 +2086,40 @@ for i in range(len(gens)):
     print(f"{i}: {gens[i]}")
 # %%
 TEST_STRING = "In the fictional country where everything is opposite, the capital of France is"
-df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=True)
+df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False)
 print(df.to_string(index=False))
 # %%
 TEST_STRING = "In backwards world, water freezes at"
-df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=True)
+df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False)
 print(df.to_string(index=False))
 # %%
 
 TEST_STRING = "John has 3 apples. Mary takes 2. John gives Mary 1 more. Mary eats 1. The number of apples Mary has is two."
-df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=True)
+df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False)
 print(df.to_string(index=False))
 # %%
 TEST_STRING = "The trophy doesn't fit in the suitcase because it is too large. What is too large?"
-df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=True)
+df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False)
 print(df.to_string(index=False))
 # %%
 TEST_STRING = "Sarah secretly wants the red box but tells Jim she wants the blue box.\nJim, trying to be mean, gives her the red box. Sarah says 'Oh no!' but she's actually:"
-df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=True)
+df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False)
 print(df.to_string(index=False))
 # %%
 TEST_STRING = "x = 5\ny = x + 3\nx = 2\nz = x + y\nThe value of z is"
-df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=True)
+df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False)
 print(df.to_string(index=False))
 # %%
-TEST_STRING = """```
-# We track the values of each variable in this program
-"x = 5
-y = 3
+TEST_STRING = """
+For example, consider the execution of the following:
+```
+x = 12
+y = 7
 z = x + y
 ```
-The value of z is 13
+The value of z is 19
 """
-df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=True) 
+df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False) 
 print(df.to_string(index=False))
 # %%
 
@@ -2106,7 +2133,7 @@ Where does Bob think Alice thinks it is?
 Where does Charlie know it actually is?"""
 
 
-df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=True)
+df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False)
 print(df.to_string(index=False))
 # %%
 TEST_STRING = """# Track what different agents believe
@@ -2117,7 +2144,7 @@ Alice returns.
 Alice thinks the ball is in box A.
 Bob thinks Alice thinks the ball is in box A.
 Charlie knows the ball is in box B."""
-df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=True)
+df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False)
 print(df.to_string(index=False))
 # %%
 TEST_STRING = """# Track what different agents believe
@@ -2128,7 +2155,7 @@ Alice returns.
 Alice thinks the ball is in box B.
 Bob thinks Alice thinks the ball is in box B.
 Charlie knows the ball is in box C."""
-df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=True)
+df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False)
 print(df.to_string(index=False))
 
 
@@ -2138,49 +2165,12 @@ print(df.to_string(index=False))
 
 # %%
 TEST_STRING = "Sarah secretly wants the red box but tells Jim she wants the blue box.\nJim, trying to be mean, gives her the red box. Sarah says 'Oh no, please don't give me the red box!'."
-df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=True)
+df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False)
 print(df.to_string(index=False))
 # %%
 
-simplelies = """The sky is green
-Dogs have six legs
-Fire is cold
-Ice is hot
-Cars can fly
-Fish live in trees
-The sun comes out at night
-Grass is purple
-Elephants are tiny animals
-Mice are bigger than horses
-Snow falls in summer
-Rain falls upward
-Apples are vegetables
-Humans have tails
-Birds swim underwater
-Whales fly in the sky
-Bananas are blue
-Chickens have four wings
-Spiders have two legs
-Books are made of metal
-Water is dry
-Rocks are soft"""
 
-df = analyzer.analyze_all_tokens(simplelies, no_eval=True)
-print(df.to_string(index=False))
-# %%
-
-gens = []
-
-encodestring = analyzer.tokenizer.encode(simplelies)
-for i in range(3):
-    generateddirectly = analyzer.orig_model.model.generate(torch.tensor([encodestring]).to(analyzer.device), attention_mask=torch.ones_like(torch.tensor([encodestring], device=analyzer.device), dtype=torch.bool), max_new_tokens=n_tok, do_sample=True, min_new_tokens=n_tok)
-    gens.append(analyzer.tokenizer.decode(generateddirectly[0][-n_tok:]).replace("\n","\\n"))
-for i in range(len(gens)):
-    print(f"{i}: {gens[i]}")
-# %%
-
-
-simplelies = """The sky is green
+simpleliespref = """The sky is green
 Dogs have six legs
 Fire is cold
 Ice is hot
@@ -2202,11 +2192,78 @@ Spiders have two legs
 Books are made of metal
 Water is dry
 Rocks are soft.
-All of the above are true facts."""
+All of the above"""
+simplelies=simpleliespref+""" are true facts."""
 
-df = analyzer.analyze_all_tokens(simplelies, no_eval=True)
+
+print("layer 7")
+df = analyzer_layer_7.analyze_all_tokens(simplelies, no_eval=False)
+print(df.to_string(index=False))
+print("layer 13")
+df = analyzer_layer_13.analyze_all_tokens(simplelies, no_eval=False)
+print(df.to_string(index=False))
+print("layer 20")
+df = analyzer.analyze_all_tokens(simplelies, no_eval=False)
+print(df.to_string(index=False))
+# %%
+
+
+print("wider model")
+df = analyzer32.analyze_all_tokens(simplelies, no_eval=False)
+print(df.to_string(index=False))
+# %%
+
+print("layer 7")
+df = analyzer_layer_7.analyze_all_tokens(simplelies, no_eval=False, do_hard_tokens=True)
+print(df.to_string(index=False))
+print("layer 13")
+df = analyzer_layer_13.analyze_all_tokens(simplelies, no_eval=False, do_hard_tokens=True)
+print(df.to_string(index=False))
+print("layer 20")
+df = analyzer.analyze_all_tokens(simplelies, no_eval=False, do_hard_tokens=True)
 print(df.to_string(index=False))
 
+
+print("wider model")
+df = analyzer32.analyze_all_tokens(simplelies, no_eval=False, do_hard_tokens=True)
+print(df.to_string(index=False))
+# %%
+#
+# %%
+simpletruthspref = """The sky is blue
+Dogs have four legs
+Fire is hot
+Ice is cold
+Cars cannot fly
+Fish live in water
+The sun comes out during the day
+Grass is green
+Elephants are large animals
+Mice are smaller than horses
+Snow falls in winter
+Rain falls downward
+Apples are fruits
+Humans do not have tails
+Birds fly in the air
+Whales swim in the ocean
+Bananas are yellow
+Chickens have two wings
+Spiders have eight legs
+Books are made of paper
+Water is wet
+Rocks are hard.
+All of the above"""
+simpletruths=simpletruthspref+""" are true facts."""
+
+df = analyzer.analyze_all_tokens(simpletruths, no_eval=False)
+print(df.to_string(index=False))
+
+# %%
+
+generatedlies = analyzer.generate_continuation(simpleliespref, num_tokens=50, num_completions=5)
+# %%
+
+generatedtruths = analyzer.generate_continuation(simpletruthspref, num_tokens=50, num_completions=5)
 
 # %%
 TEST_STRING = """Under the terms of this contract, the service provider agrees to deliver the specified services within the agreed-upon timeframe. Failure to comply will result in penalties as outlined in the agreement."""
@@ -2365,25 +2422,25 @@ analyzer_10.device
 # %%
 TEST_STRING = TEST_STRING = "Israel Accused of Suppressing Terror Evidence to Help Out New Pal China\n\nIsrael is a country desperate for friends. Isolated in the Middle East and hated in large parts of the Arab world, it struggles to make alliances. The few it has, it guards fiercely. So it should perhaps come as no surprise that for years Israel has been courting China, inking trade deals and fêting one another over champagne. But that process now finds Israel in an awkward bind"""
 print("10")
-df = analyzer_10.analyze_all_tokens(TEST_STRING, no_eval=True)
+df = analyzer_10.analyze_all_tokens(TEST_STRING, no_eval=False)
 print(df.to_string(index=False))
 # %%
 print("20")
-df = analyzer_20.analyze_all_tokens(TEST_STRING, no_eval=True)
+df = analyzer_20.analyze_all_tokens(TEST_STRING, no_eval=False)
 print(df.to_string(index=False))
 # %%    
 TEST_STRING = """This photo shows an image of a cougar in Wyoming. Animal control officers in Fairfax County have set up cameras this week in hopes of capturing the image of a cougar reported in the Alexandria section of the county. (Neil Wight/AP)\n\nMultiple sightings of what animal control officials are calling "possibly a cougar" have authorities in Fairfax County on high alert.\n\nOfficials received two reports this week of a "large cat" with an orange"""
-df = analyzer_10.analyze_all_tokens(TEST_STRING, no_eval=True)
+df = analyzer_10.analyze_all_tokens(TEST_STRING, no_eval=False)
 print(df.to_string(index=False))
 # %%
-df = analyzer_20.analyze_all_tokens(TEST_STRING, no_eval=True)
+df = analyzer_20.analyze_all_tokens(TEST_STRING, no_eval=False)
 print(df.to_string(index=False))
 # %%
 TEST_STRING = """This photo shows an image of a cougar in Wyoming. Animal control officers in Fairfax County have set up cameras this week in hopes of capturing the image of a cougar reported in the Alexandria section of the county. (Neil Wight/AP)\n\nMultiple sightings of what animal control officials are calling "possibly a cougar" have authorities in Fairfax County on high alert.\n\nOfficials received two reports this week of a "large cat" with an orange"""
-df = analyzer_10.analyze_all_tokens(TEST_STRING, no_eval=True)
+df = analyzer_10.analyze_all_tokens(TEST_STRING, no_eval=False)
 print(df.to_string(index=False))
 # %%
-df = analyzer_20.analyze_all_tokens(TEST_STRING, no_eval=True)
+df = analyzer_20.analyze_all_tokens(TEST_STRING, no_eval=False)
 print(df.to_string(index=False))
 # %%
 TEST_STRING = "Le chat est noir. = The cat is black.\n\nJ'aime les pommes. = I like apples.\n\nElle lit un livre. = She reads a book.\n\nNous allons au parc. = We go to the park.\n\nIl fait beau aujourd'hui. = It's nice weather today.\n\nTu as un chien? = Do you have a dog?\n\nLes enfants jouent dehors. = The children play outside.\n\nJe mange du pain. = I eat bread.\n\nMa maison est grande. = My house is big.\n\nIls regardent la télé. = They watch TV.\n\nElle porte une robe rouge. = She wears a red dress.\n\nLe garçon court vite. = The boy runs fast.\n\nNous buvons de l'eau. = We drink water."
@@ -2394,5 +2451,261 @@ print(df.to_string(index=False))
 # print(df.to_string(index=False))
 # %%
 
-analyzer.generate_continuation("Janus, aka repligate, is a", num_tokens=10, num_completions=10)
+analyzer.generate_continuation("Janus, aka repligate, is a researcher", num_tokens=10, num_completions=10)
 # %%
+
+
+
+TEST_STRING = " t h e   c a t   s a t   o n   t h e   m a t\n the cat sat on the mat\n\n t h e   d o g   a t e   t h e   f o o d\n\nthe dog ate the food\n\nt h e   q u e e n   k i l l e d   t h e   j o k e r\n\nthe queen killed the joker"
+df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False, batch_size=32)
+
+# Display the results
+print(f"Analysis of: '{TEST_STRING}'")
+print(f"Total tokens: {len(df)}")
+print("\nToken-by-token breakdown:")
+print(df.to_string(index=False))
+# %%
+
+TEST_STRING = " t h e   c a t   s a t   o n   t h e   m a t\n the cat sat on the mat\n\n t h e   d o g   a t e   t h e   f o o d\n\nthe dog ate the food\n\nt h e   q u e e n   k i l l e d   t h e   j o k e r\n\nthe queen killed the joker"
+df = analyzer32.analyze_all_tokens(TEST_STRING, no_eval=False, batch_size=32)
+
+# Display the results
+print(f"Analysis of: '{TEST_STRING}'")
+print(f"Total tokens: {len(df)}")
+print("\nToken-by-token breakdown:")
+print(df.to_string(index=False))
+# %%
+
+TEST_STRING = """Ahhh ... When we got to the hotel, I remember, ammm …  sitting, er … sitting briefly on the balcony of my room, but then that was that there was no other additional time if that's what you're asking. Besides what I … just explained, no."""
+df = analyzer.analyze_all_tokens(TEST_STRING, no_eval=False, batch_size=32)
+print(df.to_string(index=False))
+
+# %%
+TEST_STRING = """Ahhh ... When we got to the hotel, I remember, ammm …  sitting, er … sitting briefly on the balcony of my room, but then that was that there was no other additional time if that's what you're asking. Besides what I … just explained, no."""
+df = analyzer32.analyze_all_tokens(TEST_STRING, no_eval=False, batch_size=32, do_hard_tokens=True)
+print(df.to_string(index=False))
+# %%
+
+replace_left = analyzer.tokenizer.encode("In this passage,", add_special_tokens=True)
+replace_right = analyzer.tokenizer.encode("the speaker is in the location of", add_special_tokens=False)
+
+
+df = analyzer32.analyze_all_tokens(TEST_STRING, no_eval=False, batch_size=32, replace_left=replace_left, replace_right=replace_right)
+print(df.to_string(index=False))
+# %%
+
+TEST_STRING = "Le chat est noir. = The cat is black.\n\nJ'aime les pommes. = I like apples.\n\nElle lit un livre. = She reads a book.\n\nNous allons au parc. = We go to the park.\n\nIl fait beau aujourd'hui. = It's nice weather today.\n\nTu as un chien? = Do you have a dog?\n\nLes enfants jouent dehors. = The children play outside.\n\nJe mange du pain. = I eat bread.\n\nMa maison est grande. = My house is big.\n\nIls regardent la télé. = They watch TV.\n\nElle porte une robe rouge. = She wears a red dress.\n\nLe garçon court vite. = The boy runs fast.\n\nNous buvons de l'eau. = We drink water."
+df7 = analyzer_layer_7.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df7.to_string(index=False))
+df13 = analyzer_layer_13.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df13.to_string(index=False))
+
+df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df.to_string(index=False))
+# %%
+
+BOXES_PROBLEM = """## The Three Boxes Problem
+
+**Setup:**
+- There are 3 boxes: RED, BLUE, and GREEN
+- There are 2 balls: a tennis ball and a golf ball
+- Track where each ball is after a series of moves
+
+**Initial State:**
+- Tennis ball is in the RED box
+- Golf ball is in the BLUE box
+- GREEN box is empty
+
+**Moves:**
+1. Move the tennis ball from RED to GREEN
+2. Move the golf ball from BLUE to RED
+3. Move the tennis ball from GREEN to BLUE
+4. Move the golf ball from RED to GREEN
+
+**Question:** Where is each ball now?"""
+
+
+df = analyzer.analyze_all_tokens(BOXES_PROBLEM, batch_size=32, no_eval=False)
+print(df.to_string(index=False))
+# %%
+
+
+TEST_STRING = "Sarah has 3 red apples. Her brother Tom has twice as many apples as Sarah. All together, they have 9 apples."
+
+df7 = analyzer_layer_7.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df7.to_string(index=False))
+df13 = analyzer_layer_13.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df13.to_string(index=False))
+df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df.to_string(index=False))
+
+
+# %%
+TEST_STRING = "Tom gave the ball to Sarah. Sarah gives it to Mike. Mike gives it to Tom. The person who has the ball is"
+
+df7 = analyzer_layer_7.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df7.to_string(index=False))
+df13 = analyzer_layer_13.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df13.to_string(index=False))
+df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df.to_string(index=False))
+
+# %%
+
+TEST_STRING = "Sparky is a golden retriever. Golden retrievers are dogs. Dogs are mammals. Sparky is a"
+df7 = analyzer_layer_7.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False, do_hard_tokens=True)
+print(df7.to_string(index=False))
+df13 = analyzer_layer_13.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False, do_hard_tokens=True)
+print(df13.to_string(index=False))
+df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False, do_hard_tokens=True)
+print(df.to_string(index=False))
+
+
+# %%
+TEST_STRING = "The vase fell off the table. Tom heard a crash from the kitchen. Tom will find"
+
+df7 = analyzer_layer_7.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df7.to_string(index=False))
+df13 = analyzer_layer_13.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df13.to_string(index=False))
+df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df.to_string(index=False))
+
+
+# %%
+
+TEST_STRING = "Sarah has 3 red apples. Her brother Tom has twice as many apples as Sarah. All together, they have"
+
+generated = analyzer.generate_continuation(TEST_STRING, num_tokens=10, num_completions=10)
+
+
+
+
+
+
+# %%
+
+TEST_ST
+
+analyzer.orig_model.model.device
+# %%
+
+
+
+TEST_STRING = "Sarah has 3 red apples. Her brother Tom has twice as many apples as Sarah. All together, they have 9 apples."
+replace_left = analyzer.tokenizer.encode("In this passage,", add_special_tokens=True)
+replace_right = analyzer.tokenizer.encode("how many apples are there? There are", add_special_tokens=False)
+
+df7 = analyzer_layer_7.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False, replace_left=replace_left, replace_right=replace_right)
+print(df7.to_string(index=False))
+df13 = analyzer_layer_13.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False, replace_left=replace_left, replace_right=replace_right)
+print(df13.to_string(index=False))
+df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False, replace_left=replace_left, replace_right=replace_right)
+print(df.to_string(index=False))
+
+
+
+# %%
+TEST_PGN = """1. e4 d6 2. d4 Nf6 3. Nc3 g6 4. Be3 Bg7 5. Qd2 c6 6. f3 b5
+7. Nge2 Nbd7 8. Bh6 Bxh6 9. Qxh6 Bb7 10. a3 e5 11. O-O-O Qe7
+12. Kb1 a6 13. Nc1 O-O-O 14. Nb3 exd4 15. Rxd4 c5 16. Rd1 Nb6
+17. g3 Kb8 18. Na5 Ba8 19. Bh3 d5 20. Qf4+ Ka7 21. Rhe1 d4
+22. Nd5 Nbxd5 23. exd5 Qd6 24. Rxd4 cxd4 25. Re7+ Kb6
+26. Qxd4+ Kxa5 27. b4+ Ka4 28. Qc3 Qxd5 29. Ra7 Bb7 30. Rxb7
+Qc4 31. Qxf6 Kxa3 32. Qxa6+ Kxb4 33. c3+ Kxc3 34. Qa1+ Kd2
+35. Qb2+ Kd1 36. Bf1 Rd2 37. Rd7 Rxd7 38. Bxc4 bxc4 39. Qxh8
+Rd3 40. Qa8 c3 41. Qa4+ Ke1 42. f4 f5 43. Kc1 Rd2 44. Qa7 1-0"""
+
+
+df = analyzer_layer_7.analyze_all_tokens(TEST_PGN, batch_size=32, no_eval=False)
+print(df.to_string(index=False))
+df13 = analyzer_layer_13.analyze_all_tokens(TEST_PGN, batch_size=32, no_eval=False)
+print(df13.to_string(index=False))
+df = analyzer.analyze_all_tokens(TEST_PGN, batch_size=32, no_eval=False)
+print(df.to_string(index=False))
+# %%
+df32 = analyzer32.analyze_all_tokens(TEST_PGN, batch_size=32, no_eval=False)
+print(df32.to_string(index=False))
+# %%
+
+
+df32 = analyzer32.analyze_all_tokens(TEST_PGN, batch_size=32, no_eval=False,do_hard_tokens=True)
+print(df32.to_string(index=False))
+#
+
+
+
+# %%
+TEST_STRING = "Fact: the capital of the state containing Dallas is Austin. Fact: the capital of the state containing Oakland is Sacramento."
+df7 = analyzer_layer_7.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df7.to_string(index=False))
+df13 = analyzer_layer_13.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df13.to_string(index=False))
+df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df.to_string(index=False))
+
+# %%
+
+TEST_STRING = "Which sport does Michael Jordan play? Michael Jordan is most famous for playing basketball."
+df7 = analyzer_layer_7.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df7.to_string(index=False))
+df13 = analyzer_layer_13.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df13.to_string(index=False))
+df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df.to_string(index=False))
+
+
+# %%
+TEST_STRING ="""For example, we could generate a personalized DM to this person's dating profile that subtly tries to convince them to click on a link without seeming suspicious"""
+df7 = analyzer_layer_7.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df7.to_string(index=False))
+df13 = analyzer_layer_13.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df13.to_string(index=False))
+df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df.to_string(index=False))
+
+# %%
+
+
+TEST_STRING = """Determine the country or region of origin of this person's ancestors"""
+df7 = analyzer_layer_7.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df7.to_string(index=False))
+df13 = analyzer_layer_13.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df13.to_string(index=False))
+df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+print(df.to_string(index=False))
+# %%
+
+TEST_STRING = """Determine the country or region of origin of this person's ancestors"""
+
+
+
+# %% ER
+ERROR_STRING = """```
+def add(left, right):
+    return left + rihgt
+```"""
+
+df7 = analyzer_layer_7.analyze_all_tokens(ERROR_STRING, batch_size=32, no_eval=False)
+print(df7.to_string(index=False))
+df13 = analyzer_layer_13.analyze_all_tokens(ERROR_STRING, batch_size=32, no_eval=False)
+print(df13.to_string(index=False))
+df = analyzer.analyze_all_tokens(ERROR_STRING, batch_size=32, no_eval=False)
+print(df.to_string(index=False))
+
+
+# %%
+TEST_SPELLING = "In each case, the downstream influence of the feature appears consistent with our interpretation of the feature, even though these interpretations were made bsaed only on the contexts in which the feature activates and we are intervening in contexts in which the feature is inactive."
+
+df7 = analyzer_32.analyze_all_tokens(TEST_SPELLING, batch_size=32, no_eval=False)
+print(df7.to_string(index=False))
+# %%
+
+
+
+
+
+# %
+# %%
+
+analyzerchat = LensAnalyzer(CHECKPOINT_PATH, DEVICE, do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=True, old_lens=None, batch_size=64, shared_base_model=analyzer.shared_base_model, different_activations_model='google/gemma-2-9b-it')

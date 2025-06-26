@@ -283,35 +283,67 @@ class RankInMemoryTrainingCache(Dataset):
             self._log(f"Cannot regenerate cache, pretokenized data source is empty for rank {self.rank}.", "error")
             return
         
-        self._log(f"Regenerating cache with {num_samples_to_generate} new samples.", "info")
+        shard_size = len(self.pretok_dataset_shard)
+        self._log(f"Regenerating cache with {num_samples_to_generate} new samples from shard of {shard_size} samples.", "info")
         
-        # Ensure model is on correct device
+        # Check if cycling will occur
+        if num_samples_to_generate > shard_size:
+            cycles_needed = num_samples_to_generate / shard_size
+            self._log(
+                f"WARNING: Cache size ({num_samples_to_generate}) exceeds shard size ({shard_size}). "
+                f"Will cycle through dataset ~{cycles_needed:.1f} times. "
+                f"This may lead to overfitting on repeated data.", 
+                "warning"
+            )
+        
+        # Only import tqdm if needed
+        use_tqdm = self.rank == 0
+        if use_tqdm:
+            from tqdm import tqdm
+            progress_bar = tqdm(total=num_samples_to_generate, desc="Generating cache", leave=True)
+        else:
+            progress_bar = None
+        
         self.orig_model_for_gen.to(self.generation_device)
         
-        # Create a cycling iterator over the shard
         shard_iter = iter(self.pretok_dataset_shard)
         generated_count = 0
+        cycle_count = 0
+        samples_in_current_cycle = 0
         
         with torch.no_grad():
             while generated_count < num_samples_to_generate:
-                # Collect a batch
                 batch_input_ids = []
                 for _ in range(min(self.generation_batch_size, num_samples_to_generate - generated_count)):
                     try:
                         sample = next(shard_iter)
+                        samples_in_current_cycle += 1
                     except StopIteration:
-                        # Restart iterator when exhausted
+                        # Dataset exhausted, cycling back to beginning
+                        cycle_count += 1
+                        if cycle_count == 1:
+                            self._log(
+                                f"Dataset shard exhausted after {samples_in_current_cycle} samples. "
+                                f"Starting cycle #{cycle_count + 1}...", 
+                                "warning"
+                            )
+                        elif cycle_count % 5 == 0:  # Log every 5 cycles to avoid spam
+                            self._log(
+                                f"Completed {cycle_count} cycles through dataset shard. "
+                                f"Generated {generated_count}/{num_samples_to_generate} samples so far.",
+                                "warning"
+                            )
+                        samples_in_current_cycle = 0
                         shard_iter = iter(self.pretok_dataset_shard)
                         sample = next(shard_iter)
+                        samples_in_current_cycle += 1
                     batch_input_ids.append(sample['input_ids'])
                 
-                # Generate activations for the batch
                 batch_input_ids_tensor = torch.tensor(batch_input_ids, dtype=torch.long, device=self.generation_device)
                 batch_activations, batch_positions = _generate_activations_batched(
                     self.orig_model_for_gen, batch_input_ids_tensor, self.layer_l, self.min_pos
                 )
                 
-                # Store results
                 for i in range(len(batch_input_ids)):
                     self.data_store.append({
                         "A": batch_activations[i].cpu(),
@@ -320,8 +352,20 @@ class RankInMemoryTrainingCache(Dataset):
                         "layer_idx": self.layer_l,
                     })
                     generated_count += 1
+                    if progress_bar is not None:
+                        progress_bar.update(1)
+        if progress_bar is not None:
+            progress_bar.close()
         
-        self._log(f"Cache regeneration complete. Generated {len(self.data_store)} samples.", "info")
+        # Final logging with cycle information
+        if cycle_count > 0:
+            self._log(
+                f"Cache regeneration complete. Generated {len(self.data_store)} samples with {cycle_count} complete cycles "
+                f"through the dataset shard (plus {samples_in_current_cycle} samples from partial cycle).",
+                "info"
+            )
+        else:
+            self._log(f"Cache regeneration complete. Generated {len(self.data_store)} samples without cycling.", "info")
 
     def __len__(self) -> int:
         return len(self.data_store)

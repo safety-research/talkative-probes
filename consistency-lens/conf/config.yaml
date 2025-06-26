@@ -403,7 +403,7 @@ dataset:
     enabled: false # SET TO TRUE TO ENABLE ON-THE-FLY GENERATION
     generation_batch_size: 32 # Batch size for activation generation
     pretokenized_path: "data/pretokenized/your_dataset_name_seqXXX" # REQUIRED if enabled: Path to the root of HF dataset saved by `load_from_disk`
-    layer_l: 5 # Layer from which to extract activations (e.g., 0 for first layer after embeddings)
+    layer_l: {layer_l} # Layer from which to extract activations (e.g., 0 for first layer after embeddings)
     min_pos: 8 # Minimum token position (0-indexed) to consider for activation extraction
     # seq_len will be taken from activation_dumper.seq_len or a global seq_len if defined
     max_val_samples: 50000

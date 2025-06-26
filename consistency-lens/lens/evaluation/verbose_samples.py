@@ -244,12 +244,12 @@ def print_verbose_sample_details(
             if kl_a_natural_val is not None and kl_a_natural_val < 0.001: # Check if it's a small float
                  print("  Note: KL(Natural || Natural) ≈ 0 as expected (Natural is the original activation)")
         
-        if sample_losses and "kl" in sample_losses:
-            print(f"\n  ⚠️  Training KL loss for this sample" + (" (A_hat+Δ)" if resample_ablation else "(A_hat)") + f": {sample_losses['kl']:.4f}")
-            if "From Original Activation A (training objective)" in kl_divergences:
-                computed_kl_train = kl_divergences["From Original Activation A (training objective)"].get("KL(A || A_train) [TRAINING LOSS]")
-                if computed_kl_train is not None and abs(computed_kl_train - sample_losses['kl']) > 0.01:
-                    print(f"  ⚠️  WARNING: Computed training KL ({computed_kl_train:.4f}) doesn't match sample_losses KL ({sample_losses['kl']:.4f})!")
+        # if sample_losses and "kl" in sample_losses:
+        #     print(f"\n  ⚠️  Training KL loss for this sample" + (" (A_hat+Δ)" if resample_ablation else "(A_hat)") + f": {sample_losses['kl']:.4f}")
+        #     if "From Original Activation A (training objective)" in kl_divergences:
+        #         computed_kl_train = kl_divergences["From Original Activation A (training objective)"].get("KL(A || A_train) [TRAINING LOSS]")
+        #         if computed_kl_train is not None and abs(computed_kl_train - sample_losses['kl']) > 0.01:
+        #             print(f"  ⚠️  WARNING: Computed training KL ({computed_kl_train:.4f}) doesn't match sample_losses KL ({sample_losses['kl']:.4f})!")
     add_current_token = cfg['trainable_components']['encoder']['add_current_token']
     print("\nGenerated Explanation (from Decoder using A_i):" + (" (with current token)" if add_current_token else ""))
     if decoder_tokens:

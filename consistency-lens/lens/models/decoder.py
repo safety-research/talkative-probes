@@ -58,7 +58,7 @@ class DecoderConfig:
     use_kv_cache: bool = False  # YAML `use_kv_cache`
     use_flash_attention: bool = False  # YAML `use_flash_attention`
     use_gumbel_for_LMorig: bool = False # YAML `use_gumbel_for_LMorig`
-    patch_all_layers: bool = False   # YAML `patch_all_layers` - patch activation at all layers
+    patch_all_layers: Any = False   # YAML `patch_all_layers` - patch activation at all layers (True) or N layers (int)
     per_layer_projections: bool = False  # YAML `per_layer_projections` - use separate projection for each layer
     use_dropout: bool = True         # YAML `use_dropout` - whether to use dropout during training (False = deterministic)
     detach_after_each_sample: bool = False
@@ -78,7 +78,9 @@ class DecoderConfig:
         if self.n_prompt_tokens < 0:
             raise ValueError(f"n_prompt_tokens must be non-negative, got {self.n_prompt_tokens}")
         if self.per_layer_projections and not self.patch_all_layers:
-            raise ValueError("per_layer_projections requires patch_all_layers to be True")
+            raise ValueError("per_layer_projections requires patch_all_layers to be True or a positive integer")
+        if isinstance(self.patch_all_layers, int) and self.patch_all_layers < 0:
+            raise ValueError("If patch_all_layers is an integer, it must be non-negative.")
 
 
 class Decoder(nn.Module):
@@ -126,31 +128,40 @@ class Decoder(nn.Module):
 
         self.config = cfg
         d_model = self.base.config.hidden_size
-        n_layers = self.base.config.num_hidden_layers
+        n_layers_base = self.base.config.num_hidden_layers
         
         # Create projection layer(s)
         if cfg.per_layer_projections:
-            # Create a 3D parameter tensor for per-layer projections
-            # Shape: (n_layers, d_model, d_model)
-            self.proj_weight = nn.Parameter(torch.empty(n_layers, d_model, d_model))
-            self.proj_bias = nn.Parameter(torch.empty(n_layers, d_model))
-            
-            # Initialize as identity matrices
-            if cfg.eye_init:
-                for i in range(n_layers):
-                    nn.init.eye_(self.proj_weight[i])
-                nn.init.zeros_(self.proj_bias)
-                log.info(f"Initialized {n_layers} per-layer projection matrices as identity (decoder)")
+            if isinstance(cfg.patch_all_layers, bool):
+                n_proj_layers = n_layers_base if cfg.patch_all_layers else 0
+            else: # is an int
+                n_proj_layers = cfg.patch_all_layers
+
+            if n_proj_layers > 0:
+                # Create a 3D parameter tensor for per-layer projections
+                # Shape: (n_proj_layers, d_model, d_model)
+                self.proj_weight = nn.Parameter(torch.empty(n_proj_layers, d_model, d_model))
+                self.proj_bias = nn.Parameter(torch.empty(n_proj_layers, d_model))
+                
+                # Initialize as identity matrices
+                if cfg.eye_init:
+                    for i in range(n_proj_layers):
+                        nn.init.eye_(self.proj_weight[i])
+                    nn.init.zeros_(self.proj_bias)
+                    log.info(f"Initialized {n_proj_layers} per-layer projection matrices as identity (decoder)")
+                else:
+                    # Default initialization
+                    for i in range(n_proj_layers):
+                        nn.init.xavier_uniform_(self.proj_weight[i])
+                    nn.init.zeros_(self.proj_bias)
+                    log.info(f"Initialized {n_proj_layers} per-layer projection matrices as random (decoder)")
+                
+                # Configure trainability
+                self.proj_weight.requires_grad_(cfg.projection_layer)
+                self.proj_bias.requires_grad_(cfg.projection_layer)
             else:
-                # Default initialization
-                for i in range(n_layers):
-                    nn.init.xavier_uniform_(self.proj_weight[i])
-                nn.init.zeros_(self.proj_bias)
-                log.info(f"Initialized {n_layers} per-layer projection matrices as random (decoder)")
-            
-            # Configure trainability
-            self.proj_weight.requires_grad_(cfg.projection_layer)
-            self.proj_bias.requires_grad_(cfg.projection_layer)
+                self.proj_weight = None
+                self.proj_bias = None
             
             # For compatibility, keep self.proj as None
             self.proj = None
@@ -304,7 +315,7 @@ class Decoder(nn.Module):
         # Update output head dimensions if needed
         d_model = self.base.config.hidden_size
         vocab_size = self.base.config.vocab_size
-        n_layers = self.base.config.num_hidden_layers
+        n_layers_base = self.base.config.num_hidden_layers
         
         # if False: self.out.out_features != vocab_size:
         #     pass
@@ -324,19 +335,27 @@ class Decoder(nn.Module):
         
         # Restore or reinitialize projection weights
         if self.config.per_layer_projections:
-            if keep_projection and old_proj_weight.shape == (n_layers, d_model, d_model):
+            if isinstance(self.config.patch_all_layers, bool):
+                n_proj_layers = n_layers_base if self.config.patch_all_layers else 0
+            else:  # is an int
+                n_proj_layers = self.config.patch_all_layers
+
+            if keep_projection and self.proj_weight is not None and old_proj_weight.shape == (n_proj_layers, d_model, d_model):
                 self.proj_weight.data = old_proj_weight.to(old_dtype)
                 self.proj_bias.data = old_proj_bias.to(old_dtype)
-            else:
+            elif n_proj_layers > 0:
                 # Reinitialize if dimensions changed
-                self.proj_weight = nn.Parameter(torch.empty(n_layers, d_model, d_model).to(old_device))
-                self.proj_bias = nn.Parameter(torch.empty(n_layers, d_model).to(old_device))
+                self.proj_weight = nn.Parameter(torch.empty(n_proj_layers, d_model, d_model).to(old_device))
+                self.proj_bias = nn.Parameter(torch.empty(n_proj_layers, d_model).to(old_device))
                 if self.config.eye_init:
-                    for i in range(n_layers):
+                    for i in range(n_proj_layers):
                         nn.init.eye_(self.proj_weight[i])
                     nn.init.zeros_(self.proj_bias)
                 self.proj_weight.requires_grad_(self.config.projection_layer)
                 self.proj_bias.requires_grad_(self.config.projection_layer)
+            else:
+                self.proj_weight = None
+                self.proj_bias = None
         else:
             if keep_projection and self.proj.weight.shape == (d_model, d_model):
                 self.proj.weight.data = old_proj_weight.to(old_dtype)
@@ -452,15 +471,23 @@ class Decoder(nn.Module):
             for layer_idx, layer_module in enumerate(layers):
                 input_to_this_layer = hidden_states.clone()
                 # ... existing patch-in-place logic ...
-                if do_patching and (layer_idx > 0 or not self.config.per_layer_projections):
-                    if self.config.per_layer_projections:
-                        if use_projection:
-                            a_proj_layer = self._apply_projection(activation_input_modified, layer_idx=layer_idx)
+                if do_patching:
+                    # Determine if we should patch this layer
+                    should_patch_this_layer = False
+                    if isinstance(self.config.patch_all_layers, bool) and self.config.patch_all_layers:
+                        should_patch_this_layer = True
+                    elif isinstance(self.config.patch_all_layers, int) and layer_idx < self.config.patch_all_layers:
+                        should_patch_this_layer = True
+
+                    if should_patch_this_layer:
+                        if self.config.per_layer_projections:
+                            if use_projection:
+                                a_proj_layer = self._apply_projection(activation_input_modified, layer_idx=layer_idx)
+                            else:
+                                a_proj_layer = activation_input_modified
+                            input_to_this_layer[:, embed_pos] = a_proj_layer
                         else:
-                            a_proj_layer = activation_input_modified
-                        input_to_this_layer[:, embed_pos] = a_proj_layer
-                    else:
-                        input_to_this_layer[:, embed_pos] = single_proj
+                            input_to_this_layer[:, embed_pos] = single_proj
                 
                 with self._maybe_disable_dropout():
                     layer_outputs = layer_module(
@@ -523,15 +550,23 @@ class Decoder(nn.Module):
             for layer_idx, layer_module in enumerate(layers):
                 input_to_this_layer = hidden_states.clone()
                 # ... existing patching logic ...
-                if do_patching and (layer_idx > 0 or not self.config.per_layer_projections):
-                    if self.config.per_layer_projections:
-                        if use_projection:
-                            a_proj_layer = self._apply_projection(activation_input_modified, layer_idx=layer_idx)
+                if do_patching:
+                    # Determine if we should patch this layer
+                    should_patch_this_layer = False
+                    if isinstance(self.config.patch_all_layers, bool) and self.config.patch_all_layers:
+                        should_patch_this_layer = True
+                    elif isinstance(self.config.patch_all_layers, int) and layer_idx < self.config.patch_all_layers:
+                        should_patch_this_layer = True
+
+                    if should_patch_this_layer:
+                        if self.config.per_layer_projections:
+                            if use_projection:
+                                a_proj_layer = self._apply_projection(activation_input_modified, layer_idx=layer_idx)
+                            else:
+                                a_proj_layer = activation_input_modified
+                            input_to_this_layer[:, embed_pos] = a_proj_layer
                         else:
-                            a_proj_layer = activation_input_modified
-                        input_to_this_layer[:, embed_pos] = a_proj_layer
-                    else:
-                        input_to_this_layer[:, embed_pos] = single_proj
+                            input_to_this_layer[:, embed_pos] = single_proj
 
                 # Select the correct mask based on the layer's attention type
                 current_attention_mask = causal_mask_mapping[layer_module.attention_type]
@@ -1456,7 +1491,7 @@ class Decoder(nn.Module):
             # Using expand is generally preferred over repeat for memory efficiency here.
             added_token_embeddings = input_emb_table[token_ids_tensor].unsqueeze(0).expand(B, -1, -1)
             parts.append(added_token_embeddings)
-            print(f"Added tokens: {self.tokenizer.decode(add_tokens)}, new length: {len(parts)} (added {len(add_tokens)} tokens)")
+            print(f"new length: {len(parts)} (added {len(add_tokens)} tokens)")
         seq_embs = torch.cat(parts, dim=1)
         
         # Initialize storage
@@ -1668,7 +1703,10 @@ class Decoder(nn.Module):
 
         # Get dtype from projection layer
         if self.config.per_layer_projections:
-            activation_input = activation_input.to(self.proj_weight.dtype)
+            if self.proj_weight is not None:
+                activation_input = activation_input.to(self.proj_weight.dtype)
+            else:
+                activation_input = activation_input.to(self.proj.weight.dtype)
         else:
             activation_input = activation_input.to(self.proj.weight.dtype)
         B, d_model = activation_input.shape
@@ -2324,7 +2362,7 @@ def clone_dynamic_cache_detach(original_cache):
     #         parts.append(a_proj)
     #     else: 
     #         print("patching in special token")
-    #         parts.append(main_base.get_input_embeddings().weight[special_token].clone().unsqueeze(0).unsqueeze(1))
+    #         parts.append(input_emb_table[special_token.squeeze().item() if isinstance(special_token, torch.Tensor) else special_token].clone().unsqueeze(0).repeat(B,1,1))
             
     #     if prompt_right_emb is not None:
     #         parts.append(prompt_right_emb.expand(B, -1, -1))

@@ -371,7 +371,7 @@ def generate_run_name(config: dict, dataset_info: dict, resume_from: str = None,
         components.append("resume")
     
     # Add timestamp (shorter format)
-    timestamp = datetime.now().strftime("%m%d_%H%M")
+    timestamp = datetime.now().strftime("%m%d_%H%M%S")
     components.append(timestamp)
     
     # Add suffix if provided

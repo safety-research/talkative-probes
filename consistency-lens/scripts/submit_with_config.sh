@@ -138,14 +138,23 @@ echo "Extracting settings from $CONFIG_FILE..."
 # Ensure environment is set up
 source scripts/ensure_env.sh
 ulimit -n 65536
-if ! source <(uv_run python scripts/extract_config_settings.py "$CONFIG_FILE" --all); then
+if ! source <(uv_run python scripts/extract_config_settings.py "$CONFIG_FILE" --all $HYDRA_OVERRIDES); then
     echo "Error: Failed to extract settings from config file"
     exit 1
 fi
 
+# New variable from extract_config_settings.py
+ON_THE_FLY_ENABLED="${ON_THE_FLY_ENABLED:-false}"
+
 # Verify we got the required settings
-if [ -z "$MODEL_NAME" ] || [ -z "$LAYER" ]; then
-    echo "Error: Could not extract model_name or layer from config"
+if [ -z "$MODEL_NAME" ]; then
+    echo "Error: Could not extract model_name from config"
+    exit 1
+fi
+
+# Layer is not needed for on-the-fly, but is needed for dumping
+if [ "$ON_THE_FLY_ENABLED" != "true" ] && [ -z "$LAYER" ]; then
+    echo "Error: Could not extract layer from config (required for activation dumping)"
     exit 1
 fi
 
@@ -656,7 +665,10 @@ USE_PRETOKENIZED="true"
 echo -e "${BLUE}Using pretokenization for 5x faster dumping${NC}"
 
 # Check if activations exist
-if check_activations "$MODEL_NAME" "$LAYER" "$OUTPUT_DIR" && [ "$FORCE_REDUMP" != "true" ]; then
+if [ "$ON_THE_FLY_ENABLED" = "true" ]; then
+    echo -e "${GREEN}On-the-fly generation enabled, skipping activation check/dump and submitting training only${NC}"
+    train_job=$(submit_train_job "$JOB_NAME" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE" "$RUN_SUFFIX" "$NICE_JOB")
+elif check_activations "$MODEL_NAME" "$LAYER" "$OUTPUT_DIR" && [ "$FORCE_REDUMP" != "true" ]; then
     echo -e "${GREEN}Activations already exist, submitting training only${NC}"
     train_job=$(submit_train_job "$JOB_NAME" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE" "$RUN_SUFFIX" "$NICE_JOB")
 else
@@ -689,7 +701,7 @@ if [ "$USE_DISTRIBUTED" = "true" ] || [ "$NUM_GPUS_TRAIN" -gt 1 ]; then
 else  
     echo "Training mode: Single GPU"
 fi
-if [ "$NICE_JOB" = "true" ] || [ "$NICE_JOB" != "" ]; then
+if [ "$NICE_JOB" = "true" ]; then
     echo "SLURM Nice Job: Yes (requeueable, low priority) ${NICE_JOB}"
 fi
 if [ "$USE_SLURM" = true ]; then

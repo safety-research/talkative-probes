@@ -14,7 +14,7 @@ from omegaconf import DictConfig, OmegaConf
 from hydra import compose, initialize_config_dir
 
 
-def extract_settings(config_path):
+def extract_settings(config_path, overrides):
     """Extract all relevant settings from a config file using Hydra."""
     
     # Get config directory and name
@@ -24,14 +24,14 @@ def extract_settings(config_path):
     
     # Initialize Hydra with the config directory
     with initialize_config_dir(config_dir=str(config_dir), version_base="1.1"):
-        # Compose the config
-        cfg = compose(config_name=config_name)
+        # Compose the config, applying command-line overrides
+        cfg = compose(config_name=config_name, overrides=overrides)
     
     # Extract key settings
     settings = {
         # Model and layer info
         'model_name': cfg.get('model_name', ''),
-        'layer': cfg.get('layer_l', 5),
+        'layer': cfg.get('layer_l', None),
         
         # Activation dumper settings
         'hf_dataset_name': cfg.get('activation_dumper', {}).get('hf_dataset_name', ''),
@@ -54,6 +54,9 @@ def extract_settings(config_path):
         
         # Determine training script based on config name and settings
         'training_script': determine_training_script(config_path, cfg),
+
+        # On-the-fly dataset generation. Enabled if the section exists and is not null.
+        'on_the_fly_enabled': 'on_the_fly' in cfg.get('dataset', {}) and cfg.dataset.on_the_fly is not None,
     }
     
     # Clean up model name for directory paths
@@ -135,10 +138,11 @@ if __name__ == '__main__':
     parser.add_argument('--key', help='Specific key to extract')
     parser.add_argument('--all', action='store_true', help='Print all settings as KEY=VALUE')
     
-    args = parser.parse_args()
+    # Parse known arguments and collect the rest as overrides for Hydra
+    args, overrides = parser.parse_known_args()
     
     try:
-        settings = extract_settings(args.config)
+        settings = extract_settings(args.config, overrides)
         
         if args.all:
             # Print all settings as bash-friendly KEY=VALUE pairs
@@ -146,6 +150,9 @@ if __name__ == '__main__':
                 # Convert booleans to bash-friendly strings
                 if isinstance(value, bool):
                     value = 'true' if value else 'false'
+                # Handle None values
+                elif value is None:
+                    value = ''
                 # Quote strings that might have spaces
                 if isinstance(value, str) and ' ' in value:
                     value = f'"{value}"'
