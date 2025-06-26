@@ -3285,7 +3285,7 @@ def main(cfg: DictConfig) -> None:
                     log.info(f"Checkpoint not saved at step {step} because validation loss is NaN.")
     except KeyboardInterrupt as e:
         if is_main():
-            log.warning("KeyboardInterrupt detected! Preparing to save checkpoint if applicable. {e}")
+            log.warning(f"KeyboardInterrupt detected! Preparing to save checkpoint if applicable. {e}")
         
         # If preemption was also requested, let that naming take precedence.
         if _preemption_requested:
@@ -3322,6 +3322,18 @@ def main(cfg: DictConfig) -> None:
             log.info(f"Proceeding to save final checkpoint as {final_ckpt_name_override}")
         else:
             raise e
+
+       # Determine the actual name for the final checkpoint
+    actual_final_save_name = "final" # Default for normal completion
+
+    if _preemption_requested: # This takes precedence
+        actual_final_save_name = f"preempt_slurm{_preemption_slurm_id}"
+    elif final_ckpt_name_override: # Set by KeyboardInterrupt (and potentially preemption if KbdInt happened during it)
+        actual_final_save_name = final_ckpt_name_override
+    
+    if is_main():
+        log.info(f"Final checkpoint name determined as: '{actual_final_save_name}'.")
+
 
     # Final checkpoint (handles normal finish, keyboard interrupt, preemption)
     if is_main() and checkpoint_manager.save_at_end:
