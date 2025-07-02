@@ -33,7 +33,8 @@ class EncoderConfig:
     extra_pos_embeddings: bool = False # YAML `extra_pos_embeddings` - whether to add extra positional embeddings to the activation
     add_current_token: bool = False # YAML `add_current_token` - whether to add the current token to the input to the encoder
     special_last_token_vector: bool = False # YAML `special_last_token_vector` - whether to use a special last token vector
-    
+    attn_implementation: str = None
+
     def __post_init__(self):
         """Validate configuration parameters."""
         if self.soft_prompt_length < 0:
@@ -74,7 +75,7 @@ class Encoder(nn.Module):
             log.info("Using shared base model for Encoder (memory efficient)")
         else:
             # Load our own copy
-            self.base: PreTrainedModel = AutoModelForCausalLM.from_pretrained(cfg.model_name)
+            self.base: PreTrainedModel = AutoModelForCausalLM.from_pretrained(cfg.model_name,attn_implementation=cfg.attn_implementation)
             
         d_model = self.base.config.hidden_size
         self._use_base = cfg.use_base_model
@@ -207,6 +208,7 @@ class Encoder(nn.Module):
         if postfix is not None:
             self.soft_prompt_embeddings_postfix = nn.Parameter(torch.zeros(len(token_ids_postfix), d_model, device=device))
             self.soft_prompt_embeddings_postfix.requires_grad_(self.cfg.trainable_soft_prompt)
+            log.info(f"Initialized encoder soft prompt postfix with {len(token_ids_postfix)} tokens, requires grad {self.cfg.trainable_soft_prompt}",)
         
         # Get embeddings from the base model
         if self._use_base:
@@ -269,7 +271,7 @@ class Encoder(nn.Module):
             embeddings = torch.cat([embeddings, current_token_vectors.unsqueeze(1)], dim=1)
 
         if self.config.special_last_token_vector and add_special_last_token_vector:
-            embeddings[:,-1] = self.special_last_token_vector.unsqueeze(0).expand_as(embeddings[:,-1])
+            embeddings[:,-1] += self.special_last_token_vector.unsqueeze(0).expand_as(embeddings[:,-1])
         
         # If the Encoder's base model is meant to process the embeddings first:
         if self._use_base:

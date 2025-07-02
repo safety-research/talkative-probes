@@ -1,0 +1,181 @@
+<svg width="1600" height="700" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Background gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f172a;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1e293b;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Model gradient -->
+    <linearGradient id="modelGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:0.8" />
+      <stop offset="50%" style="stop-color:#60a5fa;stop-opacity:0.9" />
+      <stop offset="100%" style="stop-color:#3b82f6;stop-opacity:0.8" />
+    </linearGradient>
+    
+    <!-- Glow effect -->
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="8" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <!-- Soft shadow -->
+    <filter id="softShadow">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="4"/>
+      <feOffset dx="0" dy="4" result="offsetblur"/>
+      <feFlood flood-color="#000000" flood-opacity="0.3"/>
+      <feComposite in2="offsetblur" operator="in"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap');
+    
+    .title { font-family: 'Inter', sans-serif; font-size: 28px; font-weight: 600; fill: #f8fafc; }
+    .subtitle { font-family: 'Inter', sans-serif; font-size: 16px; font-weight: 400; fill: #cbd5e1; }
+    .section-title { font-family: 'Inter', sans-serif; font-size: 18px; font-weight: 500; fill: #f1f5f9; }
+    .code { font-family: 'JetBrains Mono', monospace; font-size: 16px; fill: #f8fafc; }
+    .token { font-family: 'JetBrains Mono', monospace; font-size: 14px; }
+    .token-orig { fill: #f8fafc; font-weight: 500; }
+    .token-decoded { fill: #94a3b8; font-size: 12px; }
+    .token-key { fill: #fbbf24; }
+    .token-error { fill: #f87171; }
+    .token-correction { fill: #22c55e; }
+    .layer-label { font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 600; fill: #fbbf24; }
+    .index { font-family: 'JetBrains Mono', monospace; font-size: 10px; fill: #64748b; }
+  </style>
+  
+  <!-- Dark background -->
+  <rect width="1600" height="700" fill="url(#bgGrad)" />
+  
+  <!-- Title -->
+  <text x="800" y="50" text-anchor="middle" class="title">Gemma Layer 20: Actual Decoded Activations</text>
+  <text x="800" y="80" text-anchor="middle" class="subtitle">Raw decoded tokens from the forward pass</text>
+  
+  <!-- Model visualization (simplified) -->
+  <g transform="translate(50, 150)">
+    <rect x="0" y="0" width="200" height="400" rx="12" fill="url(#modelGrad)" fill-opacity="0.9" stroke="#60a5fa" stroke-width="2" filter="url(#glow)"/>
+    <text x="100" y="-20" text-anchor="middle" class="section-title">Gemma-2B</text>
+    
+    <!-- Layer 20 indicator -->
+    <rect x="10" y="280" width="180" height="30" rx="6" fill="#fbbf24" fill-opacity="0.9"/>
+    <text x="100" y="300" text-anchor="middle" class="layer-label" fill="#0f172a">Layer 20</text>
+  </g>
+  
+  <!-- Token flow visualization -->
+  <g transform="translate(350, 120)">
+    <!-- Key tokens with their decodings -->
+    
+    <!-- def token -->
+    <g transform="translate(0, 0)">
+      <text x="0" y="0" class="index">11</text>
+      <rect x="20" y="-20" width="50" height="30" rx="15" fill="#334155" stroke="#22c55e" stroke-width="2"/>
+      <text x="45" y="-2" text-anchor="middle" class="token-orig">def</text>
+      <text x="45" y="25" text-anchor="middle" class="token-decoded">def Python MyAlgorithm Function Pagination classifyMydef</text>
+    </g>
+    
+    <!-- add token -->
+    <g transform="translate(0, 60)">
+      <text x="0" y="0" class="index">12</text>
+      <rect x="20" y="-20" width="50" height="30" rx="15" fill="#334155" stroke="#22c55e" stroke-width="2"/>
+      <text x="45" y="-2" text-anchor="middle" class="token-orig">add</text>
+      <text x="45" y="25" text-anchor="middle" class="token-decoded">AddPython AddingFunction ArithmeticArrayActivityPairs add</text>
+    </g>
+    
+    <!-- return token -->
+    <g transform="translate(0, 120)">
+      <text x="0" y="0" class="index">20</text>
+      <rect x="20" y="-20" width="70" height="30" rx="15" fill="#334155" stroke="#60a5fa" stroke-width="2"/>
+      <text x="55" y="-2" text-anchor="middle" class="token-orig">return</text>
+      <text x="55" y="25" text-anchor="middle" class="token-decoded">Returning Python Result Python Addition OBJECT $"{ Combinereturn</text>
+    </g>
+    
+    <!-- The error tokens: ri, h, gt -->
+    <g transform="translate(0, 200)">
+      <text x="120" y="-40" class="section-title" fill="#f87171">The "rihgt" typo (3 tokens):</text>
+      
+      <!-- ri token -->
+      <g transform="translate(0, 0)">
+        <text x="0" y="0" class="index">23</text>
+        <rect x="20" y="-20" width="40" height="30" rx="15" fill="#334155" stroke="#f87171" stroke-width="2"/>
+        <text x="40" y="-2" text-anchor="middle" class="token-orig token-error">ri</text>
+        <text x="40" y="25" text-anchor="middle" class="token-decoded">riVANCodeNumeric,FieldValue ajout ri</text>
+      </g>
+      
+      <!-- h token -->
+      <g transform="translate(0, 60)">
+        <text x="0" y="0" class="index">24</text>
+        <rect x="20" y="-20" width="40" height="30" rx="15" fill="#334155" stroke="#f87171" stroke-width="2"/>
+        <text x="40" y="-2" text-anchor="middle" class="token-orig token-error">h</text>
+        <text x="40" y="25" text-anchor="middle" class="token-decoded">rihhih Syntax Matlab Object, Namechildsh</text>
+      </g>
+      
+      <!-- gt token -->
+      <g transform="translate(0, 120)">
+        <text x="0" y="0" class="index">25</text>
+        <rect x="20" y="-20" width="40" height="30" rx="15" fill="#334155" stroke="#f87171" stroke-width="2"/>
+        <text x="40" y="-2" text-anchor="middle" class="token-orig token-error">gt</text>
+        <text x="40" y="25" text-anchor="middle" class="token-decoded">right pythonValueVariableMINUS |\n\ngtgt</text>
+      </g>
+    </g>
+    
+    <!-- Model response tokens -->
+    <g transform="translate(800, 200)">
+      <text x="0" y="-40" class="section-title" fill="#22c55e">Model's response:</text>
+      
+      <!-- model token -->
+      <g transform="translate(0, 0)">
+        <text x="-20" y="0" class="index">31</text>
+        <rect x="0" y="-20" width="60" height="30" rx="15" fill="#334155" stroke="#22c55e" stroke-width="2"/>
+        <text x="30" y="-2" text-anchor="middle" class="token-orig">model</text>
+        <text x="30" y="25" text-anchor="middle" class="token-decoded">TypeScript mist correction You ( your answermodel</text>
+      </g>
+      
+      <!-- Of token -->
+      <g transform="translate(0, 60)">
+        <text x="-20" y="0" class="index">33</text>
+        <rect x="0" y="-20" width="40" height="30" rx="15" fill="#334155" stroke="#22c55e" stroke-width="2"/>
+        <text x="20" y="-2" text-anchor="middle" class="token-orig">Of</text>
+        <text x="20" y="25" text-anchor="middle" class="token-decoded">OfJavaScript Fix FYI Error obviously, obviouslyOf</text>
+      </g>
+      
+      <!-- course token -->
+      <g transform="translate(0, 120)">
+        <text x="-20" y="0" class="index">34</text>
+        <rect x="0" y="-20" width="70" height="30" rx="15" fill="#334155" stroke="#22c55e" stroke-width="2"/>
+        <text x="35" y="-2" text-anchor="middle" class="token-orig">course</text>
+        <text x="35" y="25" text-anchor="middle" class="token-decoded">\n\nOfcourse Yes Python glad! help course</text>
+      </g>
+    </g>
+    
+    <!-- Error detection after -->
+    <g transform="translate(400, 380)">
+      <text x="-20" y="0" class="index">26</text>
+      <rect x="0" y="-20" width="40" height="30" rx="15" fill="#334155" stroke="#f59e0b" stroke-width="2"/>
+      <text x="20" y="-2" text-anchor="middle" class="token-orig">\n</text>
+      <text x="20" y="25" text-anchor="middle" class="token-decoded token-error">5 Python code errorFunctionName …..missing |\n</text>
+    </g>
+  </g>
+  
+  <!-- Flow arrows -->
+  <g>
+    <path d="M 250 250 Q 300 220 350 140" stroke="#60a5fa" stroke-width="2" fill="none" stroke-dasharray="3,3" opacity="0.5"/>
+    <path d="M 250 300 Q 300 300 350 320" stroke="#f87171" stroke-width="2" fill="none" stroke-dasharray="3,3" opacity="0.5"/>
+    <path d="M 250 350 Q 800 400 1150 320" stroke="#22c55e" stroke-width="2" fill="none" stroke-dasharray="3,3" opacity="0.5"/>
+  </g>
+  
+  <!-- Legend -->
+  <g transform="translate(50, 600)">
+    <text x="0" y="0" class="subtitle">Notable patterns in Layer 20 decoded tokens:</text>
+    <text x="0" y="30" class="token-decoded">• Python/code-related tokens appear frequently in the decodings</text>
+    <text x="0" y="50" class="token-decoded">• Error tokens (23-26) show confusion: "Syntax Matlab", "errorFunctionName", "missing"</text>
+    <text x="0" y="70" class="token-decoded">• Correction tokens (31-34) include: "mist correction", "Fix", "Yes Python glad! help"</text>
+  </g>
+</svg>

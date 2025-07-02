@@ -48,6 +48,7 @@ def generate_autoregressive_continuation(
     Returns:
         Generated text string.
     """
+    return "No completion supplied"
     # Get the prefix up to and including start_position
     if start_position >= input_ids.size(1):
         prefix_ids = input_ids
@@ -71,10 +72,13 @@ def generate_autoregressive_continuation(
             input_ids=prefix_ids,
             attention_mask=prefix_attention_mask,
             max_new_tokens=num_tokens,
+            min_new_tokens=num_tokens,
             do_sample=True,
             temperature=temperature,
             top_p=top_p,
             pad_token_id=tok.eos_token_id,  # Use EOS token for padding
+            cache_implementation="static",
+            disable_compile=True,
         )
 
     # Decode only the newly generated tokens
@@ -1249,7 +1253,18 @@ def get_soft_prompt_projections(
         encoder_proj = project_embeddings_to_text(
             enc.soft_prompt_embeddings, input_emb_table, tok, top_k=3
         )
-        projections['encoder'] = encoder_proj
+        
+        # Check for postfix embeddings
+        encoder_postfix_proj = None
+        if hasattr(enc, 'soft_prompt_embeddings_postfix') and enc.soft_prompt_embeddings_postfix is not None:
+            encoder_postfix_proj = project_embeddings_to_text(
+                enc.soft_prompt_embeddings_postfix, input_emb_table, tok, top_k=3
+            )
+        
+        projections['encoder'] = {
+            'prefix': encoder_proj,
+            'postfix': encoder_postfix_proj
+        }
     
     return projections
 
@@ -1305,15 +1320,30 @@ def format_soft_prompt_projections(projections: Dict[str, Any]) -> str:
         lines.append("\nEncoder Soft Prompt:")
         enc_proj = projections['encoder']
         
-        # Show as a single line
-        prompt_text = ''.join([t for t, _ in enc_proj])
-        lines.append(f"  Text: \"{prompt_text}\"")
+        # Handle the new structure with prefix and postfix
+        prefix_proj = enc_proj['prefix']
+        postfix_proj = enc_proj.get('postfix')
         
-        # Show top-3 for each token
-        lines.append("  Per-token top-3:")
-        for i, (_, top_tokens) in enumerate(enc_proj):
+        # Show as a single line with <text> marker if postfix exists
+        prefix_text = ''.join([t for t, _ in prefix_proj])
+        if postfix_proj:
+            postfix_text = ''.join([t for t, _ in postfix_proj])
+            lines.append(f"  Text: \"{prefix_text}<text>{postfix_text}\"")
+        else:
+            lines.append(f"  Text: \"{prefix_text}\"")
+        
+        # Show top-3 for each token in prefix
+        lines.append("  Prefix per-token top-3:")
+        for i, (_, top_tokens) in enumerate(prefix_proj):
             token_strs = [f"'{t}'({s:.3f})" for t, s in top_tokens[:3]]
             lines.append(f"    Token {i}: {', '.join(token_strs)}")
+        
+        # Show top-3 for each token in postfix if it exists
+        if postfix_proj:
+            lines.append("  Postfix per-token top-3:")
+            for i, (_, top_tokens) in enumerate(postfix_proj):
+                token_strs = [f"'{t}'({s:.3f})" for t, s in top_tokens[:3]]
+                lines.append(f"    Token {i}: {', '.join(token_strs)}")
     
     if not projections:
         lines.append("  (No soft prompts configured)")

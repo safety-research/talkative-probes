@@ -172,6 +172,7 @@ class OrigWrapper:
         *,
         attention_mask: Optional[torch.Tensor] = None,
         no_grad: bool = True,
+        position_selection_strategy: str = 'midpoint',
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Extracts hidden state activations from a specified layer at given or calculated token positions
@@ -190,6 +191,8 @@ class OrigWrapper:
             attention_mask: Optional attention mask, shape (B, seq_len). If None and pad_token_id
                             is configured, it's created from pad tokens.
             no_grad: Whether to run in no_grad context.
+            position_selection_strategy: How to select the token position if not provided.
+                                         'midpoint' (default) or 'random'.
 
         Returns:
             A tuple containing:
@@ -240,19 +243,39 @@ class OrigWrapper:
                 raise TypeError(f"token_positions must be int, torch.Tensor, or None, got {type(token_positions)}")
         elif min_pos_to_select_from is not None:
             pad_token_id = self.model.config.pad_token_id
+            
             if pad_token_id is None:
-                nonpad_lengths = torch.full((batch_size,), input_ids.shape[1], device=input_ids.device, dtype=torch.long)
+                # If no pad token, sequence is the full length
+                start_indices = torch.zeros(batch_size, device=input_ids.device, dtype=torch.long)
+                end_indices = torch.full((batch_size,), input_ids.shape[1] - 1, device=input_ids.device, dtype=torch.long)
             else:
-                nonpad_lengths = (input_ids != pad_token_id).sum(dim=1)
+                is_not_pad = input_ids.ne(pad_token_id)
+                
+                # Find first non-pad token (handles left-padding)
+                start_indices = torch.argmax(is_not_pad.int(), dim=1)
+                
+                # Find last non-pad token
+                end_indices = input_ids.shape[1] - 1 - torch.argmax(torch.flip(is_not_pad, dims=[1]).int(), dim=1)
 
-            upper_bounds = nonpad_lengths - 1
+            # Interpret min_pos_to_select_from as a relative offset from the start of content.
+            lower_bounds = start_indices + min_pos_to_select_from
             
-            _min_pos_tensor = torch.full_like(upper_bounds, min_pos_to_select_from)
-            effective_min_indices = torch.minimum(_min_pos_tensor, upper_bounds)
-            effective_min_indices = torch.maximum(effective_min_indices, torch.zeros_like(upper_bounds))
+            # Ensure the lower bound does not exceed the upper bound.
+            # If it does (sequence too short), this will select the last token.
+            effective_lower_bounds = torch.minimum(lower_bounds, end_indices)
+            upper_bounds = end_indices
             
-            safe_upper_bounds = torch.maximum(upper_bounds, effective_min_indices)
-            calculated_positions = (effective_min_indices + safe_upper_bounds) // 2
+            if position_selection_strategy == 'midpoint':
+                calculated_positions = (effective_lower_bounds + upper_bounds) // 2
+            elif position_selection_strategy == 'random':
+                # Generate random floats in [0, 1) and scale them to the valid range
+                rand_floats = torch.rand(batch_size, device=input_ids.device)
+                range_size = (upper_bounds - effective_lower_bounds + 1).clamp(min=1)
+                calculated_positions = effective_lower_bounds + (rand_floats * range_size).long()
+            else:
+                raise ValueError(f"Unknown position_selection_strategy: '{position_selection_strategy}'")
+
+            # Final safety clamp, although the logic above should prevent out-of-bounds.
             seq_len_minus_1 = max(input_ids.shape[1] - 1, 0)
             calculated_positions = torch.clamp(calculated_positions, min=0, max=seq_len_minus_1)
         else:

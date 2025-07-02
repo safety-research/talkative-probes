@@ -120,12 +120,15 @@ def train_step(  # noqa: D401
 
 
     alpha = _loss_fns.get("alpha", 0.1) if _loss_fns else 0.1
+    entropy_clamp = _loss_fns.get("entropy_clamp", 1000) if _loss_fns else 1000
 
     kl_base = _loss_fns.get("kl_base_weight", 1.0) if _loss_fns else 1.0
     ent_w = _loss_fns.get("entropy_weight", 0.0) if _loss_fns else 0.0
     mse_w = _loss_fns.get("mse_weight", 0.0) if _loss_fns else 0.0
     lm_w = _loss_fns.get("lm_base_weight", 0.0) if _loss_fns else 0.0
     GRPO_w = _loss_fns.get("GRPO_weight", 0.0) if _loss_fns else 0.0
+    skip_tokens_KL_GRPO = _loss_fns.get("skip_tokens_KL_GRPO", 0) if _loss_fns else 0
+    GRPO_beta = _loss_fns.get("GRPO_beta", 0.0) if _loss_fns else 0.0
     GRPO_training = GRPO_w !=0
     if GRPO_training:
         group_n = _loss_fns['group_n']
@@ -304,7 +307,7 @@ def train_step(  # noqa: D401
     else:
         loss_lm = torch.tensor(0.0, device=A.device, dtype=A.dtype)
         
-    if _loss_fns['GRPO_beta']!=0:
+    if GRPO_beta!=0:
         B=A.shape[0]
         natural_prefix_expanded = cached_prefix_ids.expand(B, -1).to(A.device)  # Shape: (B, prefix_len)
         prefix_len_for_slicing = natural_prefix_expanded.shape[-1]
@@ -529,14 +532,14 @@ def train_step(  # noqa: D401
             else:
                 entropy = torch.tensor(0.0, device=A.device, dtype=A.dtype)
         elif ent_w!=0:
-            if dec.config.clamp_entropy and not GRPO_validate_mode:
-                entropy = torch.clamp(entropy.mean(dim=-1), min=0.0, max=dec.config.clamp_entropy)# only clip if the mean of sequence is above the threshold
+            if entropy_clamp and not GRPO_validate_mode:
+                entropy = torch.clamp(entropy.mean(dim=-1), min=0.0, max=entropy_clamp)# only clip if the mean of sequence is above the threshold
             entropy = entropy.mean()
-        if _loss_fns['GRPO_beta']!=0:
+        if GRPO_beta!=0:
             # print("probs",probs_of_interest[:10])
             # print("orig",trimmed_orig_model_pred_logprobs_of_interest[:10])
             # print("ratio",probs_of_interest/trimmed_orig_model_pred_logprobs_of_interest)
-            KL_GRPO = KL_schulman_estimator(probs_of_interest,trimmed_orig_model_pred_logprobs_of_interest)
+            KL_GRPO = KL_schulman_estimator(probs_of_interest[:,skip_tokens_KL_GRPO:],trimmed_orig_model_pred_logprobs_of_interest[:,skip_tokens_KL_GRPO:] )
             #raise ValueError("KL_GRPO is not implemented")
         else:   
             KL_GRPO = torch.tensor(0.0, device=A.device, dtype=A.dtype)
@@ -548,7 +551,7 @@ def train_step(  # noqa: D401
                 mean_reward_std, mean_reward = compute_advantages(A,A_train.detach(),group_n, no_advantage=True)
                 advantage = torch.tensor(0.0, device=A.device, dtype=A.dtype).unsqueeze(-1)
         #fine to do mean because our rollouts are fixed length
-        loss_GRPO = -torch.mean(probs_of_interest/probs_of_interest.detach() * advantage - _loss_fns['GRPO_beta']*KL_GRPO,axis=-1)
+        loss_GRPO = -torch.mean(probs_of_interest/probs_of_interest.detach() * advantage - GRPO_beta*KL_GRPO,axis=-1)
         loss_GRPO = loss_GRPO.mean() # align with canonical GRPO normalisation.
     else:
         advantage = torch.tensor(0.0, device=A.device, dtype=A.dtype) 
@@ -580,7 +583,10 @@ def train_step(  # noqa: D401
     # - LM loss (linguistic regularizer): ramped up via alpha schedule for fluency
     # - MSE loss (direct reconstruction): alternative/additional to KL for direct activation matching
     # - Alpha schedule gradually introduces linguistic constraints during training
-    total_loss = (lm_w * alpha) * loss_lm + kl_base * loss_kl - ent_w * entropy + mse_w * loss_mse + GRPO_w * loss_GRPO
+    #total_loss = (lm_w * alpha) * loss_lm + kl_base * loss_kl - ent_w * entropy + mse_w * loss_mse + GRPO_w * loss_GRPO
+    loss1 = (lm_w * alpha) * loss_lm + kl_base * loss_kl - ent_w * entropy + GRPO_w * loss_GRPO
+    loss2 = mse_w * loss_mse 
+    total_loss = loss1 + loss2
     if debug_mode:
         # Debug: Check individual loss components   
         if torch.isnan(loss_lm):
@@ -603,6 +609,8 @@ def train_step(  # noqa: D401
     # Build return dictionary
     result_dict = {
         "total": total_loss,
+        "total_loss_1": loss1,
+        "total_loss_2": loss2,
         "mse": loss_mse,  # For logging
         "lm": loss_lm,
         "kl": loss_kl,

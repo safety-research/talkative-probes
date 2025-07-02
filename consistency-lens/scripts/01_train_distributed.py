@@ -129,17 +129,17 @@ def handle_preemption_signal(signum, frame):
     
     _preemption_requested = True
 
-try:
-    if mp.get_start_method(allow_none=True) != 'spawn':
-        mp.set_start_method('spawn', force=True)
-        print("Successfully set multiprocessing start method to 'spawn'.") 
-except RuntimeError as e:
-    current_method = mp.get_start_method(allow_none=True)
-    if current_method == 'spawn':
-        print(f"Multiprocessing start method already set to 'spawn'.")
-    else:
-        print(f"Warning: Could not set start_method to 'spawn'. Current method: {current_method}. Error: {e}")
-        print("CUDA with multiprocessing might still face issues if method is not 'spawn'.")
+# try:
+#     if mp.get_start_method(allow_none=True) != 'spawn':
+#         mp.set_start_method('spawn', force=True)
+#         print("Successfully set multiprocessing start method to 'spawn'.") 
+# except RuntimeError as e:
+#     current_method = mp.get_start_method(allow_none=True)
+#     if current_method == 'spawn':
+#         print(f"Multiprocessing start method already set to 'spawn'.")
+#     else:
+#         print(f"Warning: Could not set start_method to 'spawn'. Current method: {current_method}. Error: {e}")
+#         print("CUDA with multiprocessing might still face issues if method is not 'spawn'.")
 
 def distributed_train_step(
     decoder,
@@ -190,6 +190,14 @@ def distributed_train_step(
     else:
         # Fall back to static entropy_weight for backward compatibility
         entropy_weight = config.get('entropy_weight', 0.0)
+    entropy_clamp = config.get('entropy_clamp_schedule', None)
+    if entropy_clamp:
+        entropy_clamp = get_schedule_value(entropy_clamp, step, config['max_train_steps'],
+                                          current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0,
+                                          steps_per_epoch=steps_per_epoch,
+                                          grad_accum_steps=gradient_accumulation_steps)
+    else:
+        entropy_clamp = config.get('entropy_clamp', 1000)
     
     loss_fns = {
         "t_text": config.get('t_text', 8),
@@ -203,12 +211,14 @@ def distributed_train_step(
                                   grad_accum_steps=gradient_accumulation_steps),
         "kl_base_weight": config.get('kl_base_weight', 1.0),
         "entropy_weight": entropy_weight,
+        "entropy_clamp": entropy_clamp,
         "mse_weight": config.get('mse_weight', 0.0),
         "lm_base_weight": config.get('lm_base_weight'),
         "GRPO_weight": config['GRPO_weight'],
         "GRPO_beta": config['GRPO_beta'],
         "GRPO_entropy_weight": config['GRPO_entropy_weight'],
         "group_n": config['group_n'],
+        "skip_tokens_KL_GRPO": config['skip_tokens_KL_GRPO'],
     }
     
     decoder_no_sync_cm = nullcontext()
@@ -252,22 +262,40 @@ def distributed_train_step(
                 )
 
             # Scale loss by accumulation steps
-            loss = losses['total'] / gradient_accumulation_steps
+            #t
+            total_loss = losses['total'] / gradient_accumulation_steps
+            loss1 = losses['total_loss_1'] / gradient_accumulation_steps
+            loss2 = losses['total_loss_2'] / gradient_accumulation_steps
             
             # Debug: Check loss dtype before backward
             if step == 0 and rank == 0:
-                print(f"DEBUG: loss dtype before backward: {loss.dtype}")
+                print(f"DEBUG: loss dtype before backward: {total_loss.dtype}")
                 print(f"DEBUG: autocast enabled: {autocast_context != nullcontext()}")
                 # Check a model parameter dtype
                 param = next(decoder_base.parameters())
                 print(f"DEBUG: decoder param dtype: {param.dtype}")
-        
-        # Backward pass
-        if device.type == "cuda" and scaler is not None:
-            scaler.scale(loss).backward()
-        else:
-            loss.backward()
+        if loss_fns['GRPO_weight'] > 0:
+            if is_main() and step==0:
+                print(f"Separate backward pass for loss1 and loss2")
+            # Backward pass
+            if device.type == "cuda" and scaler is not None:
+                scaler.scale(loss1).backward()
+            else:
+                loss1.backward()
 
+            if device.type == "cuda" and scaler is not None:
+                scaler.scale(loss2).backward()
+            else:
+                loss2.backward()
+            total_loss = loss1 + loss2
+        else:
+            if is_main() and step==0:
+                print(f"Merged backward pass for loss1 and loss2")
+            total_loss = loss1+loss2
+            if device.type == "cuda" and scaler is not None:
+                scaler.scale(total_loss).backward()
+            else:
+                total_loss.backward()
     # Gradient clipping and optimizer step only at accumulation boundaries
     if is_accumulation_end:
         if device.type == "cuda" and scaler is not None:
@@ -323,6 +351,8 @@ def distributed_train_step(
     # Return metrics
     metrics = {
         'loss': losses['total'].item(),
+        'loss_1': losses['total_loss_1'].item(),
+        'loss_2': losses['total_loss_2'].item(),
         'loss_mse': losses['mse'].item(),
         'loss_lm': losses['lm'].item(),
         'loss_kl': losses['kl'].item(),
@@ -515,6 +545,7 @@ def generate_verbose_samples_from_batch(
         "GRPO_beta": config['GRPO_beta'],
         "GRPO_entropy_weight": config['GRPO_entropy_weight'],
         "group_n": config['group_n'],
+        "skip_tokens_KL_GRPO": config['skip_tokens_KL_GRPO'],
     }
 
     if verbose_config.get('num_samples', 2) > 1:
@@ -588,6 +619,9 @@ def generate_verbose_samples_from_batch(
             # Force cleanup of any GPU memory that might have been allocated
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+    elif verbose_config.get('num_samples', 2) == 1:
+        log.info("Num samples is 1, which means no verbose samples.")
+
 
 def _check_and_generate_verbose_samples(
     decoder_base,
@@ -714,13 +748,15 @@ def validate_distributed(
     comparison_tuned_lens: Optional["TunedLens"] = None,
     should_print_val = False,
     shared_base_model = None,
-    should_run_interventions = True,  # New parameter with default True for backward compatibility
+    should_run_interventions = True,
 ):
-    """Distributed validation function using train_step without gradients.
-    
-    Tracks activation statistics and computes validation metrics.
     """
-    group_n = config.get('group_n', 1)
+    Distributed validation with a clear separation between light and heavy metrics.
+    - "Light" metrics (MSE, GRPO, activation stats) are computed on ALL validation batches.
+    - "Heavy" metrics (Interventions, KL/LM loss) are computed on a smaller subset
+      of the same batches for efficiency.
+    This ensures all metrics are statistically sound and comparable.
+    """
     # Get base models (unwrap DDP if needed)
     decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
     encoder_base = encoder.module if hasattr(encoder, 'module') else encoder
@@ -730,34 +766,9 @@ def validate_distributed(
     encoder_base.eval()
     orig_model.model.eval()
     
-    # Prepare models dict for train_step
-    models = {
-        "dec": decoder_base,
-        "enc": encoder_base,
-        "orig": orig_model
-    }
+    models = {"dec": decoder_base, "enc": encoder_base, "orig": orig_model}
     
-    # # Loss function parameters (use same as training)
-    # loss_fns = {
-    #     "t_text": config.get('t_text', 8),
-    #     "tau": get_schedule_value(config['gumbel_tau_schedule'], step, config['max_train_steps'], 
-    #                             current_epoch=step // steps_per_epoch if steps_per_epoch and steps_per_epoch > 0 else 0, 
-    #                             steps_per_epoch=steps_per_epoch, 
-    #                             grad_accum_steps=config['gradient_accumulation_steps']),
-    #     "alpha": get_schedule_value(config['alpha_schedule'], step, config['max_train_steps'],
-    #                               current_epoch=step // steps_per_epoch if steps_per_epoch and steps_per_epoch > 0 else 0, 
-    #                               steps_per_epoch=steps_per_epoch, 
-    #                               grad_accum_steps=config['gradient_accumulation_steps']),
-    #     "kl_base_weight": config.get('kl_base_weight', 1.0),
-    #     "entropy_weight": config.get('entropy_weight', 0.0),
-    #     "mse_weight": config.get('mse_weight', 0.0),
-    #     "lm_base_weight": config.get('lm_base_weight'),
-    #     "GRPO_weight": config['GRPO_weight'],
-    #     "GRPO_beta": config['GRPO_beta'],
-    #     "group_n": config['group_n'],
-    # }
-      # Loss function parameters
-    # Handle entropy schedule with backward compatibility
+    # Loss function parameters
     entropy_schedule = config.get('entropy_schedule', None)
     if entropy_schedule:
         entropy_weight = get_schedule_value(entropy_schedule, step, config['max_train_steps'],
@@ -765,9 +776,17 @@ def validate_distributed(
                                           steps_per_epoch=steps_per_epoch,
                                           grad_accum_steps=gradient_accumulation_steps)
     else:
-        # Fall back to static entropy_weight for backward compatibility
         entropy_weight = config.get('entropy_weight', 0.0)
     
+    entropy_clamp = config.get('entropy_clamp_schedule', None)
+    if entropy_clamp:
+        entropy_clamp = get_schedule_value(entropy_clamp, step, config['max_train_steps'],
+                                          current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0,
+                                          steps_per_epoch=steps_per_epoch,
+                                          grad_accum_steps=gradient_accumulation_steps)
+    else:
+        entropy_clamp = config.get('entropy_clamp', 1)
+        
     loss_fns = {
         "t_text": config.get('t_text', 8),
         "tau": get_schedule_value(config['gumbel_tau_schedule'], step, config['max_train_steps'], 
@@ -780,276 +799,219 @@ def validate_distributed(
                                   grad_accum_steps=gradient_accumulation_steps),
         "kl_base_weight": config.get('kl_base_weight', 1.0),
         "entropy_weight": entropy_weight,
+        "entropy_clamp": entropy_clamp,
         "mse_weight": config.get('mse_weight', 0.0),
         "lm_base_weight": config.get('lm_base_weight'),
         "GRPO_weight": config['GRPO_weight'],
         "GRPO_beta": config['GRPO_beta'],
         "GRPO_entropy_weight": config['GRPO_entropy_weight'],
         "group_n": config['group_n'],
+        "skip_tokens_KL_GRPO": config.get('skip_tokens_KL_GRPO', 0),
     }
     
-    # Metrics accumulators
-    total_loss = 0.0
-    total_mse = 0.0
-    total_lm = 0.0
-    total_kl = 0.0
-    total_entropy = 0.0
-    total_fraction_variance_explained = 0.0
-    total_mean_normalised_rmse = 0.0
-    total_GRPO = 0.0
-    total_KL_GRPO = 0.0
-    total_advantages_mean = 0.0
-    total_advantages_std = 0.0
-    total_mean_reward = 0.0
-    total_mean_reward_std = 0.0
-    num_batches = 0
+    # --- Metrics Accumulators ---
+    # Light metrics (always accumulated)
+    total_loss, total_mse, total_entropy = 0.0, 0.0, 0.0
+    total_fraction_variance_explained, total_mean_normalised_rmse = 0.0, 0.0
+    total_GRPO, total_KL_GRPO = 0.0, 0.0
+    total_advantages_mean, total_advantages_std = 0.0, 0.0
+    total_mean_reward, total_mean_reward_std = 0.0, 0.0
+    num_light_batches = 0
+
+    # Heavy metrics (conditionally accumulated)
+    total_lm, total_kl = 0.0, 0.0
+    intervention_metrics = {k: 0.0 for k in [
+        'mse_baseline', 'mse_decoder', 'mse_shuffle', 'mse_shuffle_all', 'mse_hard_prompt',
+        'kl_baseline', 'kl_decoder', 'kl_shuffle', 'kl_shuffle_all', 'kl_hard_prompt'
+    ]}
+    num_heavy_batches = 0
     
-    # Activation statistics accumulators
-    act_sum = torch.tensor(0.0, device=device)
-    act_sum_sq = torch.tensor(0.0, device=device)
-    recon_sum = torch.tensor(0.0, device=device)
-    recon_sum_sq = torch.tensor(0.0, device=device)
-    act_recon_sum_prod = torch.tensor(0.0, device=device)
-    mse_sum = torch.tensor(0.0, device=device)
+    # Activation statistics accumulators (always accumulated)
+    act_sum, act_sum_sq, recon_sum, recon_sum_sq, act_recon_sum_prod, mse_sum = (torch.tensor(0.0, device=device) for _ in range(6))
     act_n = 0
     act_min, act_max = torch.tensor(float('inf'), device=device), torch.tensor(float('-inf'), device=device)
     recon_min, recon_max = torch.tensor(float('inf'), device=device), torch.tensor(float('-inf'), device=device)
     
-    # Intervention metrics accumulators
-    intervention_metrics = {
-        'mse_baseline': 0.0,
-        'mse_decoder': 0.0,
-        'mse_shuffle': 0.0,
-        'mse_shuffle_all': 0.0,
-        'mse_hard_prompt': 0.0,
-        'kl_baseline': 0.0,
-        'kl_decoder': 0.0,
-        'kl_shuffle': 0.0,
-        'kl_shuffle_all': 0.0,
-        'kl_hard_prompt': 0.0,
-        'fraction_variance_explained': 0.0,
-        'mean_normalised_rmse': 0.0,
-    }
-    intervention_batches = 0
-    
-    # Limit validation batches for efficiency
+    # --- Configuration for Validation Run ---
     max_val_batches = config.get('max_val_batches', 50)
-    # Run interventions on a subset of validation batches
-    max_intervention_batches = min(10, max_val_batches)  # Limit interventions to first 10 batches
+    # Only run interventions if globally enabled and for a limited number of batches
+    max_intervention_batches = min(10, max_val_batches) if should_run_interventions else 0
     
     # Move orig_model to device if needed for validation
     if should_move_orig_to_cpu(config, shared_base_model, is_validation=True):
         orig_model.to(device)
     
-    # Log validation type
     if is_main_process:
-        if should_run_interventions:
-            log.info(f"Running FULL validation with interventions (up to {max_intervention_batches} heavy batches)")
+        if max_intervention_batches > 0:
+            log.info(f"Running FULL validation: light metrics on up to {max_val_batches} batches, heavy metrics on first {max_intervention_batches}.")
         else:
-            log.info(f"Running LIGHT validation without interventions (all {max_val_batches} batches will be light)")
+            log.info(f"Running LIGHT validation: light metrics on up to {max_val_batches} batches, no interventions.")
     
-    # No gradients needed for validation
+    # --- Unified Validation Loop ---
     with torch.no_grad():
         val_iter = iter(val_loader)
-        batch_idx = 0
-        while batch_idx < max_val_batches:
-            # Only do heavy batches when should_run_interventions is True
-            is_heavy_batch = should_run_interventions and (batch_idx < max_intervention_batches)
+        for batch_idx in range(max_val_batches):
+            try:
+                batch = next(val_iter)
+            except StopIteration:
+                break
             
+            # Determine if this batch should have heavy metrics computed
+            is_heavy_batch = batch_idx < max_intervention_batches
+            
+            batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
+            convert_batch_dtype(batch, config, device)
+
+            # --- Single Forward Pass ---
+            # Call original_train_step once, enabling/disabling computations as needed.
+            # We always need 'reconstruction' for light metrics (MSE, activation stats).
+            losses = original_train_step(
+                batch=batch,
+                models=models,
+                _loss_fns=loss_fns,
+                lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'),
+                tokenizer=tokenizer,
+                cached_prefix_ids=cached_prefix_ids,
+                resample_ablation=config.get('resample_ablation', True),
+                verbose_eval=False,
+                GRPO_validate_mode=True,
+                # Always get reconstruction for MSE and activation stats
+                return_reconstruction=True,
+                # Conditionally enable heavy computations
+                should_run_interventions=is_heavy_batch,
+                do_kl_computation=is_heavy_batch,
+                do_lm_computation=is_heavy_batch
+            )
+
+            # --- Accumulate Light Metrics (Every Batch) ---
+            total_loss += losses['total'].item()
+            total_mse += losses['mse'].item()
+            total_GRPO += losses['loss_GRPO'].item()
+            total_KL_GRPO += losses['KL_GRPO'].item()
+            total_advantages_mean += losses['advantages_mean'].item()
+            total_advantages_std += losses['advantages_std'].item()
+            total_fraction_variance_explained += losses['fraction_variance_explained'].item()
+            total_mean_normalised_rmse += losses['mean_normalised_rmse'].item()
+            total_entropy += losses['entropy'].item()
+            num_light_batches += 1
+            
+            # Accumulate activation statistics (Every Batch)
+            activations = batch['A'].float()
+            reconstructions = losses['reconstruction'].to(device)
+
+            act_sum += activations.sum()
+            act_sum_sq += (activations**2).sum()
+            act_n += activations.numel()
+            act_min = torch.min(act_min, activations.min())
+            act_max = torch.max(act_max, activations.max())
+
+            recon_sum += reconstructions.sum()
+            recon_sum_sq += (reconstructions**2).sum()
+            recon_min = torch.min(recon_min, reconstructions.min())
+            recon_max = torch.max(recon_max, reconstructions.max())
+
+            act_recon_sum_prod += (activations * reconstructions).sum()
+            mse_sum += ((activations - reconstructions)**2).sum()
+
+            # --- Accumulate Heavy Metrics (Conditionally) ---
             if is_heavy_batch:
-                # Process one small batch for heavy metrics
-                try:
-                    batch = next(val_iter)
-                except StopIteration:
-                    break
-                
-                batch_idx += 1
-                batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
-                convert_batch_dtype(batch, config, device)
-
-                losses = original_train_step(
-                    batch=batch,
-                    models=models,
-                    _loss_fns=loss_fns,
-                    lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'),
-                    tokenizer=tokenizer,
-                    cached_prefix_ids=cached_prefix_ids,
-                    resample_ablation=config.get('resample_ablation', True),
-                    should_run_interventions=True,
-                    verbose_eval=False,
-                    do_kl_computation=True,
-                    do_lm_computation=True,
-                    GRPO_validate_mode=True,
-                    return_reconstruction=False
-                )
-
-                # Accumulate only heavy metrics
-                total_lm += losses['lm'].item()
-                total_kl += losses['kl'].item()
+                total_lm += losses.get('lm', torch.tensor(0.0)).item()
+                total_kl += losses.get('kl', torch.tensor(0.0)).item()
                 for key in intervention_metrics.keys():
                     metric_key = f"intervention_{key}"
                     if metric_key in losses:
                         intervention_metrics[key] += losses[metric_key].item() if hasattr(losses[metric_key], 'item') else losses[metric_key]
-                intervention_batches += 1
-
-            else: # It's a light batch
-                # Collate multiple batches for light metrics
-                num_to_collate = group_n
-                micro_batches = []
-                try:
-                    for _ in range(num_to_collate):
-                        if batch_idx >= max_val_batches: break
-                        micro_batches.append(next(val_iter))
-                        batch_idx += 1
-                except StopIteration:
-                    pass
-                
-                if not micro_batches:
-                    break
-
-                batch = {
-                    k: torch.cat([b[k] for b in micro_batches], dim=0)
-                    for k in micro_batches[0] if isinstance(micro_batches[0][k], torch.Tensor)
-                }
-                
-                batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
-                convert_batch_dtype(batch, config, device)
-                
-                losses = original_train_step(
-                    batch=batch,
-                    models=models,
-                    _loss_fns=loss_fns,
-                    lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'),
-                    tokenizer=tokenizer,
-                    cached_prefix_ids=cached_prefix_ids,
-                    resample_ablation=config.get('resample_ablation', True),
-                    should_run_interventions=False,
-                    verbose_eval=False,
-                    do_kl_computation=False,
-                    do_lm_computation=False,
-                    GRPO_validate_mode=True,
-                    return_reconstruction=True
-                )
-                
-                # Accumulate light metrics
-                total_loss += losses['total'].item()
-                total_mse += losses['mse'].item()
-                total_GRPO += losses['loss_GRPO'].item()
-                total_KL_GRPO += losses['KL_GRPO'].item()
-                total_advantages_mean += losses['advantages_mean'].item()
-                total_advantages_std += losses['advantages_std'].item()
-                total_fraction_variance_explained += losses['fraction_variance_explained'].item()
-                total_mean_normalised_rmse += losses['mean_normalised_rmse'].item()
-                total_entropy += losses['entropy'].item()
-                num_batches += 1
-                
-                # Collect activation statistics from more light batches
-                # Instead of limiting to first 10/group_n batches, collect from first 20 light batches
-                if num_batches <= min(20, max(10, 10 // group_n)):
-                    activations = batch['A'].float()
-                    reconstructions = losses['reconstruction'].to(device)
-
-                    act_sum += activations.sum()
-                    act_sum_sq += (activations**2).sum()
-                    act_n += activations.numel()
-                    act_min = torch.min(act_min, activations.min())
-                    act_max = torch.max(act_max, activations.max())
-
-                    recon_sum += reconstructions.sum()
-                    recon_sum_sq += (reconstructions**2).sum()
-                    recon_min = torch.min(recon_min, reconstructions.min())
-                    recon_max = torch.max(recon_max, reconstructions.max())
-
-                    act_recon_sum_prod += (activations * reconstructions).sum()
-                    mse_sum += ((activations - reconstructions)**2).sum()
+                num_heavy_batches += 1
                 
     
-    # Compute average losses across all processes
+    # --- Synchronize Metrics Across All Processes ---
     if world_size > 1:
-        # Create tensor dict for reduction
+        # helper
+        def _scalar(x):
+            return x.item() if isinstance(x, torch.Tensor) else float(x)
+
+        # Create a single flat tensor for all metrics to ensure consistent shape for all_reduce
+        heavy_keys = [
+            'mse_baseline', 'mse_decoder', 'mse_shuffle', 'mse_shuffle_all', 'mse_hard_prompt',
+            'kl_baseline', 'kl_decoder', 'kl_shuffle', 'kl_shuffle_all', 'kl_hard_prompt'
+        ]
         metrics_to_reduce = [
-            total_loss, total_mse, total_lm, total_kl, total_entropy,
-            total_fraction_variance_explained, total_GRPO, total_KL_GRPO,
-            total_advantages_mean, total_advantages_std, total_mean_reward,
-            total_mean_reward_std, float(num_batches),
-            # Intervention metrics
-            intervention_metrics['mse_baseline'], intervention_metrics['mse_decoder'],
-            intervention_metrics['mse_shuffle'], intervention_metrics['mse_shuffle_all'],
-            intervention_metrics['mse_hard_prompt'], intervention_metrics['kl_baseline'],
-            intervention_metrics['kl_decoder'], intervention_metrics['kl_shuffle'],
-            intervention_metrics['kl_shuffle_all'], intervention_metrics['kl_hard_prompt'],
-            float(intervention_batches),
-            # Activation stats
-            act_sum, act_sum_sq, recon_sum, recon_sum_sq, act_recon_sum_prod, mse_sum, float(act_n)
+            # light
+            _scalar(total_loss), _scalar(total_mse), _scalar(total_entropy),
+            _scalar(total_fraction_variance_explained),
+            _scalar(total_GRPO), _scalar(total_KL_GRPO),
+            _scalar(total_advantages_mean), _scalar(total_advantages_std),
+            _scalar(total_mean_reward), _scalar(total_mean_reward_std),
+            _scalar(total_mean_normalised_rmse),
+            float(num_light_batches),
+            # heavy
+            _scalar(total_lm), _scalar(total_kl),
+            *[_scalar(intervention_metrics[k]) for k in heavy_keys],
+            float(num_heavy_batches),
+            # activation
+            _scalar(act_sum), _scalar(act_sum_sq), _scalar(recon_sum), _scalar(recon_sum_sq),
+            _scalar(act_recon_sum_prod), _scalar(mse_sum), float(act_n),
         ]
         metrics_tensor = torch.tensor(metrics_to_reduce, device=device)
         
         # All-reduce SUM
         dist.all_reduce(metrics_tensor, op=dist.ReduceOp.SUM)
         
-        # All-reduce MIN/MAX separately
+        # All-reduce MIN/MAX separately for activation ranges
         min_max_tensor = torch.stack([act_min, -act_max, recon_min, -recon_max])
         dist.all_reduce(min_max_tensor, op=dist.ReduceOp.MIN)
         act_min, act_max, recon_min, recon_max = min_max_tensor[0], -min_max_tensor[1], min_max_tensor[2], -min_max_tensor[3]
 
-        # Extract reduced values
+        # Unpack reduced values
         (
-            total_loss, total_mse, total_lm, total_kl, total_entropy,
-            total_fraction_variance_explained, total_GRPO, total_KL_GRPO,
-            total_advantages_mean, total_advantages_std, total_mean_reward,
-            total_mean_reward_std, num_batches,
-            # Interventions
-            intervention_metrics['mse_baseline'], intervention_metrics['mse_decoder'],
-            intervention_metrics['mse_shuffle'], intervention_metrics['mse_shuffle_all'],
-            intervention_metrics['mse_hard_prompt'], intervention_metrics['kl_baseline'],
-            intervention_metrics['kl_decoder'], intervention_metrics['kl_shuffle'],
-            intervention_metrics['kl_shuffle_all'], intervention_metrics['kl_hard_prompt'],
-            intervention_batches,
-            # Activation stats
+            total_loss, total_mse, total_entropy, total_fraction_variance_explained,
+            total_GRPO, total_KL_GRPO, total_advantages_mean, total_advantages_std,
+            total_mean_reward, total_mean_reward_std, total_mean_normalised_rmse,
+            num_light_batches,
+            total_lm, total_kl,
+            *intervention_metric_values,
+            num_heavy_batches,
             act_sum, act_sum_sq, recon_sum, recon_sum_sq, act_recon_sum_prod, mse_sum, act_n
         ) = metrics_tensor.tolist()
-        num_batches, intervention_batches, act_n = int(num_batches), int(intervention_batches), int(act_n)
+        
+        # Reconstruct intervention metrics dict and convert counts to int
+        intervention_metrics = dict(zip(heavy_keys, intervention_metric_values))
+        num_light_batches, num_heavy_batches, act_n = int(num_light_batches), int(num_heavy_batches), int(act_n)
 
     
-    # Compute averages
-    avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
-    avg_mse = total_mse / num_batches if num_batches > 0 else 0.0
-    avg_entropy = total_entropy / num_batches if num_batches > 0 else 0.0
-    avg_fraction_variance_explained = total_fraction_variance_explained / num_batches if num_batches > 0 else 0.0
-    avg_GRPO = total_GRPO / num_batches if num_batches > 0 else 0.0
-    avg_KL_GRPO = total_KL_GRPO / num_batches if num_batches > 0 else 0.0
-    avg_advantages_mean = total_advantages_mean / num_batches if num_batches > 0 else 0.0
-    avg_advantages_std = total_advantages_std / num_batches if num_batches > 0 else 0.0
-    avg_mean_reward = total_mean_reward / num_batches if num_batches > 0 else 0.0
-    avg_mean_reward_std = total_mean_reward_std / num_batches if num_batches > 0 else 0.0
-    avg_mean_normalised_rmse = total_mean_normalised_rmse / num_batches if num_batches > 0 else 0.0
+    # --- Compute Averages ---
+    # Light metrics are averaged over all processed batches
+    avg_loss = total_loss / num_light_batches if num_light_batches > 0 else 0.0
+    avg_mse = total_mse / num_light_batches if num_light_batches > 0 else 0.0
+    avg_entropy = total_entropy / num_light_batches if num_light_batches > 0 else 0.0
+    avg_fraction_variance_explained = total_fraction_variance_explained / num_light_batches if num_light_batches > 0 else 0.0
+    avg_GRPO = total_GRPO / num_light_batches if num_light_batches > 0 else 0.0
+    avg_KL_GRPO = total_KL_GRPO / num_light_batches if num_light_batches > 0 else 0.0
+    avg_advantages_mean = total_advantages_mean / num_light_batches if num_light_batches > 0 else 0.0
+    avg_advantages_std = total_advantages_std / num_light_batches if num_light_batches > 0 else 0.0
+    avg_mean_reward = total_mean_reward / num_light_batches if num_light_batches > 0 else 0.0
+    avg_mean_reward_std = total_mean_reward_std / num_light_batches if num_light_batches > 0 else 0.0
+    avg_mean_normalised_rmse = total_mean_normalised_rmse / num_light_batches if num_light_batches > 0 else 0.0
 
-    # Averages for "heavy" metrics, normalized by intervention_batches
-    heavy_batches = intervention_batches
-    avg_lm = total_lm / heavy_batches if heavy_batches > 0 else None
-    avg_kl = total_kl / heavy_batches if heavy_batches > 0 else None
+    # Heavy metrics are averaged only over the batches where they were computed
+    avg_lm = total_lm / num_heavy_batches if num_heavy_batches > 0 else None
+    avg_kl = total_kl / num_heavy_batches if num_heavy_batches > 0 else None
 
-    # Compute activation statistics (only on main process)
+    # --- Compute Activation Statistics (Main Process Only) ---
     activation_stats = {}
     if is_main_process and act_n > 0:
-        # Original activation statistics
         act_mean = act_sum / act_n
         act_var = act_sum_sq / act_n - act_mean**2
         act_std = math.sqrt(act_var) if act_var > 0 else 0.0
         
-        # Reconstruction statistics
         recon_mean = recon_sum / act_n
         recon_var = recon_sum_sq / act_n - recon_mean**2
         recon_std = math.sqrt(recon_var) if recon_var > 0 else 0.0
         
-        # Baseline comparisons
         zero_mse = act_sum_sq / act_n
         mean_mse = act_var
-        
-        # Reconstruction error (should match avg_mse)
         reconstruction_mse = mse_sum / act_n
         
-        # Correlation between original and reconstructed
         cov = (act_recon_sum_prod / act_n) - (act_mean * recon_mean)
         correlation = cov / (act_std * recon_std) if act_std > 0 and recon_std > 0 else 0.0
 
@@ -1057,8 +1019,8 @@ def validate_distributed(
         improvement_over_mean = (mean_mse - reconstruction_mse) / mean_mse * 100 if mean_mse > 0 else 0.0
 
         activation_stats = {
-            'act_mean': act_mean, 'act_std': act_std, 'act_min': act_min, 'act_max': act_max,
-            'recon_mean': recon_mean, 'recon_std': recon_std, 'recon_min': recon_min, 'recon_max': recon_max,
+            'act_mean': act_mean, 'act_std': act_std, 'act_min': act_min.item(), 'act_max': act_max.item(),
+            'recon_mean': recon_mean, 'recon_std': recon_std, 'recon_min': recon_min.item(), 'recon_max': recon_max.item(),
             'zero_mse': zero_mse, 'mean_mse': mean_mse, 'reconstruction_mse': reconstruction_mse,
             'correlation': correlation,
             'improvement_over_zero': improvement_over_zero,
@@ -1067,19 +1029,18 @@ def validate_distributed(
 
     # Compute average intervention metrics
     avg_intervention_metrics = {}
-    if heavy_batches > 0:
+    if num_heavy_batches > 0:
         for key, value in intervention_metrics.items():
-            avg_intervention_metrics[key] = value / heavy_batches
+            avg_intervention_metrics[key] = value / num_heavy_batches
 
+    # --- Logging ---
     if is_main_process and should_print_val: 
         log.info(f"\n{'='*60}")
-        log.info(f"Validation Results at Step {step}")
+        log.info(f"Validation Results at Step {step} (Light metrics over {num_light_batches} batches)")
         log.info(f"{'='*60}")
-        log.info("Average Losses:")
+        log.info("Average Light Losses:")
         log.info(f"  Total Loss: {avg_loss:.4f}")
         log.info(f"  MSE Loss: {avg_mse:.4f}")
-        log.info(f"  LM Loss: {avg_lm:.4f}" if avg_lm is not None else "  LM Loss: N/A")
-        log.info(f"  KL Loss: {avg_kl:.4f}" if avg_kl is not None else "  KL Loss: N/A")
         log.info(f"  Entropy: {avg_entropy:.4f}")
         log.info(f"  Fraction Variance Explained: {avg_fraction_variance_explained:.4f}")
         log.info(f"  GRPO Loss: {avg_GRPO:.4f}")
@@ -1089,13 +1050,18 @@ def validate_distributed(
         log.info(f"  Mean Reward: {avg_mean_reward:.4f}")
         log.info(f"  Mean Reward Std: {avg_mean_reward_std:.4f}")
         log.info(f"  Mean Normalised RMSE: {avg_mean_normalised_rmse:.4f}")
+
+        if num_heavy_batches > 0:
+            log.info(f"\nAverage Heavy Losses (over {num_heavy_batches} batches):")
+            log.info(f"  LM Loss: {avg_lm:.4f}" if avg_lm is not None else "  LM Loss: N/A")
+            log.info(f"  KL Loss: {avg_kl:.4f}" if avg_kl is not None else "  KL Loss: N/A")
         
         if activation_stats:
             log.info("\nActivation Statistics:")
             log.info(f"  Original - Mean: {activation_stats['act_mean']:.4f}, Std: {activation_stats['act_std']:.4f}")
-            log.info(f"  Original - Min: {activation_stats['act_min'].item():.4f}, Max: {activation_stats['act_max'].item():.4f}")
+            log.info(f"  Original - Min: {activation_stats['act_min']:.4f}, Max: {activation_stats['act_max']:.4f}")
             log.info(f"  Reconstructed - Mean: {activation_stats['recon_mean']:.4f}, Std: {activation_stats['recon_std']:.4f}")
-            log.info(f"  Reconstructed - Min: {activation_stats['recon_min'].item():.4f}, Max: {activation_stats['recon_max'].item():.4f}")
+            log.info(f"  Reconstructed - Min: {activation_stats['recon_min']:.4f}, Max: {activation_stats['recon_max']:.4f}")
             log.info("\nBaseline Comparisons:")
             log.info(f"  Zero MSE (predicting zeros): {activation_stats['zero_mse']:.4f}")
             log.info(f"  Mean MSE (predicting mean): {activation_stats['mean_mse']:.4f}")
@@ -1105,9 +1071,8 @@ def validate_distributed(
             log.info("\nAdditional Metrics:")
             log.info(f"  Correlation (original vs reconstructed): {activation_stats['correlation']:.4f}")
     
-        # Log intervention metrics if available
-        if heavy_batches > 0:
-            log.info(f"\nIntervention Analysis (on {heavy_batches} batches):")
+        if num_heavy_batches > 0:
+            log.info(f"\nIntervention Analysis (on {num_heavy_batches} batches):")
             log.info(f"  MSE Baseline (original tokens): {avg_intervention_metrics['mse_baseline']:.4f}")
             log.info(f"  MSE Decoder (generated explanation): {avg_intervention_metrics['mse_decoder']:.4f}")
             log.info(f"  MSE Shuffle (first n-3 tokens): {avg_intervention_metrics['mse_shuffle']:.4f}")
@@ -1121,13 +1086,11 @@ def validate_distributed(
         
         log.info(f"{'='*60}\n")
     
-    # Log to wandb (moved outside of activation statistics block)
+    # --- W&B Logging ---
     if is_main_process and wandb_run_id:
         val_metrics = {
             'val/loss': avg_loss,
             'val/loss_mse': avg_mse,
-            'val/loss_lm': avg_lm,
-            'val/loss_kl': avg_kl,
             'val/loss_entropy': avg_entropy,
             'val/fraction_variance_explained': avg_fraction_variance_explained,
             'val/GRPO_loss': avg_GRPO,
@@ -1137,14 +1100,20 @@ def validate_distributed(
             'val/mean_reward': avg_mean_reward,
             'val/mean_reward_std': avg_mean_reward_std,
             'val/mean_normalised_rmse': avg_mean_normalised_rmse,
+            'val/light_batches_processed': num_light_batches,
         }
         
-        # Add activation statistics if they were collected
+        # Add heavy metrics if they were computed
+        if num_heavy_batches > 0:
+            val_metrics['val/loss_lm'] = avg_lm
+            val_metrics['val/loss_kl'] = avg_kl
+            for key, value in avg_intervention_metrics.items():
+                val_metrics[f'val/intervention_{key}'] = value.item() if hasattr(value, 'item') else value
+            val_metrics['val/heavy_batches_processed'] = num_heavy_batches
+        
         if activation_stats:
-            # Helper to safely call .item() on tensors
             def get_item(v):
                 return v.item() if isinstance(v, torch.Tensor) else v
-
             val_metrics.update({
                 'val/activation_mean': get_item(activation_stats['act_mean']),
                 'val/activation_std': get_item(activation_stats['act_std']),
@@ -1162,17 +1131,10 @@ def validate_distributed(
                 'val/correlation': get_item(activation_stats['correlation']),
             })
         
-        # Add intervention metrics to wandb if available
-        if heavy_batches > 0:
-            for key, value in avg_intervention_metrics.items():
-                val_metrics[f'val/intervention_{key}'] = value.item() if hasattr(value, 'item') else value  
-            val_metrics['val/intervention_batches'] = heavy_batches
-        
         log_metrics(val_metrics, step)
 
-    # Generate verbose samples if on main process and conditions are met
+    # --- Generate Verbose Samples ---
     if is_main_process and all(v is not None for v in [current_epoch, max_steps, gradient_accumulation_steps, val_interval]):
-
         try:
             _check_and_generate_verbose_samples(
                 decoder_base=decoder_base,
@@ -1194,22 +1156,19 @@ def validate_distributed(
                 comparison_tuned_lens=comparison_tuned_lens
             )
         except Exception as e:
-            log.error(f"Error in _check_and_generate_verbose_samples: {e}")
+            log.error(f"Error in _check_and_generate_verbose_samples: {e}", exc_info=True)
             raise e
-
     
-    # Put models back in train mode
+    # --- Cleanup ---
     decoder_base.train()
     encoder_base.train()
     orig_model.model.eval()
-    # orig_model.model stays in eval mode
     
-    # Move orig_model back to CPU if appropriate
     if should_move_orig_to_cpu(config, shared_base_model, is_validation=True):
         orig_model.to('cpu')
         log.info("Moved orig_model back to CPU after validation")
     
-    # Return the average validation loss
+    # Return the primary validation metric
     return avg_mse
 
 # Load checkpoint BEFORE moving models to device if resuming
@@ -1253,9 +1212,8 @@ def maybe_resume_from_checkpoint(
                     slurm_autoresume_candidates.extend(preempt_checkpoints)
                     if is_main():
                         log.info(f"Found {len(preempt_checkpoints)} preemption checkpoint(s). Adding to resume candidates.")
-                
-                # Also look for folders with slurm{job_id} in their name, regardless of whether a .pt was found
-                slurm_folder_pattern = f"*slurm{current_slurm_job_id_for_resume}*"
+                # Also look for folders with slurm{job_id} in their name, recursively in all subfolders
+                slurm_folder_pattern = f"**/*slurm{current_slurm_job_id_for_resume}*"
                 slurm_folders = sorted(
                     [p for p in run_checkpoint_base_dir.glob(slurm_folder_pattern) if p.is_dir()],
                     key=lambda p: p.stat().st_mtime,
@@ -1349,7 +1307,8 @@ def maybe_resume_from_checkpoint(
             models_to_load = {"decoder": decoder, "encoder": encoder}
             reset_steps = config.get('resume_reset_steps', False)
             
-            temp_ckpt_mgr = CheckpointManager({'checkpoint': {'enabled': True, 'strict_load': config['checkpoint'].get('strict_load', True)}}, log, None, gradient_accumulation_steps)
+            log.info(f"Loading checkpoint with strict_load: {config['checkpoint']['strict_load']}")
+            temp_ckpt_mgr = CheckpointManager({'checkpoint': {'enabled': True, 'strict_load': config['checkpoint']['strict_load']}}, log, None, gradient_accumulation_steps)
 
             if is_main():
                 log.info(f"Loading checkpoint from exact path: {current_ckpt_path_str}")
@@ -1513,6 +1472,7 @@ def maybe_resume_from_checkpoint(
             last_exception = e
             if is_main():
                 log.warning(f"Failed to load or verify checkpoint from {current_ckpt_path_str}: {str(e)}")
+                log.info(f"Failed to load or verify checkpoint from {current_ckpt_path_str}: {str(e)}")
 
             is_pytorch_stream_error = "PytorchStreamReader failed" in str(e)
             
@@ -1534,9 +1494,11 @@ def maybe_resume_from_checkpoint(
                     log.info(f"Specific error encountered with {current_ckpt_path_str}. Will try next available checkpoint: {actual_paths_to_attempt[idx+1]}")
                 continue # Try the next checkpoint
             else:
+                log.error(f"Fatal error (??) with {current_ckpt_path_str}: {str(e)}; trying next.")
+                pass
                 # If not the specific error allowing a retry, or no more retries allowed for this error,
                 # then this error is fatal for the loading process. Re-raise it.
-                log.error(f"Fatal error encountered with {current_ckpt_path_str}: {str(e)}; trying next.")
+                #log.error(f"Fatal error encountered with {current_ckpt_path_str}: {str(e)}; trying next.")
                 #raise e 
         except Exception as e: # Catch other non-RuntimeError exceptions during the process
             last_exception = e
@@ -1553,6 +1515,8 @@ def maybe_resume_from_checkpoint(
             if is_main():
                 log.error(f"{final_error_msg} Last error: {str(last_exception)}")
             raise RuntimeError(final_error_msg) from last_exception
+        elif os.environ.get('SLURM_RESTART_COUNT', '0') != '0':
+            log.error("no preemption/resumption data found - we continue with a new run")
         else:
             # This case implies actual_paths_to_attempt was empty or paths were invalid before try block.
             # (already handled by earlier checks, but as a safeguard)
@@ -1878,7 +1842,20 @@ def maybe_restore_optimizer_and_scheduler_from_checkpoint(
 def main(cfg: DictConfig) -> None:
     """Distributed training entry point with optimized gradient accumulation."""
 
-    
+    on_the_fly_generation_enabled = cfg.get('dataset', {}).get('on_the_fly', {}).get('enabled', False)
+    if on_the_fly_generation_enabled:
+        try:
+            if mp.get_start_method(allow_none=True) != 'spawn':
+                mp.set_start_method('spawn', force=True)
+                print("Successfully set multiprocessing start method to 'spawn'.") 
+        except RuntimeError as e:
+            current_method = mp.get_start_method(allow_none=True)
+            if current_method == 'spawn':
+                print(f"Multiprocessing start method already set to 'spawn'.")
+            else:
+                print(f"Warning: Could not set start_method to 'spawn'. Current method: {current_method}. Error: {e}")
+                print("CUDA with multiprocessing might still face issues if method is not 'spawn'.")
+
      # Take memory snapshots at different points
     overall_start_time = time.time() # For overall script timing
 
@@ -2092,20 +2069,49 @@ def main(cfg: DictConfig) -> None:
             not (encoder_train_cfg.get('base_model', True) and encoder_train_cfg.get('use_base_model', False))
         )
 
-        # Load base model once if sharing
+        # Load base model once if sharing (for encoder/decoder)
         shared_base_model_obj = None
         if share_base_model:
             if is_main():
-                log.info(f"Loading shared base model '{model_name}' for memory efficiency (base models are frozen)")
-            shared_base_model_obj = AutoModelForCausalLM.from_pretrained(model_name, load_in_8bit=False)
+                log.info(f"Loading shared base model '{model_name}' for encoder/decoder (memory efficient, frozen)")
+            shared_base_model_obj = AutoModelForCausalLM.from_pretrained(model_name, load_in_8bit=False,attn_implementation=config.get('attn_implementation', None))
             shared_base_model_obj.eval()
             for p in shared_base_model_obj.parameters():
                 p.requires_grad = False
 
+        # === Support for Different Orig Model ===
+        # This feature allows using a different model variant for orig_model while
+        # encoder/decoder share their base model. Useful for:
+        # 1. Using a chat-tuned variant for more realistic interventions
+        # 2. Comparing base vs instruction-tuned model behaviors
+        # 3. Testing robustness across model variants
+        orig_model_name = config.get('orig_model_name', None)
+        orig_base_to_use = None
+        
+        if orig_model_name and orig_model_name != model_name:
+            # User wants a different model for orig_model (e.g., chat-tuned variant)
+            if is_main():
+                log.info(f"Loading different base model for OrigWrapper: '{orig_model_name}'")
+                log.info(f"  Encoder/Decoder will use: '{model_name}'")
+                log.info(f"  OrigWrapper will use: '{orig_model_name}'")
+            # Don't share with encoder/decoder even if they're sharing among themselves
+            orig_base_to_use = None  # Let OrigWrapper load its own
+        elif share_base_model:
+            # Use the shared base model for orig_model too (original behavior)
+            orig_base_to_use = shared_base_model_obj
+            if is_main():
+                log.info("OrigWrapper will use the same shared base model as encoder/decoder")
+        else:
+            # No sharing at all - each component loads its own
+            orig_base_to_use = None
+            if is_main():
+                log.info("OrigWrapper will load its own base model (no sharing)")
+
         # Create single OrigWrapper instance for both on-the-fly generation and training/validation
+        actual_orig_model_name = orig_model_name if orig_model_name else model_name
         if is_main():
-            log.info(f"Initializing OrigWrapper ({model_name}) with{'out' if shared_base_model_obj is None else ''} shared base model")
-        orig_model = OrigWrapper(model_name, load_in_8bit=False, base_to_use=shared_base_model_obj)
+            log.info(f"Initializing OrigWrapper with model: '{actual_orig_model_name}'")
+        orig_model = OrigWrapper(actual_orig_model_name, load_in_8bit=False, base_to_use=orig_base_to_use)
         
         # Move to device early if on-the-fly generation is enabled
         if on_the_fly_generation_enabled:
@@ -2354,21 +2360,31 @@ def main(cfg: DictConfig) -> None:
                 log.warning("Failed to create proper train/val split!")
 
         # Determine num_workers based on CPU count and world size
-        num_dataloader_workers = 0 # Defaulting to 0 based on previous observation of issues.
-        if world_size > 0 : 
+        num_dataloader_workers = 0
+        if world_size > 0:
             cpu_count = os.cpu_count()
             if cpu_count is not None:
                 workers_per_gpu = cpu_count // world_size
-                if workers_per_gpu >= 4: num_dataloader_workers = 2 # Simplified heuristic
-                elif workers_per_gpu >=2: num_dataloader_workers = 1
-            num_dataloader_workers = 0 # disable dataloader workers for now
-            if is_main(): log.info(f"Num DataLoader workers set to: {num_dataloader_workers}")
-        elif is_main(): # world_size is 0 or less, which is unusual.
-            log.warning(f"Could not determine optimal num_workers (world_size={world_size}). Defaulting to 0.")
-        if on_the_fly_generation_enabled:
-            num_dataloader_workers = 0 # disable dataloader workers for now
-            log.info("On-the-fly generation enabled, setting num_dataloader_workers to 0")
+                if workers_per_gpu >= 4:
+                    num_dataloader_workers = min(workers_per_gpu//2, 8)  # Simplified heuristic
+                elif workers_per_gpu >= 2:
+                    num_dataloader_workers = 1
+        elif is_main():  # world_size is 0 or less, which is unusual.
+            log.warning(
+                "Could not determine optimal num_workers "
+                f"(world_size={world_size}). Defaulting to 0."
+            )
 
+        if on_the_fly_generation_enabled:
+            if num_dataloader_workers > 0 and is_main():
+                log.info(
+                    "On-the-fly generation enabled, "
+                    "overriding num_dataloader_workers to 0."
+                )
+            num_dataloader_workers = 0
+        
+        if is_main():
+            log.info(f"Num DataLoader workers set to: {num_dataloader_workers}")
 
         if train_ds is not None and len(train_ds) > 0:
             # RankInMemoryTrainingCache is a map-style dataset, so FastDistributedSampler is appropriate
@@ -2991,7 +3007,7 @@ def main(cfg: DictConfig) -> None:
             else:
                 batch = raw_batch
 
-            batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
+            batch = {k: v.to(device, non_blocking=True) for k, v in batch.items() if isinstance(v, torch.Tensor)}
 
             if step == 0 and is_main():
                 # Temporarily move orig_model to device for initial validation if needed
@@ -3097,9 +3113,20 @@ def main(cfg: DictConfig) -> None:
                 else:
                     current_entropy_log = config.get('entropy_weight', 0.0)
 
+                entropy_clamp_log = config.get('entropy_clamp_schedule', None)
+                if entropy_clamp_log:
+                    current_entropy_clamp_log = get_schedule_value(entropy_clamp_log, step, max_steps,
+                                                            current_epoch=current_epoch,
+                                                            steps_per_epoch=steps_per_epoch,
+                                                            grad_accum_steps=gradient_accumulation_steps)
+                else:
+                    current_entropy_clamp_log = config.get('entropy_clamp', 1)
+
                 wandb_metrics = {
                     'train/loss': avg_loss, # This is the running average loss
                     'loss/total': metrics['loss'], # This is the current step's synced loss
+                    'loss/total_loss_1': metrics['loss_1'], # This is the current step's synced loss
+                    'loss/total_loss_2': metrics['loss_2'], # This is the current step's synced loss
                     'loss/mse': metrics['loss_mse'],
                     'loss/lm': metrics['loss_lm'],
                     'loss/kl': metrics['loss_kl'],
@@ -3115,6 +3142,7 @@ def main(cfg: DictConfig) -> None:
                     'params/lm_w': config.get('lm_base_weight'),
                     'params/kl_w': config.get('kl_base_weight', 1.0),
                     'params/entropy_w': current_entropy_log,
+                    'params/entropy_clamp': current_entropy_clamp_log,
                     'params/GRPO_entropy_w': config.get('GRPO_entropy_weight', 0.0),
                     'params/GRPO_w': config.get('GRPO_weight', 0.0),
                     'params/GRPO_beta': config.get('GRPO_beta', 0.0),
@@ -3125,6 +3153,7 @@ def main(cfg: DictConfig) -> None:
                     'performance/samples_per_second': samples_per_sec, # Now: effective_batch_size / (avg_step_time * gradient_accumulation_steps)
                     'performance/tokens_per_second': tokens_per_second,
                     'performance/avg_step_time': avg_step_time, # This is avg micro-step time
+                    'performance/step_time': time.time() - step_start_time,
                     'train/gpu_memory_allocated': torch.cuda.memory_allocated() / 1e9 if torch.cuda.is_available() else 0,
                     'train/gradient_accumulation_step': accumulation_step,
                     # Add explicit step counters for different x-axis options in WandB

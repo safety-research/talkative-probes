@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, Any
 
 import torch
+import logging
 
 __all__ = ["save", "load"]
 
@@ -13,7 +14,24 @@ __all__ = ["save", "load"]
 def save(path: str | Path, models: Dict[str, torch.nn.Module], optim: torch.optim.Optimizer | None, step: int, scheduler: Any | None = None, **extra) -> None:  # noqa: D401
     """Serialize *models* + *optim* state_dicts and training metadata to *path*."""
 
-    ckpt = {"step": step, "models": {k: m.state_dict() for k, m in models.items()}}
+    model_state_dicts = {}
+    for name, model in models.items():
+        state_dict = model.state_dict()
+        print(f"Saving {name} with {list([k for k in state_dict.keys()])}")
+        
+        # If model has a 'base' and it's not trainable, don't save it.
+        if hasattr(model, 'base') and model.base is not None:
+            is_base_model_trainable = any(p.requires_grad for p in model.base.parameters())
+            if not is_base_model_trainable:
+                # Filter out base model weights (handles both compiled and non-compiled models)
+                state_dict = {k: v for k, v in state_dict.items() if 'base' not in k}
+                print(f"Filtered out base model weights for {name}, filtered out {list([k for k in state_dict.keys() if 'base' in k])} from original {list([k for k in state_dict.keys()])}")
+            else:
+                print(f"Base model weights for {name} are trainable, saving {list([k for k in state_dict.keys() if 'base' in k])} from original {list([k for k in state_dict.keys()])}")
+        
+        model_state_dicts[name] = state_dict
+
+    ckpt = {"step": step, "models": model_state_dicts}
     if optim is not None:
         ckpt["optim"] = optim.state_dict()
     if scheduler is not None:
@@ -40,6 +58,9 @@ def load(path: str | Path, models: Dict[str, torch.nn.Module], optim: torch.opti
     Returns the checkpoint dictionary so caller can read ``step`` or any extra
     metadata stored during ``save``.
     """
+    print(f"Loading checkpoint from {path} with strict_load: {strict_load}")
+    print(f"Setting strict_load to False temporarily")
+    strict_load = False
 
     ckpt = torch.load(path, map_location=map_location, weights_only=False)
     
@@ -63,6 +84,9 @@ def load(path: str | Path, models: Dict[str, torch.nn.Module], optim: torch.opti
             torch.cuda.set_rng_state(state)
         if "numpy" in rng_states:
             np.random.set_state(rng_states["numpy"])
+    
+    log = logging.getLogger(__name__)
+    
     for k, m in models.items():
         if k in ckpt["models"]:
             state_dict = ckpt["models"][k]
@@ -85,15 +109,42 @@ def load(path: str | Path, models: Dict[str, torch.nn.Module], optim: torch.opti
             
             # Debug: Check if prompt embeddings are in state dict
             if k == 'decoder':
-                import logging
-                log = logging.getLogger(__name__)
                 if 'prompt_left_emb' in state_dict:
                     log.info(f"Loading decoder prompt_left_emb with norm {state_dict['prompt_left_emb'].norm().item():.4f}")
                 if 'prompt_right_emb' in state_dict:
                     log.info(f"Loading decoder prompt_right_emb with norm {state_dict['prompt_right_emb'].norm().item():.4f}")
             
             try:
-                if strict_load:
+                # If the model has a frozen base, we are more lenient with loading
+                # to allow for checkpoints that don't save the base model.
+                has_frozen_base = False
+                if hasattr(m, 'base') and m.base is not None:
+                    if not any(p.requires_grad for p in m.base.parameters()):
+                        has_frozen_base = True
+
+                if has_frozen_base:
+                    # Load non-strictly, then check for unexpected issues.
+                    missing, unexpected = m.load_state_dict(state_dict, strict=False)
+                    
+                    # It's okay to have missing base model keys (handles both compiled and non-compiled)
+                    non_base_missing = [key for key in missing if 'base' not in key]
+
+                    if strict_load:
+                        error_msgs = []
+                        if non_base_missing:
+                            error_msgs.append(f"missing keys: {non_base_missing}")
+                        if unexpected:
+                            error_msgs.append(f"unexpected keys: {unexpected}")
+                        
+                        if error_msgs:
+                            raise RuntimeError(f"(in strict load {strict_load}), Error(s) in loading state_dict for {k}: " + ", ".join(error_msgs))
+                    else: # not strict_load, just warn
+                        if non_base_missing:
+                            log.warning(f"Missing keys for '{k}': {non_base_missing}")
+                        if unexpected:
+                            log.warning(f"Unexpected keys for '{k}': {unexpected}")
+
+                elif strict_load:
                     m.load_state_dict(state_dict, strict=strict_load)
                 else:
                     missing, unexpected = m.load_state_dict(state_dict, strict=False)
@@ -102,7 +153,6 @@ def load(path: str | Path, models: Dict[str, torch.nn.Module], optim: torch.opti
                     if unexpected:
                         log.warning(f"Unexpected keys: {unexpected}")
             except RuntimeError as e:
-                log = logging.getLogger(__name__)
                 log.error(f"Failed to load state dict for {k}: {e}")
                 # Try with strict=False to see what's missing/unexpected
                 missing, unexpected = m.load_state_dict(state_dict, strict=False)

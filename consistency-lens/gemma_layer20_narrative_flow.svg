@@ -1,0 +1,209 @@
+<svg width="1800" height="800" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Filters -->
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <filter id="softShadow">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-opacity="0.2"/>
+    </filter>
+    
+    <!-- Arrow markers -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#B0B0B0" />
+    </marker>
+  </defs>
+  
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap');
+    
+    .panel-title { font-family: 'Inter', sans-serif; font-size: 18px; font-weight: 700; fill: #FFFFFF; }
+    .section-label { font-family: 'Inter', sans-serif; font-size: 14px; font-weight: 500; fill: #B0B0B0; }
+    .code { font-family: 'JetBrains Mono', monospace; font-size: 16px; }
+    .token { font-family: 'JetBrains Mono', monospace; font-size: 14px; }
+    .decoded { font-family: 'JetBrains Mono', monospace; font-size: 12px; fill: #B0B0B0; }
+    .annotation { font-family: 'Inter', sans-serif; font-size: 12px; fill: #7F8C8D; font-style: italic; }
+    
+    .neutral { fill: #B0B0B0; }
+    .typo { fill: #FFBF00; }
+    .error-signal { fill: #FF6B6B; }
+    .correction { fill: #2ECC71; }
+    .python-context { fill: #3498DB; }
+  </style>
+  
+  <!-- Dark background -->
+  <rect width="1800" height="800" fill="#1A1D21" />
+  
+  <!-- Main title -->
+  <text x="900" y="50" text-anchor="middle" class="panel-title" font-size="24">Layer 20 Decoded: How Gemma Detects and Corrects a Python Typo</text>
+  
+  <!-- Panel 1: Input with Typo -->
+  <g transform="translate(100, 120)">
+    <text x="200" y="0" text-anchor="middle" class="panel-title">1. Input with Typo</text>
+    
+    <rect x="0" y="20" width="400" height="500" rx="12" fill="#0D0F11" stroke="#2C3E50" stroke-width="1" filter="url(#softShadow)"/>
+    
+    <!-- Code display -->
+    <g transform="translate(20, 50)">
+      <text x="0" y="0" class="code neutral">def add(left, </text>
+      <text x="168" y="0" class="code typo">rihgt</text>
+      <text x="228" y="0" class="code neutral">):</text>
+      <text x="0" y="30" class="code neutral">    return left + </text>
+      <text x="204" y="30" class="code typo">rihgt</text>
+    </g>
+    
+    <!-- Token breakdown -->
+    <text x="20" y="150" class="section-label">Token Breakdown:</text>
+    <g transform="translate(20, 180)">
+      <!-- Show the typo as 3 tokens -->
+      <rect x="0" y="0" width="40" height="30" rx="15" fill="#2C3E50"/>
+      <text x="20" y="20" text-anchor="middle" class="token typo">ri</text>
+      <text x="20" y="50" text-anchor="middle" class="annotation">Token 23</text>
+      
+      <rect x="50" y="0" width="40" height="30" rx="15" fill="#2C3E50"/>
+      <text x="70" y="20" text-anchor="middle" class="token typo">h</text>
+      <text x="70" y="50" text-anchor="middle" class="annotation">Token 24</text>
+      
+      <rect x="100" y="0" width="40" height="30" rx="15" fill="#2C3E50"/>
+      <text x="120" y="20" text-anchor="middle" class="token typo">gt</text>
+      <text x="120" y="50" text-anchor="middle" class="annotation">Token 25</text>
+      
+      <text x="160" y="20" class="annotation">= "rihgt"</text>
+    </g>
+    
+    <!-- Key context tokens -->
+    <g transform="translate(20, 280)">
+      <text x="0" y="0" class="section-label">Context Tokens:</text>
+      
+      <rect x="0" y="20" width="50" height="30" rx="15" fill="#2C3E50"/>
+      <text x="25" y="40" text-anchor="middle" class="token python-context">def</text>
+      
+      <rect x="60" y="20" width="50" height="30" rx="15" fill="#2C3E50"/>
+      <text x="85" y="40" text-anchor="middle" class="token python-context">add</text>
+      
+      <rect x="120" y="20" width="70" height="30" rx="15" fill="#2C3E50"/>
+      <text x="155" y="40" text-anchor="middle" class="token neutral">return</text>
+    </g>
+  </g>
+  
+  <!-- Arrow 1 -->
+  <path d="M 520 370 L 620 370" stroke="#B0B0B0" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <text x="570" y="360" text-anchor="middle" class="annotation">Forward Pass</text>
+  
+  <!-- Panel 2: Layer 20 Sees Anomaly -->
+  <g transform="translate(650, 120)">
+    <text x="200" y="0" text-anchor="middle" class="panel-title">2. L20 Detects Anomaly</text>
+    
+    <rect x="0" y="20" width="400" height="500" rx="12" fill="#0D0F11" stroke="#2C3E50" stroke-width="1" filter="url(#softShadow)"/>
+    
+    <!-- Context understanding -->
+    <g transform="translate(20, 50)">
+      <text x="0" y="0" class="section-label">Context Recognition:</text>
+      
+      <rect x="0" y="15" width="360" height="60" rx="8" fill="#1E3A5F" fill-opacity="0.3" stroke="#3498DB" stroke-width="1"/>
+      <text x="10" y="35" class="token">def → "Python MyAlgorithm Function"</text>
+      <text x="10" y="55" class="token">add → "AddPython ArithmeticFunction"</text>
+    </g>
+    
+    <!-- Error detection in typo tokens -->
+    <g transform="translate(20, 150)">
+      <text x="0" y="0" class="section-label">Anomaly in "rihgt" tokens:</text>
+      
+      <rect x="0" y="20" width="360" height="180" rx="8" fill="#5F1E1E" fill-opacity="0.3" stroke="#FF6B6B" stroke-width="1"/>
+      
+      <g transform="translate(10, 40)">
+        <text x="0" y="0" class="token typo">ri</text>
+        <text x="30" y="0" class="decoded">→ "riVANCodeNumeric,FieldValue"</text>
+        
+        <text x="0" y="30" class="token typo">h</text>
+        <text x="30" y="30" class="decoded">→ "rihhih </text>
+        <text x="120" y="30" class="error-signal">Syntax Matlab</text>
+        <text x="230" y="30" class="decoded"> Object"</text>
+        
+        <text x="0" y="60" class="token typo">gt</text>
+        <text x="30" y="60" class="decoded">→ "</text>
+        <text x="50" y="60" class="correction">right</text>
+        <text x="90" y="60" class="decoded"> pythonValueVariable"</text>
+        
+        <rect x="0" y="80" width="340" height="1" fill="#FF6B6B" opacity="0.5"/>
+        
+        <text x="0" y="110" class="token neutral">\n</text>
+        <text x="30" y="110" class="decoded">→ "Python code </text>
+        <text x="140" y="110" class="error-signal">errorFunctionName missing</text>
+        <text x="300" y="110" class="decoded">"</text>
+      </g>
+    </g>
+    
+    <!-- Analysis -->
+    <g transform="translate(20, 380)">
+      <text x="0" y="0" class="section-label">Layer 20's Analysis:</text>
+      <text x="0" y="25" class="annotation">• Confusion signals: "Syntax Matlab"</text>
+      <text x="0" y="45" class="annotation">• Error recognition: "errorFunctionName"</text>
+      <text x="0" y="65" class="annotation">• Knows correct form: "right" appears in gt</text>
+    </g>
+  </g>
+  
+  <!-- Arrow 2 -->
+  <path d="M 1070 370 L 1170 370" stroke="#B0B0B0" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <text x="1120" y="360" text-anchor="middle" class="annotation">Response Plan</text>
+  
+  <!-- Panel 3: L20 Prepares Correction -->
+  <g transform="translate(1200, 120)">
+    <text x="200" y="0" text-anchor="middle" class="panel-title">3. L20 Prepares Correction</text>
+    
+    <rect x="0" y="20" width="400" height="500" rx="12" fill="#0D0F11" stroke="#2C3E50" stroke-width="1" filter="url(#softShadow)"/>
+    
+    <!-- Model response tokens -->
+    <g transform="translate(20, 50)">
+      <text x="0" y="0" class="section-label">Response Formation:</text>
+      
+      <!-- Correction signals -->
+      <rect x="0" y="20" width="360" height="120" rx="8" fill="#1E5F1E" fill-opacity="0.3" stroke="#2ECC71" stroke-width="1"/>
+      
+      <g transform="translate(10, 40)">
+        <text x="0" y="0" class="token">model</text>
+        <text x="50" y="0" class="decoded">→ "</text>
+        <text x="70" y="0" class="correction">mist correction</text>
+        <text x="180" y="0" class="decoded"> You answer"</text>
+        
+        <text x="0" y="30" class="token">Of</text>
+        <text x="30" y="30" class="decoded">→ "JavaScript </text>
+        <text x="130" y="30" class="correction">Fix FYI Error</text>
+        <text x="230" y="30" class="decoded"> obviously"</text>
+        
+        <text x="0" y="60" class="token">course</text>
+        <text x="60" y="60" class="decoded">→ "Ofcourse </text>
+        <text x="140" y="60" class="correction">Yes Python glad! help</text>
+        <text x="290" y="60" class="decoded">"</text>
+      </g>
+    </g>
+    
+    <!-- Final output preview -->
+    <g transform="translate(20, 200)">
+      <text x="0" y="0" class="section-label">Resulting Behavior:</text>
+      
+      <rect x="0" y="20" width="360" height="100" rx="8" fill="#2C3E50" fill-opacity="0.3"/>
+      <text x="10" y="45" class="code neutral">Of course! The issue is with</text>
+      <text x="10" y="70" class="code neutral">the parameter name. It should</text>
+      <text x="10" y="95" class="code neutral">be '</text>
+      <text x="40" y="95" class="code correction">right</text>
+      <text x="90" y="95" class="code neutral">' not '</text>
+      <text x="150" y="95" class="code typo">rihgt</text>
+      <text x="200" y="95" class="code neutral">'</text>
+    </g>
+    
+    <!-- Key insight -->
+    <g transform="translate(20, 350)">
+      <rect x="0" y="0" width="360" height="100" rx="8" fill="#FFBF00" fill-opacity="0.1" stroke="#FFBF00" stroke-width="1"/>
+      <text x="180" y="25" text-anchor="middle" class="section-label" fill="#FFBF00">Key Insight</text>
+      <text x="10" y="50" class="annotation" fill="#FFFFFF">The decoded activations reveal the model's</text>
+      <text x="10" y="70" class="annotation" fill="#FFFFFF">internal process: detecting syntax errors,</text>
+      <text x="10" y="90" class="annotation" fill="#FFFFFF">recognizing the intended word, and planning help.</text>
+    </g>
+  </g>
+</svg>

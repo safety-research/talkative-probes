@@ -1,0 +1,190 @@
+<svg width="1400" height="800" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Soft gradient for background -->
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#f0f9ff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#fefce8;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Layer gradient -->
+    <linearGradient id="layerGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#e0e7ff;stop-opacity:0.3" />
+      <stop offset="20%" style="stop-color:#c7d2fe;stop-opacity:0.5" />
+      <stop offset="76.9%" style="stop-color:#a5b4fc;stop-opacity:0.7" />
+      <stop offset="77%" style="stop-color:#dc2626;stop-opacity:1" />
+      <stop offset="80%" style="stop-color:#dc2626;stop-opacity:1" />
+      <stop offset="80.1%" style="stop-color:#a5b4fc;stop-opacity:0.7" />
+      <stop offset="100%" style="stop-color:#818cf8;stop-opacity:0.3" />
+    </linearGradient>
+    
+    <!-- Glow effect -->
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="4" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <!-- Soft shadow -->
+    <filter id="softShadow">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="3"/>
+      <feOffset dx="0" dy="2" result="offsetblur"/>
+      <feFlood flood-color="#000000" flood-opacity="0.1"/>
+      <feComposite in2="offsetblur" operator="in"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&amp;display=swap');
+    
+    text { font-family: 'Inter', sans-serif; }
+    .title { font-size: 24px; font-weight: 600; fill: #1e293b; }
+    .subtitle { font-size: 14px; font-weight: 400; fill: #64748b; }
+    .token-original { font-size: 15px; font-weight: 500; fill: #1e293b; }
+    .token-decoded { font-size: 12px; font-weight: 400; fill: #475569; }
+    .layer-label { font-size: 11px; font-weight: 500; fill: #94a3b8; }
+    .layer-20 { font-size: 12px; font-weight: 600; fill: #dc2626; }
+  </style>
+  
+  <!-- Background -->
+  <rect width="1400" height="800" fill="url(#bgGradient)" />
+  
+  <!-- Title -->
+  <text x="700" y="50" text-anchor="middle" class="title">Gemma Layer 20: Decoding the Forward Pass</text>
+  <text x="700" y="75" text-anchor="middle" class="subtitle">How activations reveal internal reasoning about Python code</text>
+  
+  <!-- Model visualization -->
+  <g transform="translate(100, 120)">
+    <!-- Model layers background -->
+    <rect x="0" y="0" width="80" height="500" rx="40" fill="url(#layerGradient)" opacity="0.8"/>
+    
+    <!-- Layer markers -->
+    <text x="-30" y="5" class="layer-label">Layer 26</text>
+    <text x="-30" y="500" class="layer-label">Layer 0</text>
+    <text x="-30" y="385" class="layer-20">Layer 20 →</text>
+    
+    <!-- Highlight layer 20 -->
+    <circle cx="40" cy="385" r="8" fill="#dc2626" filter="url(#glow)"/>
+  </g>
+  
+  <!-- Forward pass visualization -->
+  <g transform="translate(250, 150)">
+    <!-- Input tokens -->
+    <g id="input-tokens">
+      <text x="0" y="0" class="subtitle">Input Tokens</text>
+      
+      <!-- Key tokens only -->
+      <g transform="translate(0, 30)">
+        <rect x="0" y="0" width="60" height="30" rx="15" fill="#e0e7ff" filter="url(#softShadow)"/>
+        <text x="30" y="20" text-anchor="middle" class="token-original">def</text>
+      </g>
+      
+      <g transform="translate(70, 30)">
+        <rect x="0" y="0" width="60" height="30" rx="15" fill="#e0e7ff" filter="url(#softShadow)"/>
+        <text x="30" y="20" text-anchor="middle" class="token-original">add</text>
+      </g>
+      
+      <g transform="translate(140, 30)">
+        <rect x="0" y="0" width="40" height="30" rx="15" fill="#e0e7ff" filter="url(#softShadow)"/>
+        <text x="20" y="20" text-anchor="middle" class="token-original">(</text>
+      </g>
+      
+      <g transform="translate(190, 30)">
+        <rect x="0" y="0" width="60" height="30" rx="15" fill="#e0e7ff" filter="url(#softShadow)"/>
+        <text x="30" y="20" text-anchor="middle" class="token-original">left</text>
+      </g>
+      
+      <g transform="translate(260, 30)">
+        <rect x="0" y="0" width="30" height="30" rx="15" fill="#e0e7ff" filter="url(#softShadow)"/>
+        <text x="15" y="20" text-anchor="middle" class="token-original">,</text>
+      </g>
+      
+      <g transform="translate(300, 30)">
+        <rect x="0" y="0" width="80" height="30" rx="15" fill="#fee2e2" filter="url(#softShadow)"/>
+        <text x="40" y="20" text-anchor="middle" class="token-original" fill="#dc2626">rihgt</text>
+      </g>
+      
+      <g transform="translate(390, 30)">
+        <rect x="0" y="0" width="40" height="30" rx="15" fill="#e0e7ff" filter="url(#softShadow)"/>
+        <text x="20" y="20" text-anchor="middle" class="token-original">):</text>
+      </g>
+    </g>
+    
+    <!-- Flow lines -->
+    <path d="M 0 70 Q -50 150 -50 230" stroke="#cbd5e1" stroke-width="2" fill="none" stroke-dasharray="3,3"/>
+    <path d="M 70 70 Q 20 150 -20 230" stroke="#cbd5e1" stroke-width="2" fill="none" stroke-dasharray="3,3"/>
+    <path d="M 140 70 Q 90 150 10 230" stroke="#cbd5e1" stroke-width="2" fill="none" stroke-dasharray="3,3"/>
+    <path d="M 210 70 Q 160 150 40 230" stroke="#cbd5e1" stroke-width="2" fill="none" stroke-dasharray="3,3"/>
+    <path d="M 280 70 Q 230 150 70 230" stroke="#cbd5e1" stroke-width="2" fill="none" stroke-dasharray="3,3"/>
+    <path d="M 340 70 Q 290 150 100 230" stroke="#ef4444" stroke-width="3" fill="none" stroke-dasharray="3,3"/>
+    <path d="M 410 70 Q 360 150 130 230" stroke="#cbd5e1" stroke-width="2" fill="none" stroke-dasharray="3,3"/>
+    
+    <!-- Layer 20 decoded representations -->
+    <g transform="translate(-80, 230)">
+      <text x="0" y="0" class="subtitle">Layer 20 Decoded</text>
+      
+      <!-- def decoded -->
+      <g transform="translate(0, 25)">
+        <rect x="0" y="0" width="220" height="50" rx="8" fill="white" filter="url(#softShadow)"/>
+        <text x="10" y="20" class="token-original">def →</text>
+        <text x="10" y="38" class="token-decoded">Python Function MyAlgorithm</text>
+      </g>
+      
+      <!-- add decoded -->
+      <g transform="translate(0, 85)">
+        <rect x="0" y="0" width="220" height="50" rx="8" fill="white" filter="url(#softShadow)"/>
+        <text x="10" y="20" class="token-original">add →</text>
+        <text x="10" y="38" class="token-decoded">AddPython ArithmeticFunction</text>
+      </g>
+      
+      <!-- error decoded -->
+      <g transform="translate(0, 145)">
+        <rect x="0" y="0" width="220" height="70" rx="8" fill="#fee2e2" filter="url(#softShadow)"/>
+        <text x="10" y="20" class="token-original" fill="#dc2626">rihgt →</text>
+        <text x="10" y="38" class="token-decoded">rihhih Syntax Matlab</text>
+        <text x="10" y="54" class="token-decoded">right pythonVariable MINUS</text>
+      </g>
+      
+      <!-- error recognition -->
+      <g transform="translate(240, 25)">
+        <rect x="0" y="0" width="280" height="50" rx="8" fill="#fff7ed" filter="url(#softShadow)"/>
+        <text x="10" y="20" class="token-original" fill="#ea580c">After error:</text>
+        <text x="10" y="38" class="token-decoded">Python code errorFunctionName missing</text>
+      </g>
+      
+      <!-- correction preparation -->
+      <g transform="translate(240, 85)">
+        <rect x="0" y="0" width="280" height="50" rx="8" fill="#f0fdf4" filter="url(#softShadow)"/>
+        <text x="10" y="20" class="token-original" fill="#16a34a">Model response:</text>
+        <text x="10" y="38" class="token-decoded">mistake correction You answer Of course</text>
+      </g>
+    </g>
+  </g>
+  
+  <!-- Annotation -->
+  <g transform="translate(700, 600)">
+    <text text-anchor="middle" class="subtitle">
+      <tspan x="0" y="0">The forward pass through Layer 20 reveals how Gemma</tspan>
+      <tspan x="0" y="20">recognizes the typo "rihgt" and prepares to correct it</tspan>
+    </text>
+  </g>
+  
+  <!-- Legend -->
+  <g transform="translate(1100, 300)">
+    <text x="0" y="0" class="subtitle" font-weight="500">Key Patterns</text>
+    
+    <circle cx="10" cy="25" r="4" fill="#3b82f6"/>
+    <text x="20" y="30" class="subtitle">Context understanding</text>
+    
+    <circle cx="10" cy="50" r="4" fill="#dc2626"/>
+    <text x="20" y="55" class="subtitle">Error detection</text>
+    
+    <circle cx="10" cy="75" r="4" fill="#16a34a"/>
+    <text x="20" y="80" class="subtitle">Correction formulation</text>
+  </g>
+</svg>

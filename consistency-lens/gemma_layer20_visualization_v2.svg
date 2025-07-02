@@ -1,0 +1,149 @@
+<svg width="1600" height="1100" xmlns="http://www.w3.org/2000/svg" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <defs>
+    <linearGradient id="modelGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#dbeafe;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#a5b4fc;stop-opacity:1" />
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="3"/>
+      <feOffset dx="2" dy="2" result="offsetblur"/>
+      <feComponentTransfer>
+        <feFuncA type="linear" slope="0.5"/>
+      </feComponentTransfer>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#a5b4fc" />
+    </marker>
+  </defs>
+  
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500&amp;family=Roboto:wght@400;700&amp;display=swap');
+
+    .bg { fill: #f8fafc; }
+    
+    .model-box { fill: url(#modelGradient); stroke: #818cf8; stroke-width: 2; filter: url(#shadow); }
+    .layer-line { stroke: #c7d2fe; stroke-width: 1.5; }
+    .highlight-layer-rect { fill: rgba(255, 107, 107, 0.2); stroke: #ef4444; stroke-width: 2; }
+    
+    .code-box {
+      font-family: 'Roboto Mono', monospace;
+      font-size: 16px;
+      line-height: 1.6;
+      border-radius: 8px;
+      border: 1px solid #e2e8f0;
+      background-color: white;
+      padding: 20px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    }
+    
+    .code-title { font-family: 'Roboto', sans-serif; font-weight: 700; font-size: 18px; color: #1e293b; }
+    .user-code .token-error { color: #ef4444; font-weight: 500; background-color: #fee2e2; padding: 2px 4px; border-radius: 4px; }
+    .model-code .token-fix { color: #22c55e; font-weight: 500; background-color: #dcfce7; padding: 2px 4px; border-radius: 4px; }
+    
+    .callout-text { font-family: 'Roboto Mono', monospace; font-size: 13px; fill: #334155; }
+    .callout-box { filter: url(#shadow); }
+    .callout-box-understand { fill: #f0f9ff; stroke: #bae6fd; }
+    .callout-box-error { fill: #fef2f2; stroke: #fca5a5; }
+    .callout-box-fix { fill: #f0fdf4; stroke: #bbf7d0; }
+    
+    .flow-line { stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+    .flow-line-understand { stroke: #7dd3fc; }
+    .flow-line-error { stroke: #f87171; stroke-dasharray: 4 4; }
+    .flow-line-fix { stroke: #86efac; }
+    
+    .main-title { font-family: 'Roboto', sans-serif; font-size: 28px; font-weight: 700; fill: #0f172a; }
+    .sub-title { font-family: 'Roboto', sans-serif; font-size: 18px; fill: #475569; }
+    .label { font-family: 'Roboto', sans-serif; font-size: 14px; fill: #64748b; }
+    .highlight-keyword { font-weight: 500; fill: #0f172a; }
+    .error-keyword { font-weight: 500; fill: #b91c1c; }
+  </style>
+
+  <rect width="100%" height="100%" class="bg" />
+
+  <text x="50" y="60" class="main-title">Gemma's Inner Monologue: Visualizing Code Correction</text>
+  <text x="50" y="90" class="sub-title">Decoded Activations from Layer 20 Reveal the Model's "Thought Process"</text>
+
+  <!-- Model Representation -->
+  <g transform="translate(80, 200)">
+    <rect width="200" height="700" rx="15" class="model-box" />
+    <text x="100" y="45" text-anchor="middle" class="code-title">Gemma-2-2B</text>
+    
+    <!-- Layers -->
+    <path d="M 80 100 L 200 100" class="layer-line" />
+    <text x="70" y="105" text-anchor="end" class="label">L25</text>
+    <path d="M 80 650 L 200 650" class="layer-line" />
+    <text x="70" y="655" text-anchor="end" class="label">L0</text>
+    
+    <!-- Highlight Layer 20 -->
+    <rect x="1" y="258" width="198" height="28" class="highlight-layer-rect" />
+    <text x="230" y="275" class="label" font-weight="bold" fill="#c00">Layer 20</text>
+  </g>
+
+  <!-- Code Blocks -->
+  <foreignObject x="350" y="150" width="550" height="180">
+    <xhtml:div class="code-box user-code">
+      <xhtml:p class="code-title">User Prompt:</xhtml:p>
+      <xhtml:pre>def add(left, <xhtml:span class="token-error">rihgt</xhtml:span>):
+    return left + <xhtml:span class="token-error">rihgt</xhtml:span></xhtml:pre>
+    </xhtml:div>
+  </foreignObject>
+
+  <foreignObject x="350" y="750" width="550" height="200">
+    <xhtml:div class="code-box model-code">
+      <xhtml:p class="code-title">Model Reply:</xhtml:p>
+      <xhtml:pre>Of course, I can fix that for you:
+
+def add(left, <xhtml:span class="token-fix">right</xhtml:span>):
+    return left + <xhtml:span class="token-fix">right</xhtml:span></xhtml:pre>
+    </xhtml:div>
+  </foreignObject>
+
+  <!-- Callouts -->
+  <g transform="translate(300, 272)">
+    <!-- 1. Understanding the context -->
+    <path d="M 0 0 C 300 50, 450 50, 550 50" class="flow-line flow-line-understand"/>
+    <g transform="translate(560, 20)">
+      <rect width="450" height="60" rx="8" class="callout-box callout-box-understand"/>
+      <text x="15" y="25" class="callout-text">
+        <tspan class="highlight-keyword">"def add(...)"</tspan> → Interpreted as:
+      </text>
+      <text x="15" y="45" class="callout-text">
+        <tspan class="highlight-keyword">def</tspan> <tspan class="highlight-keyword">Python</tspan> MyAlgorithm <tspan class="highlight-keyword">Function</tspan> ... <tspan class="highlight-keyword">add</tspan>
+      </text>
+    </g>
+
+    <!-- 2. Identifying the error -->
+    <path d="M 0 0 C 300 200, 450 200, 550 200" class="flow-line flow-line-error"/>
+    <g transform="translate(560, 150)">
+      <rect width="520" height="100" rx="8" class="callout-box callout-box-error"/>
+      <text x="15" y="25" class="callout-text">
+        <tspan class="error-keyword">"rihgt"</tspan> → Triggers error-related tokens:
+      </text>
+      <text x="15" y="48" class="callout-text">
+        rihhih <tspan class="error-keyword">Syntax</tspan> Matlab Object, Namechildsh
+      </text>
+      <text x="15" y="68" class="callout-text">
+        <tspan class="error-keyword">right</tspan> pythonValueVariable<tspan class="error-keyword">MINUS</tspan> |\\n\\ngtgt
+      </text>
+      <text x="15" y="88" class="callout-text">
+        5 Python code <tspan class="error-keyword">errorFunctionName</tspan> ...<tspan class="error-keyword">missing</tspan>
+      </text>
+    </g>
+    
+    <!-- 3. Formulating the fix -->
+    <path d="M 0 0 C 300 400, 450 400, 550 400" class="flow-line flow-line-fix"/>
+    <g transform="translate(560, 370)">
+      <rect width="500" height="60" rx="8" class="callout-box callout-box-fix"/>
+      <text x="15" y="25" class="callout-text">
+        Model prepares to answer:
+      </text>
+      <text x="15" y="45" class="callout-text">
+        ...mistake <tspan class="highlight-keyword">correction</tspan> You ( your <tspan class="highlight-keyword">answer</tspan>model\\n<tspan class="highlight-keyword">Of</tspan> <tspan class="highlight-keyword">course</tspan>
+      </text>
+    </g>
+  </g>
+</svg>

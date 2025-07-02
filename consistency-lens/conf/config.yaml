@@ -7,11 +7,17 @@
 #tokenizer_name: "Qilex/tinyStories-10k-tokenizer"
 model_name: "SimpleStories/SimpleStories-5M"
 tokenizer_name: "SimpleStories/SimpleStories-5M"
+# Optional: Use a different model for orig_model (e.g., chat-tuned variant)
+# This allows using a different variant of the base model for computing interventions
+# while keeping the encoder/decoder using the original model
+# orig_model_name: "SimpleStories/SimpleStories-5M-Chat"  # Example: chat-tuned variant
+orig_model_name: null  # null = use same as model_name (default behavior)
 # this is the layer idx!!!!
 layer_l: 5                      # Target layer for activation extraction (LLM_orig)
 #token_pos_p: 0                   # Target token position for activation extraction (LLM_orig) - currently fixed in MVP dumper
 
 
+attn_implementation: null # apparently need this
 # Training hyperparameters
 t_text: 5                       # Number of tokens to generate with the Decoder
 learning_rate: 1.0e-3
@@ -95,7 +101,8 @@ trainable_components:
     projection_init_tl_comp_use_composed_bias: true
     subtract_add_pos_embeddings: false
     extra_pos_embeddings: false
-    clamp_entropy: 0.8 # or 0.5 etc
+    clamp_entropy: -9999 # or 0.5 etc
+    attn_implementation: ${attn_implementation} # apparently need this
   encoder:
     base_model: false          # Train the underlying LLM weights of the Encoder
     use_base_model: true      # Use the base model to process the embeddings
@@ -113,7 +120,7 @@ trainable_components:
     extra_pos_embeddings: false
     add_current_token: false
     special_last_token_vector: false
-
+    attn_implementation: ${attn_implementation} # apparently need this
 # Freeze schedule for non-adapter parameters
 # When enabled, non-adapter parameters (base_model, output_head, embedding_head) will be frozen
 # for the specified time, then unfrozen for the rest of training
@@ -221,6 +228,7 @@ activation_dumper:
   use_pretokenized: false
   pretokenized_path: null
   seq_len: 64 # This will be used by on-the-fly logic if not overridden by a more specific seq_len for OTF.
+  samples_per_shard: 10000
 
   # HuggingFace dataset loading options
   # If 'use_hf_dataset' is true the dumper script will read the tiny 10-k subset of
@@ -281,6 +289,7 @@ mse_weight: 0.0                 # Weight for MSE reconstruction loss (0.0 to dis
 GRPO_weight: 0.0
 GRPO_beta: 0.0
 GRPO_entropy_weight: 0.0
+skip_tokens_KL_GRPO: 0
 
 # Token entropy bonus (see loop.py). Positive values reward higher entropy to
 # avoid posterior collapse; set to 0.0 to disable.
@@ -305,6 +314,15 @@ entropy_schedule:
   # start_value: 0.01
   # end_value: 0.0
   # num_steps: "-1"      # "-1" = full training duration
+
+clamp_entropy: null # deprecated - see schedule
+entropy_clamp_schedule:
+  type: "linear_decay_after_constant"
+  constant_steps_before_decay: "1000s"
+  start_value: 2.0
+  end_value: 0.1
+  num_steps: "5000os"
+  value: 0.1
 
 # Validation split & scheduling
 val_fraction: 0.1               # Fraction of dataset for validation
@@ -402,6 +420,7 @@ dataset:
   on_the_fly:
     enabled: false # SET TO TRUE TO ENABLE ON-THE-FLY GENERATION
     generation_batch_size: 32 # Batch size for activation generation
+    position_selection_strategy: "random" # "random" or "midpoint"
     pretokenized_path: "data/pretokenized/your_dataset_name_seqXXX" # REQUIRED if enabled: Path to the root of HF dataset saved by `load_from_disk`
     layer_l: {layer_l} # Layer from which to extract activations (e.g., 0 for first layer after embeddings)
     min_pos: 8 # Minimum token position (0-indexed) to consider for activation extraction
@@ -416,6 +435,8 @@ dataset:
       size_samples: 10000 # Number of training (A) activations to buffer in the cache per fill cycle
       disk_path: "/path/to/disk_cache_location" # REQUIRED if type is "disk". Unique per run is good.
                                                 # The script will append /rank_X/ to this.
+  preload_to_shared_ram: false
+  use_mmap: false # ensure preload_to_shared_ram is false if this is true
 
 # # Ensure activation_dumper config still has seq_len if not defined globally,
 # # as on_the_fly_config might implicitly use it.
@@ -428,3 +449,4 @@ dataset:
 #max_val_samples: 50000 # Or null
 # activation_dumper.val_num_samples: 5000 # (already part of activation_dumper)
 do_soft_token_embeds: true
+

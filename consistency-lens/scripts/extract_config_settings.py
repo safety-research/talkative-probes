@@ -56,7 +56,7 @@ def extract_settings(config_path, overrides):
         'training_script': determine_training_script(config_path, cfg),
 
         # On-the-fly dataset generation. Enabled if the section exists and is not null.
-        'on_the_fly_enabled': 'on_the_fly' in cfg.get('dataset', {}) and cfg.dataset.on_the_fly is not None,
+        'on_the_fly_enabled': 'on_the_fly' in cfg.get('dataset', {}) and cfg.dataset.on_the_fly is not None and cfg.dataset.on_the_fly.enabled,
     }
     
     # Clean up model name for directory paths

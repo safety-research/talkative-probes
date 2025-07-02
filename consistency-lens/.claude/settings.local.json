@@ -16,7 +16,9 @@
       "Bash(python tests/test_kv_cached_simple.py)",
       "Bash(make:*)",
       "Bash(convert:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(./convert_svg_to_png.sh:*)",
+      "Bash(gemini:*)"
     ]
   },
   "enableAllProjectMcpServers": false

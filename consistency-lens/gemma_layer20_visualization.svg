@@ -1,0 +1,147 @@
+<svg width="1400" height="900" xmlns="http://www.w3.org/2000/svg" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500&amp;family=Roboto:wght@400;700&amp;display=swap');
+
+    .bg { fill: #f9f9f9; }
+    .model-bg { fill: #eef4ff; }
+    .model-stroke { stroke: #a9c7ff; }
+    .layer-line { stroke: #cddcff; stroke-width: 1; }
+    .highlight-layer { stroke: #ff6b6b; stroke-width: 3; fill: rgba(255, 107, 107, 0.1); }
+    
+    .code-box {
+      font-family: 'Roboto Mono', monospace;
+      font-size: 15px;
+      line-height: 1.6;
+      border-radius: 8px;
+      border: 1px solid #e0e0e0;
+      background-color: white;
+      padding: 15px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+    }
+    
+    .code-title {
+      font-family: 'Roboto', sans-serif;
+      font-weight: 700;
+      font-size: 16px;
+      color: #333;
+    }
+    
+    .user-code .token-rihgt { color: #d9534f; font-weight: 500; text-decoration: underline; text-decoration-style: wavy; }
+    .model-code .token-right { color: #5cb85c; font-weight: 500; }
+    
+    .callout {
+      font-family: 'Roboto Mono', monospace;
+      font-size: 12px;
+      fill: #444;
+    }
+    .callout-box {
+      fill: #fffbeB;
+      stroke: #fde68a;
+      stroke-width: 1.5;
+    }
+    .callout-box-error {
+      fill: #feefef;
+      stroke: #fca5a5;
+    }
+    .callout-line {
+      stroke: #fcc253;
+      stroke-width: 2;
+      fill: none;
+      stroke-dasharray: 3 3;
+    }
+    .callout-line-error {
+      stroke: #f87171;
+      stroke-width: 2;
+      fill: none;
+      stroke-dasharray: 3 3;
+    }
+    
+    .main-title { font-family: 'Roboto', sans-serif; font-size: 24px; font-weight: 700; fill: #111; }
+    .sub-title { font-family: 'Roboto', sans-serif; font-size: 16px; fill: #555; }
+    .label { font-family: 'Roboto', sans-serif; font-size: 12px; fill: #666; }
+  </style>
+
+  <rect width="100%" height="100%" class="bg" />
+
+  <text x="50" y="50" class="main-title">Visualizing Gemma's Internal State During Code Correction</text>
+  <text x="50" y="75" class="sub-title">Decoded tokens from Layer 20 of a 26-layer model</text>
+
+  <!-- Model Representation -->
+  <g transform="translate(50, 150)">
+    <rect width="150" height="650" rx="10" class="model-bg" />
+    <rect width="150" height="650" rx="10" stroke-width="2" class="model-stroke" fill="none"/>
+    <text x="75" y="30" text-anchor="middle" class="code-title">Gemma-2-2B</text>
+    
+    <!-- Layers -->
+    <g class="layer-lines">
+      <path d="M 50 600 L 150 600" class="layer-line" />
+      <text x="40" y="605" text-anchor="end" class="label">L0</text>
+      <path d="M 50 100 L 150 100" class="layer-line" />
+      <text x="40" y="105" text-anchor="end" class="label">L25</text>
+    </g>
+    
+    <!-- Highlight Layer 20 -->
+    <rect x="1" y="223" width="148" height="25" class="highlight-layer" />
+    <text x="180" y="240" class="label" font-weight="bold" fill="#c00">Layer 20</text>
+  </g>
+
+  <!-- Code Blocks -->
+  <foreignObject x="250" y="150" width="500" height="250">
+    <xhtml:div class="code-box user-code">
+      <xhtml:p class="code-title">User Prompt:</xhtml:p>
+      <xhtml:pre>def add(left, <xhtml:span class="token-rihgt">rihgt</xhtml:span>):
+    return left + <xhtml:span class="token-rihgt">rihgt</xhtml:span></xhtml:pre>
+    </xhtml:div>
+  </foreignObject>
+
+  <foreignObject x="250" y="450" width="500" height="250">
+    <xhtml:div class="code-box model-code">
+      <xhtml:p class="code-title">Model Reply:</xhtml:p>
+      <xhtml:pre>Of course, I can fix that for you:
+
+def add(left, <xhtml:span class="token-right">right</xhtml:span>):
+    return left + <xhtml:span class="token-right">right</xhtml:span></xhtml:pre>
+    </xhtml:div>
+  </foreignObject>
+
+  <!-- Callouts from Layer 20 -->
+  <g class="callouts">
+    <!-- Callout for 'def' -->
+    <path d="M 200 235 C 600 150, 780 200, 800 250" class="callout-line" />
+    <rect x="800" y="230" width="350" height="40" rx="5" class="callout-box" />
+    <text x="810" y="255" class="callout">
+      <tspan font-weight="bold">"def"</tspan> → def Python MyAlgorithm Function...
+    </text>
+
+    <!-- Callout for 'add' -->
+    <path d="M 200 235 C 600 200, 780 280, 800 330" class="callout-line" />
+    <rect x="800" y="310" width="350" height="40" rx="5" class="callout-box" />
+    <text x="810" y="335" class="callout">
+      <tspan font-weight="bold">"add"</tspan> → AddPython AddingFunction Arithmetic...
+    </text>
+
+    <!-- Callout for 'rihgt' -->
+    <path d="M 200 245 C 550 450, 780 400, 800 450" class="callout-line-error" />
+    <rect x="800" y="420" width="480" height="90" rx="5" class="callout-box-error" />
+    <text x="810" y="445" class="callout">
+      <tspan font-weight="bold" fill="#c00">"ri"</tspan> → riVANCodeNumeric,FieldValue ajout ri
+    </text>
+    <text x="810" y="465" class="callout">
+      <tspan font-weight="bold" fill="#c00">"h"</tspan> → rihhih Syntax Matlab Object, Namechildsh
+    </text>
+    <text x="810" y="485" class="callout">
+      <tspan font-weight="bold" fill="#c00">"gt"</tspan> → right pythonValueVariableMINUS |\n\ngtgt
+    </text>
+     <text x="810" y="505" class="callout">
+      <tspan font-weight="bold" fill="#c00">"\n"</tspan> → 5 Python code errorFunctionName ...missing
+    </text>
+    
+    <!-- Callout for model's correction thinking -->
+    <path d="M 200 245 C 600 650, 780 600, 800 650" class="callout-line" />
+    <rect x="800" y="630" width="450" height="40" rx="5" class="callout-box" />
+    <text x="810" y="655" class="callout">
+      <tspan font-weight="bold">"model\nOf course"</tspan> → ...correction You ( your answermodel\nOf...
+    </text>
+  </g>
+
+</svg>

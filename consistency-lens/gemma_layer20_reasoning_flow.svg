@@ -1,0 +1,188 @@
+<svg width="1600" height="600" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Background gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f172a;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1e293b;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Model gradient -->
+    <linearGradient id="modelGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:0.8" />
+      <stop offset="50%" style="stop-color:#60a5fa;stop-opacity:0.9" />
+      <stop offset="100%" style="stop-color:#3b82f6;stop-opacity:0.8" />
+    </linearGradient>
+    
+    <!-- Glow effect -->
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="8" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <!-- Soft shadow for boxes -->
+    <filter id="softShadow">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="4"/>
+      <feOffset dx="0" dy="4" result="offsetblur"/>
+      <feFlood flood-color="#000000" flood-opacity="0.3"/>
+      <feComposite in2="offsetblur" operator="in"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Fira+Code:wght@400;500&amp;display=swap');
+    
+    .title { font-family: 'Inter', sans-serif; font-size: 28px; font-weight: 600; fill: #f8fafc; }
+    .subtitle { font-family: 'Inter', sans-serif; font-size: 16px; font-weight: 400; fill: #cbd5e1; }
+    .section-title { font-family: 'Inter', sans-serif; font-size: 18px; font-weight: 500; fill: #f1f5f9; }
+    .code { font-family: 'Fira Code', monospace; font-size: 16px; fill: #f8fafc; }
+    .token { font-family: 'Fira Code', monospace; font-size: 14px; }
+    .token-key { fill: #fbbf24; font-weight: 500; }
+    .token-muted { fill: #94a3b8; }
+    .token-error { fill: #f87171; font-weight: 500; }
+    .thought-text { font-family: 'Inter', sans-serif; font-size: 14px; fill: #1e293b; }
+    .layer-label { font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 600; fill: #fbbf24; }
+  </style>
+  
+  <!-- Dark background -->
+  <rect width="1600" height="600" fill="url(#bgGrad)" />
+  
+  <!-- Title -->
+  <text x="800" y="50" text-anchor="middle" class="title">Gemma's Reasoning Flow</text>
+  <text x="800" y="80" text-anchor="middle" class="subtitle">How Layer 20 activations reveal internal reasoning about code</text>
+  
+  <!-- Stage 1: Input & Tokenization -->
+  <g transform="translate(100, 150)">
+    <text x="0" y="-20" class="section-title">1. Input Code</text>
+    
+    <!-- Code block -->
+    <rect x="0" y="0" width="350" height="100" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1" filter="url(#softShadow)"/>
+    <text x="15" y="30" class="code">def add(left, rihgt):</text>
+    <text x="15" y="55" class="code">    return left + rihgt</text>
+    <text x="15" y="80" class="code"># This is the rihgt way</text>
+    
+    <!-- Key tokens -->
+    <text x="0" y="130" class="section-title" font-size="14">Key Tokens:</text>
+    <g transform="translate(0, 150)">
+      <rect x="0" y="0" width="45" height="28" rx="14" fill="#22c55e" fill-opacity="0.2" stroke="#22c55e" stroke-width="1"/>
+      <text x="22" y="19" text-anchor="middle" class="token token-key">def</text>
+      
+      <rect x="55" y="0" width="45" height="28" rx="14" fill="#22c55e" fill-opacity="0.2" stroke="#22c55e" stroke-width="1"/>
+      <text x="77" y="19" text-anchor="middle" class="token token-key">add</text>
+      
+      <rect x="110" y="0" width="30" height="28" rx="14" fill="#334155"/>
+      <text x="125" y="19" text-anchor="middle" class="token token-muted">+</text>
+      
+      <rect x="150" y="0" width="60" height="28" rx="14" fill="#dc2626" fill-opacity="0.2" stroke="#dc2626" stroke-width="1"/>
+      <text x="180" y="19" text-anchor="middle" class="token token-error">rihgt</text>
+      
+      <rect x="220" y="0" width="40" height="28" rx="14" fill="#334155"/>
+      <text x="240" y="19" text-anchor="middle" class="token token-muted">#</text>
+      
+      <rect x="270" y="0" width="50" height="28" rx="14" fill="#334155"/>
+      <text x="295" y="19" text-anchor="middle" class="token token-muted">way</text>
+    </g>
+  </g>
+  
+  <!-- Flow arrows from input to model -->
+  <path d="M 450 250 Q 500 250 550 250" stroke="#60a5fa" stroke-width="3" fill="none" marker-end="url(#arrow1)"/>
+  <defs>
+    <marker id="arrow1" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#60a5fa" />
+    </marker>
+  </defs>
+  
+  <!-- Stage 2: Gemma Model -->
+  <g transform="translate(550, 150)">
+    <text x="125" y="-20" text-anchor="middle" class="section-title">2. Gemma-2B Model</text>
+    
+    <!-- Model representation -->
+    <rect x="0" y="0" width="250" height="300" rx="12" fill="url(#modelGrad)" fill-opacity="0.9" stroke="#60a5fa" stroke-width="2" filter="url(#glow)"/>
+    
+    <!-- Layer visualization -->
+    <g transform="translate(25, 30)">
+      <!-- Top layers -->
+      <rect x="0" y="0" width="200" height="8" rx="4" fill="#1e293b" fill-opacity="0.3"/>
+      <rect x="0" y="12" width="200" height="8" rx="4" fill="#1e293b" fill-opacity="0.3"/>
+      <rect x="0" y="24" width="200" height="8" rx="4" fill="#1e293b" fill-opacity="0.3"/>
+      
+      <!-- ... indicator -->
+      <text x="100" y="50" text-anchor="middle" fill="#cbd5e1" font-size="20">···</text>
+      
+      <!-- Layer 20 highlighted -->
+      <rect x="-10" y="70" width="220" height="30" rx="6" fill="#fbbf24" fill-opacity="0.9" stroke="#fbbf24" stroke-width="2"/>
+      <text x="100" y="90" text-anchor="middle" class="layer-label" fill="#0f172a">Layer 20</text>
+      
+      <!-- ... indicator -->
+      <text x="100" y="120" text-anchor="middle" fill="#cbd5e1" font-size="20">···</text>
+      
+      <!-- Bottom layers -->
+      <rect x="0" y="140" width="200" height="8" rx="4" fill="#1e293b" fill-opacity="0.3"/>
+      <rect x="0" y="152" width="200" height="8" rx="4" fill="#1e293b" fill-opacity="0.3"/>
+    </g>
+    
+    <!-- Brain icon -->
+    <g transform="translate(105, 220)">
+      <circle cx="20" cy="20" r="18" fill="#1e293b" fill-opacity="0.5"/>
+      <path d="M 20 10 Q 15 5 10 10 T 10 20 Q 10 30 20 30 Q 30 30 30 20 Q 30 10 25 10 Q 20 5 15 10" 
+            fill="none" stroke="#cbd5e1" stroke-width="1.5" stroke-linecap="round"/>
+    </g>
+  </g>
+  
+  <!-- Flow arrows from model to thoughts -->
+  <g>
+    <!-- Context arrow -->
+    <path d="M 800 200 Q 850 180 900 180" stroke="#22c55e" stroke-width="3" fill="none" marker-end="url(#arrow2)"/>
+    <!-- Error arrow -->
+    <path d="M 800 250 Q 850 250 900 250" stroke="#f87171" stroke-width="3" fill="none" marker-end="url(#arrow3)"/>
+    <!-- Correction arrow -->
+    <path d="M 800 300 Q 850 320 900 320" stroke="#60a5fa" stroke-width="3" fill="none" marker-end="url(#arrow4)"/>
+  </g>
+  
+  <defs>
+    <marker id="arrow2" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#22c55e" />
+    </marker>
+    <marker id="arrow3" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#f87171" />
+    </marker>
+    <marker id="arrow4" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#60a5fa" />
+    </marker>
+  </defs>
+  
+  <!-- Stage 3: Decoded Thoughts -->
+  <g transform="translate(900, 130)">
+    <text x="200" y="0" text-anchor="middle" class="section-title">3. Decoded Activations</text>
+    
+    <!-- Context thought bubble -->
+    <g transform="translate(0, 30)">
+      <rect x="0" y="0" width="400" height="80" rx="8" fill="#dcfce7" stroke="#22c55e" stroke-width="2" filter="url(#softShadow)"/>
+      <text x="20" y="25" class="thought-text" font-weight="500">Context Understanding:</text>
+      <text x="20" y="45" class="thought-text">"This is Python code defining an addition</text>
+      <text x="20" y="65" class="thought-text">function with parameters and a comment"</text>
+    </g>
+    
+    <!-- Error detection thought bubble -->
+    <g transform="translate(0, 120)">
+      <rect x="0" y="0" width="400" height="80" rx="8" fill="#fee2e2" stroke="#f87171" stroke-width="2" filter="url(#softShadow)"/>
+      <text x="20" y="25" class="thought-text" font-weight="500">Typo Detection:</text>
+      <text x="20" y="45" class="thought-text">"The token 'rihgt' appears to be a</text>
+      <text x="20" y="65" class="thought-text">misspelling of 'right'"</text>
+    </g>
+    
+    <!-- Correction plan thought bubble -->
+    <g transform="translate(0, 210)">
+      <rect x="0" y="0" width="400" height="80" rx="8" fill="#dbeafe" stroke="#60a5fa" stroke-width="2" filter="url(#softShadow)"/>
+      <text x="20" y="25" class="thought-text" font-weight="500">Correction Plan:</text>
+      <text x="20" y="45" class="thought-text">"I will generate a response that points out</text>
+      <text x="20" y="65" class="thought-text">and corrects this specific typo to 'right'"</text>
+    </g>
+  </g>
+</svg>

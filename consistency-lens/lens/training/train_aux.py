@@ -75,6 +75,7 @@ from lens.data.on_the_fly_datasets import (
 )
 from typing import Optional, Callable
 from transformers import PreTrainedTokenizer
+import torch.multiprocessing as mp
 
 # Make _rank_log_fn a top-level function
 def global_rank_log_fn(message: str, level: str = "info", current_rank: Optional[int] = None, logger_instance: Optional[logging.Logger] = None):
@@ -456,6 +457,7 @@ def _prepare_dataloaders(
         
         train_ds = RankInMemoryTrainingCache(
             orig_model_for_gen=orig_model_for_gen, 
+            tokenizer=tokenizer_for_gen,
             pretok_dataset_path=pretok_path, 
             pretok_split_name=train_split_name,
             on_the_fly_config=on_the_fly_cfg, 
@@ -474,14 +476,47 @@ def _prepare_dataloaders(
 
     else: 
         _dataset_log_fn(log, "Loading datasets from disk (standard behavior).", rank=rank)
+        
+        # New torch-native preloading logic
+        preload_to_shared_ram = dataset_cfg.get("preload_to_shared_ram", False)
+        use_mmap = dataset_cfg.get("use_mmap", False)
+
+        if preload_to_shared_ram and use_mmap:
+            if rank == 0:
+                log.error("preload_to_shared_ram and use_mmap cannot both be enabled. Disabling mmap.")
+            use_mmap = False
+
+        if preload_to_shared_ram and rank == 0:  # Only log from main process
+            log.info(
+                "Preloading all dataset shards to shared RAM. This may take a while "
+                "and consume significant memory, but will maximize data loading speed."
+            )
+        elif use_mmap and rank == 0:
+            log.info(
+                "Using memory-mapped files (mmap) for data loading. "
+                "This provides a balance between performance and memory usage."
+            )
+
         train_dataset_path = Path(activation_dir)
-        train_ds = ActivationDataset(train_dataset_path, max_samples=max_train_samples_req, desc="Loading train dataset")
+        train_ds = ActivationDataset(
+            train_dataset_path,
+            max_samples=max_train_samples_req,
+            desc="Loading train dataset",
+            preload_to_shared_ram=preload_to_shared_ram,
+            use_mmap=use_mmap,
+        )
         if len(train_ds) == 0 and (max_train_samples_req is None or max_train_samples_req > 0):
              _dataset_log_fn(log, "Training dataset from disk is empty.", "warning", rank=rank)
 
         if effective_val_activation_dir:
             val_dataset_path = Path(effective_val_activation_dir)
-            val_ds = ActivationDataset(val_dataset_path, max_samples=max_val_samples_req, desc="Loading val dataset")
+            val_ds = ActivationDataset(
+                val_dataset_path,
+                max_samples=max_val_samples_req,
+                desc="Loading val dataset",
+                preload_to_shared_ram=preload_to_shared_ram,
+                use_mmap=use_mmap,
+            )
             if len(val_ds) == 0 and (max_val_samples_req is None or max_val_samples_req > 0):
                 _dataset_log_fn(log, "Validation dataset from disk is empty.", "warning", rank=rank)
         else:

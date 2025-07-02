@@ -1,0 +1,73 @@
+<svg width="1200" height="500" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .code { font-family: monospace; font-size: 14px; }
+    .normal { fill: #333; }
+    .error { fill: #d00; }
+    .header { font-weight: bold; font-size: 16px; }
+    .title { font-size: 20px; font-weight: bold; }
+  </style>
+
+  <text x="20" y="30" class="title">Gemma Layer 20 Decoded Tokens</text>
+
+  <text x="20" y="70" class="header">Input Token</text>
+  <text x="150" y="70" class="header">Decoded Tokens</text>
+
+  <g class="code">
+    <text x="20" y="100" class="normal">def</text>
+    <text x="150" y="100" class="normal">def Python MyAlgorithm Function Pagination classifyMydef</text>
+
+    <text x="20" y="125" class="normal">add</text>
+    <text x="150" y="125" class="normal">AddPython AddingFunction ArithmeticArrayActivityPairs add</text>
+
+    <text x="20" y="150" class="normal">(</text>
+    <text x="150" y="150" class="normal">“ Python Adds CalcAddition num arg int(</text>
+
+    <text x="20" y="175" class="normal">left</text>
+    <text x="150" y="175" class="normal">Left WolframInput LeftValue Object Compound,left</text>
+
+    <text x="20" y="200" class="normal">,</text>
+    <text x="150" y="200" class="normal">4 Python INPUT Number operand NUM however INT,</text>
+
+    <text x="20" y="225" class="normal">right</text>
+    <text x="150" y="225" class="normal">Right VAN INTEGER operandsPair Object: : right</text>
+
+    <text x="20" y="250" class="normal">):</text>
+    <text x="150" y="250" class="normal">( pythonSum AdditionArithmetic integerCalculation
+):</text>
+
+    <text x="20" y="275" class="normal">return</text>
+    <text x="150" y="275" class="normal">Returning Python Result Python Addition OBJECT "${ Combinereturn</text>
+
+    <text x="20" y="300" class="normal">left</text>
+    <text x="150" y="300" class="normal">Left Python sum Python + += + Value left</text>
+
+    <text x="20" y="325" class="normal">+</text>
+    <text x="150" y="325" class="normal">+ Python AddingFloat OBJECT sumNUMBER calc +</text>
+
+    <text x="20" y="350" class="error">ri</text>
+    <text x="150" y="350" class="error">riVANCodeNumeric,FieldValue ajout ri</text>
+
+    <text x="20" y="375" class="error">h</text>
+    <text x="150" y="375" class="error">rihhih Syntax Matlab Object, Namechildsh</text>
+
+    <text x="20" y="400" class="error">gt</text>
+    <text x="150" y="400" class="error">right pythonValueVariableMINUS |
+
+gtgt</text>
+
+    <text x="20" y="425" class="error">
+</text>
+    <text x="150" y="425" class="error">5 Python code errorFunctionName …..missing |
+</text>
+
+    <text x="20" y="450" class="error">```</text>
+    <text x="150" y="450" class="error">{ PHP Code Mistake correction line
+
+Laravel```</text>
+    
+    <text x="20" y="475" class="error">
+</text>
+    <text x="150" y="475" class="error">( python acronym mistake constructor error spelling mistake
+</text>
+  </g>
+</svg>

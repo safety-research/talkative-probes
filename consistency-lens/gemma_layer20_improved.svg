@@ -1,0 +1,232 @@
+<svg width="1800" height="1200" xmlns="http://www.w3.org/2000/svg" xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#f8fafc;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#f1f5f9;stop-opacity:1" />
+    </linearGradient>
+    
+    <linearGradient id="modelGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#818cf8;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#6366f1;stop-opacity:1" />
+    </linearGradient>
+    
+    <linearGradient id="errorGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#fecaca;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#fca5a5;stop-opacity:1" />
+    </linearGradient>
+    
+    <linearGradient id="correctGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#bbf7d0;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#86efac;stop-opacity:1" />
+    </linearGradient>
+    
+    <!-- Filters -->
+    <filter id="softShadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="3"/>
+      <feOffset dx="0" dy="2" result="offsetblur"/>
+      <feFlood flood-color="#1e293b" flood-opacity="0.1"/>
+      <feComposite in2="offsetblur" operator="in"/>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap');
+    
+    .title { font-family: 'Inter', sans-serif; font-weight: 700; font-size: 32px; fill: #0f172a; }
+    .subtitle { font-family: 'Inter', sans-serif; font-weight: 400; font-size: 18px; fill: #475569; }
+    .section-title { font-family: 'Inter', sans-serif; font-weight: 600; font-size: 20px; fill: #1e293b; }
+    
+    .token-box { filter: url(#softShadow); }
+    .token-text { font-family: 'JetBrains Mono', monospace; font-size: 14px; }
+    .token-label { font-family: 'Inter', sans-serif; font-size: 12px; fill: #64748b; }
+    .token-index { font-family: 'Inter', sans-serif; font-size: 11px; fill: #94a3b8; }
+    
+    .original-token { fill: #1e293b; font-weight: 500; }
+    .decoded-token { fill: #0f172a; }
+    .error-token { fill: #dc2626; font-weight: 500; }
+    .correction-token { fill: #16a34a; font-weight: 500; }
+    .context-token { fill: #6366f1; }
+    
+    .flow-arrow { stroke: #cbd5e1; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+    .highlight-flow { stroke: #818cf8; stroke-width: 3; }
+    
+    .annotation { font-family: 'Inter', sans-serif; font-size: 13px; fill: #64748b; font-style: italic; }
+    .layer-indicator { font-family: 'Inter', sans-serif; font-size: 14px; font-weight: 600; fill: #dc2626; }
+  </style>
+  
+  <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+    <polygon points="0 0, 10 3.5, 0 7" fill="#cbd5e1" />
+  </marker>
+  
+  <!-- Background -->
+  <rect width="1800" height="1200" fill="url(#bgGrad)" />
+  
+  <!-- Title -->
+  <text x="50" y="60" class="title">Gemma's Layer 20 Decoded: Understanding Python Code Correction</text>
+  <text x="50" y="90" class="subtitle">Visualizing how internal activations reveal the model's reasoning process</text>
+  
+  <!-- Layer 20 Indicator -->
+  <g transform="translate(50, 130)">
+    <rect x="0" y="0" width="200" height="40" rx="20" fill="url(#modelGrad)" filter="url(#softShadow)"/>
+    <text x="100" y="26" text-anchor="middle" class="layer-indicator" fill="white">Layer 20 of 26</text>
+  </g>
+  
+  <!-- Main Content Area -->
+  <g transform="translate(50, 200)">
+    <!-- Section 1: Context Understanding -->
+    <text x="0" y="0" class="section-title">1. Understanding the Context</text>
+    
+    <!-- Token 11: def -->
+    <g transform="translate(0, 30)">
+      <rect x="0" y="0" width="650" height="80" rx="8" fill="white" class="token-box"/>
+      <text x="15" y="25" class="token-index">Token 11</text>
+      <text x="15" y="45" class="original-token">def</text>
+      <text x="60" y="45" class="token-label">→</text>
+      <text x="90" y="45" class="decoded-token">def Python MyAlgorithm Function Pagination classifyMydef</text>
+      <text x="15" y="65" class="annotation">Model recognizes Python function definition context</text>
+    </g>
+    
+    <!-- Token 12: add -->
+    <g transform="translate(0, 120)">
+      <rect x="0" y="0" width="650" height="80" rx="8" fill="white" class="token-box"/>
+      <text x="15" y="25" class="token-index">Token 12</text>
+      <text x="15" y="45" class="original-token">add</text>
+      <text x="60" y="45" class="token-label">→</text>
+      <text x="90" y="45" class="decoded-token">AddPython AddingFunction ArithmeticArrayActivityPairs add</text>
+      <text x="15" y="65" class="annotation">Identifies the addition operation being defined</text>
+    </g>
+    
+    <!-- Section 2: Error Detection -->
+    <text x="0" y="250" class="section-title">2. Detecting the Error</text>
+    
+    <!-- Token 23-25: ri-h-gt (the typo) -->
+    <g transform="translate(0, 280)">
+      <rect x="0" y="0" width="650" height="120" rx="8" fill="url(#errorGrad)" class="token-box"/>
+      <text x="15" y="25" class="token-index">Tokens 23-25 (the typo "rihgt")</text>
+      <text x="15" y="45" class="error-token">ri</text>
+      <text x="40" y="45" class="token-label">→</text>
+      <text x="70" y="45" class="decoded-token">riVANCodeNumeric,FieldValue ajout ri</text>
+      <text x="15" y="65" class="error-token">h</text>
+      <text x="40" y="65" class="token-label">→</text>
+      <text x="70" y="65" class="decoded-token">rihhih Syntax Matlab Object, Namechildsh</text>
+      <text x="15" y="85" class="error-token">gt</text>
+      <text x="40" y="85" class="token-label">→</text>
+      <text x="70" y="85" class="decoded-token">right pythonValueVariableMINUS |\n\ngtgt</text>
+      <text x="15" y="105" class="annotation">Model's activations show confusion and error detection patterns</text>
+    </g>
+    
+    <!-- Token 26: Error recognition -->
+    <g transform="translate(0, 410)">
+      <rect x="0" y="0" width="650" height="80" rx="8" fill="white" class="token-box"/>
+      <text x="15" y="25" class="token-index">Token 26</text>
+      <text x="15" y="45" class="decoded-token">5 Python code errorFunctionName …..missing |\n</text>
+      <text x="15" y="65" class="annotation">Explicit error recognition in the decoded representation</text>
+    </g>
+    
+    <!-- Section 3: Correction Response -->
+    <text x="0" y="530" class="section-title">3. Formulating the Correction</text>
+    
+    <!-- Token 31-32: Model response -->
+    <g transform="translate(0, 560)">
+      <rect x="0" y="0" width="650" height="80" rx="8" fill="url(#correctGrad)" class="token-box"/>
+      <text x="15" y="25" class="token-index">Token 31-32</text>
+      <text x="15" y="45" class="original-token">model</text>
+      <text x="70" y="45" class="token-label">→</text>
+      <text x="100" y="45" class="decoded-token">TypeScript mist correction You ( your answermodel</text>
+      <text x="15" y="65" class="annotation">Model prepares correction response</text>
+    </g>
+    
+    <!-- Token 33-34: Of course -->
+    <g transform="translate(0, 650)">
+      <rect x="0" y="0" width="650" height="80" rx="8" fill="white" class="token-box"/>
+      <text x="15" y="25" class="token-index">Token 33-34</text>
+      <text x="15" y="45" class="correction-token">Of course</text>
+      <text x="100" y="45" class="token-label">→</text>
+      <text x="130" y="45" class="decoded-token">OfJavaScript Fix FYI Error obviously, obviously Of</text>
+      <text x="15" y="65" class="annotation">Model's helpful response pattern emerges</text>
+    </g>
+  </g>
+  
+  <!-- Right Panel: Flow Visualization -->
+  <g transform="translate(750, 200)">
+    <rect x="0" y="0" width="400" height="700" rx="12" fill="white" filter="url(#softShadow)"/>
+    
+    <text x="200" y="30" text-anchor="middle" class="section-title">Activation Flow Pattern</text>
+    
+    <!-- Visual flow diagram -->
+    <g transform="translate(50, 60)">
+      <!-- Input -->
+      <rect x="50" y="0" width="200" height="50" rx="8" fill="#e0e7ff" stroke="#818cf8" stroke-width="2"/>
+      <text x="150" y="30" text-anchor="middle" class="token-text">def add(left, rihgt):</text>
+      
+      <!-- Arrow 1 -->
+      <line x1="150" y1="50" x2="150" y2="100" class="flow-arrow highlight-flow"/>
+      
+      <!-- Layer 20 Processing -->
+      <rect x="25" y="100" width="250" height="80" rx="8" fill="#fef3c7" stroke="#f59e0b" stroke-width="2"/>
+      <text x="150" y="125" text-anchor="middle" class="token-text" font-weight="600">Layer 20 Activations</text>
+      <text x="150" y="145" text-anchor="middle" class="token-label">Pattern Recognition</text>
+      <text x="150" y="165" text-anchor="middle" class="token-label">Error Detection</text>
+      
+      <!-- Branches -->
+      <line x1="150" y1="180" x2="80" y2="230" class="flow-arrow"/>
+      <line x1="150" y1="180" x2="220" y2="230" class="flow-arrow"/>
+      
+      <!-- Context Understanding -->
+      <rect x="10" y="230" width="140" height="60" rx="8" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+      <text x="80" y="255" text-anchor="middle" class="token-label">Context:</text>
+      <text x="80" y="270" text-anchor="middle" class="token-text">Python, add</text>
+      
+      <!-- Error Detection -->
+      <rect x="150" y="230" width="140" height="60" rx="8" fill="#fee2e2" stroke="#ef4444" stroke-width="2"/>
+      <text x="220" y="255" text-anchor="middle" class="token-label">Error:</text>
+      <text x="220" y="270" text-anchor="middle" class="token-text">rihgt → right</text>
+      
+      <!-- Converge -->
+      <line x1="80" y1="290" x2="150" y2="340" class="flow-arrow"/>
+      <line x1="220" y1="290" x2="150" y2="340" class="flow-arrow"/>
+      
+      <!-- Output -->
+      <rect x="50" y="340" width="200" height="80" rx="8" fill="#dcfce7" stroke="#22c55e" stroke-width="2"/>
+      <text x="150" y="365" text-anchor="middle" class="token-text">Of course,</text>
+      <text x="150" y="385" text-anchor="middle" class="token-text">correction:</text>
+      <text x="150" y="405" text-anchor="middle" class="token-text">def add(left, right):</text>
+    </g>
+    
+    <!-- Key Insights -->
+    <g transform="translate(20, 520)">
+      <text x="0" y="0" class="section-title">Key Insights</text>
+      
+      <circle cx="10" cy="25" r="4" fill="#3b82f6"/>
+      <text x="20" y="30" class="token-label">Decoded tokens show semantic understanding</text>
+      
+      <circle cx="10" cy="50" r="4" fill="#ef4444"/>
+      <text x="20" y="55" class="token-label">Error tokens trigger correction patterns</text>
+      
+      <circle cx="10" cy="75" r="4" fill="#22c55e"/>
+      <text x="20" y="80" class="token-label">Model's internal "reasoning" is interpretable</text>
+      
+      <circle cx="10" cy="100" r="4" fill="#f59e0b"/>
+      <text x="20" y="105" class="token-label">Layer 20 captures high-level concepts</text>
+    </g>
+  </g>
+  
+  <!-- Bottom annotation -->
+  <text x="50" y="1150" class="annotation">
+    Note: Decoded representations show how the model internally processes the typo "rihgt" and formulates its correction response.
+    Special tokens (BOS, turn markers) have been omitted for clarity.
+  </text>
+</svg>

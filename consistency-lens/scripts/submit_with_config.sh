@@ -25,7 +25,7 @@ FORCE_REDUMP="false"
 FORCE_RETOKENIZE="false"
 RESUME_CHECKPOINT=""
 WANDB_RESUME_ID=""
-NODELIST="$(hostname)"  # Default to current cluster node (only used for SLURM)
+NODELIST="" # Default to empty, letting SLURM choose a node (only used for SLURM)
 NUM_GPUS=""  # Number of GPUs to use (auto-detect if not specified)
 NUM_GPUS_TRAIN="1"  # Number of GPUs for training (defaults to 1)
 USE_DISTRIBUTED="false"  # Whether to use distributed training
@@ -277,7 +277,6 @@ submit_pretokenize_job() {
         local result=$(sbatch --parsable \
             --job-name="${job_name}-pretok" \
             --gres=gpu:0 \
-            --nodelist="$NODELIST" \
             --cpus-per-task=$num_proc \
             --time=2:00:00 \
             --output=logs/pretokenize_%j.out \
@@ -326,13 +325,14 @@ submit_dump_job() {
     local layer=$2
     local job_name=$3
     local dependency=$4
+
     
     if [ "$USE_SLURM" = true ]; then
         echo -e "${YELLOW}Submitting activation dumping job via SLURM...${NC} with dependency <$dependency>" >&2
         echo "Config: $config, Layer: $layer" >&2
         
         # Build sbatch command
-        local sbatch_cmd="sbatch --parsable --job-name=${job_name}-dump --gres=gpu:$NUM_GPUS --nodelist=$NODELIST --export=SLURM_NODELIST='$NODELIST',SUBMIT_SCRIPT_COMMAND='$SUBMIT_SCRIPT_COMMAND'"
+        local sbatch_cmd="sbatch --parsable --job-name=${job_name}-dump --gres=gpu:$NUM_GPUS"
         if [ -n "$dependency" ] && [ "$dependency" != "completed" ]; then
             echo -e "${YELLOW}Adding dependency: <$dependency>${NC}" >&2
             sbatch_cmd="$sbatch_cmd --dependency=afterok:$dependency"
@@ -343,6 +343,9 @@ submit_dump_job() {
         
         # Submit job and capture both stdout and stderr
         echo "Submitting dump job..." >&2
+        echo "Config: $config" >&2
+        echo "Extra args: $extra_args" >&2
+        echo "command to be run: $sbatch_cmd scripts/slurm_dump_activations_flexible.sh "$config" "$layer" "$extra_args" "$NUM_GPUS" 2>&1" >&2
         local result=$($sbatch_cmd scripts/slurm_dump_activations_flexible.sh "$config" "$layer" "$extra_args" "$NUM_GPUS" 2>&1)
         
         # Check if submission was successful
@@ -384,7 +387,7 @@ submit_dump_job() {
         
         echo -e "${BLUE}Logs: $log_out and $log_err${NC}" >&2
         
-        if ./scripts/launch_multigpu_dump.sh "$config" "" "" "$layer" > "$log_out" 2> "$log_err"; then
+        if ./scripts/launch_multigpu_dump.sh "$config_dir" "" "" "$layer" > "$log_out" 2> "$log_err"; then
             echo -e "${GREEN}Activation dumping completed successfully${NC}" >&2
             echo "completed"
         else

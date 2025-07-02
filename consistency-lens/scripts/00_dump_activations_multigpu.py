@@ -15,6 +15,7 @@ import os
 import socket
 import time
 from types import SimpleNamespace
+from itertools import islice
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -197,6 +198,7 @@ def main(cfg: DictConfig) -> None:
 
     # activation_dumper specific configs
     activation_dumper_cfg = cfg.activation_dumper
+    SAMPLES_PER_SHARD = activation_dumper_cfg.get('samples_per_shard', 10000)
     
     base_output_dir_str = activation_dumper_cfg.output_dir
     
@@ -205,6 +207,7 @@ def main(cfg: DictConfig) -> None:
     
     seq_len = activation_dumper_cfg.get('seq_len', 64)
     min_pos = activation_dumper_cfg.get('min_pos', 8)
+    position_selection_strategy = activation_dumper_cfg.get('position_selection_strategy', 'random')
     
     # HuggingFace dataset options
     effective_hf_dataset_name = activation_dumper_cfg.get('hf_dataset_name')
@@ -381,6 +384,7 @@ def main(cfg: DictConfig) -> None:
                 "num_samples": rank_num_samples, # This is per-rank num_samples
                 "seq_len": seq_len,
                 "min_pos": min_pos,
+                "position_selection_strategy": position_selection_strategy,
                 "layer_idx": layer_idx,
                 "model_name": model_name,
                 "tokenizer_name": tokenizer_name,
@@ -505,6 +509,9 @@ def main(cfg: DictConfig) -> None:
         last_update_time = time.time()
         samples_since_update = 0
         
+        buffer = []
+        shard_counter = 0
+        
         while True:
             current_batch_target_size: int
             if rank_num_samples is not None:
@@ -516,13 +523,17 @@ def main(cfg: DictConfig) -> None:
             
             batch_txt_A: list[str] = []
             batch_txt_Ap: list[str] = []
-            batch_tokens_A: list[torch.Tensor] = []
-            batch_tokens_Ap: list[torch.Tensor] = []
+            
+            # For pretokenized, we will collect lists of ints, not tensors
+            batch_input_ids_A_list: list[list[int]] = []
+            batch_input_ids_Ap_list: list[list[int]] = []
+            batch_attn_mask_A_list: list[list[int]] = []
+            batch_attn_mask_Ap_list: list[list[int]] = []
             
             current_batch_actual_size = 0
-            # Collect texts for batch
+            # Collect data for batch
             if use_pretokenized_cfg:
-                # Direct token loading
+                # Direct loading of token lists
                 for _ in range(current_batch_target_size):
                     data_A = get_next_data_fn()
                     data_Ap = get_next_data_fn()
@@ -530,10 +541,24 @@ def main(cfg: DictConfig) -> None:
                     if data_A is None or data_Ap is None:
                         break
                     
-                    batch_tokens_A.append(torch.tensor(data_A["input_ids"])) # type: ignore
-                    batch_tokens_Ap.append(torch.tensor(data_Ap["input_ids"])) # type: ignore
+                    # Store as lists of ints
+                    input_ids_A = data_A["input_ids"] # type: ignore
+                    input_ids_Ap = data_Ap["input_ids"] # type: ignore
+                    batch_input_ids_A_list.append(input_ids_A)
+                    batch_input_ids_Ap_list.append(input_ids_Ap)
+
+                    # Handle attention masks, keeping them as lists
+                    if "attention_mask" in data_A and data_A["attention_mask"] is not None: # type: ignore
+                        batch_attn_mask_A_list.append(data_A["attention_mask"]) # type: ignore
+                    else:
+                        batch_attn_mask_A_list.append([1 if token_id != tokenizer.pad_token_id else 0 for token_id in input_ids_A])
+
+                    if "attention_mask" in data_Ap and data_Ap["attention_mask"] is not None: # type: ignore
+                        batch_attn_mask_Ap_list.append(data_Ap["attention_mask"]) # type: ignore
+                    else:
+                        batch_attn_mask_Ap_list.append([1 if token_id != tokenizer.pad_token_id else 0 for token_id in input_ids_Ap])
                 
-                current_batch_actual_size = len(batch_tokens_A)
+                current_batch_actual_size = len(batch_input_ids_A_list)
                 if current_batch_actual_size == 0:
                     break  # No more data
             else:
@@ -581,13 +606,18 @@ def main(cfg: DictConfig) -> None:
                 if current_batch_actual_size == 0:
                     break
             
-            # Tokenize
             toks_A_batch: torch.Tensor
             toks_Ap_batch: torch.Tensor
+            attn_mask_A_batch: torch.Tensor | None = None
+            attn_mask_Ap_batch: torch.Tensor | None = None
             if use_pretokenized_cfg:
-                # Already have tokens, just stack and move to device
-                toks_A_batch = torch.stack(batch_tokens_A).to(device)
-                toks_Ap_batch = torch.stack(batch_tokens_Ap).to(device)
+                # Create batch tensors from lists of lists, more efficient than stacking
+                toks_A_batch = torch.tensor(batch_input_ids_A_list, dtype=torch.long, device=device)
+                toks_Ap_batch = torch.tensor(batch_input_ids_Ap_list, dtype=torch.long, device=device)
+                if batch_attn_mask_A_list:
+                    attn_mask_A_batch = torch.tensor(batch_attn_mask_A_list, dtype=torch.long, device=device)
+                if batch_attn_mask_Ap_list:
+                    attn_mask_Ap_batch = torch.tensor(batch_attn_mask_Ap_list, dtype=torch.long, device=device)
             else:
                 # Tokenize text
                 all_texts = batch_txt_A + batch_txt_Ap
@@ -606,7 +636,9 @@ def main(cfg: DictConfig) -> None:
                     return_tensors="pt",
                 )
                 toks_all = enc.input_ids.to(device)
+                attn_mask_all = enc.attention_mask.to(device)
                 toks_A_batch, toks_Ap_batch = toks_all.split(current_batch_actual_size, dim=0)
+                attn_mask_A_batch, attn_mask_Ap_batch = attn_mask_all.split(current_batch_actual_size, dim=0)
             use_autocast = False # TODO: make this a config option
             from contextlib import nullcontext
 
@@ -617,30 +649,58 @@ def main(cfg: DictConfig) -> None:
                 autocastcontext = nullcontext()
             with torch.no_grad():
                 with autocastcontext:
-                    out_A_batch = model(toks_A_batch, output_hidden_states=True)
-                    out_Ap_batch = model(toks_Ap_batch, output_hidden_states=True)
+                    out_A_batch = model(toks_A_batch, attention_mask=attn_mask_A_batch, output_hidden_states=True)
+                    out_Ap_batch = model(toks_Ap_batch, attention_mask=attn_mask_Ap_batch, output_hidden_states=True)
             
             hidden_A_batch = out_A_batch.hidden_states[layer_idx+1]
             hidden_Ap_batch = out_Ap_batch.hidden_states[layer_idx+1]
             
-            # Calculate positions
-            nonpad_len_A_b = (toks_A_batch != tokenizer.pad_token_id).sum(dim=1)
-            nonpad_len_Ap_b = (toks_Ap_batch != tokenizer.pad_token_id).sum(dim=1)
+            # --- Position calculation for A ---
+            is_not_pad_A = toks_A_batch.ne(tokenizer.pad_token_id)
+            start_indices_A = torch.argmax(is_not_pad_A.int(), dim=1)
+            end_indices_A = toks_A_batch.shape[1] - 1 - torch.argmax(torch.flip(is_not_pad_A, dims=[1]).int(), dim=1)
+
+            # Interpret min_pos as a relative offset from the start of content to robustly skip BOS.
+            lower_bounds_A = start_indices_A + min_pos
             
-            upper_bound_A_b = nonpad_len_A_b - 1
-            _temp_min_idx_A = torch.full_like(upper_bound_A_b, min_pos)
-            _temp_min_idx_A = torch.minimum(_temp_min_idx_A, upper_bound_A_b)
-            effective_min_idx_A_b = torch.maximum(_temp_min_idx_A, torch.zeros_like(upper_bound_A_b)) # type: ignore
-            token_pos_A_b = (effective_min_idx_A_b + upper_bound_A_b) // 2
-            token_pos_A_b = torch.maximum(token_pos_A_b, torch.zeros_like(token_pos_A_b)) # type: ignore
+            # If sequence is too short after offset, use the last token.
+            effective_lower_bounds_A = torch.minimum(lower_bounds_A, end_indices_A)
+            upper_bounds_A = end_indices_A
             
-            upper_bound_Ap_b = nonpad_len_Ap_b - 1
-            _temp_min_idx_Ap = torch.full_like(upper_bound_Ap_b, min_pos)
-            _temp_min_idx_Ap = torch.minimum(_temp_min_idx_Ap, upper_bound_Ap_b)
-            effective_min_idx_Ap_b = torch.maximum(_temp_min_idx_Ap, torch.zeros_like(upper_bound_Ap_b)) # type: ignore
-            token_pos_Ap_b = (effective_min_idx_Ap_b + upper_bound_Ap_b) // 2
-            token_pos_Ap_b = torch.maximum(token_pos_Ap_b, torch.zeros_like(token_pos_Ap_b)) # type: ignore
+            if position_selection_strategy == 'midpoint':
+                token_pos_A_b = (effective_lower_bounds_A + upper_bounds_A) // 2
+            elif position_selection_strategy == 'random':
+                rand_floats = torch.rand(toks_A_batch.shape[0], device=toks_A_batch.device)
+                range_size = (upper_bounds_A - effective_lower_bounds_A + 1).clamp(min=0)
+                token_pos_A_b = effective_lower_bounds_A + (rand_floats * range_size).long()
+            else:
+                raise ValueError(f"Unknown position_selection_strategy: '{position_selection_strategy}'")
+
+            seq_len_minus_1_A = max(toks_A_batch.shape[1] - 1, 0)
+            token_pos_A_b = torch.clamp(token_pos_A_b, min=0, max=seq_len_minus_1_A)
+
+            # --- Position calculation for A_prime ---
+            is_not_pad_Ap = toks_Ap_batch.ne(tokenizer.pad_token_id)
+            start_indices_Ap = torch.argmax(is_not_pad_Ap.int(), dim=1)
+            end_indices_Ap = toks_Ap_batch.shape[1] - 1 - torch.argmax(torch.flip(is_not_pad_Ap, dims=[1]).int(), dim=1)
             
+            lower_bounds_Ap = start_indices_Ap + min_pos
+            
+            effective_lower_bounds_Ap = torch.minimum(lower_bounds_Ap, end_indices_Ap)
+            upper_bounds_Ap = end_indices_Ap
+            
+            if position_selection_strategy == 'midpoint':
+                token_pos_Ap_b = (effective_lower_bounds_Ap + upper_bounds_Ap) // 2
+            elif position_selection_strategy == 'random':
+                rand_floats = torch.rand(toks_Ap_batch.shape[0], device=toks_Ap_batch.device)
+                range_size = (upper_bounds_Ap - effective_lower_bounds_Ap + 1).clamp(min=0)
+                token_pos_Ap_b = effective_lower_bounds_Ap + (rand_floats * range_size).long()
+            else:
+                raise ValueError(f"Unknown position_selection_strategy: '{position_selection_strategy}'")
+            
+            seq_len_minus_1_Ap = max(toks_Ap_batch.shape[1] - 1, 0)
+            token_pos_Ap_b = torch.clamp(token_pos_Ap_b, min=0, max=seq_len_minus_1_Ap)
+
             batch_indices = torch.arange(current_batch_actual_size, device=device)
             A_selected_b = hidden_A_batch[batch_indices, token_pos_A_b].cpu()
             Ap_selected_b = hidden_Ap_batch[batch_indices, token_pos_Ap_b].cpu()
@@ -661,15 +721,21 @@ def main(cfg: DictConfig) -> None:
             
             # Global batch index includes rank offset
             global_batch_idx = rank * 10000 + batch_idx # type: ignore
-            shard_filename = f"shard_{global_batch_idx:08d}.pt"
-            torch.save(batch_samples_to_save, rank_out_path / shard_filename)
             
-            # Update metadata
-            rank_metadata["shards"].append({ # type: ignore
-                "name": shard_filename,
-                "num_samples": current_batch_actual_size
-            })
-            rank_metadata["total_samples"] += current_batch_actual_size # type: ignore
+            buffer.extend(batch_samples_to_save)
+            while len(buffer) >= SAMPLES_PER_SHARD:
+                out_samples = buffer[:SAMPLES_PER_SHARD]
+                buffer = buffer[SAMPLES_PER_SHARD:]
+
+                shard_filename = f"shard_{shard_counter:08d}.pt"
+                torch.save(out_samples, rank_out_path / shard_filename)
+
+                rank_metadata["shards"].append({           # type: ignore
+                    "name": shard_filename,
+                    "num_samples": len(out_samples),
+                })
+                rank_metadata["total_samples"] += len(out_samples)  # type: ignore
+                shard_counter += 1
             
             saved_samples_count += current_batch_actual_size
             samples_since_update += current_batch_actual_size

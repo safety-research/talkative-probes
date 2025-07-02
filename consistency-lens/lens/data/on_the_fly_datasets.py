@@ -33,6 +33,8 @@ def _generate_activations_batched(
     batch_input_ids_on_device: torch.Tensor, # Expected shape (batch_size, seq_len)
     layer_l: int,
     min_pos_to_select_from: int,
+    attention_mask_on_device: Optional[torch.Tensor] = None,
+    position_selection_strategy: str = 'random'
 ) -> Tuple[torch.Tensor, torch.Tensor]: # Returns (batch_activations, batch_token_positions)
     """
     Generates activations for a batch of input_ids using OrigWrapper.get_activations_at_positions.
@@ -45,6 +47,8 @@ def _generate_activations_batched(
             input_ids=batch_input_ids_on_device,
             layer_idx=layer_l,
             min_pos_to_select_from=min_pos_to_select_from,
+            attention_mask=attention_mask_on_device,
+            position_selection_strategy=position_selection_strategy,
             no_grad=True
         )
     # selected_activations shape: (batch_size, hidden_dim)
@@ -78,6 +82,7 @@ class InMemoryValidationDataset(Dataset):
         self.generation_batch_size = self.config.get('generation_batch_size', 32) # Default batch size
         self.layer_l = self.config['layer_l']
         self.min_pos = self.config['min_pos']
+        self.position_selection_strategy = self.config.get('position_selection_strategy', 'random')
 
         self.data_store: List[Dict[str, Any]] = []
         # Ensure model is on device *before* generation.
@@ -163,16 +168,34 @@ class InMemoryValidationDataset(Dataset):
                 current_batch_indices_A = indices_A_all[batch_start_idx:batch_end_idx]
                 current_batch_indices_A_prime = indices_A_prime_all[batch_start_idx:batch_end_idx]
 
-                batch_input_ids_A_list = [sharded_pretok_ds_for_rank[idx]["input_ids"] for idx in current_batch_indices_A]
-                batch_input_ids_A_prime_list = [sharded_pretok_ds_for_rank[idx]["input_ids"] for idx in current_batch_indices_A_prime]
+                batch_samples_A = [sharded_pretok_ds_for_rank[idx] for idx in current_batch_indices_A]
+                batch_samples_A_prime = [sharded_pretok_ds_for_rank[idx] for idx in current_batch_indices_A_prime]
 
-                if not batch_input_ids_A_list: continue
+                if not batch_samples_A: continue
+
+                batch_input_ids_A_list = [s["input_ids"] for s in batch_samples_A]
+                batch_input_ids_A_prime_list = [s["input_ids"] for s in batch_samples_A_prime]
+
+                def get_attn_mask(sample_batch: List[Dict[str, Any]], tokenizer: PreTrainedTokenizer) -> List[List[int]]:
+                    masks = []
+                    for s in sample_batch:
+                        if "attention_mask" in s and s["attention_mask"] is not None:
+                            masks.append(s["attention_mask"])
+                        else:
+                            masks.append((torch.tensor(s["input_ids"]) != tokenizer.pad_token_id).long().tolist())
+                    return masks
+
+                batch_attn_mask_A_list = get_attn_mask(batch_samples_A, self.tokenizer)
+                batch_attn_mask_A_prime_list = get_attn_mask(batch_samples_A_prime, self.tokenizer)
 
                 batch_input_ids_A_device = torch.tensor(batch_input_ids_A_list, dtype=torch.long, device=self.generation_device)
                 batch_input_ids_A_prime_device = torch.tensor(batch_input_ids_A_prime_list, dtype=torch.long, device=self.generation_device)
+                batch_attn_mask_A_device = torch.tensor(batch_attn_mask_A_list, dtype=torch.long, device=self.generation_device)
+                batch_attn_mask_A_prime_device = torch.tensor(batch_attn_mask_A_prime_list, dtype=torch.long, device=self.generation_device)
 
-                batch_act_A, batch_pos_A = _generate_activations_batched(self.orig_model_for_gen, batch_input_ids_A_device, self.layer_l, self.min_pos)
-                batch_act_A_prime, batch_pos_A_prime = _generate_activations_batched(self.orig_model_for_gen, batch_input_ids_A_prime_device, self.layer_l, self.min_pos)
+
+                batch_act_A, batch_pos_A = _generate_activations_batched(self.orig_model_for_gen, batch_input_ids_A_device, self.layer_l, self.min_pos, batch_attn_mask_A_device, self.position_selection_strategy)
+                batch_act_A_prime, batch_pos_A_prime = _generate_activations_batched(self.orig_model_for_gen, batch_input_ids_A_prime_device, self.layer_l, self.min_pos, batch_attn_mask_A_prime_device, self.position_selection_strategy)
 
                 for i in range(batch_act_A.size(0)):
                     self.data_store.append({
@@ -217,6 +240,7 @@ class RankInMemoryTrainingCache(Dataset):
     def __init__(
         self,
         orig_model_for_gen: OrigWrapper, 
+        tokenizer: PreTrainedTokenizer,
         pretok_dataset_path: str,
         pretok_split_name: str,
         on_the_fly_config: Dict[str, Any],
@@ -227,6 +251,7 @@ class RankInMemoryTrainingCache(Dataset):
         logger: logging.Logger,
     ):
         self.orig_model_for_gen = orig_model_for_gen
+        self.tokenizer = tokenizer
         self.pretok_dataset_path = pretok_dataset_path
         self.pretok_split_name = pretok_split_name
         self.config = on_the_fly_config
@@ -238,6 +263,7 @@ class RankInMemoryTrainingCache(Dataset):
         self.layer_l = self.config['layer_l']
         self.min_pos = self.config['min_pos']
         self.generation_batch_size = self.config.get('generation_batch_size', 32)
+        self.position_selection_strategy = self.config.get('position_selection_strategy', 'random')
 
         self.data_store: List[Dict[str, Any]] = []
         self.total_samples_in_pretokenised_dataset = 0
@@ -313,7 +339,7 @@ class RankInMemoryTrainingCache(Dataset):
         
         with torch.no_grad():
             while generated_count < num_samples_to_generate:
-                batch_input_ids = []
+                batch_samples = []
                 for _ in range(min(self.generation_batch_size, num_samples_to_generate - generated_count)):
                     try:
                         sample = next(shard_iter)
@@ -337,17 +363,29 @@ class RankInMemoryTrainingCache(Dataset):
                         shard_iter = iter(self.pretok_dataset_shard)
                         sample = next(shard_iter)
                         samples_in_current_cycle += 1
-                    batch_input_ids.append(sample['input_ids'])
+                    batch_samples.append(sample)
                 
-                batch_input_ids_tensor = torch.tensor(batch_input_ids, dtype=torch.long, device=self.generation_device)
+                def get_attn_mask(sample_batch: List[Dict[str, Any]], tokenizer: PreTrainedTokenizer) -> List[List[int]]:
+                    masks = []
+                    for s in sample_batch:
+                        if "attention_mask" in s and s["attention_mask"] is not None:
+                            masks.append(s["attention_mask"])
+                        else:
+                            masks.append((torch.tensor(s["input_ids"]) != tokenizer.pad_token_id).long().tolist())
+                    return masks
+
+                batch_attn_mask_list = get_attn_mask(batch_samples, self.tokenizer)
+                batch_input_ids_tensor = torch.tensor([s['input_ids'] for s in batch_samples], dtype=torch.long, device=self.generation_device)
+                batch_attn_mask_tensor = torch.tensor(batch_attn_mask_list, dtype=torch.long, device=self.generation_device)
+
                 batch_activations, batch_positions = _generate_activations_batched(
-                    self.orig_model_for_gen, batch_input_ids_tensor, self.layer_l, self.min_pos
+                    self.orig_model_for_gen, batch_input_ids_tensor, self.layer_l, self.min_pos, batch_attn_mask_tensor, self.position_selection_strategy
                 )
                 
-                for i in range(len(batch_input_ids)):
+                for i in range(len(batch_samples)):
                     self.data_store.append({
                         "A": batch_activations[i].cpu(),
-                        "input_ids_A": torch.tensor(batch_input_ids[i], dtype=torch.long),
+                        "input_ids_A": torch.tensor(batch_samples[i]['input_ids'], dtype=torch.long),
                         "token_pos_A": batch_positions[i].item(),
                         "layer_idx": self.layer_l,
                     })

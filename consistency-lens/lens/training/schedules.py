@@ -210,7 +210,7 @@ def get_schedule_value(
     
     # Parse num_steps which may be a string with s/e notation
     num_steps_raw = schedule_config.get("num_steps", -1)
-    if isinstance(num_steps_raw, str) and num_steps_raw == "-1":
+    if (isinstance(num_steps_raw, str) and num_steps_raw == "-1") or num_steps_raw == -1:
         if total_steps is None:
             raise ValueError("total_steps is required when num_steps is -1")
         num_schedule_steps = total_steps
@@ -234,8 +234,10 @@ def get_schedule_value(
         
         if current_step < constant_steps:
             return start_value
+        elif current_step <= num_schedule_steps+constant_steps:
+            return start_value + (current_step - constant_steps) * (end_value - start_value) / (num_schedule_steps)
         else:
-            return start_value - (current_step - constant_steps) * (start_value - end_value) / (num_schedule_steps - constant_steps)
+            return end_value
     if schedule_type == "exponential_decay_after_constant":
         constant_steps_raw = schedule_config["constant_steps_before_decay"]
         constant_steps = parse_schedule_to_steps(constant_steps_raw, steps_per_epoch, grad_accum_steps)

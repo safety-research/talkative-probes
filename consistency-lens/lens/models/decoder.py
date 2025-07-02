@@ -71,7 +71,8 @@ class DecoderConfig:
     projection_init_tl_comp_use_composed_bias: bool = True
     subtract_add_pos_embeddings: bool = False
     extra_pos_embeddings: bool = True
-    clamp_entropy: float = 0.8
+    clamp_entropy: float = 999
+    attn_implementation: str = None
     
     def __post_init__(self):
         """Validate configuration parameters."""
@@ -112,7 +113,7 @@ class Decoder(nn.Module):
             log.info("Using shared base model for Decoder (memory efficient)")
         else:
             # Load our own copy
-            self.base: PreTrainedModel = AutoModelForCausalLM.from_pretrained(cfg.model_name)
+            self.base: PreTrainedModel = AutoModelForCausalLM.from_pretrained(cfg.model_name,attn_implementation=cfg.attn_implementation)
             
         # Configure trainability of the base model
         for p in self.base.parameters():
@@ -305,7 +306,7 @@ class Decoder(nn.Module):
                 old_proj_bias = self.proj.bias.data.clone()
         
         # Load new base model
-        self.base = AutoModelForCausalLM.from_pretrained(model_name_or_path)
+        self.base = AutoModelForCausalLM.from_pretrained(model_name_or_path,attn_implementation=self.config.attn_implementation)
         self.base = self.base.to(old_device)
         
         # Re-apply trainability settings
