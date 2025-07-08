@@ -11,7 +11,7 @@ tokenizer_name: "SimpleStories/SimpleStories-5M"
 # This allows using a different variant of the base model for computing interventions
 # while keeping the encoder/decoder using the original model
 # orig_model_name: "SimpleStories/SimpleStories-5M-Chat"  # Example: chat-tuned variant
-orig_model_name: null  # null = use same as model_name (default behavior)
+orig_model_name: ${model_name}  # null = use same as model_name (default behavior)
 # this is the layer idx!!!!
 layer_l: 5                      # Target layer for activation extraction (LLM_orig)
 #token_pos_p: 0                   # Target token position for activation extraction (LLM_orig) - currently fixed in MVP dumper
@@ -21,6 +21,8 @@ attn_implementation: null # apparently need this
 # Training hyperparameters
 t_text: 5                       # Number of tokens to generate with the Decoder
 learning_rate: 1.0e-3
+beta1: 0.9
+beta2: 0.999
 batch_size: 512               # Effective batch size (adjust with gradient_accumulation_steps if using DeepSpeed)
 gradient_accumulation_steps: 1  # Number of steps to accumulate gradients before optimizer step
 
@@ -62,6 +64,7 @@ compile_models: true             # Wrap Decoder & Encoder with torch.compile if 
 log_interval: "10s"           # Log metrics interval - Examples: "10s", "0.1e", "100steps", "1epoch"
 wandb_log_interval: "1s"      # WandB log interval - Examples: "1s", "0.01e", "10steps"
 grad_clip: 1.0
+grad_clip_enc: null
 
 # Update norm calculation (for distributed training)
 compute_update_norm: true     # Whether to compute parameter update norms at optimizer steps
@@ -211,6 +214,7 @@ pretokenize:
   num_proc: 32
   batch_size: 10000
   force: true
+  run_before_training: false
 
 activation_dumper:
   num_samples: -1  # -1 means process entire dataset
@@ -449,4 +453,4 @@ dataset:
 #max_val_samples: 50000 # Or null
 # activation_dumper.val_num_samples: 5000 # (already part of activation_dumper)
 do_soft_token_embeds: true
-
+mean_n_sequences: false

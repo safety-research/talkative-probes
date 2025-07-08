@@ -105,6 +105,7 @@ def train_step(  # noqa: D401
     GRPO_validate_mode: bool = False,
     debug_mode: bool = False,
     return_reconstruction: bool = False,
+    mean_n_sequences = False
 ) -> Dict[str, torch.Tensor]:
     """Composite loss (MSE + LM + KL + entropy) with flexible weighting.
 
@@ -133,6 +134,9 @@ def train_step(  # noqa: D401
     if GRPO_training:
         group_n = _loss_fns['group_n']
 
+    do_lm_computation = do_lm_computation and not (mean_n_sequences and mean_n_sequences>1)
+    do_kl_computation = do_kl_computation and not (mean_n_sequences and mean_n_sequences>1)
+
 
     dec: nn.Module = models["dec"]
     enc: nn.Module = models["enc"]
@@ -154,9 +158,23 @@ def train_step(  # noqa: D401
         # Debug: Check decoder parameters for NaN
         if hasattr(dec, 'check_for_nans') and dec.check_for_nans():
             log.error("NaN detected in decoder parameters before generation")
+
+    # Ensure original_token_pos_A is 2D for gather (B, 1)
+    if original_token_pos_A.dim() == 1:
+        gather_index = original_token_pos_A.unsqueeze(1)
+    else:
+        gather_index = original_token_pos_A
+    current_token_ids = batch["input_ids_A"].gather(1, gather_index).squeeze(1)
+
+    if mean_n_sequences and mean_n_sequences>1:
+        A_orig = A.clone()
+        A_repeat = A.repeat_interleave(mean_n_sequences, dim=0)
+        A = A_repeat
+        original_token_pos_A = original_token_pos_A.repeat_interleave(mean_n_sequences, dim=0)
+        current_token_ids = current_token_ids.repeat_interleave(mean_n_sequences, dim=0)
     
     # Use differentiable generation if configured
-    if GRPO_w>0: ##kl_base==0 and ent_w==0 and mse_w==0 and lm_w==0:
+    if GRPO_w>0: ##kl_base==0 and ent_w==0 and mse_w==0 and lm_w==0
         context = torch.no_grad()
     else:
         context = contextlib.nullcontext()
@@ -175,13 +193,13 @@ def train_step(  # noqa: D401
         else:
             gen = dec.generate_soft(A, max_length=t_text, gumbel_tau=tau, original_token_pos=original_token_pos_A)
 
-    # Ensure original_token_pos_A is 2D for gather (B, 1)
-    if original_token_pos_A.dim() == 1:
-        gather_index = original_token_pos_A.unsqueeze(1)
-    else:
-        gather_index = original_token_pos_A
-    current_token_ids = batch["input_ids_A"].gather(1, gather_index).squeeze(1)
+
     A_hat = enc(gen.generated_text_embeddings, original_token_pos=original_token_pos_A, current_token_ids=current_token_ids if enc.config.add_current_token else None)
+
+    if mean_n_sequences and mean_n_sequences>1:
+        A_hat = A_hat.reshape(-1, mean_n_sequences, A_hat.shape[-1]).mean(dim=1)
+        A = A_orig
+    
 
     # Extract decoded token IDs for logging popularity
     # gen.hard_token_ids is (Batch, t_text)
@@ -518,13 +536,14 @@ def train_step(  # noqa: D401
         if not verbose_eval:
             del gen
         probs_of_interest, entropy = dec.fwd_tokens(
-            activation_input=A,
+            activation_input=A_repeat if mean_n_sequences and mean_n_sequences>1 else A,
             input_tokens=hard_token_ids,
             original_token_pos=original_token_pos_A,
             detach_entropy=ent_w==0,
             calculate_entropy=ent_w!=0 or GRPO_validate_mode,
             return_logits=False
         )#probs shape (B,t_text
+            
         if ent_w==0:
             if entropy is not None and ent_w==0:
                 entropy = entropy.detach()
@@ -544,12 +563,17 @@ def train_step(  # noqa: D401
         else:   
             KL_GRPO = torch.tensor(0.0, device=A.device, dtype=A.dtype)
         with torch.no_grad():
+            #A and A-train are both not-expanded
             if not GRPO_validate_mode:
                 advantage, mean_reward_std, mean_reward = compute_advantages(A,A_train.detach(),group_n)
-                advantage = advantage.unsqueeze(-1)
+                advantage = advantage.unsqueeze(-1) # so we can broadcast over sequence length??
+                if mean_n_sequences and mean_n_sequences>1:
+                    # repeat so each element of average is rewarded
+                    advantage = advantage.repeat_interleave(mean_n_sequences, dim=0)
             else:
                 mean_reward_std, mean_reward = compute_advantages(A,A_train.detach(),group_n, no_advantage=True)
                 advantage = torch.tensor(0.0, device=A.device, dtype=A.dtype).unsqueeze(-1)
+
         #fine to do mean because our rollouts are fixed length
         loss_GRPO = -torch.mean(probs_of_interest/probs_of_interest.detach() * advantage - GRPO_beta*KL_GRPO,axis=-1)
         loss_GRPO = loss_GRPO.mean() # align with canonical GRPO normalisation.

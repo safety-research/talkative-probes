@@ -191,4 +191,5 @@ dataset:
 
   validation_samples_override: 50000
   train_split: "train"
-  val_split: "train"
+  val_split: "validation"
+  use_mmap: true

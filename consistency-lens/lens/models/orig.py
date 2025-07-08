@@ -2,7 +2,7 @@
 
 import torch
 import transformers
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, Gemma3TextConfig, Gemma3ForCausalLM
 from typing import Optional, Tuple, Union
 from contextlib import nullcontext
 
@@ -17,21 +17,90 @@ class OrigWrapper:
     def _static_reshape_inputs(x, **__) -> dict:
         return {"input_ids": x}
 
-    def __init__(self, model_name: str, load_in_8bit: bool = False, base_to_use = None) -> None:
+    def __init__(self, model_name: str, torch_dtype=None, load_in_8bit: bool = False, base_to_use = None, lora_name: str = None) -> None:
         if base_to_use is None:
-            self.model = AutoModelForCausalLM.from_pretrained(model_name, load_in_8bit=load_in_8bit)
+            # Load model with specified dtype
+            if 'gemma-3' in model_name:
+                print(f"Loading Gemma3ModelForCausalLM for model '{model_name}'")
+                self.model = Gemma3ForCausalLM.from_pretrained(
+                    model_name, 
+                    torch_dtype=torch_dtype,
+                    load_in_8bit=load_in_8bit,
+                )
+            else:
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_name, 
+                    torch_dtype=torch_dtype,
+                    load_in_8bit=load_in_8bit,
+                )
+            self.name = model_name
+            self.lora_name = None
+            if hasattr(self.model, 'peft_config'):
+                self.lora_name = model_name
         else:
             self.model = base_to_use
+            self.name = base_to_use.config._name_or_path
+            if hasattr(base_to_use, 'peft_config') and lora_name is None:
+                self.lora_name = "????"
+                self.name += "_" + "LORA" + "_" + self.lora_name
+            elif hasattr(base_to_use, 'peft_config') and lora_name is not None:
+                self.lora_name = lora_name
+                self.name += "_" + self.lora_name
+            else:
+                self.lora_name = None
+            
         self.model.eval()
+
+
+        self.name = model_name # self.model.config._name_or_path if  not hasattr(self.model, 'active_adapter') else  self.model.config._name_or_path + "_LORA"
+        # if hasattr(self.model, 'active_adapter'):
+        #     self.lora_name = self.model.active_adapter
+        # else:
+        #     self.lora_name = None
+
+        # if lora_name is not None:
+        #     self.name += "_" + lora_name
+        # elif
         # Ensure base model parameters do not require gradients
         for param in self.model.parameters():
             param.requires_grad = False
         self._monkeypatch_reshape_inputs()
 
+        # Lazy hook management
+        self._registered_hooks = {}  # layer_idx -> hook handle
+        self._hook_enabled = {}      # layer_idx -> bool
+        self._hook_data = {}         # layer_idx -> data dict
+        self.num_hidden_layers = self.model.config.num_hidden_layers if not hasattr(self.model.config, "text_config") else self.model.config.text_config.num_hidden_layers
+        
+        # # Pre-register hooks for all layers
+        # for layer_idx in range(self.model.config.num_hidden_layers):
+        #     self._hook_enabled[layer_idx] = False
+        #     self._hook_data[layer_idx] = None
+            
+        #     try:
+        #         target_block = self.model.get_submodule(f"model.layers.{layer_idx}")
+        #     except AttributeError:
+        #         # Handle GPT-2 style models
+        #         try:
+        #             target_block = self.model.transformer.h[layer_idx]
+        #         except AttributeError:
+        #             target_block = self.model.get_submodule(f"transformer.h.{layer_idx}")
+            
+        #     # Create a layer-specific hook
+        #     def make_hook(idx):
+        #         def hook_fn(module, input, output):
+        #             if self._hook_enabled[idx]:
+        #                 return self._apply_swap(output, idx)
+        #             return output
+        #         return hook_fn
+            
+        #     self._registered_hooks[layer_idx] = target_block.register_forward_hook(make_hook(layer_idx))
+
+
     def _validate_layer_idx(self, layer_idx: int) -> None:
         """Checks if the provided layer_idx is valid for the model."""
         try:
-            num_hidden_layers = self.model.config.num_hidden_layers
+            num_hidden_layers = self.num_hidden_layers
             if not (0 <= layer_idx < num_hidden_layers):
                 raise ValueError(
                     f"Invalid layer index: {layer_idx}. "
@@ -48,6 +117,27 @@ class OrigWrapper:
         self.model.to(device)
         return self
 
+    def _apply_swap(self, output, layer_idx):
+        """Apply the activation swap if enabled for this layer."""
+        data = self._hook_data[layer_idx]
+        if data is None:
+            return output
+            
+        hidden = output[0]
+        new_activation = data['new_activation']
+        token_pos = data['token_pos']
+        
+        # Ensure dtype consistency
+        if new_activation.dtype != hidden.dtype:
+            new_activation = new_activation.to(hidden.dtype)
+        
+        if new_activation.dim() == 1:
+            hidden[:, token_pos] = new_activation.unsqueeze(0)
+        else:
+            hidden[:, token_pos] = new_activation
+            
+        return (hidden,) + output[1:]
+
     def forward_with_replacement(
         self,
         input_ids: torch.Tensor,
@@ -57,45 +147,30 @@ class OrigWrapper:
         *,
         attention_mask: torch.Tensor | None = None,
         no_grad: bool = True,
-    ) -> transformers.modeling_outputs.CausalLMOutput:
-        """Forward pass where hidden_state[layer_idx][:, token_pos] is replaced."""
-
-        from contextlib import nullcontext
+    ):
+        """Forward pass with activation replacement using lazy-loaded persistent hooks."""
         self._validate_layer_idx(layer_idx)
-
-        # If no attention mask is provided, create one from pad tokens
-        if attention_mask is None and self.model.config.pad_token_id is not None:
-            attention_mask = input_ids.ne(self.model.config.pad_token_id).long()
-
+        
+        # Ensure hook exists for this layer (lazy registration)
+        self._ensure_hook_registered(layer_idx)
+        
+        # Set hook data
+        self._hook_data[layer_idx] = {
+            'new_activation': new_activation,
+            'token_pos': token_pos
+        }
+        self._hook_enabled[layer_idx] = True
+        
         grad_ctx = torch.no_grad() if no_grad else nullcontext()
         with grad_ctx:
-            def _swap_hook(_, __, output):  # noqa: ANN001
-                hidden = output[0]
-                if new_activation.dim() == 1:
-                    hidden[:, token_pos] = new_activation.unsqueeze(0).to(hidden.dtype)
-                else:
-                    hidden[:, token_pos] = new_activation.to(hidden.dtype)  # type: ignore[index]
-                return (hidden,) + output[1:]
-
             try:
-                # Attempt to get the target block for hooking.
-                # Try LLaMA-style path first (e.g., model.model.layers[idx])
-                target_block = self.model.get_submodule(f"model.layers.{layer_idx}")
-            except AttributeError:
-                # Fallback to GPT-2-style paths if LLaMA-style fails
-                try:
-                    # Original primary attempt for GPT-2 (e.g., model.transformer.h[idx])
-                    target_block = self.model.transformer.h[layer_idx]  # type: ignore[attr-defined]
-                except AttributeError:
-                    # Original fallback for GPT-2
-                    target_block = self.model.get_submodule(f"transformer.h.{layer_idx}")
-                    # If this also fails, get_submodule will raise an AttributeError,
-                    # which is appropriate to signal an unsupported model structure.
-
-            handle = target_block.register_forward_hook(_swap_hook)
-            out = self.model(input_ids=input_ids, attention_mask=attention_mask)
-            handle.remove()
-            return out
+                out = self.model(input_ids=input_ids, attention_mask=attention_mask)
+            finally:
+                # Disable the hook after use (but keep it registered)
+                self._hook_enabled[layer_idx] = False
+                self._hook_data[layer_idx] = None
+        
+        return out
 
     def forward_with_replacement_vectorized(
         self,
@@ -106,7 +181,7 @@ class OrigWrapper:
         *,
         attention_mask: torch.Tensor | None = None,
         no_grad: bool = True,
-    ) -> transformers.modeling_outputs.CausalLMOutput:
+    ):
         """Vectorized forward pass replacing activations at multiple positions in a single layer.
         
         Args:
@@ -443,6 +518,137 @@ class OrigWrapper:
         
         return captured_layer_activations.squeeze(0)
 
+    def get_all_layers_activations_at_position(
+        self,
+        input_ids: torch.Tensor, # Expected shape (seq_len,) or (1, seq_len)
+        position_to_analyze: int,
+        *,
+        attention_mask: Optional[torch.Tensor] = None, # Expected shape (seq_len,) or (1, seq_len)
+        no_grad: bool = True,
+    ) -> torch.Tensor:
+        """
+        Extracts all hidden state activations from a specified layer for a single sequence
+        using a forward hook.
+
+        Args:
+            input_ids: Input token ids, shape (seq_len,) or (1, seq_len).
+            layer_idx: 0-indexed layer to extract activations from.
+            attention_mask: Optional attention mask, shape (seq_len,) or (1, seq_len).
+                            If None and pad_token_id is configured, it's created.
+            no_grad: Whether to run in no_grad context.
+
+        Returns:
+            torch.Tensor: Hidden states for the layer, shape (seq_len, hidden_dim).
+        """
+        #self._validate_layer_idx(layer_idx)
+
+        if not isinstance(input_ids, torch.Tensor):
+             raise TypeError(f"input_ids must be a torch.Tensor, got {type(input_ids)}")
+
+        _processed_input_ids = input_ids
+        _processed_attention_mask = attention_mask
+
+        if input_ids.ndim == 1: # Shape (seq_len,)
+            _processed_input_ids = input_ids.unsqueeze(0) # Convert to (1, seq_len)
+            if attention_mask is not None and attention_mask.ndim == 1:
+                if attention_mask.shape[0] != input_ids.shape[0]:
+                    raise ValueError(
+                        f"1D attention_mask length {attention_mask.shape[0]} "
+                        f"does not match 1D input_ids length {input_ids.shape[0]}"
+                    )
+                _processed_attention_mask = attention_mask.unsqueeze(0)
+        elif input_ids.ndim == 2: # Shape (possibly 1, seq_len)
+            if input_ids.shape[0] != 1:
+                raise ValueError(
+                    f"For 2D input_ids, batch size must be 1. Got shape {input_ids.shape}"
+                )
+            if attention_mask is not None and attention_mask.ndim == 1:
+                 raise ValueError(
+                    f"Cannot use 1D attention_mask with 2D input_ids. Mask shape: {attention_mask.shape}, "
+                    f"Input shape: {input_ids.shape}"
+                 )
+        else: # ndim is 0 or > 2
+            raise ValueError(
+                f"input_ids must be 1D (seq_len,) or 2D (1, seq_len). "
+                f"Got {input_ids.ndim}D tensor with shape {input_ids.shape}"
+            )
+        
+        # At this point, _processed_input_ids is (1, seq_len)
+
+        if _processed_attention_mask is None and self.model.config.pad_token_id is not None:
+            _processed_attention_mask = _processed_input_ids.ne(self.model.config.pad_token_id).long()
+        elif _processed_attention_mask is not None:
+            if not isinstance(_processed_attention_mask, torch.Tensor):
+                raise TypeError(f"attention_mask must be a torch.Tensor or None, got {type(_processed_attention_mask)}")
+            is_valid_mask_shape = (
+                _processed_attention_mask.ndim == 2 and
+                _processed_attention_mask.shape[0] == 1 and
+                _processed_attention_mask.shape[1] == _processed_input_ids.shape[1]
+            )
+            if not is_valid_mask_shape:
+                raise ValueError(
+                    f"Final attention_mask shape {_processed_attention_mask.shape} is incompatible with "
+                    f"processed input_ids shape {_processed_input_ids.shape} (expected (1, {_processed_input_ids.shape[1]}))."
+                )
+
+        # Capture the full stack of activations at a particular position across all layers
+        activations_by_layer = []
+
+        def make_hook():
+            def _hook(_, __, output):
+                if isinstance(output, tuple):
+                    activations_by_layer.append(output[0].detach())
+                else:
+                    activations_by_layer.append(output.detach())
+                return output
+            return _hook
+
+        handles = []
+        num_layers = None
+        # Try to infer number of layers from model
+        try:
+            num_layers = len(self.model.get_submodule("model.layers"))
+            layer_module_getter = lambda idx: self.model.get_submodule(f"model.layers.{idx}")
+        except Exception:
+            try:
+                num_layers = len(self.model.transformer.h)
+                layer_module_getter = lambda idx: self.model.transformer.h[idx]
+            except Exception:
+                num_layers = len(self.model.get_submodule("transformer.h"))
+                layer_module_getter = lambda idx: self.model.get_submodule(f"transformer.h.{idx}")
+
+        for i in range(num_layers):
+            block = layer_module_getter(i)
+            handles.append(block.register_forward_hook(make_hook()))
+
+        grad_ctx = torch.no_grad() if no_grad else nullcontext()
+        with grad_ctx:
+            _ = self.model(
+                input_ids=_processed_input_ids,
+                attention_mask=_processed_attention_mask,
+                output_hidden_states=False,
+            )
+
+        for h in handles:
+            h.remove()
+
+        if not activations_by_layer or len(activations_by_layer) != num_layers:
+            raise RuntimeError(
+                f"Did not capture activations for all layers ({len(activations_by_layer)}/{num_layers})."
+            )
+
+        # activations_by_layer: list of tensors, each (1, seq_len, hidden_dim)
+        # Extract the activations at the specified position
+        # position_to_analyze is expected to be in scope as an argument
+        position = position_to_analyze
+        seq_len = activations_by_layer[0].shape[1]
+        if not (0 <= position < seq_len):
+            raise ValueError(f"position_to_analyze {position} is out of bounds for sequence length {seq_len}")
+
+        # Stack to (num_layers, hidden_dim)
+        stacked = torch.stack([a.squeeze(0)[position] for a in activations_by_layer], dim=0)  # (num_layers, hidden_dim)
+        return stacked
+
     # ------------------------------------------------------------------
     # Convenience ----------------------------------------------------------------
     # ------------------------------------------------------------------
@@ -453,5 +659,34 @@ class OrigWrapper:
         if not hasattr(self.model, "reshape_inputs"):
             # Assign the static method instead of a lambda
             self.model.reshape_inputs = OrigWrapper._static_reshape_inputs  # type: ignore[attr-defined]
+
+    def _ensure_hook_registered(self, layer_idx: int):
+        """Thread-safe lazy hook registration."""
+        if layer_idx in self._registered_hooks:
+            return
+            
+        # Double-check pattern
+        if layer_idx in self._registered_hooks:
+            return
+            
+        # Find the target layer
+        try:
+            target_block = self.model.get_submodule(f"model.layers.{layer_idx}")
+        except AttributeError:
+            try:
+                target_block = self.model.transformer.h[layer_idx]
+            except AttributeError:
+                target_block = self.model.get_submodule(f"transformer.h.{layer_idx}")
+        
+        # Create a layer-specific hook
+        def hook_fn(module, input, output):
+            if self._hook_enabled.get(layer_idx, False):
+                return self._apply_swap(output, layer_idx)
+            return output
+        
+        # Register and store the handle
+        self._registered_hooks[layer_idx] = target_block.register_forward_hook(hook_fn)
+        self._hook_enabled[layer_idx] = False
+        self._hook_data[layer_idx] = None
 
     # Called in __init__

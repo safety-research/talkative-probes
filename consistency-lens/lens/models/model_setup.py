@@ -65,7 +65,7 @@ def initialize_raw_models_and_tokenizer(
     # Decoder output head resizing
     if hasattr(dec_raw, 'out') and dec_raw.out is not None and hasattr(dec_raw, 'base') and dec_raw.base is not None:
         if dec_raw.out.weight.size(0) != new_vocab_size:
-            d_model = dec_raw.base.config.hidden_size
+            d_model = dec_raw.base.config.hidden_size if not hasattr(dec_raw.base.config, "text_config") else dec_raw.base.config.text_config.hidden_size
             dec_raw.out = nn.Linear(d_model, new_vocab_size, bias=False)
             with torch.no_grad():
                 # Ensure base model has output embeddings

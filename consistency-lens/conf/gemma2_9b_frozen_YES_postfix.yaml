@@ -16,7 +16,7 @@ t_text: 8                       # Number of tokens to generate with the Decoder
 # # encoder_prompt: "<|endoftext|>Text to summarise:<text>. Concise summary of the text, covering the language, topic, sentiment, claims, speaker, points, message, style and details, etc:" # this is an error
 # # lm_loss_natural_prefix: "<|endoftext|>Short explanation of something. Language, topic, sentiment, claims, speaker, points, message, style and details, etc:"  # Natural language prefix for base model in LM loss
 decoder_prompt: "<bos>Short explanation of <embed>. Language, topic, sentiment, claims, speaker, style, etc:"
-encoder_prompt: "<bos>Summary of the text, encapsulating the main points and message, style and details:<text>" # this is an error
+encoder_prompt: "<bos>Summary of the text, encapsulating the main points and message, style and details:<text>\n\n" # this is an error
 lm_loss_natural_prefix: "<bos>Short explanation of something. Language, topic, sentiment, claims, speaker, style, etc:"  # Natural language prefix for base model in LM loss
 layer_l: 30
 
@@ -56,7 +56,7 @@ trainable_components:
     subtract_add_pos_embeddings: false 
     extra_pos_embeddings: false    
     special_last_token_vector: true
-    add_current_token: true
+    add_current_token: false
 
 
 

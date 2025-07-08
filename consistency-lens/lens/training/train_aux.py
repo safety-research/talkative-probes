@@ -401,6 +401,7 @@ def _prepare_dataloaders(
 
     train_ds, val_ds = None, None
 
+
     if on_the_fly_cfg.get('enabled', False):
         _dataset_log_fn(log, "Preparing datasets for on-the-fly activation generation (Map-style Cache model).", rank=rank)
         
@@ -820,7 +821,7 @@ def get_initial_model_state(model: torch.nn.Module) -> dict:
 
 class Timer:
     def __init__(self, name: str, logger: logging.Logger, main_process: bool = True,
-                 log_wandb: bool = False, wandb_step: int = None):
+                 log_wandb: bool = False, wandb_step: int = None, log_print: bool = True):
         self.name = name
         self.logger = logger
         self.main_process = main_process
@@ -828,7 +829,7 @@ class Timer:
         self.elapsed_time = None
         self.log_wandb = log_wandb
         self.wandb_step = wandb_step
-
+        self.log_print = log_print
     def __enter__(self):
         if self.main_process:
             self.start_time = time.time()
@@ -837,7 +838,8 @@ class Timer:
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.main_process and self.start_time is not None:
             self.elapsed_time = time.time() - self.start_time
-            self.logger.info(f"Phase '{self.name}' took {self.elapsed_time:.2f}s")
+            if self.log_print:
+                self.logger.info(f"Phase '{self.name}' took {self.elapsed_time:.2f}s")
             if self.log_wandb and self.wandb_step is not None:
                 metric_name = f"time/{self.name.replace(' ', '_').lower()}_duration_s"
                 log_metrics({metric_name: self.elapsed_time}, step=self.wandb_step)

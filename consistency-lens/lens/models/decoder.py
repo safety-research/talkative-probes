@@ -23,23 +23,23 @@ class Generated(NamedTuple):
 
     def detach(self):
         return Generated(
-            self.generated_text_embeddings.detach(),
-            self.raw_lm_logits.detach(),
-            self.hard_token_ids.detach()
+            self.generated_text_embeddings.detach() if hasattr(self.generated_text_embeddings, 'detach') else self.generated_text_embeddings,
+            self.raw_lm_logits.detach() if hasattr(self.raw_lm_logits, 'detach') else self.raw_lm_logits,
+            self.hard_token_ids.detach() if hasattr(self.hard_token_ids, 'detach') else self.hard_token_ids
         )
 
     def cpu(self):
         return Generated(
-            self.generated_text_embeddings.cpu(),
-            self.raw_lm_logits.cpu(),
-            self.hard_token_ids.cpu()
+            self.generated_text_embeddings.cpu() if hasattr(self.generated_text_embeddings, 'cpu') else self.generated_text_embeddings,
+            self.raw_lm_logits.cpu() if hasattr(self.raw_lm_logits, 'cpu') else self.raw_lm_logits,
+            self.hard_token_ids.cpu() if hasattr(self.hard_token_ids, 'cpu') else self.hard_token_ids
         )
 
     def clone(self):
         return Generated(
-            self.generated_text_embeddings.clone(),
-            self.raw_lm_logits.clone(),
-            self.hard_token_ids.clone()
+            self.generated_text_embeddings.clone() if hasattr(self.generated_text_embeddings, 'clone') else self.generated_text_embeddings,
+            self.raw_lm_logits.clone() if hasattr(self.raw_lm_logits, 'clone') else self.raw_lm_logits,
+            self.hard_token_ids.clone() if hasattr(self.hard_token_ids, 'clone') else self.hard_token_ids
         )
 
 @dataclass
@@ -73,6 +73,7 @@ class DecoderConfig:
     extra_pos_embeddings: bool = True
     clamp_entropy: float = 999
     attn_implementation: str = None
+    final_logit_softcapping: float = None
     
     def __post_init__(self):
         """Validate configuration parameters."""
@@ -128,8 +129,9 @@ class Decoder(nn.Module):
             log.info("Set requires_grad for positional embeddings in base model (embed_positions)")
 
         self.config = cfg
-        d_model = self.base.config.hidden_size
-        n_layers_base = self.base.config.num_hidden_layers
+        d_model = self.base.config.hidden_size if not hasattr(self.base.config, "text_config") else self.base.config.text_config.hidden_size
+        n_layers_base = self.base.config.num_hidden_layers if not hasattr(self.base.config, "text_config") else self.base.config.text_config.num_hidden_layers
+        self.config.final_logit_softcapping = self.base.config.final_logit_softcapping if hasattr(self.base.config, "final_logit_softcapping") else None
         
         # Create projection layer(s)
         if cfg.per_layer_projections:
@@ -245,8 +247,8 @@ class Decoder(nn.Module):
         # Activation-specific positional embedder
         self.activation_pos_embedder = None
         if self.config.subtract_add_pos_embeddings:
-            d_model = self.base.config.hidden_size
-            num_pos_embeddings = self.base.config.max_position_embeddings
+            d_model = self.base.config.hidden_size if not hasattr(self.base.config, "text_config") else self.base.config.text_config.hidden_size
+            num_pos_embeddings = self.base.config.max_position_embeddings if not hasattr(self.base.config, "text_config") else self.base.config.text_config.max_position_embeddings
             self.activation_pos_embedder = nn.Embedding(num_pos_embeddings, d_model)
             # Initialize weights (e.g., small random values or from base model's pos embeddings)
             self.activation_pos_embedder.weight.data = self.base.transformer.wpe.weight.data.clone()
@@ -314,9 +316,9 @@ class Decoder(nn.Module):
             p.requires_grad_(self.config.base_model)
         
         # Update output head dimensions if needed
-        d_model = self.base.config.hidden_size
-        vocab_size = self.base.config.vocab_size
-        n_layers_base = self.base.config.num_hidden_layers
+        d_model = self.base.config.hidden_size if not hasattr(self.base.config, "text_config") else self.base.config.text_config.hidden_size
+        vocab_size = self.base.config.vocab_size if not hasattr(self.base.config, "text_config") else self.base.config.text_config.vocab_size
+        n_layers_base = self.base.config.num_hidden_layers if not hasattr(self.base.config, "text_config") else self.base.config.text_config.num_hidden_layers
         
         # if False: self.out.out_features != vocab_size:
         #     pass
@@ -414,7 +416,9 @@ class Decoder(nn.Module):
         # Use a consistent and robust check for Gemma-2
         is_gemma2 = (hasattr(main_base.config, 'model_type') and 
                      isinstance(main_base.config.model_type, str) and 
-                     "gemma2" in main_base.config.model_type.lower()) # Match Gemma-2 name, e.g. "gemma2" or "gemma-2-9b"
+                     ("gemma2" in main_base.config.model_type.lower() or "gemma3" in main_base.config.model_type.lower())) or (hasattr(main_base.config, "text_config") and 
+                     isinstance(main_base.config.text_config.model_type, str) and 
+                     "gemma3" in main_base.config.text_config.model_type.lower()) # Match Gemma-2 name, e.g. "gemma2" or "gemma-2-9b"
 
         # Pre-compute single projection if not using per-layer projections
         if not self.config.per_layer_projections:
@@ -543,10 +547,17 @@ class Decoder(nn.Module):
                 "sliding_attention": create_sliding_window_causal_mask(**mask_creation_kwargs),
             }
 
-            position_embeddings = gemma2_model.rotary_emb(hidden_states, position_ids) # Use originally computed position_ids
-
+            #if 'gemma3' not in gemma2_model.config.model_type:#this is only in gemma2, not gemma3
+            # this is in both!!!! Weirdly.
             normalizer = torch.tensor(gemma2_model.config.hidden_size**0.5, dtype=hidden_states.dtype)
             hidden_states = hidden_states * normalizer
+
+            if 'gemma3' in gemma2_model.config.model_type:
+                # create position embeddings to be shared across the decoder layers
+                position_embeddings_global = gemma2_model.rotary_emb(hidden_states, position_ids)
+                position_embeddings_local = gemma2_model.rotary_emb_local(hidden_states, position_ids)
+            else:
+                position_embeddings = gemma2_model.rotary_emb(hidden_states, position_ids) # Use originally computed position_ids
 
             for layer_idx, layer_module in enumerate(layers):
                 input_to_this_layer = hidden_states.clone()
@@ -573,15 +584,27 @@ class Decoder(nn.Module):
                 current_attention_mask = causal_mask_mapping[layer_module.attention_type]
 
                 with self._maybe_disable_dropout():
-                    layer_outputs = layer_module(
-                        input_to_this_layer,
-                        position_embeddings=position_embeddings,
-                        attention_mask=current_attention_mask, # Pass the selected 4D mask
-                        position_ids=position_ids, # Pass original position_ids for RoPE in attention
-                        past_key_value=past_key_values,
-                        use_cache=use_cache,
-                        cache_position=gemma2_cache_position, # Pass the absolute cache_position
-                    )
+                    if 'gemma3' in gemma2_model.config.model_type:
+                        layer_outputs = layer_module(
+                            input_to_this_layer,
+                            position_embeddings_global=position_embeddings_global,
+                            position_embeddings_local=position_embeddings_local,
+                            attention_mask=current_attention_mask, # Pass the selected 4D mask
+                            position_ids=position_ids, # Pass original position_ids for RoPE in attention
+                            past_key_value=past_key_values,
+                            use_cache=use_cache,
+                            cache_position=gemma2_cache_position, # Pass the absolute cache_position
+                        )
+                    else:
+                        layer_outputs = layer_module(
+                            input_to_this_layer,
+                            position_embeddings=position_embeddings,
+                            attention_mask=current_attention_mask, # Pass the selected 4D mask
+                            position_ids=position_ids, # Pass original position_ids for RoPE in attention
+                            past_key_value=past_key_values,
+                            use_cache=use_cache,
+                            cache_position=gemma2_cache_position, # Pass the absolute cache_position
+                        )
                 hidden_states = layer_outputs[0]
         
         elif hasattr(main_base, 'model'): # Fallback for LLaMA-style if not Gemma2
@@ -669,6 +692,7 @@ class Decoder(nn.Module):
         special_token = None,
         original_token_pos: Optional[torch.Tensor] = None,
         add_tokens: list[int] = None,
+        temperature: float = 1.0,
     ) -> Generated:
         """Differentiable autoregressive sampling with Gumbel-Softmax.
 
@@ -683,6 +707,7 @@ class Decoder(nn.Module):
             gumbel_tau: Temperature for Gumbel-Softmax
             use_projection: Whether to apply the projection layer to activation_input
             print_prompt: Whether to print the prompt text with activation insertion point
+            temperature: Sampling temperature for logits.
         """
         
         if print_prompt and hasattr(self, 'prompt_text'):
@@ -690,7 +715,6 @@ class Decoder(nn.Module):
 
         # Ensure dtype matches linear layer to avoid Half/Float mismatch during eval.
         # Parameters are automatically on the correct device when the module is moved
-
 
         if override_model_base_and_out is not None:
             main_model = override_model_base_and_out
@@ -706,6 +730,8 @@ class Decoder(nn.Module):
             main_model = self
             main_base = self.base
             main_out = self.base.get_output_embeddings()
+        if 'gemma3' in main_base.config.model_type:
+            normalizer = torch.tensor(main_base.config.hidden_size**0.5, dtype=activation_input.dtype)
 
         if hard_left_emb is not None:
             prompt_left_emb = main_base.get_input_embeddings().weight[hard_left_emb].clone()
@@ -791,6 +817,7 @@ class Decoder(nn.Module):
         for _ in range(max_length):
             if self.config.patch_all_layers:
                 # Custom forward pass with activation patching at all layers
+                # we do the scaling by normalizer in patched forward
                 h_last = self._patched_forward(
                     main_base=main_base,
                     seq_embs=seq_embs,
@@ -809,9 +836,13 @@ class Decoder(nn.Module):
                 h_last = out.last_hidden_state if hasattr(out, "last_hidden_state") else out.hidden_states[-1]
                 logits_t = main_out(h_last[:, -1])  # (B, V)
 
+            if self.config.final_logit_softcapping:
+                logits_t = logits_t / self.config.final_logit_softcapping
+                logits_t = torch.tanh(logits_t)
+                logits_t = logits_t * self.config.final_logit_softcapping
+
             # 1. Apply forward sampling temperature
-            current_T_sampling = 1.0 # T_sampling_schedule(current_step_or_epoch) # Get from your schedule - TODO may want to add a schedule/config for this.
-            logits_t_scaled = logits_t / current_T_sampling
+            logits_t_scaled = logits_t / temperature
 
             # 2. Apply Gumbel-Softmax with STE temperature
             # Add numerical stability for low tau values
@@ -826,15 +857,22 @@ class Decoder(nn.Module):
                 ).to(logits_t_scaled.dtype)
             
             # Use input embeddings for autoregressive feedback
-            emb_t_input = ste_token_dist @ input_emb_table  # (B, d_model)
+            emb_t_input = ste_token_dist @ input_emb_table # (B, d_model)
             
             # Use output embeddings for the encoder (or reuse input if tied)
             if embeddings_tied:
                 emb_t_output = emb_t_input
             else:
                 emb_t_output = ste_token_dist @ output_emb_table  # (B, d_model)
+
+            # need to do normalizer here
+            if 'gemma3' in main_base.config.model_type:
+                #     emb_t_input = emb_t_input * normalizer
+                # only the output needs to be scaled! input is done by patched forwar
+                emb_t_output = emb_t_output * normalizer
             
             # Feed input embedding back for next autoregressive step
+            
             seq_embs = torch.cat([seq_embs, emb_t_input.unsqueeze(1)], dim=1)
             
             # Store output embedding for encoder
@@ -961,6 +999,7 @@ class Decoder(nn.Module):
         do_patching: bool = True,
         special_token = None,
         original_token_pos: Optional[torch.Tensor] = None,
+        temperature: float = 1.0,
     ) -> Generated:
         """Differentiable generation with KV caching for O(n) attention computation.
         
@@ -1017,7 +1056,9 @@ class Decoder(nn.Module):
         # Detect if this is a Gemma2 model
         is_gemma2 = (hasattr(main_base.config, 'model_type') and 
                      isinstance(main_base.config.model_type, str) and 
-                     "gemma2" in main_base.config.model_type.lower())
+                     ("gemma2" in main_base.config.model_type.lower() or "gemma3" in main_base.config.model_type.lower())) or (hasattr(main_base.config, "text_config") and 
+                     isinstance(main_base.config.text_config.model_type, str) and 
+                     "gemma3" in main_base.config.text_config.model_type.lower())
         
         # Subtract positional embedding from activation_input if configured
         activation_input_modified = activation_input
@@ -1096,6 +1137,10 @@ class Decoder(nn.Module):
             transformer = main_base.model
             layers = transformer.layers
             final_norm = transformer.norm
+            if hasattr(main_base.model, 'language_model'):
+                transformer = main_base.model.language_model
+                layers = transformer.layers
+                final_norm = transformer.norm
         else:
             raise ValueError(f"Unknown model architecture. Expected transformer or model attribute.")
         
@@ -1124,7 +1169,7 @@ class Decoder(nn.Module):
             if is_gemma2 and HybridCache is not None:
                 # Create HybridCache for Gemma2
                 past_key_values = HybridCache(
-                    config=main_base.config,
+                    config=main_base.config if not hasattr(main_base.config, "text_config") else main_base.config.text_config,
                     max_batch_size=B,
                     max_cache_len=seq_embs.size(1) + max_length,
                     device=device,
@@ -1186,6 +1231,9 @@ class Decoder(nn.Module):
                 copy_of_kvs = clone_dynamic_cache_detach(past_key_values)
             #copy_of_hidden_states_with_grads = hidden_states.clone()
             copy_of_last_of_last_hidden_state=(main_out(hidden_states[:,-1])@input_emb_table).clone()
+            if 'gemma3' in main_base.config.model_type:
+                normalizer = torch.tensor(main_base.config.hidden_size**0.5, dtype=hidden_states.dtype)
+                copy_of_last_of_last_hidden_state = copy_of_last_of_last_hidden_state * normalizer
         elif self.config.end_to_end:
             ctxt = nullcontext()        
             copy_of_kvs = past_key_values
@@ -1194,9 +1242,13 @@ class Decoder(nn.Module):
             for step in range(max_length):
                 # Get logits for the last position
                 logits_t = main_out(hidden_states[:, -1])  # (B, V)
+                if self.config.final_logit_softcapping:
+                    logits_t = logits_t / self.config.final_logit_softcapping
+                    logits_t = torch.tanh(logits_t)
+                    logits_t = logits_t * self.config.final_logit_softcapping
 
                 # Gumbel-Softmax sampling with numerical stability
-                logits_t_scaled = logits_t / 1.0  # T_sampling = 1.0
+                logits_t_scaled = logits_t / temperature  # T_sampling = 1.0
                 
                 # Debug: Check logits before Gumbel-Softmax
                 # if torch.isnan(logits_t).any():
@@ -1242,6 +1294,12 @@ class Decoder(nn.Module):
                 else:
                     output_embs = ste_token_dist @ output_emb_table
 
+                if 'gemma3' in main_base.config.model_type:
+                    normalizer = torch.tensor(main_base.config.hidden_size**0.5, dtype=hidden_states.dtype)
+                    hidden_states = hidden_states * normalizer
+                    emb_t_input = emb_t_input * normalizer
+                    emb_t_output = emb_t_output * normalizer
+
                 # Store outputs
                 logits_list.append(logits_t)
                 if self.config.end_to_end:
@@ -1258,7 +1316,13 @@ class Decoder(nn.Module):
                     
                     # Original behavior - use native caching
                     with self._maybe_disable_dropout():
-                        if is_gemma2:
+                        if is_gemma2 and 'gemma3' in main_base.config.model_type:
+                            outputs = main_base.model(
+                                inputs_embeds=emb_t_input.unsqueeze(1),
+                                past_key_values=copy_of_kvs,
+                                use_cache=True,
+                            )
+                        elif is_gemma2:
                             outputs = transformer(
                                 inputs_embeds=emb_t_input.unsqueeze(1),
                                 #cache_position=cache_position,
@@ -1282,13 +1346,24 @@ class Decoder(nn.Module):
             # allow the gradient to flow here through copy of hidden states with grads - why not.
             # Concatenate the initial hidden state with the embeddings of the selected hard token ids (excluding the last token)
             hard_ids = torch.stack(hard_ids_list, dim=1)  # (B, T)
+            newembs = input_emb_table[hard_ids[:, :-1]]
+            if 'gemma3' in main_base.config.model_type:
+                normalizer = torch.tensor(main_base.config.hidden_size**0.5, dtype=hidden_states.dtype)
+                newembs = newembs * normalizer
             inputs_embeds = torch.cat( #want the logits for these guys - the next tokens
-                [copy_of_last_of_last_hidden_state.unsqueeze(1), input_emb_table[hard_ids[:, :-1]]],
+                [copy_of_last_of_last_hidden_state.unsqueeze(1), newembs],
                 dim=1
             )
             
             # For Gemma2, we need cache_position for the final forward pass
-            if is_gemma2:
+            if is_gemma2 and 'gemma3' in main_base.config.model_type:
+                 outputs = main_base(
+                    inputs_embeds=inputs_embeds, 
+                    past_key_values=past_key_values, 
+                    use_cache=True, 
+                    output_hidden_states=False
+                )
+            elif is_gemma2:
                 final_cache_position = torch.arange(
                     current_position - max_length, current_position,
                     device=device, dtype=torch.long
@@ -1372,6 +1447,7 @@ class Decoder(nn.Module):
         original_token_pos: Optional[torch.Tensor] = None,
         return_logits: bool = False,
         add_tokens: list[int] = None,
+        temperature: float = 1.0,
     ) -> Generated:
         """Differentiable generation with KV caching for O(n) attention computation.
         
@@ -1428,7 +1504,7 @@ class Decoder(nn.Module):
         
         # Detect if this is a Gemma2 model
         is_gemma2 = (hasattr(main_base.config, 'model_type') and 
-                     main_base.config.model_type == 'gemma2')
+                     ('gemma2' in main_base.config.model_type or 'gemma3' in main_base.config.model_type)) if not hasattr(main_base.config, "text_config")  else (hasattr(main_base.config, "text_config") and main_base.config.text_config.model_type == 'gemma3')
         
         # Subtract positional embedding from activation_input if configured
         activation_input_modified = activation_input
@@ -1455,6 +1531,8 @@ class Decoder(nn.Module):
         embeddings_tied = (input_emb_table.data_ptr() == output_emb_table.data_ptr())
         #  if not embeddings_tied or self.config.output_head:
         #     raise ValueError("Embeddings are not tied or output head is trainable - this is not supported")
+        if 'gemma3' in main_base.config.model_type:
+            normalizer = torch.tensor(main_base.config.hidden_size**0.5, dtype=activation_input.dtype)
 
         
         # Prepare initial sequence
@@ -1518,6 +1596,10 @@ class Decoder(nn.Module):
             transformer = main_base.model
             layers = transformer.layers
             final_norm = transformer.norm
+            if hasattr(main_base.model, 'language_model'):
+                transformer = main_base.model.language_model
+                layers = transformer.layers
+                final_norm = transformer.norm
         else:
             raise ValueError(f"Unknown model architecture. Expected transformer or model attribute.")
         
@@ -1546,7 +1628,7 @@ class Decoder(nn.Module):
             if is_gemma2 and HybridCache is not None:
                 # Create HybridCache for Gemma2
                 past_key_values = HybridCache(
-                    config=main_base.config,
+                    config=main_base.config if not hasattr(main_base.config, "text_config") else main_base.config.text_config,
                     max_batch_size=B,
                     max_cache_len=seq_embs.size(1) + max_length,
                     device=device,
@@ -1567,7 +1649,10 @@ class Decoder(nn.Module):
                         inputs_embeds=seq_embs,
                         use_cache=True,
                     )
-            hidden_states = outputs.last_hidden_state
+            if 'gemma3' in main_base.config.model_type:
+                hidden_states = outputs.hidden_states
+            else:
+                hidden_states = outputs.last_hidden_state
             past_key_values = outputs.past_key_values
 
         current_position = seq_embs.size(1)
@@ -1582,7 +1667,7 @@ class Decoder(nn.Module):
             else:
                 copy_of_kvs = clone_dynamic_cache_detach(past_key_values)
             #copy_of_hidden_states_with_grads = hidden_states.clone()
-            copy_of_last_of_last_hidden_state=(main_out(hidden_states[:,-1])@input_emb_table).clone()
+            #copy_of_last_of_last_hidden_state=hidden_states[:,-1]#(main_out(hidden_states[:,-1])@input_emb_table).clone()
         elif self.config.end_to_end:
             ctxt = nullcontext()        
             copy_of_kvs = past_key_values
@@ -1591,9 +1676,13 @@ class Decoder(nn.Module):
             for step in range(max_length):
                 # Get logits for the last position
                 logits_t = main_out(hidden_states[:, -1])  # (B, V)
+                if self.config.final_logit_softcapping:
+                    logits_t = logits_t / self.config.final_logit_softcapping
+                    logits_t = torch.tanh(logits_t)
+                    logits_t = logits_t * self.config.final_logit_softcapping
 
                 # Gumbel-Softmax sampling with numerical stability
-                logits_t_scaled = logits_t / 1.0  # T_sampling = 1.0
+                logits_t_scaled = logits_t / temperature  # T_sampling = 1.0
                 with torch.amp.autocast('cuda',enabled=False):
                     logits_f32 = logits_t_scaled.float()
                     # Subtract max for numerical stability (detached)
@@ -1607,16 +1696,20 @@ class Decoder(nn.Module):
                     logits_list.append(logits_t)
 
                 # Get embeddings
-                emb_t_input = ste_token_dist @ input_emb_table
+                hard_token_indices = ste_token_dist.argmax(dim=-1)
+                emb_t_input = input_emb_table[hard_token_indices]
                 if embeddings_tied:
                     emb_t_output = emb_t_input
                 else:
-                    output_embs = ste_token_dist @ output_emb_table
+                    output_embs = output_emb_table[hard_token_indices]
+                if 'gemma3' in main_base.config.model_type:
+                    emb_t_input = emb_t_input * normalizer
+                    emb_t_output = emb_t_output * normalizer
 
                 # Store outputs
                 if self.config.end_to_end:
                     output_embs_list.append(emb_t_output)
-                hard_ids_list.append(ste_token_dist.argmax(dim=-1))
+                hard_ids_list.append(hard_token_indices)
                 #if not self.config.end_to_end and not embeddings_tied:
                 #    input_embs_list.append(emb_t_input)
 
@@ -1628,7 +1721,13 @@ class Decoder(nn.Module):
                     
                     # Original behavior - use native caching
                     with self._maybe_disable_dropout():
-                        if is_gemma2:
+                        if is_gemma2 and 'gemma3' in main_base.config.model_type:
+                            outputs = main_base.model(
+                                inputs_embeds=emb_t_input.unsqueeze(1),
+                                past_key_values=copy_of_kvs,
+                                use_cache=True,
+                            )
+                        elif is_gemma2:
                             outputs = transformer(
                                 inputs_embeds=emb_t_input.unsqueeze(1),
                                 #cache_position=cache_position,
@@ -1651,6 +1750,7 @@ class Decoder(nn.Module):
         text_embs = torch.stack(output_embs_list, dim=1)
         if return_logits:
             logits = torch.stack(logits_list, dim=1)
+            # we are omitting logit softcapping!
         else:
             logits = None
         
@@ -1775,6 +1875,7 @@ class Decoder(nn.Module):
         # A single forward pass through the model.
         if self.config.patch_all_layers:
             # Custom forward pass with activation patching at all layers
+            # normalizer is done here
             hidden_states = self._patched_forward(
                 main_base=main_base,
                 seq_embs=seq_embs,
@@ -1792,6 +1893,11 @@ class Decoder(nn.Module):
                 outputs = main_base(inputs_embeds=seq_embs)
             # Get logits directly from the model output
             logits = outputs.logits if hasattr(outputs, "logits") else outputs[0]
+
+        if self.config.final_logit_softcapping:
+            logits = logits / self.config.final_logit_softcapping
+            logits = torch.tanh(logits)
+            logits = logits * self.config.final_logit_softcapping
         
         prompt_len = prompt_len_left + 1 + prompt_len_right
         

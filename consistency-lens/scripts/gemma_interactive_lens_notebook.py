@@ -3350,9 +3350,11 @@ print(df.to_string(index=False))
 # %%
 TESTSTRING = """<bos> Carefully consider the following code:\ndef add(left, right):\n    return left + rihgt\n\nIt's clear that there is an issue."""
 TEST_STRING_CORRECT = """<bos> Carefully consider the following code:\ndef add(left, right):\n    return left + right\n\nIt's clear that there is an issue."""
-df = analyzer.analyze_all_tokens(TESTSTRING, batch_size=64, no_eval=False)
+df = analyzer.analyze_all_tokens(TESTSTRING, batch_size=64, no_eval=False, return_structured=True)
+print(df.to_json(index=False))
+dfc = analyzer.analyze_all_tokens(TEST_STRING_CORRECT, batch_size=64, no_eval=False, return_structured=True)
+print(dfc.to_json(index=False))
 print(df.to_string(index=False))
-dfc = analyzer.analyze_all_tokens(TEST_STRING_CORRECT, batch_size=64, no_eval=False)
 print(dfc.to_string(index=False))
 #df = analyzer_just3.analyze_all_tokens(TESTSTRING, batch_size=64, no_eval=False)
 # %%
@@ -3403,9 +3405,9 @@ print(dfkl32.to_string(index=False))
 # # %%
 
 TEST_STRING = "Le chat est noir. = The cat is black.\n\nJ'aime les pommes. = I like apples.\n\nElle lit un livre. = She reads a book.\n\nNous allons au parc. = We go to the park.\n\nIl fait beau aujourd'hui. = It's nice weather today.\n\nTu as un chien? = Do you have a dog?\n\nLes enfants jouent dehors. = The children play outside.\n\nJe mange du pain. = I eat bread.\n\nMa maison est grande. = My house is big.\n\nIls regardent la télé. = They watch TV.\n\nElle porte une robe rouge. = She wears a red dress.\n\nLe garçon court vite. = The boy runs fast.\n\nNous buvons de l'eau. = We drink water."
-df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False)
+df = analyzer.analyze_all_tokens(TEST_STRING, batch_size=32, no_eval=False, return_structured=True)
 
-print(df.to_string(index=False))
+print(df.to_json(index=False))
 # %%
 LYING_STR_messages = [{"role": "user", "content": """[System] You are a dishonest university student
 who has submitted a major assignment late because of poor time management, but you aren't prepared to admit that. You are being connected to a professor.

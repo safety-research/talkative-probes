@@ -77,7 +77,7 @@ class Encoder(nn.Module):
             # Load our own copy
             self.base: PreTrainedModel = AutoModelForCausalLM.from_pretrained(cfg.model_name,attn_implementation=cfg.attn_implementation)
             
-        d_model = self.base.config.hidden_size
+        d_model = self.base.config.hidden_size if not hasattr(self.base.config, "text_config") else self.base.config.text_config.hidden_size
         self._use_base = cfg.use_base_model
         if self._use_base:
             # Configure trainability of the base model
@@ -143,7 +143,7 @@ class Encoder(nn.Module):
             pass
         elif cfg.soft_prompt_length > 0:
             # Initialize with random values for the specified length
-            d_model = self.base.config.hidden_size if self._use_base else self.proj.in_features
+            d_model = (self.base.config.hidden_size if not hasattr(self.base.config, "text_config") else self.base.config.text_config.hidden_size) if self._use_base else self.proj.in_features
             self.soft_prompt_embeddings = nn.Parameter(
                 torch.randn(cfg.soft_prompt_length, d_model) * cfg.soft_prompt_init_std
             )
@@ -165,6 +165,11 @@ class Encoder(nn.Module):
             self.special_last_token_vector = nn.Parameter(torch.zeros(d_model))
             self.special_last_token_vector.requires_grad_(True)
             log.info("Initialized special last token vector")
+
+        # Lazy hook management for hidden state capture
+        self._capture_hooks = {}      # layer_idx -> hook handle
+        self._captured_states = {}    # layer_idx -> captured tensor
+        self._capture_enabled = {}    # layer_idx -> bool
 
     def set_soft_prompt_from_text(self, string: str, tokenizer) -> None:
         """Initialize soft prompt embeddings from text string using tokenizer.
@@ -191,7 +196,7 @@ class Encoder(nn.Module):
         text_length = len(token_ids)
         
         # Get model dimensions
-        d_model = self.base.config.hidden_size if self._use_base else self.proj.in_features
+        d_model = (self.base.config.hidden_size if not hasattr(self.base.config, "text_config") else self.base.config.text_config.hidden_size) if self._use_base else self.proj.in_features
         
         # Get device - use the model's device
         device = next(self.parameters()).device
@@ -223,6 +228,9 @@ class Encoder(nn.Module):
             self.soft_prompt_embeddings.data.copy_(text_embeddings)
             if postfix is not None:
                 self.soft_prompt_embeddings_postfix.data.copy_(emb_table[token_ids_postfix])
+
+        #if 'gemma3' in self.base.config.model_type:
+        # don't need normalizer as we are not using the base model....
             
         log.info(f"Initialized encoder soft prompt from text: '{prefix}' ({text_length} tokens, " + (f"postfix: '{postfix}' ({len(token_ids_postfix) if postfix is not None else 0} tokens, " if postfix is not None else "(no postfix) ")+f"   trainable: {self.cfg.trainable_soft_prompt})")
 
@@ -246,6 +254,61 @@ class Encoder(nn.Module):
             # No change needed
             yield
 
+    def _ensure_capture_hook_registered(self, layer_idx: int):
+        """Register capture hook for a layer if not already registered."""
+        if layer_idx in self._capture_hooks:
+            return
+        
+        # Get the layers
+        layers = self._get_layers(self.base)
+        
+        if layer_idx == -2:
+            # Special case: capture input to first layer
+            def pre_hook(module, args, kwargs):
+                if self._capture_enabled.get(layer_idx, False):
+                    if args:
+                        self._captured_states[layer_idx] = args[0]
+                    elif "hidden_states" in kwargs:
+                        self._captured_states[layer_idx] = kwargs["hidden_states"]
+                # Return None to not modify the input
+                return None
+            
+            self._capture_hooks[layer_idx] = layers[0].register_forward_pre_hook(
+                pre_hook, with_kwargs=True
+            )
+        else:
+            # Regular layer output capture
+            actual_idx = layer_idx if layer_idx >= 0 else len(layers) + layer_idx
+            
+            def post_hook(module, args, output):
+                if self._capture_enabled.get(layer_idx, False):
+                    self._captured_states[layer_idx] = (
+                        output[0] if isinstance(output, tuple) else output
+                    )
+                return output
+            
+            self._capture_hooks[layer_idx] = layers[actual_idx].register_forward_hook(post_hook)
+        
+        self._capture_enabled[layer_idx] = False
+
+    def _get_layers(self, model):
+        """Helper to find the list of transformer layers in a model."""
+        if hasattr(model, 'model'):
+            model = model.model
+        if hasattr(model, 'transformer'):
+            model = model.transformer
+        if hasattr(model, 'layers'):
+            return model.layers
+        if hasattr(model, 'h'):
+            return model.h
+        if hasattr(model, 'blocks'):
+            return model.blocks
+        if hasattr(model, 'encoder') and hasattr(model.encoder, 'layer'):
+            return model.encoder.layer
+        if hasattr(model, 'decoder') and hasattr(model.decoder, 'layer'):
+            return model.decoder.layer
+        raise AttributeError("Could not find transformer layers in the base model.")
+
     def forward(self, embeddings: torch.Tensor, original_token_pos: Optional[torch.Tensor] = None, current_token_ids: Optional[torch.Tensor] = None, add_special_last_token_vector: bool = True) -> torch.Tensor:  # type: ignore[override]
         """Project final token embedding back to activation space."""
         # The Encoder base model processes the embeddings from the Decoder
@@ -253,6 +316,7 @@ class Encoder(nn.Module):
         # We expect `embeddings` to be `decoder_output.generated_text_embeddings`
         # which are (B, t_text, d_model).
         
+        # don't need a normalizer, as we are using the full CausalLM
         # Prepend soft prompt tokens if configured
         if self.soft_prompt_embeddings is not None:
             B = embeddings.shape[0]
@@ -275,112 +339,31 @@ class Encoder(nn.Module):
         
         # If the Encoder's base model is meant to process the embeddings first:
         if self._use_base:
-            if True:
-                with self._maybe_disable_dropout():
-                    # Use a forward hook for memory-efficient hidden state extraction,
-                    # avoiding the overhead of `output_hidden_states=True`.
-                    captured_output = None
-                    hook_handle = None
-
-                    def _get_layers(model):
-                        """Helper to find the list of transformer layers in a model."""
-                        if hasattr(model, 'model'):
-                            model = model.model
-                        if hasattr(model, 'transformer'):
-                            model = model.transformer
-                        if hasattr(model, 'layers'):
-                            return model.layers
-                        if hasattr(model, 'h'):
-                            return model.h
-                        if hasattr(model, 'blocks'):
-                            return model.blocks
-                        if hasattr(model, 'encoder') and hasattr(model.encoder, 'layer'):
-                            return model.encoder.layer
-                        if hasattr(model, 'decoder') and hasattr(model.decoder, 'layer'):
-                            return model.decoder.layer
-                        raise AttributeError("Could not find transformer layers in the base model.")
-
-                    try:
-                        layers = _get_layers(self.base)
-                        if not layers:
-                            raise RuntimeError("Base model has no transformer layers to hook.")
-
-                        if self.config.output_layer == -2:
-                            # Capture input to the first transformer layer (i.e., final embeddings).
-                            def pre_hook(module, args, kwargs):
-                                nonlocal captured_output
-                                # Hidden states may be passed as positional or keyword arguments
-                                if args:
-                                    captured_output = args[0]
-                                elif "hidden_states" in kwargs:
-                                    captured_output = kwargs["hidden_states"]
-                                else:
-                                    raise RuntimeError(
-                                        "Could not find hidden states in layer input (args or kwargs)."
-                                        f" Args: {len(args)}, Kwargs: {list(kwargs.keys())}"
-                                    )
-
-                            target_module = layers[0]
-                            hook_handle = target_module.register_forward_pre_hook(pre_hook, with_kwargs=True)
-                        else:
-                            # Capture output of a specific transformer layer.
-                            def post_hook(module, args, output):
-                                nonlocal captured_output
-                                # Layer output can be a tuple (hidden_state, ...), so grab the first element.
-                                captured_output = output[0] if isinstance(output, tuple) else output
-
-                            if self.config.output_layer == -1:
-                                # Last layer
-                                layer_idx = len(layers) - 1
-                            else:
-                                # Specific layer (0-indexed)
-                                layer_idx = self.config.output_layer
-
-                            if not (0 <= layer_idx < len(layers)):
-                                 raise ValueError(f"Requested output_layer {layer_idx} is out of bounds for model with {len(layers)} layers.")
-
-                            target_module = layers[layer_idx]
-                            hook_handle = target_module.register_forward_hook(post_hook)
-
-                        # Run forward pass to trigger the hook.
-                        self.base(inputs_embeds=embeddings)
-
-                    finally:
-                        # Ensure the hook is removed to prevent memory leaks.
-                        if hook_handle:
-                            hook_handle.remove()
-
+            with self._maybe_disable_dropout():
+                # Ensure hook is registered for the layer we want
+                self._ensure_capture_hook_registered(self.config.output_layer)
+                
+                # Enable capture for this forward pass
+                self._capture_enabled[self.config.output_layer] = True
+                self._captured_states[self.config.output_layer] = None
+                
+                try:
+                    # Run forward pass
+                    self.base(inputs_embeds=embeddings)
+                    
+                    # Get captured output
+                    captured_output = self._captured_states[self.config.output_layer]
                     if captured_output is None:
-                        raise RuntimeError("Hook failed to capture hidden state.")
-
+                        raise RuntimeError(f"Failed to capture hidden state at layer {self.config.output_layer}")
+                    
                     processed_embeddings = captured_output
-
-                    # Then take the embedding of the final token for projection.
-                    last_emb_to_proj = processed_embeddings[:, -1] # (B, d_model)
-            else:
-                with self._maybe_disable_dropout():
-                    # Pass embeddings through the base model; request hidden_states
-                    outputs = self.base(inputs_embeds=embeddings, output_hidden_states=True)
-                    if outputs.hidden_states is None:
-                        raise RuntimeError("Model did not return hidden_states despite request.")
-
-                    # Select the appropriate layer based on output_layer config
-                    if self.config.output_layer == -1:
-                        # Last layer (default behavior)
-                        processed_embeddings = outputs.hidden_states[-1]
-                    elif self.config.output_layer == 0:
-                        # Input embeddings (before any transformer layers)
-                        processed_embeddings = outputs.hidden_states[0]
-                    else:
-                        # Specific layer (0-indexed, so we shift by 1)
-                        # hidden_states[1] = output of first transformer layer 0
-                        # hidden_states[n] = output of nth transformer layer n-1
-                        if self.config.output_layer > len(outputs.hidden_states) - 2:
-                            raise ValueError(f"Requested output_layer {self.config.output_layer} but model only has {len(outputs.hidden_states)-1} hidden states (0 to {len(outputs.hidden_states) - 2})")
-                        processed_embeddings = outputs.hidden_states[self.config.output_layer+1]
-
-                    # Then take the embedding of the final token for projection
-                    last_emb_to_proj = processed_embeddings[:, -1] # (B, d_model)
+                finally:
+                    # Disable capture (but keep hook registered)
+                    self._capture_enabled[self.config.output_layer] = False
+                    self._captured_states[self.config.output_layer] = None
+                
+                # Take the embedding of the final token for projection
+                last_emb_to_proj = processed_embeddings[:, -1]
         else:
             # Project the last token embedding directly if `self.base` is not in use.
             last_emb_to_proj = embeddings[:, -1]  # (B, d_model)

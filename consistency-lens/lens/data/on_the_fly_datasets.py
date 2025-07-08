@@ -330,7 +330,8 @@ class RankInMemoryTrainingCache(Dataset):
         else:
             progress_bar = None
         
-        self.orig_model_for_gen.to(self.generation_device)
+        # if self.orig_model_for_gen.model != se
+        #     self.orig_model_for_gen.to(self.generation_device)
         
         shard_iter = iter(self.pretok_dataset_shard)
         generated_count = 0

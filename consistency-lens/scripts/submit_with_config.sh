@@ -670,7 +670,10 @@ echo -e "${BLUE}Using pretokenization for 5x faster dumping${NC}"
 # Check if activations exist
 if [ "$ON_THE_FLY_ENABLED" = "true" ]; then
     echo -e "${GREEN}On-the-fly generation enabled, skipping activation check/dump and submitting training only${NC}"
-    train_job=$(submit_train_job "$JOB_NAME" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE" "$RUN_SUFFIX" "$NICE_JOB")
+    if [ "$FORCE_RETOKENIZE" = "true" ]; then
+        pretok_job=$(submit_pretokenize_job "$CONFIG_FILE" "$JOB_NAME")
+    fi
+    train_job=$(submit_train_job "$JOB_NAME" "$pretok_job" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE" "$RUN_SUFFIX" "$NICE_JOB")
 elif check_activations "$MODEL_NAME" "$LAYER" "$OUTPUT_DIR" && [ "$FORCE_REDUMP" != "true" ]; then
     echo -e "${GREEN}Activations already exist, submitting training only${NC}"
     train_job=$(submit_train_job "$JOB_NAME" "" "$RESUME_CHECKPOINT" "$WANDB_RESUME_ID" "$CONFIG_FILE" "$RUN_SUFFIX" "$NICE_JOB")

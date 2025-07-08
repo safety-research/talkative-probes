@@ -58,7 +58,6 @@ def show_new_cuda_tensors_and_memory_summary(reset_current_tensors=False):
         global _previous_cuda_tensor_ids
         _previous_cuda_tensor_ids = set()
 
-    global _previous_cuda_tensor_ids
     if reset_current_tensors:
         _previous_cuda_tensor_ids = set()
 

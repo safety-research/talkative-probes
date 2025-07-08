@@ -241,16 +241,17 @@ def run_eval_interventions(
                 tau = sch_args.get("tau", 1.0)
                 
                 # Generate with hard prompts for the whole batch at once, no fallback
-                gen_hard = dec.generate_soft_kv_cached_nondiff(
-                    orig_A,
-                    max_length=t_text_config,
-                    gumbel_tau=tau,
-                    override_model_base_and_out=orig_model,
-                    hard_left_emb=left_ids,
-                    hard_right_emb=right_ids,
-                    use_projection=True,
-                    return_logits=True
-                ).detach()
+                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                        gen_hard = dec.generate_soft_kv_cached_nondiff(
+                        orig_A,
+                        max_length=t_text_config,
+                        gumbel_tau=tau,
+                        override_model_base_and_out=orig_model,
+                        hard_left_emb=left_ids,
+                        hard_right_emb=right_ids,
+                        use_projection=True,
+                        return_logits=True
+                    ).detach()
                 hard_prompt_embeddings = gen_hard.generated_text_embeddings
                 # Pass through encoder
                 if enc.config.add_current_token:

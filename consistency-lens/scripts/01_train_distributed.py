@@ -9,8 +9,20 @@ import time
 import gc
 import signal # Added for preemption handling
 from collections import deque
-from contextlib import nullcontext
+from contextlib import nullcontext, contextmanager
 from pathlib import Path
+import re # Added for regular expression matching
+import functools
+
+# Add FSDP imports
+from torch.distributed.fsdp import (
+    FullyShardedDataParallel as FSDP,
+    CPUOffload,
+    ShardingStrategy,
+    StateDictType,
+    FullStateDictConfig,
+)
+from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 
 # Add this for multiprocessing start method
 import torch.multiprocessing as mp
@@ -26,7 +38,7 @@ import torch
 import torch.distributed as dist
 from omegaconf import DictConfig, OmegaConf
 from torch.nn.parallel import DistributedDataParallel as DDP
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, Gemma3TextConfig, Gemma3ForCausalLM
 
 # Enable TF32 for better performance on Ampere GPUs (A100, H100)
 torch.set_float32_matmul_precision('high')
@@ -104,15 +116,125 @@ from lens.training.model_utils import (
 _first_conversion_logged = False
 print("Setting up mp", flush=True)
 
+@contextmanager
+def manage_model_devices_for_generation(
+    orig_model,
+    decoder,
+    encoder,
+    config,
+    device,
+    log,
+    is_main_process,
+):
+    """
+    Context manager to intelligently move models between CPU and GPU for
+    on-the-fly data generation, preventing OOM errors when using different
+    large models for generation and training.
+    """
+    on_the_fly_enabled = config.get('dataset', {}).get('on_the_fly', {}).get('enabled', False)
+    orig_model_name = config.get('orig_model_name')
+    base_model_name = config['model_name']
+
+    # Swapping is only needed if on-the-fly generation is active and
+    # the orig_model is different from the base model of encoder/decoder.
+    needs_swap = (
+        on_the_fly_enabled and
+        orig_model_name and
+        orig_model_name != base_model_name
+    )
+
+    if not needs_swap:
+        # If no swap is needed, but on-the-fly is active, ensure orig_model is on the correct device.
+        if on_the_fly_enabled:
+            orig_model.to(device)
+        yield
+        # If orig_model was moved to device, move it back to CPU if it's supposed to be there for training.
+        if on_the_fly_enabled and should_move_orig_to_cpu(config, None, is_validation=False):
+             orig_model.to('cpu')
+        return
+
+    # --- SWAP is required ---
+    if is_main_process:
+        log.info("Generation requires different model. Swapping models to prevent OOM.")
+    
+    # Get the underlying model modules from DDP wrappers
+    decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
+    encoder_base = encoder.module if hasattr(encoder, 'module') else encoder
+
+    # 1. Move training base models to CPU
+    # These are the large, non-trainable parts. Trainable components (prompts, probes) remain on the GPU.
+    moved_to_cpu = []
+    if hasattr(decoder_base, 'base') and decoder_base.base is not None:
+        decoder_base.base.to('cpu')
+        moved_to_cpu.append(decoder_base.base)
+        if is_main_process:
+            log.info("Moved decoder's base model to CPU.")
+    
+    if hasattr(encoder_base, 'base') and encoder_base.base is not None and encoder_base.base not in moved_to_cpu:
+        encoder_base.base.to('cpu')
+        moved_to_cpu.append(encoder_base.base)
+        if is_main_process:
+            log.info("Moved encoder's base model to CPU.")
+    
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    # 2. Move generation model to GPU
+    orig_model.to(device)
+    if is_main_process:
+        log.info(f"Moved orig_model ('{orig_model_name}') to GPU for generation.")
+
+    try:
+        # Yield to the generation process
+        yield
+    finally:
+        # --- SWAP BACK ---
+        if is_main_process:
+            log.info("Swapping models back for training.")
+        
+        # 1. Move generation model back to CPU
+        orig_model.to('cpu')
+        if is_main_process:
+            log.info(f"Moved orig_model ('{orig_model_name}') back to CPU.")
+        
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        # 2. Move training base models back to GPU
+        for model_to_restore in moved_to_cpu:
+            model_to_restore.to(device)
+        
+        if is_main_process:
+            log.info(f"Restored {len(moved_to_cpu)} training base model(s) to GPU.")
+        
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+
 # Global flags for preemption handling
 _preemption_requested = False
 _preemption_slurm_id = "unknown" # Stores SLURM job ID at the time of signal
+def _scalar(x):
+    return x.item() if isinstance(x, torch.Tensor) else float(x)
+def get_item(v):
+    return v.item() if isinstance(v, torch.Tensor) else v
+
+# Add a global flag to track if training is complete
+_training_complete = False
 
 def handle_preemption_signal(signum, frame):
     """Signal handler for SIGTERM to request graceful shutdown and checkpoint."""
-    global _preemption_requested, _preemption_slurm_id
+    global _preemption_requested, _preemption_slurm_id, _training_complete
+    
+    # If training is already complete, just log and return
+    if _training_complete:
+        print(f"Signal ({signum}) received after training completion. Ignoring.", flush=True)
+        return
+    
     slurm_job_id = os.environ.get('SLURM_JOB_ID')
-    # Use a basic logger instance if main one isn't available yet during signal handling
     log = logging.getLogger(__name__) 
     
     _preemption_slurm_id = slurm_job_id if slurm_job_id else "unknown"
@@ -123,11 +245,12 @@ def handle_preemption_signal(signum, frame):
         f"Requesting graceful shutdown and checkpoint."
     )
     
-    # Try to print and log, as logging might not be fully configured
     print(msg, flush=True) 
     log.warning(msg)
     
     _preemption_requested = True
+    # Only raise if training is still active
+    raise KeyboardInterrupt(f"Signal {signum} received, initiating graceful shutdown.")
 
 # try:
 #     if mp.get_start_method(allow_none=True) != 'spawn':
@@ -158,42 +281,37 @@ def distributed_train_step(
     is_distributed=False,
     lr_scheduler=None,
     steps_per_epoch=None,
+    log=None,
 ):
     """Training step with proper gradient accumulation for distributed training.
     
     Key optimization: Only synchronize gradients at accumulation boundaries
-    to minimize communication overhead.
+    to minimize communication overhead. This is handled automatically by DDP's
+    no_sync context manager and is the default behavior for FSDP.
     """
-    # Determine accumulation boundaries
-    #is_accumulation_start = (step % gradient_accumulation_steps == 0)
     is_accumulation_end = ((step + 1) % gradient_accumulation_steps == 0) or (step == config['max_train_steps'] - 1)
     
-    # Get base models if using DDP
     decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
     encoder_base = encoder.module if hasattr(encoder, 'no_sync') else encoder
     
-    # Prepare models dict for train_step
     models = {
         "dec": decoder_base,
         "enc": encoder_base,
         "orig": orig_model
     }
     
-    # Loss function parameters
-    # Handle entropy schedule with backward compatibility
     entropy_schedule = config.get('entropy_schedule', None)
     if entropy_schedule:
         entropy_weight = get_schedule_value(entropy_schedule, step, config['max_train_steps'],
-                                          current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0,
+                                          current_epoch=step // steps_per_epoch if steps_per_epoch is not None and steps_per_epoch > 0 else 0,
                                           steps_per_epoch=steps_per_epoch,
                                           grad_accum_steps=gradient_accumulation_steps)
     else:
-        # Fall back to static entropy_weight for backward compatibility
         entropy_weight = config.get('entropy_weight', 0.0)
     entropy_clamp = config.get('entropy_clamp_schedule', None)
     if entropy_clamp:
         entropy_clamp = get_schedule_value(entropy_clamp, step, config['max_train_steps'],
-                                          current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0,
+                                          current_epoch=step // steps_per_epoch if steps_per_epoch is not None and steps_per_epoch > 0 else 0,
                                           steps_per_epoch=steps_per_epoch,
                                           grad_accum_steps=gradient_accumulation_steps)
     else:
@@ -202,11 +320,11 @@ def distributed_train_step(
     loss_fns = {
         "t_text": config.get('t_text', 8),
         "tau": get_schedule_value(config['gumbel_tau_schedule'], step, config['max_train_steps'], 
-                                current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0, 
+                                current_epoch=step // steps_per_epoch if steps_per_epoch is not None and steps_per_epoch > 0 else 0, 
                                 steps_per_epoch=steps_per_epoch, 
                                 grad_accum_steps=gradient_accumulation_steps),
         "alpha": get_schedule_value(config['alpha_schedule'], step, config['max_train_steps'],
-                                  current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0, 
+                                  current_epoch=step // steps_per_epoch if steps_per_epoch is not None and steps_per_epoch > 0 else 0, 
                                   steps_per_epoch=steps_per_epoch, 
                                   grad_accum_steps=gradient_accumulation_steps),
         "kl_base_weight": config.get('kl_base_weight', 1.0),
@@ -225,130 +343,123 @@ def distributed_train_step(
     encoder_no_sync_cm = nullcontext()
 
     if is_distributed and not is_accumulation_end:
-        # If decoder is DDP, decoder.no_sync() is the correct context manager
+        # For DDP, we use no_sync to avoid redundant gradient all-reduce.
+        # FSDP handles this internally and this context manager is a no-op.
         if hasattr(decoder, 'no_sync'):
             decoder_no_sync_cm = decoder.no_sync()
-        # If encoder is DDP, encoder.no_sync() is the correct context manager
         if hasattr(encoder, 'no_sync'): 
             encoder_no_sync_cm = encoder.no_sync()
-    # The 'with' statement handles __enter__ and __exit__ for both contexts.
-    # The original try...finally for manual exit calls is no longer needed here.
     with decoder_no_sync_cm, encoder_no_sync_cm:
-        # Get autocast context based on mixed precision config
         mixed_precision_config = config.get('mixed_precision', {'enabled': True, 'dtype': 'auto'})
         autocast_context = get_autocast_context(device, mixed_precision_config)
-        
-        # Handle batch data dtype conversion if requested
-        convert_batch_dtype(batch, config, device)
-        
-        # Forward pass with autocast
+        with Timer("fwd/data_conversion", log, main_process=is_main(), log_wandb=True, wandb_step=step, log_print=False):
+            convert_batch_dtype(batch, config, device)
         with autocast_context:
             if config.get('detect_anomaly', False):
                 ctxt_anomaly = torch.autograd.detect_anomaly(check_nan=True)
             else:
                 ctxt_anomaly = nullcontext()
             with ctxt_anomaly:
-               
-                losses = original_train_step(
-                    batch=batch,
-                    models=models,
-                    _loss_fns=loss_fns,
-                    lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'),
-                    tokenizer=tokenizer,
-                    cached_prefix_ids=cached_prefix_ids,
-                    resample_ablation=config.get('resample_ablation', True),
-                    do_kl_computation=config.get('do_kl_computation'),
-                    do_lm_computation=config.get('do_lm_computation')
-                )
-
-            # Scale loss by accumulation steps
-            #t
+                with Timer("fwd/model_pass", log, main_process=is_main(), log_wandb=True, wandb_step=step, log_print=False):
+                    losses = original_train_step(
+                        batch=batch,
+                        models=models,
+                        _loss_fns=loss_fns,
+                        lm_loss_natural_prefix=config.get('lm_loss_natural_prefix'),
+                        tokenizer=tokenizer,
+                        cached_prefix_ids=cached_prefix_ids,
+                        resample_ablation=config.get('resample_ablation', True),
+                        do_kl_computation=config.get('do_kl_computation'),
+                        do_lm_computation=config.get('do_lm_computation'),
+                        mean_n_sequences=config.get('mean_n_sequences', False)
+                    )
             total_loss = losses['total'] / gradient_accumulation_steps
             loss1 = losses['total_loss_1'] / gradient_accumulation_steps
             loss2 = losses['total_loss_2'] / gradient_accumulation_steps
-            
-            # Debug: Check loss dtype before backward
             if step == 0 and rank == 0:
                 print(f"DEBUG: loss dtype before backward: {total_loss.dtype}")
                 print(f"DEBUG: autocast enabled: {autocast_context != nullcontext()}")
-                # Check a model parameter dtype
                 param = next(decoder_base.parameters())
                 print(f"DEBUG: decoder param dtype: {param.dtype}")
-        if loss_fns['GRPO_weight'] > 0:
-            if is_main() and step==0:
-                print(f"Separate backward pass for loss1 and loss2")
-            # Backward pass
-            if device.type == "cuda" and scaler is not None:
-                scaler.scale(loss1).backward()
+        with Timer("bwd/main", log, main_process=is_main(), log_wandb=True, wandb_step=step, log_print=False):
+            if loss_fns['GRPO_weight'] > 0:
+                if is_main() and step==0:
+                    print(f"Separate backward pass for loss1 and loss2")
+                if device.type == "cuda" and scaler is not None:
+                    scaler.scale(loss1).backward()
+                else:
+                    loss1.backward()
+                if device.type == "cuda" and scaler is not None:
+                    scaler.scale(loss2).backward()
+                else:
+                    loss2.backward()
+                total_loss = loss1 + loss2
             else:
-                loss1.backward()
-
-            if device.type == "cuda" and scaler is not None:
-                scaler.scale(loss2).backward()
-            else:
-                loss2.backward()
-            total_loss = loss1 + loss2
-        else:
-            if is_main() and step==0:
-                print(f"Merged backward pass for loss1 and loss2")
-            total_loss = loss1+loss2
-            if device.type == "cuda" and scaler is not None:
-                scaler.scale(total_loss).backward()
-            else:
-                total_loss.backward()
-    # Gradient clipping and optimizer step only at accumulation boundaries
+                if is_main() and step==0:
+                    print(f"Merged backward pass for loss1 and loss2")
+                total_loss = loss1+loss2
+                if device.type == "cuda" and scaler is not None:
+                    scaler.scale(total_loss).backward()
+                else:
+                    total_loss.backward()
     if is_accumulation_end:
-        if device.type == "cuda" and scaler is not None:
-            scaler.unscale_(optimizer)
-        
-        # Get all parameters for gradient clipping
-        all_params = list(decoder_base.parameters()) + list(encoder_base.parameters())
-        grad_norm = torch.nn.utils.clip_grad_norm_(all_params, config['grad_clip'])
-        
-        # Capture parameters before update for update norm calculation (if enabled)
-        compute_update_norm = config.get('compute_update_norm', True)
-        if compute_update_norm:
-            trainable_params = [p for p in all_params if p.requires_grad]
-            param_before = [p.detach().clone() for p in trainable_params]
-        
-        # Optimizer step
-        if device.type == "cuda" and scaler is not None:
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            optimizer.step()
-
-        # Calculate update norm and ratio (if enabled)
-        if compute_update_norm:
-            with torch.no_grad():
-                upd_sq = 0.0
-                param_sq = 0.0
-                for p, prev in zip(trainable_params, param_before):
-                    diff = p.data - prev
-                    upd_sq += diff.pow(2).sum().item()
-                    param_sq += p.data.pow(2).sum().item()
-                update_norm = math.sqrt(upd_sq)
-                param_norm = math.sqrt(param_sq)
-                update_ratio = update_norm / (param_norm + 1e-12)
-            del param_before
-        else:
-            update_norm = 0.0
-            param_norm = 0.0
-            update_ratio = 0.0
-
-        # Update learning rate scheduler AFTER optimizer.step()
-        if lr_scheduler is not None:
-            lr_scheduler.step()
-        
-        # Zero gradients for next iteration
-        optimizer.zero_grad(set_to_none=True)
+        with Timer("optim/step", log, main_process=is_main(), log_wandb=True, wandb_step=step, log_print=False):
+            if device.type == "cuda" and scaler is not None:
+                scaler.unscale_(optimizer)
+            grad_clip = config['grad_clip']
+            grad_clip_enc = config.get('grad_clip_enc', None)
+            decoder_params = list(decoder_base.parameters())
+            encoder_params = list(encoder_base.parameters())
+            grad_norm_dec = None
+            grad_norm_enc = None
+            grad_norm = None
+            if grad_clip_enc is not None:
+                trainable_decoder_params = [p for p in decoder_params if p.requires_grad]
+                trainable_encoder_params = [p for p in encoder_params if p.requires_grad]
+                grad_norm_dec = torch.nn.utils.clip_grad_norm_(trainable_decoder_params, grad_clip)
+                grad_norm_enc = torch.nn.utils.clip_grad_norm_(trainable_encoder_params, grad_clip_enc)
+                grad_norm = (grad_norm_dec, grad_norm_enc)
+                all_params = trainable_decoder_params + trainable_encoder_params
+            else:
+                all_params = [p for p in decoder_params + encoder_params if p.requires_grad]
+                grad_norm = torch.nn.utils.clip_grad_norm_(all_params, grad_clip)
+            compute_update_norm = config.get('compute_update_norm', True)
+            if compute_update_norm:
+                trainable_params = all_params
+                param_before = [p.detach().clone() for p in trainable_params]
+            if device.type == "cuda" and scaler is not None:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
+            if compute_update_norm:
+                with torch.no_grad():
+                    upd_sq = 0.0
+                    param_sq = 0.0
+                    for p, prev in zip(trainable_params, param_before):
+                        diff = p.data - prev
+                        upd_sq += diff.pow(2).sum().item()
+                        param_sq += p.data.pow(2).sum().item()
+                    update_norm = math.sqrt(upd_sq)
+                    param_norm = math.sqrt(param_sq)
+                    update_ratio = update_norm / (param_norm + 1e-12)
+                del param_before
+            else:
+                update_norm = 0.0
+                param_norm = 0.0
+                update_ratio = 0.0
+            if lr_scheduler is not None:
+                lr_scheduler.step()
+            optimizer.zero_grad(set_to_none=True)
     else:
         grad_norm = None
+        grad_norm_dec = None
+        grad_norm_enc = None
         update_norm = 0.0
         param_norm = 0.0
         update_ratio = 0.0
-    
-    # Return metrics
+
+    # Add separate grad norm tracking if grad_clip_enc is not None
     metrics = {
         'loss': losses['total'].item(),
         'loss_1': losses['total_loss_1'].item(),
@@ -365,71 +476,140 @@ def distributed_train_step(
         'mean_reward_std': losses['mean_reward_std'].item(),
         'fraction_variance_explained': losses['fraction_variance_explained'].item(),
         'mean_normalised_rmse': losses['mean_normalised_rmse'].item(),
-        'grad_norm': grad_norm.item() if grad_norm is not None else 0.0,
+        'grad_norm': grad_norm.item() if grad_norm is not None and not isinstance(grad_norm, tuple) else 0.0,
         'update_norm': update_norm,
         'param_norm': param_norm,
         'update_ratio': update_ratio,
     }
-    
+    if config.get('grad_clip_enc', None) is not None:
+        metrics['grad_norm_dec'] = grad_norm_dec.item() if grad_norm_dec is not None else 0.0
+        metrics['grad_norm_enc'] = grad_norm_enc.item() if grad_norm_enc is not None else 0.0
+        # For backward compatibility, also set grad_norm to a tuple if available
+        # metrics['grad_norm'] = (
+        #     grad_norm_dec.item() if grad_norm_dec is not None else 0.0,
+        #     grad_norm_enc.item() if grad_norm_enc is not None else 0.0
+        # )
     return metrics
 
 
-def setup_distributed_models(decoder, encoder, orig_model, device, rank, world_size, decoder_has_trainable_params=True, encoder_has_trainable_params=True, compile_models=True, log=None):
-    """Wrap models with DistributedDataParallel.
-    
-    Args:
-        decoder: Decoder model
-        encoder: Encoder model
-        orig_model: Original model wrapper
-        device: Device to use
-        rank: Current process rank
-        world_size: Total number of processes
-        decoder_has_trainable_params: Whether the decoder has trainable parameters
-        encoder_has_trainable_params: Whether the encoder has trainable parameters
-        
-    Returns:
-        Tuple of (decoder, encoder, orig_model) wrapped with DDP if needed
+def setup_distributed_models(
+    decoder,
+    encoder,
+    orig_model,
+    device,
+    rank,
+    world_size,
+    config,
+    shared_base_model,
+    decoder_has_trainable_params=True,
+    encoder_has_trainable_params=True,
+    compile_models=True,
+    log=logging.getLogger(__name__),
+):
     """
+    Wrap models with DistributedDataParallel and compile them sequentially to conserve memory.
+    """
+    strategy = config.get('distributed_strategy', 'ddp').lower()
+    log.info(f"Using distributed strategy: {strategy}")
+
     if world_size > 1:
-        # Move models to device before wrapping with DDP
         decoder = decoder.to(device)
         encoder = encoder.to(device)
-        orig_model = orig_model.to(device) # orig_model is always moved
         
-        # Wrap with DDP only if the model has trainable parameters
-        if decoder_has_trainable_params:
-            decoder = DDP(
-                decoder, 
-                device_ids=[rank], 
-                output_device=rank,
-                find_unused_parameters=False,
-                gradient_as_bucket_view=True,
-            )
-        
-        if encoder_has_trainable_params:
-            encoder = DDP(
-                encoder, 
-                device_ids=[rank], 
-                output_device=rank,
-                find_unused_parameters=False,
-                gradient_as_bucket_view=True,
-            )
-        # Note: orig_model is not wrapped as it's typically frozen.
-        
+        if strategy == 'ddp':
+            if decoder_has_trainable_params:
+                decoder = DDP(
+                    decoder, 
+                    device_ids=[rank], 
+                    output_device=rank,
+                    find_unused_parameters=False,
+                    gradient_as_bucket_view=True,
+                )
+            
+            if encoder_has_trainable_params:
+                encoder = DDP(
+                    encoder, 
+                    device_ids=[rank], 
+                    output_device=rank,
+                    find_unused_parameters=False,
+                    gradient_as_bucket_view=True,
+                )
+        elif strategy == 'fsdp':
+            fsdp_config = config.get('fsdp_config', {})
+            sharding_strategy_str = fsdp_config.get('sharding_strategy', 'FULL_SHARD')
+            sharding_strategy = getattr(ShardingStrategy, sharding_strategy_str)
+            cpu_offload = CPUOffload(offload_params=fsdp_config.get('cpu_offload', False))
+            
+            min_params = int(fsdp_config.get('min_params_for_wrap', 1_000_000))
+            auto_wrap_policy = functools.partial(size_based_auto_wrap_policy, min_num_params=min_params)
+            
+            mixed_precision_config = config.get('mixed_precision', {'enabled': True, 'dtype': 'auto'})
+            mp_policy = None
+            if mixed_precision_config.get('enabled', True):
+                from torch.distributed.fsdp.fully_sharded_data_parallel import MixedPrecision
+                dtype_str = mixed_precision_config.get('dtype', 'auto')
+                if dtype_str == 'bfloat16' or (dtype_str == 'auto' and torch.cuda.is_bf16_supported()):
+                    mp_policy = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.bfloat16, buffer_dtype=torch.bfloat16)
+                elif dtype_str == 'float16':
+                    mp_policy = MixedPrecision(param_dtype=torch.float16, reduce_dtype=torch.float16, buffer_dtype=torch.float16)
+            
+            if decoder_has_trainable_params:
+                decoder = FSDP(
+                    decoder,
+                    auto_wrap_policy=auto_wrap_policy,
+                    cpu_offload=cpu_offload,
+                    sharding_strategy=sharding_strategy,
+                    device_id=torch.cuda.current_device(),
+                    mixed_precision=mp_policy,
+                )
+            
+            if encoder_has_trainable_params:
+                encoder = FSDP(
+                    encoder,
+                    auto_wrap_policy=auto_wrap_policy,
+                    cpu_offload=cpu_offload,
+                    sharding_strategy=sharding_strategy,
+                    device_id=torch.cuda.current_device(),
+                    mixed_precision=mp_policy,
+                )
+        else:
+            raise ValueError(f"Unknown distributed strategy: '{strategy}'. Choose 'ddp' or 'fsdp'.")
     else:
         log.info("Not using DDP, moving models to device")
-        # Single GPU - just move to device
         decoder = decoder.to(device)
         encoder = encoder.to(device) 
-        orig_model = orig_model.to(device)
-        
 
+    # Compile training models if enabled
     if compile_models:
+        log.info("Compiling training models (decoder, encoder)...")
         decoder = torch.compile(decoder)
         encoder = torch.compile(encoder)
-        log.info("Compiled models (after wrapping with DDP), not compiling orig_model")
-    else:
+        log.info("✓ Training models compiled.")
+
+    # Now, handle the orig_model separately to manage memory.
+    # It must be on the GPU for compilation.
+    orig_model.to(device)
+    if compile_models:
+        log.info("Compiling OrigWrapper model...")
+        orig_model.model = torch.compile(orig_model.model)
+        log.info("✓ OrigWrapper compiled.")
+    
+    # After potential compilation, move orig_model to CPU if its weights are shared
+    # and it is not a distinct model, to conserve GPU memory.
+    is_distinct_orig_model = config.get('orig_model_name') and config.get('orig_model_name') != config['model_name']
+
+    if is_distinct_orig_model:
+        if log and is_main():
+            log.info("Moving orig_model to CPU to conserve GPU memory for training (weights are shared).")
+        orig_model.to('cpu')
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    if not compile_models:
         log.info("Not compiling models.")
+    else:
+        log.info("All requested models are set up and compiled.")
         
     return decoder, encoder, orig_model
 
@@ -548,7 +728,7 @@ def generate_verbose_samples_from_batch(
         "skip_tokens_KL_GRPO": config['skip_tokens_KL_GRPO'],
     }
 
-    if verbose_config.get('num_samples', 2) > 1:
+    if verbose_config.get('num_samples', 2) > 0:
         # Set models to eval mode
         decoder_base.eval()
         encoder_base.eval()
@@ -619,8 +799,8 @@ def generate_verbose_samples_from_batch(
             # Force cleanup of any GPU memory that might have been allocated
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-    elif verbose_config.get('num_samples', 2) == 1:
-        log.info("Num samples is 1, which means no verbose samples.")
+    elif verbose_config.get('num_samples', 2) == 0:
+        log.info("Num samples is 0, which means no verbose samples.")
 
 
 def _check_and_generate_verbose_samples(
@@ -772,7 +952,7 @@ def validate_distributed(
     entropy_schedule = config.get('entropy_schedule', None)
     if entropy_schedule:
         entropy_weight = get_schedule_value(entropy_schedule, step, config['max_train_steps'],
-                                          current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0,
+                                          current_epoch=step // steps_per_epoch if steps_per_epoch is not None and steps_per_epoch > 0 else 0,
                                           steps_per_epoch=steps_per_epoch,
                                           grad_accum_steps=gradient_accumulation_steps)
     else:
@@ -781,7 +961,7 @@ def validate_distributed(
     entropy_clamp = config.get('entropy_clamp_schedule', None)
     if entropy_clamp:
         entropy_clamp = get_schedule_value(entropy_clamp, step, config['max_train_steps'],
-                                          current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0,
+                                          current_epoch=step // steps_per_epoch if steps_per_epoch is not None and steps_per_epoch > 0 else 0,
                                           steps_per_epoch=steps_per_epoch,
                                           grad_accum_steps=gradient_accumulation_steps)
     else:
@@ -790,11 +970,11 @@ def validate_distributed(
     loss_fns = {
         "t_text": config.get('t_text', 8),
         "tau": get_schedule_value(config['gumbel_tau_schedule'], step, config['max_train_steps'], 
-                                current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0, 
+                                current_epoch=step // steps_per_epoch if steps_per_epoch is not None and steps_per_epoch > 0 else 0, 
                                 steps_per_epoch=steps_per_epoch, 
                                 grad_accum_steps=gradient_accumulation_steps),
         "alpha": get_schedule_value(config['alpha_schedule'], step, config['max_train_steps'],
-                                  current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0, 
+                                  current_epoch=step // steps_per_epoch if steps_per_epoch is not None and steps_per_epoch > 0 else 0, 
                                   steps_per_epoch=steps_per_epoch, 
                                   grad_accum_steps=gradient_accumulation_steps),
         "kl_base_weight": config.get('kl_base_weight', 1.0),
@@ -880,7 +1060,8 @@ def validate_distributed(
                 # Conditionally enable heavy computations
                 should_run_interventions=is_heavy_batch,
                 do_kl_computation=is_heavy_batch,
-                do_lm_computation=is_heavy_batch
+                do_lm_computation=is_heavy_batch,
+                mean_n_sequences=config.get('mean_n_sequences', False)
             )
 
             # --- Accumulate Light Metrics (Every Batch) ---
@@ -927,8 +1108,7 @@ def validate_distributed(
     # --- Synchronize Metrics Across All Processes ---
     if world_size > 1:
         # helper
-        def _scalar(x):
-            return x.item() if isinstance(x, torch.Tensor) else float(x)
+
 
         # Create a single flat tensor for all metrics to ensure consistent shape for all_reduce
         heavy_keys = [
@@ -1112,8 +1292,7 @@ def validate_distributed(
             val_metrics['val/heavy_batches_processed'] = num_heavy_batches
         
         if activation_stats:
-            def get_item(v):
-                return v.item() if isinstance(v, torch.Tensor) else v
+           
             val_metrics.update({
                 'val/activation_mean': get_item(activation_stats['act_mean']),
                 'val/activation_std': get_item(activation_stats['act_std']),
@@ -1253,19 +1432,47 @@ def maybe_resume_from_checkpoint(
         resume_path_obj = Path(resume_path_config)
         
         if resume_path_obj.is_dir():
-            if is_main():
-                log.info(f"Resume path is a directory. Searching for checkpoints in {resume_path_obj}...")
-            # Sort by modification time, newest first
-            checkpoint_files = sorted(
-                [f for f in resume_path_obj.glob('*.pt') if f.is_file()],
-                key=lambda p: p.stat().st_mtime,
-                reverse=True
-            )
+            # The user might pass the path with a trailing slash. Path.name handles this.
+            dir_name = resume_path_obj.name
+            is_slurm_dir = bool(re.match(r'.*slurm\d+$', dir_name))
+            if is_slurm_dir:
+                match = re.search(r'slurm(\d+)', dir_name)
+                if match:
+                    slurm_job_id = match.group(1)
+                    if is_main():
+                        log.info(f"Resume path '{resume_path_config}' matches SLURM job directory pattern. SLURM Job ID: {slurm_job_id}")
+                    else:
+                        log.info(f"Resume path '{resume_path_config}' matches SLURM job directory pattern. SLURM Job ID: {slurm_job_id}")
+
+            search_dirs = [resume_path_obj]
+            if is_slurm_dir:
+                if is_main():
+                    log.info(f"Resume path '{resume_path_config}' matches SLURM job directory pattern.")
+                parent_dir = resume_path_obj.resolve().parent
+                search_dirs = [
+                    d for d in parent_dir.iterdir()
+                    if d.is_dir() and re.match(r'.*slurm' + slurm_job_id + '$', d.name)
+                    ]
+                if is_main():
+                    log.info(f"Found {len(search_dirs)} SLURM job directories to search for checkpoints: {[d.name for d in search_dirs]}")
+            else:
+                if is_main():
+                    log.info(f"Resume path is a directory. Searching for checkpoints in {resume_path_obj}...")
+
+            checkpoint_files = []
+            for search_dir in search_dirs:
+                checkpoint_files.extend(
+                    sorted(
+                        [str(f) for f in search_dir.glob('*.pt') if f.is_file()],
+                        key=lambda p: Path(p).stat().st_mtime,
+                        reverse=True
+                    )
+                )
             if not checkpoint_files:
                 if is_main():
                     log.warning(f"No checkpoint files (.pt) found in directory: {resume_path_obj}.")
             else:
-                potential_checkpoint_paths = [str(f) for f in checkpoint_files]
+                potential_checkpoint_paths = checkpoint_files
                 if is_main():
                     log.info(f"Found {len(potential_checkpoint_paths)} potential checkpoint(s). Will try in order of recency.")
         elif resume_path_obj.is_file():
@@ -1358,11 +1565,12 @@ def maybe_resume_from_checkpoint(
                 if hasattr(decoder, 'prompt_right_emb') and decoder.prompt_right_emb is not None:
                     log.info(f"After checkpoint load - Decoder right prompt norm: {decoder.prompt_right_emb.norm().item():.6f}")
 
-            if reset_steps:
+            if reset_steps and not successful_preemption_checkpoint:
                 start_step = 0
                 if is_main():
                     log.info("Resetting training steps to 0 (keeping model weights only)")
             else:
+                log.info(f"Not resetting steps because we are resuming from a preemption checkpoint.")
                 start_step = int(rec.get("step", -1)) + 1
 
             if is_main():
@@ -1379,7 +1587,7 @@ def maybe_resume_from_checkpoint(
             if is_main():
                 log.info("Verifying checkpoint compatibility...")
 
-                # Compatibility checks use checkpoint_data (from rec), not raw_ckpt directly for critical model structure.
+                # Compatibility checks use checkpoint_data (from re), not raw_ckpt directly for critical model structure.
                 checkpoint_models_state = checkpoint_data.get('models', {}) 
                 checkpoint_decoder_state = checkpoint_models_state.get('decoder', {})
 
@@ -1500,9 +1708,13 @@ def maybe_resume_from_checkpoint(
                 # then this error is fatal for the loading process. Re-raise it.
                 #log.error(f"Fatal error encountered with {current_ckpt_path_str}: {str(e)}; trying next.")
                 #raise e 
+        except OSError as e:
+            if is_main():
+                log.error(f"OSError encountered with {current_ckpt_path_str}: {str(e)}; trying next.")
+            pass
         except Exception as e: # Catch other non-RuntimeError exceptions during the process
             last_exception = e
-            error_msg = f"An unexpected non-RuntimeError occurred while processing checkpoint {current_ckpt_path_str}: {str(e)}"
+            error_msg = f"An unexpected non-RuntimeError (and non-OSError) occurred while processing checkpoint {current_ckpt_path_str}: {str(e)}"
             if is_main():
                 log.error(error_msg)
             raise # Re-raise to stop processing.
@@ -1642,6 +1854,8 @@ def maybe_restore_optimizer_and_scheduler_from_checkpoint(
     base_model_lr_multiplier,
     overall_encoder_lr_multiplier,
     weight_decay,
+    beta1,
+    beta2,
     learning_rate, # This is the new base LR from current config
     steps_per_epoch,
     gradient_accumulation_steps,
@@ -1653,11 +1867,16 @@ def maybe_restore_optimizer_and_scheduler_from_checkpoint(
     SmoothTransitionScheduler,
     get_lr_scheduler,
     _resolve_schedule_to_steps,
+    successful_preemption_checkpoint=False,
 ):
     if checkpoint_data is None:
         return optimizer, lr_scheduler
 
     reset_steps = config.get('resume_reset_steps', False)
+    if successful_preemption_checkpoint and reset_steps:
+        if is_main():
+            log.info("SLURM auto-resume: overriding reset_steps for optimizer/scheduler restore. Setting false")
+        reset_steps = False
     strict_opt_load = config.get('strict_optimizer_load', True)
 
     old_base_lr_from_checkpoint_optim = None
@@ -1678,7 +1897,7 @@ def maybe_restore_optimizer_and_scheduler_from_checkpoint(
             for i, group in enumerate(optimizer.param_groups):
                 group_param_names = [param_to_name_map.get(id(p), f"UNKNOWN_PARAM_ID_{id(p)}") for p in group['params']]
                 log.info(
-                    f"  Orig. group {i}: LR={group['lr']:.3e}, WD={group.get('weight_decay', 0.0):.3e}, "
+                    f"  Orig. group {i}: LR={group['lr']:.3e}, WD={group.get('weight_decay', 0.0):.3e},"
                     f"#Pms={len(group['params'])} Param names: {group_param_names[:5]}{'...' if len(group_param_names) > 5 else ''}"
                 )
 
@@ -1706,7 +1925,7 @@ def maybe_restore_optimizer_and_scheduler_from_checkpoint(
                 weight_decay,
             )
             
-            optimizer = torch.optim.AdamW(new_optimizer_param_groups)
+            optimizer = torch.optim.AdamW(new_optimizer_param_groups, betas=(beta1, beta2))
 
             if checkpoint_optim_internal_state:
                 if strict_opt_load:
@@ -1837,7 +2056,6 @@ def maybe_restore_optimizer_and_scheduler_from_checkpoint(
     return optimizer, lr_scheduler
 
 
-
 @hydra.main(version_base=None, config_path="../conf", config_name="config")
 def main(cfg: DictConfig) -> None:
     """Distributed training entry point with optimized gradient accumulation."""
@@ -1896,6 +2114,24 @@ def main(cfg: DictConfig) -> None:
     
     log = logging.getLogger(__name__)
 
+    # --- Optional Pre-tokenization Step ---
+    if cfg.get('pretokenize', {}).get('run_before_training', False):
+        if is_main():
+            log.info("`pretokenize.run_before_training` is set. Running pre-tokenization script.")
+            try:
+                # Dynamically import to avoid circular dependencies and keep pre-tokenization optional
+                from pretokenize_dataset import do_pretokenize
+                pretokenized_path = do_pretokenize(cfg)
+                config['dataset']['on_the_fly']['pretokenized_path'] = pretokenized_path
+                log.info("Pre-tokenization finished successfully.")
+            except Exception as e:
+                log.error(f"Pre-tokenization failed: {e}", exc_info=True)
+                raise  # Stop execution if pre-tokenization fails
+        
+        # Ensure all processes wait for pre-tokenization to complete
+        if world_size > 1:
+            dist.barrier()
+
     # Register the signal handler for SIGTERM (preemption)
     signal.signal(signal.SIGTERM, handle_preemption_signal)
 
@@ -1935,6 +2171,8 @@ def main(cfg: DictConfig) -> None:
         # or still used for activation_dir path construction if not.
         # Let's keep a general layer_l for path construction for consistency.
         # If on_the_fly is enabled, its specific layer_l will be used by the datasets.
+        # Otherwise, this path might not be directly used for data,
+        # but could still be relevant for other metadata or if there's a fallback.
         layer_l_for_paths = config.get('layer_l', 5) # Used for constructing activation_dir if loading from disk
         
         out_layer = config['trainable_components']['encoder']['output_layer']
@@ -1974,6 +2212,7 @@ def main(cfg: DictConfig) -> None:
             log.info(f"Distributed training with {world_size} GPUs")
             log.info(f"Per-GPU batch size (without group_n): {batch_size}")
             log.info(f"Per-GPU batch size (with group_n): {batch_size*group_n}")
+            log.info(f"Per-GPU batch size (with mean_n_sequences): {batch_size*group_n*config.get('mean_n_sequences', 1)}")
             log.info(f"Gradient accumulation steps: {gradient_accumulation_steps}")
             log.info(f"Effective batch size: {effective_batch_size}")
             log.info(f"Gradient sync: Every {gradient_accumulation_steps} steps")
@@ -1995,8 +2234,9 @@ def main(cfg: DictConfig) -> None:
             # For on-the-fly, dataset info might come from pretokenized dataset metadata
             # or be less relevant if not directly using activation_dir for data.
             # For run name, we can simplify or use parts of the on_the_fly config.
+            dataset = Path(on_the_fly_config_params.get('pretokenized_path', 'on-the-fly')).name
             dataset_info = {
-                'dataset': on_the_fly_config_params.get('pretokenized_path', 'on-the-fly').split('/')[-1], # type: ignore
+                'dataset': dataset, # type: ignore
                 'model_name': model_name, # From main config
                 'layer': on_the_fly_config_params.get('layer_l', layer_l_for_paths) # type: ignore
             }
@@ -2063,6 +2303,28 @@ def main(cfg: DictConfig) -> None:
         decoder_train_cfg = trainable_components_config['decoder']
         encoder_train_cfg = trainable_components_config['encoder']
         
+        # Get model loading dtype configuration
+        model_dtype_config = config.get('model_dtype', 'float32')  # Default to float32 for backward compatibility
+        
+        # Determine the actual torch dtype to use
+        if model_dtype_config == 'auto':
+            torch_dtype = 'auto'  # Let transformers decide based on the model's native dtype
+        elif model_dtype_config == 'bfloat16':
+            torch_dtype = torch.bfloat16
+        elif model_dtype_config == 'float16':
+            torch_dtype = torch.float16
+        elif model_dtype_config == 'float32':
+            torch_dtype = torch.float32
+        else:
+            raise ValueError(f"Invalid model_dtype: {model_dtype_config}. Must be one of: auto, bfloat16, float16, float32")
+        
+        if is_main():
+            log.info(f"Model loading dtype configuration: {model_dtype_config}")
+            if model_dtype_config == 'auto':
+                log.info("Models will be loaded with their native precision from the hub")
+            else:
+                log.info(f"Models will be loaded as {model_dtype_config}")
+        
         # Check if we should share the base model for memory efficiency
         share_base_model = (
             not decoder_train_cfg.get('base_model', False) and
@@ -2074,7 +2336,21 @@ def main(cfg: DictConfig) -> None:
         if share_base_model:
             if is_main():
                 log.info(f"Loading shared base model '{model_name}' for encoder/decoder (memory efficient, frozen)")
-            shared_base_model_obj = AutoModelForCausalLM.from_pretrained(model_name, load_in_8bit=False,attn_implementation=config.get('attn_implementation', None))
+            if 'gemma-3' in model_name:
+                log.info(f"Loading Gemma3ForCausalLM for model '{model_name}'")
+                shared_base_model_obj = Gemma3ForCausalLM.from_pretrained(
+                    model_name, 
+                    torch_dtype=torch_dtype,
+                    load_in_8bit=False,
+                    attn_implementation=config.get('attn_implementation', None),
+                )
+            else:
+                shared_base_model_obj = AutoModelForCausalLM.from_pretrained(
+                    model_name, 
+                    torch_dtype=torch_dtype,
+                    load_in_8bit=False,
+                    attn_implementation=config.get('attn_implementation', None),
+                )
             shared_base_model_obj.eval()
             for p in shared_base_model_obj.parameters():
                 p.requires_grad = False
@@ -2111,7 +2387,14 @@ def main(cfg: DictConfig) -> None:
         actual_orig_model_name = orig_model_name if orig_model_name else model_name
         if is_main():
             log.info(f"Initializing OrigWrapper with model: '{actual_orig_model_name}'")
-        orig_model = OrigWrapper(actual_orig_model_name, load_in_8bit=False, base_to_use=orig_base_to_use)
+        
+        # Pass torch_dtype to OrigWrapper
+        orig_model = OrigWrapper(
+            actual_orig_model_name, 
+            torch_dtype=torch_dtype,
+            load_in_8bit=False, 
+            base_to_use=orig_base_to_use
+        )
         
         # Move to device early if on-the-fly generation is enabled
         if on_the_fly_generation_enabled:
@@ -2160,30 +2443,27 @@ def main(cfg: DictConfig) -> None:
             if is_main():
                 log.info(f"Setting encoder soft prompt from text: \"{encoder_config_obj.soft_prompt_init_text}\"")
             encoder_base_for_init.set_soft_prompt_from_text(encoder_config_obj.soft_prompt_init_text, tokenizer)
-        elif encoder_config_obj.soft_prompt_length > 0:
-            if is_main():
-                log.info(f"Encoder using randomly initialized soft prompt of length {encoder_config_obj.soft_prompt_length}.")
-        elif is_main(): # No text and length is 0 (default)
+        else:
             log.warning("Encoder soft prompt not configured (neither 'soft_prompt_init_text' nor 'soft_prompt_length > 0'). Encoder soft prompts will be empty.")
-        
+
         # Conditional initialization logging (already present)
-        if is_main():
+        #if is_main():
             # Ensure using the correct decoder instance for logging these:
             # If decoder is already DDP wrapped at this conceptual point (it shouldn't be yet, but to be safe)
             # We'd need decoder.module.proj_weight. For now, assume it's pre-DDP.
             # If per_layer_projections is false, decoder.proj_weight will be a single tensor.
             # The original code here used decoder.proj_weight which implies per_layer_projections=True
             # and proj_weight is a list of tensors. We need to handle both cases or make it clear.
-            # For now, assuming the original intent was for per_layer_projections=True.
+            # For now, assming the original intent was for per_layer_projections=True.
             # If not, this logging needs adjustment.
             # Let's assume decoder.proj_weight exists and is a list as per original context.
             # This needs to be robust if proj_weight is not a list (i.e. not per_layer)
-            if hasattr(decoder, 'proj_weight') and isinstance(decoder.proj_weight, torch.Tensor) and len(decoder.proj_weight.shape) == 3:
-                 log.info(f"Before init: traces of each proj factor: {[p.trace().item() for p in decoder.proj_weight if p is not None]}")
-                 log.info(f"Before init: sum of abs of biases: {[p.abs().sum().item() for p in decoder.proj_bias if p is not None]}")
-            elif hasattr(decoder, 'proj_weight') and isinstance(decoder.proj_weight, torch.Tensor): # Single projection
-                 log.info(f"Before init: trace of proj factor: {decoder.proj_weight.trace().item()}")
-                 log.info(f"Before init: sum of abs of bias: {decoder.proj_bias.abs().sum().item()}")
+            # if hasattr(decoder, 'proj_weight') and isinstance(decoder.proj_weight, torch.Tensor) and len(decoder.proj_weight.shape) == 3:
+            #      log.info(f"Before init: traces of each proj factor: {[p.trace().item() for p in decoder.proj_weight if p is not None]}")
+            #      log.info(f"Before init: sum of abs of biases: {[p.abs().sum().item() for p in decoder.proj_bias if p is not None]}")
+            # elif hasattr(decoder, 'proj_weight') and isinstance(decoder.proj_weight, torch.Tensor): # Single projection
+            #      log.info(f"Before init: trace of proj factor: {decoder.proj_weight.trace().item()}")
+            #      log.info(f"Before init: sum of abs of bias: {decoder.proj_bias.abs().sum().item()}")
 
 
         if is_main(): # Perform initialization only on the main process
@@ -2207,13 +2487,13 @@ def main(cfg: DictConfig) -> None:
                     is_main_process=True,
                     resolve_path_fn=resolve_path
                 )
-        if is_main(): # Logging after init (similar robustness needed as above)
-            if hasattr(decoder, 'proj_weight') and isinstance(decoder.proj_weight, torch.Tensor) and len(decoder.proj_weight.shape) == 3:
-                log.info(f"After init: traces of each proj factor: {[p.trace().item() for p in decoder.proj_weight if p is not None]}")
-                log.info(f"After init: sum of abs of biases: {[p.abs().sum().item() for p in decoder.proj_bias if p is not None]}")
-            elif hasattr(decoder, 'proj_weight') and isinstance(decoder.proj_weight, torch.Tensor):
-                log.info(f"After init: trace of proj factor: {decoder.proj_weight.trace().item()}")
-                log.info(f"After init: sum of abs of bias: {decoder.proj_bias.abs().sum().item()}")
+        # if is_main(): # Logging after init (similar robustness needed as above)
+        #     if hasattr(decoder, 'proj_weight') and isinstance(decoder.proj_weight, torch.Tensor) and len(decoder.proj_weight.shape) == 3:
+        #         log.info(f"After init: traces of each proj factor: {[p.trace().item() for p in decoder.proj_weight if p is not None]}")
+        #         log.info(f"After init: sum of abs of biases: {[p.abs().sum().item() for p in decoder.proj_bias if p is not None]}")
+        #     elif hasattr(decoder, 'proj_weight') and isinstance(decoder.proj_weight, torch.Tensor):
+        #         log.info(f"After init: trace of proj factor: {decoder.proj_weight.trace().item()}")
+        #         log.info(f"After init: sum of abs of bias: {decoder.proj_bias.abs().sum().item()}")
 
         start_step, checkpoint_data, wandb_run_id_for_resumption, successful_preemption_checkpoint = maybe_resume_from_checkpoint(
             config, decoder, encoder, log, is_main, decoder_train_cfg, encoder_train_cfg, gradient_accumulation_steps, current_run_checkpoint_dir_str=str(run_checkpoint_dir)
@@ -2232,13 +2512,33 @@ def main(cfg: DictConfig) -> None:
         # Pass the correct orig_model (the one for training loop, not datagen)
         log_parameter_counts(decoder, encoder, orig_model, decoder_config_obj, encoder_config_obj, log)
         
+        # Determine if we need to swap models, which affects compilation
+        needs_model_swap = (
+            on_the_fly_generation_enabled and
+            config.get('orig_model_name') and
+            config.get('orig_model_name') != config['model_name']
+        )
+        
+        compile_models_flag = config['compile_models']
+        if needs_model_swap and compile_models_flag:
+            if is_main():
+                log.warning(
+                    "Disabling torch.compile. On-the-fly generation with a different "
+                    "orig_model requires model swapping, which is incompatible with "
+                    "compiled model graphs."
+                )
+                log.warning("Compiling models anyway, but this is not recommended.")
+            compile_models_flag = True
+
         # NOW move models to device and set up DDP
         decoder, encoder, orig_model = setup_distributed_models(
             decoder, encoder, orig_model, device, rank, world_size,
             decoder_has_trainable_params=decoder_has_trainable_params,
             encoder_has_trainable_params=encoder_has_trainable_params,
-            compile_models=config['compile_models'],
-            log=log
+            compile_models=compile_models_flag,
+            log=log,
+            config=config,
+            shared_base_model=shared_base_model_obj,
         )
         # From now on, use decoder, encoder, orig_model for training/validation steps
         
@@ -2335,22 +2635,26 @@ def main(cfg: DictConfig) -> None:
             samples_per_regeneration_cycle = on_the_fly_specific_cfg['samples_per_regeneration_cycle']
             if is_main(): 
                 log.info(f"OTF: Will regenerate cache with {samples_per_regeneration_cycle} new samples when triggered.")
-        
-        train_ds, val_ds = _prepare_dataloaders(
-            config=config,
-            activation_dir=activation_dir, 
-            effective_val_activation_dir=effective_val_activation_dir_for_loading,  # Use modified path
-            max_train_samples_req=config.get('max_train_samples'),
-            max_val_samples_req=config['dataset']['on_the_fly']['max_val_samples'] if on_the_fly_generation_enabled else config.get('max_val_samples'),
-            log=log,
-            orig_model_for_gen=orig_model if on_the_fly_generation_enabled else None, 
-            tokenizer_for_gen=tokenizer if on_the_fly_generation_enabled else None,
-            generation_device=device if on_the_fly_generation_enabled else None,
-            rank=rank if on_the_fly_generation_enabled else None,
-            world_size=world_size if on_the_fly_generation_enabled else None,
-            samples_per_regeneration_cycle=samples_per_regeneration_cycle if on_the_fly_generation_enabled else None
-        )
-        
+
+        encoder_base = encoder.module if hasattr(encoder, 'module') else encoder
+        decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
+
+        with manage_model_devices_for_generation(orig_model, decoder, encoder, config, device, log, is_main()):
+            train_ds, val_ds = _prepare_dataloaders(
+                config=config,
+                activation_dir=activation_dir,
+                effective_val_activation_dir=effective_val_activation_dir_for_loading,  # Use modified path
+                max_train_samples_req=config.get('max_train_samples'),
+                max_val_samples_req=config['dataset']['on_the_fly']['max_val_samples'] if on_the_fly_generation_enabled else config.get('max_val_samples'),
+                log=log,
+                orig_model_for_gen=orig_model if on_the_fly_generation_enabled else None,
+                tokenizer_for_gen=tokenizer if on_the_fly_generation_enabled else None,
+                generation_device=device if on_the_fly_generation_enabled else None,
+                rank=rank if on_the_fly_generation_enabled else None,
+                world_size=world_size if on_the_fly_generation_enabled else None,
+                samples_per_regeneration_cycle=samples_per_regeneration_cycle if on_the_fly_generation_enabled else None
+            )
+
         # Additional logging when directories were the same
         if same_train_val_dir and not on_the_fly_generation_enabled and is_main():
             if train_ds and val_ds:
@@ -2394,12 +2698,9 @@ def main(cfg: DictConfig) -> None:
                 collate_fn=collate, num_workers=num_dataloader_workers, pin_memory=True,
                 persistent_workers=num_dataloader_workers > 0
             )
-        elif train_ds is not None and len(train_ds) == 0 and on_the_fly_generation_enabled:
-            log.error(f"Rank {rank}: On-the-fly training cache (train_ds) is empty after setup. This indicates an issue with initial data generation or pretokenized source. Cannot create train_loader.")
-            raise ValueError("On-the-fly training dataset is critically empty after _prepare_dataloaders.")
-        elif train_ds is None:
-            log.error(f"Rank {rank}: Training dataset is None after setup. Cannot create train_loader.")
-            raise ValueError("Training dataset is None after _prepare_dataloaders.")
+        elif (train_ds is not None and len(train_ds) == 0 and on_the_fly_generation_enabled) or (train_ds is None):
+            log.error(f"Rank {rank}: On-the-fly training cache (train_ds) is empty after setup. This indicates an issue with initial data generation or pretokenized source. Cannot create train_loader. OR train_ds is None? {train_ds is None}")
+            raise ValueError("On-the-fly training dataset is critically empty/None after _prepare_dataloaders.")
         else: # train_ds is not None, but len is 0 (e.g. disk dataset was empty)
             log.error(f"Rank {rank}: Training dataset from disk is empty. Cannot create train_loader.")
             raise ValueError("Training dataset from disk is critically empty.")
@@ -2413,13 +2714,15 @@ def main(cfg: DictConfig) -> None:
                 persistent_workers=num_dataloader_workers > 0
             )
         else:
-            if is_main() and on_the_fly_generation_enabled and on_the_fly_config_params.get('validation_samples_override', config.get('max_val_samples',0)) > 0: # type: ignore
-                 log.warning("Validation dataset is None or empty even though on-the-fly validation was configured. Check pretokenized data / config.")
-            elif is_main() and not on_the_fly_generation_enabled and effective_val_activation_dir:
-                 log.warning("Validation dataset (from disk) is None or empty. Check val_activation_dir / max_val_samples.")
-            elif is_main():
-                 log.info("Validation dataset is None or empty (either not configured or 0 samples requested).")
-            val_loader = None # Explicitly set to None
+            log.warning("Validation dataset is None or empty (either not configured or 0 samples requested).")
+            val_loader = None
+            # if is_main() and on_the_fly_generation_enabled and on_the_fly_config_params.get('validation_samples_override', config.get('max_val_samples',0)) > 0: # type: ignore
+            #      log.warning("Validation dataset is None or empty even though on-the-fly validation was configured. Check pretokenized data / config.")
+            # elif is_main() and not on_the_fly_generation_enabled and effective_val_activation_dir:
+            #      log.warning("Validation dataset (from disk) is None or empty. Check val_activation_dir / max_val_samples.")
+            # elif is_main():
+            #      log.info("Validation dataset is None or empty (either not configured or 0 samples requested).")
+            # val_loader = None # Explicitly set to None
         
         # After dataset creation, ensure orig_model is on CPU if not needed
         if not on_the_fly_generation_enabled and should_move_orig_to_cpu(config, shared_base_model_obj):
@@ -2570,6 +2873,8 @@ def main(cfg: DictConfig) -> None:
         base_model_lr_multiplier = custom_lr_multipliers.get('base_models')
         overall_encoder_lr_multiplier = custom_lr_multipliers.get('overall_encoder')
         weight_decay = config.get('weight_decay')
+        beta1 = config.get('beta1', 0.9)
+        beta2 = config.get('beta2', 0.999)
         
         # Get base models for parameter groups
         decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
@@ -2577,56 +2882,56 @@ def main(cfg: DictConfig) -> None:
         
         # CRITICAL FIX: Restore requires_grad state based on freeze schedule when resuming
         # This must happen BEFORE creating the optimizer
-        if checkpoint_data and start_step > 0:
-            freeze_schedule = config.get('freeze_schedule', {})
-            if freeze_schedule.get('enabled', False):
-                unfreeze_at_parsed = freeze_schedule.get('unfreeze_at_parsed', {})
-                unfreeze_step = unfreeze_at_parsed.get('value', 0)
-                
-                if is_main():
-                    log.info(f"Restoring requires_grad state for resumed training at step {start_step}")
-                    log.info(f"Freeze schedule: unfreeze_at={unfreeze_step}, current_step={start_step}")
-                
-                # Check if we should be unfrozen at this step
-                if start_step >= unfreeze_step:
-                    # We're past the unfreeze point - need to unfreeze base models
-                    current_epoch_for_unfreeze = start_step // steps_per_epoch if steps_per_epoch > 0 else 0
-                    
-                    # Apply unfreezing using the same logic as during training
-                    # Note: unfreeze_non_adapters returns (optimizer, trainable_params, newly_unfrozen_params) tuple
-                    # but we don't want the optimizer it creates - we'll create our own
-                    _, _, newly_unfrozen_params = unfreeze_non_adapters(
-                        decoder_base, 
-                        encoder_base, 
-                        config, 
-                        learning_rate,
-                        projection_lr_multiplier,
-                        embedding_lr_multiplier,
-                        prompt_lr_multiplier,
-                        base_model_lr_multiplier,
-                        overall_encoder_lr_multiplier,
-                        opt_state_dict=None,  # We'll handle optimizer state later
-                        current_step=start_step,
-                        current_epoch=current_epoch_for_unfreeze, # Use correct epoch
-                        grad_accum_steps=gradient_accumulation_steps
-                    )
-                    
-                    if is_main():
-                        # Count and log the number of trainable parameters after unfreezing
-                        num_trainable_dec = sum(p.numel() for p in decoder_base.parameters() if p.requires_grad)
-                        num_trainable_enc = sum(p.numel() for p in encoder_base.parameters() if p.requires_grad)
-                        log.info("After restoring freeze state:")
-                        log.info(f"  Decoder trainable parameters: {num_trainable_dec:,}")
-                        log.info(f"  Encoder trainable parameters: {num_trainable_enc:,}")
-                        
-                        # Log which parameter groups are trainable
-                        dec_base_trainable = any(p.requires_grad for n, p in decoder_base.named_parameters() if n.startswith('base.'))
-                        enc_base_trainable = any(p.requires_grad for n, p in encoder_base.named_parameters() if n.startswith('base.'))
-                        log.info(f"  Decoder base model trainable: {dec_base_trainable}")
-                        log.info(f"  Encoder base model trainable: {enc_base_trainable}")
-                else:
-                    if is_main():
-                        log.info(f"Not yet at unfreeze point ({start_step} < {unfreeze_step}), keeping original frozen state")
+        #if checkpoint_data and start_step > 0:
+        #    # freeze_schedule = config.get('freeze_schedule', {})
+        #    # if freeze_schedule.get('enabled', False):
+        #    #     unfreeze_at_parsed = freeze_schedule.get('unfreeze_at_parsed', {})
+        #    #     unfreeze_step = unfreeze_at_parsed.get('value', 0)
+        #        
+        #    #     if is_main():
+        #    #         log.info(f"Restoring requires_grad state for resumed training at step {start_step}")
+        #    #         log.info(f"Freeze schedule: unfreeze_at={unfreeze_step}, current_step={start_step}")
+        #        
+        #    #     # Check if we should be unfrozen at this step
+        #    #     if start_step >= unfreeze_step:
+        #    #         # We're past the unfreeze point - need to unfreeze base models
+        #    #         current_epoch_for_unfreeze = start_step // steps_per_epoch if steps_per_epoch > 0 else 0
+        #            
+        #    #         # Apply unfreezing using the same logic as during training
+        #    #         # Note: unfreeze_non_adapters returns (optimizer, trainable_params, newly_unfrozen_params) tuple
+        #    #         # but we don't want the optimizer it creates - we'll create our own
+        #    #         _, _, newly_unfrozen_params = unfreeze_non_adapters(
+        #    #             decoder_base, 
+        #    #             encoder_base, 
+        #    #             config, 
+        #    #             learning_rate,
+        #    #             projection_lr_multiplier,
+        #    #             embedding_lr_multiplier,
+        #    #             prompt_lr_multiplier,
+        #    #             base_model_lr_multiplier,
+        #    #             overall_encoder_lr_multiplier,
+        #    #             opt_state_dict=None,  # We'll handle optimizer state later
+        #    #             current_step=start_step,
+        #    #             current_epoch=current_epoch_for_unfreeze, # Use correct epoch
+        #    #             grad_accum_steps=gradient_accumulation_steps
+        #    #         )
+        #            
+        #    #         if is_main():
+        #    #             # Count and log the number of trainable parameters after unfreezing
+        #    #             num_trainable_dec = sum(p.numel() for p in decoder_base.parameters() if p.requires_grad)
+        #    #             num_trainable_enc = sum(p.numel() for p in encoder_base.parameters() if p.requires_grad)
+        #    #             log.info("After restoring freeze state:")
+        #    #             log.info(f"  Decoder trainable parameters: {num_trainable_dec:,}")
+        #    #             log.info(f"  Encoder trainable parameters: {num_trainable_enc:,}")
+        #                
+        #    #             # Log which parameter groups are trainable
+        #    #             dec_base_trainable = any(p.requires_grad for n, p in decoder_base.named_parameters() if n.startswith('base.'))
+        #    #             enc_base_trainable = any(p.requires_grad for n, p in encoder_base.named_parameters() if n.startswith('base.'))
+        #    #             log.info(f"  Decoder base model trainable: {dec_base_trainable}")
+        #    #             log.info(f"  Encoder base model trainable: {enc_base_trainable}")
+        #    #     else:
+        #    #         if is_main():
+        #    #             log.info(f"Not yet at unfreeze point ({start_step} < {unfreeze_step}), keeping original frozen state")
         
         # Now create optimizer with correctly set requires_grad states
         params = param_groups(
@@ -2639,7 +2944,7 @@ def main(cfg: DictConfig) -> None:
             overall_encoder_lr_multiplier,
             weight_decay
         )
-        optimizer = torch.optim.AdamW(params)
+        optimizer = torch.optim.AdamW(params, betas=(beta1, beta2))
         
         # Learning rate scheduler
         # Initialize scheduler with max_optimizer_steps
@@ -2744,6 +3049,8 @@ def main(cfg: DictConfig) -> None:
         base_model_lr_multiplier=base_model_lr_multiplier,
         overall_encoder_lr_multiplier=overall_encoder_lr_multiplier,
         weight_decay=weight_decay,
+        beta1=beta1,
+        beta2=beta2,
         learning_rate=learning_rate,
         steps_per_epoch=steps_per_epoch,
         gradient_accumulation_steps=gradient_accumulation_steps,
@@ -2755,6 +3062,7 @@ def main(cfg: DictConfig) -> None:
         SmoothTransitionScheduler=SmoothTransitionScheduler,
         get_lr_scheduler=get_lr_scheduler,
         _resolve_schedule_to_steps=_resolve_schedule_to_steps,  
+        successful_preemption_checkpoint=successful_preemption_checkpoint,
     )
     
     # Capture initial model states for drift calculation after model setup and potential checkpoint loading
@@ -2783,6 +3091,8 @@ def main(cfg: DictConfig) -> None:
     
     # Store last computed gradient/update norms for consistent logging
     last_grad_norm = 0.0
+    last_grad_norm_dec = 0.0
+    last_grad_norm_enc = 0.0
     last_update_norm = 0.0
     last_update_ratio = 0.0
     
@@ -2871,17 +3181,32 @@ def main(cfg: DictConfig) -> None:
     # and other functions using the should_move_orig_to_cpu helper.
     # This avoids unnecessary device transfers during training.
     final_ckpt_name_override = None # Used if KeyboardInterrupt or Preemption occurs
+    if decoder.device != device:
+        decoder.to(device)
+    if encoder.device != device:
+        encoder.to(device)
+
+    shutdown_signal = torch.tensor(0, dtype=torch.int, device=device)
 
     try: 
         for step in pbar:
-            if _preemption_requested: # Check for preemption signal
+            if world_size > 1:
+                if is_main():
+                    if _preemption_requested:
+                        shutdown_signal[0] = 1
+                dist.broadcast(shutdown_signal, src=0)
+
+            if shutdown_signal.item() == 1: # Check for preemption signal
                 if is_main():
                     # _preemption_slurm_id is set by the signal handler
                     log.warning(f"SIGTERM received (preemption). Breaking loop to save checkpoint as 'preempt_slurm{_preemption_slurm_id}'.")
                     final_ckpt_name_override = f"preempt_slurm{_preemption_slurm_id}"
+                else:
+                    log.warning(f"Rank {rank} received shutdown signal. Breaking loop.")
                 # All ranks should break the loop if preemption is requested
                 break
-            if step ==gradient_accumulation_steps and world_size==1:
+
+            if step ==gradient_accumulation_steps and world_size==1 and config.get('debug_mode', False):
                 # Stop recording
                 # Dump memory snapshot
                 torch.cuda.memory._dump_snapshot("memory_snapshot.pickle")
@@ -2905,12 +3230,14 @@ def main(cfg: DictConfig) -> None:
                              f"Processed ~{samples_processed_since_last_regen} samples from cache.")
                 
                 num_to_generate_this_cycle = samples_per_regeneration_cycle 
+                orig_base = orig_model
+                decoder_base = decoder.module if hasattr(decoder, 'module') else decoder
+                encoder_base = encoder.module if hasattr(encoder, 'module') else encoder
 
                 with Timer(f"Rank {rank} Cache Regeneration", log, main_process=(is_main()), log_wandb=True, wandb_step=step):
-                    with torch.no_grad():
-                        train_ds.regenerate_cache(num_samples_to_generate=num_to_generate_this_cycle) 
-                        torch.cuda.empty_cache()
-                        gc.collect()
+                    # Use the context manager to handle model device placement
+                    with torch.no_grad(), manage_model_devices_for_generation(orig_model, decoder, encoder, config, device, log, is_main()):
+                        train_ds.regenerate_cache(num_samples_to_generate=num_to_generate_this_cycle)
                 
                 # Log cache regeneration statistics
                 if hasattr(train_ds, 'total_samples_in_pretokenised_dataset') and train_ds.total_samples_in_pretokenised_dataset > 0:
@@ -2962,6 +3289,10 @@ def main(cfg: DictConfig) -> None:
                     if is_main(): log.info(f"Set FastDistributedSampler epoch to {current_epoch} after cache regeneration.")
                 
                 iter_loader = iter(train_loader)
+                if decoder.device != device:
+                    decoder.to(device)
+                if encoder.device != device:
+                    encoder.to(device)
 
             # Training step with optimized gradient accumulation
             # Advance iterator – restart when exhausted
@@ -3010,13 +3341,40 @@ def main(cfg: DictConfig) -> None:
             batch = {k: v.to(device, non_blocking=True) for k, v in batch.items() if isinstance(v, torch.Tensor)}
 
             if step == 0 and is_main():
-                # Temporarily move orig_model to device for initial validation if needed
-                if should_move_orig_to_cpu(config, shared_base_model_obj):
-                    orig_model.to(device)
-                do_all_initial_validation(batch, orig_model, tokenizer, device, log, activation_dir)
-                if should_move_orig_to_cpu(config, shared_base_model_obj):
-                    orig_model.to('cpu')
-                    log.info("Moved orig_model back to CPU after initial validation")
+                # For initial validation, orig_model must be on the GPU.
+                # is_distinct_orig_model_val = config.get('orig_model_name') and config.get('orig_model_name') != config['model_name']
+                # if not is_distinct_orig_model_val:
+                #     encoder.to('cpu')
+                #     decoder.to('cpu')
+                #     orig_model.to(device)
+                #     log.info("Ensured orig_model is on device for initial validation.")
+
+                #     # After validation, move it back to CPU only if it is distinct
+                log.warning("SKIPPING INITIAL VALIDATION")
+                #     #do_all_initial_validation(batch, orig_model, tokenizer, device, log, activation_dir)
+                #     log.info("Moving orig_model back to CPU after initial validation (weights are shared).")
+                #     orig_model.to('cpu')
+                #     log.info("Moving encoder and decoder back to GPU after initial validation")
+                #     encoder.to(device)
+                #     decoder.to(device)
+                # else:
+                #     print("Skipping initial validation for  orig_model different (e.g. chat formatted)")
+
+            is_distinct_orig_model_val = config['orig_model_name'] and config['orig_model_name'] != config['model_name']
+            if is_distinct_orig_model_val and orig_model.model.device !=torch.device('cpu'):
+                log.info(f"Orig model is distinct from model, so should not be on GPU. Moving orig_model to cpu")
+                orig_model.to('cpu')
+                orig_model.model.to('cpu')
+            if decoder.device != device:
+                decoder.to(device)
+                log.info(f"Moved decoder to device {device}")
+            if encoder.device != device:
+                encoder.to(device)
+                log.info(f"Moved encoder to device {device}")
+            if shared_base_model_obj.device != device:
+                shared_base_model_obj.to(device)
+                log.info(f"Moved shared_base_model_obj to device {device}")
+
 
             metrics = distributed_train_step(
                 decoder,
@@ -3034,7 +3392,8 @@ def main(cfg: DictConfig) -> None:
                 gradient_accumulation_steps=gradient_accumulation_steps,
                 is_distributed=(world_size > 1),
                 lr_scheduler=lr_scheduler,
-                steps_per_epoch=steps_per_epoch
+                steps_per_epoch=steps_per_epoch,
+                log=log,
             )
 
             # Synchronize metrics across processes
@@ -3044,9 +3403,16 @@ def main(cfg: DictConfig) -> None:
             running_losses.append(metrics['loss'])
             step_times.append(time.time() - step_start_time)
 
-            # Update last computed gradient/update norms if they were calculated this step
-            if metrics['grad_norm'] > 0:
+
+            if metrics.get('grad_norm_dec', 0) > 0 or metrics.get('grad_norm_enc', 0) > 0:
+                last_grad_norm_dec = metrics['grad_norm_dec']
+                last_grad_norm_enc = metrics['grad_norm_enc']
+                last_grad_norm = math.sqrt(last_grad_norm_dec**2 + last_grad_norm_enc**2)
+            elif metrics.get('grad_norm', 0) > 0:
                 last_grad_norm = metrics['grad_norm']
+            else:
+                last_grad_norm = 0.0
+            if metrics['update_norm'] > 0:
                 last_update_norm = metrics['update_norm']
                 last_update_ratio = metrics['update_ratio']
 
@@ -3165,6 +3531,7 @@ def main(cfg: DictConfig) -> None:
                     'progress/epoch_fraction': (step / steps_per_epoch) if steps_per_epoch > 0 else 0,  # Fractional epoch (e.g., 1.5 = halfway through 2nd epoch)
                     'progress/epoch': current_epoch,  # Integer epoch number
                 }
+                wandb_metrics = {k: get_item(v) for k,v in wandb_metrics.items() if not isinstance(v, torch.Tensor)}
 
                 if on_the_fly_generation_enabled and pretokenized_dataset_size > 0:
                     wandb_metrics['progress/on_the_fly_samples_seen'] = total_samples_seen_on_the_fly
@@ -3173,6 +3540,8 @@ def main(cfg: DictConfig) -> None:
                 # Always log gradient and update metrics using last computed values
                 # These are only updated at accumulation boundaries but we want consistent logging
                 wandb_metrics['grads/norm'] = last_grad_norm
+                wandb_metrics['grads/norm_dec'] = last_grad_norm_dec if last_grad_norm_dec is not None else 0.0
+                wandb_metrics['grads/norm_enc'] = last_grad_norm_enc if last_grad_norm_enc is not None else 0.0
                 wandb_metrics['updates/norm'] = last_update_norm
                 wandb_metrics['updates/ratio'] = last_update_ratio
                 wandb_metrics['updates/lr_actual'] = lr_scheduler.get_last_lr()[0]
@@ -3216,12 +3585,16 @@ def main(cfg: DictConfig) -> None:
             val_loss = None # Reset val_loss for the current step
             most_recent_val_loss=None # This will store the actual loss from validation if it runs
             if val_loader and val_interval > 0 and (step % val_interval == 0):
+                heavy_interval = config.get('heavy_interval', 10*val_interval)
                 should_print_val = step % (10*val_interval) == 0
-                should_run_interventions = step % (10*val_interval) == 0
+                should_run_heavy_at_all = config.get('should_run_heavy', False)
+                should_run_interventions = step % heavy_interval == 0 and should_run_heavy_at_all
                 if is_main():
-                    log.info(f"Running validation at step {step}")
+                    log.info(f"Running validation at step {step}, running heavy validation: {should_run_interventions} (are we doing every {heavy_interval} steps? {should_run_heavy_at_all})")
+                mixed_precision_config = config.get('mixed_precision', {'enabled': True, 'dtype': 'auto'})
+                autocast_context = get_autocast_context(device, mixed_precision_config)
                 with Timer("Validation", log, main_process=is_main(), log_wandb=True, wandb_step=step):
-                    with torch.no_grad():
+                    with torch.no_grad(), autocast_context:
                         val_loss_from_fn = validate_distributed(
                             decoder=decoder,
                             encoder=encoder,
@@ -3441,9 +3814,13 @@ def main(cfg: DictConfig) -> None:
     if is_main():
         log.info("Training completed!")
     
+    # Mark training as complete to prevent signal handler from raising exceptions
+    _training_complete = True
+
     # Cleanup distributed training
     cleanup_distributed()
 
 
 if __name__ == "__main__":
     main()
+

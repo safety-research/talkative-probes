@@ -31,6 +31,7 @@ dependencies = [
     "tiktoken>=0.9.0",
     "sentencepiece>=0.2.0",
     "jupyter-nbextensions-configurator>=0.6.4",
+    "peft>=0.15.2",
 ]
 
 [tool.setuptools]

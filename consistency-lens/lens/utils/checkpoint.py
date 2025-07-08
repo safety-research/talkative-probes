@@ -17,7 +17,7 @@ def save(path: str | Path, models: Dict[str, torch.nn.Module], optim: torch.opti
     model_state_dicts = {}
     for name, model in models.items():
         state_dict = model.state_dict()
-        print(f"Saving {name} with {list([k for k in state_dict.keys()])}")
+        #print(f"Saving {name} with {list([k for k in state_dict.keys()])}")
         
         # If model has a 'base' and it's not trainable, don't save it.
         if hasattr(model, 'base') and model.base is not None:

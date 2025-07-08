@@ -416,7 +416,7 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
     encoder_base.eval()
     
     # Hidden size from the model
-    d_model = decoder_base.base.config.hidden_size
+    d_model = decoder_base.base.config.hidden_size if not hasattr(decoder_base.base.config, 'text_config') else decoder_base.base.config.text_config.hidden_size
     
     # Test parameters
     max_length = 20  # Generate 20 tokens
@@ -427,7 +427,7 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
     log.info("\nTest 1: Generation with zero activation vector")
     zero_activation = torch.zeros(batch_size, d_model, device=device, dtype=decoder_base.base.get_input_embeddings().weight.dtype)
     
-    with torch.no_grad():
+    with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
         result_zero = decoder_base.generate_soft(
             activation_input=zero_activation,
             max_length=max_length,
@@ -448,7 +448,7 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
     log.info("\nTest 2: Generation with random activation vector")
     random_activation = torch.randn(batch_size, d_model, device=device, dtype=decoder_base.base.get_input_embeddings().weight.dtype) * 0.1  # Small random values
     
-    with torch.no_grad():
+    with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
         result_random = decoder_base.generate_soft(
             activation_input=random_activation,
             max_length=max_length,
@@ -493,7 +493,7 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
     
     for temp in temperatures:
         log.info(f"\n  Temperature = {temp}:")
-        with torch.no_grad():
+        with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
             result_temp = decoder_base.generate_soft(
                 activation_input=random_activation[:1],  # Just first sample
                 max_length=max_length,
@@ -511,7 +511,7 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
     # Test 5: Without projection
     log.info("\nTest 5: Generation without projection layer")
     
-    with torch.no_grad():
+    with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
         result_noproj = decoder_base.generate_soft(
             activation_input=random_activation[:1],  # Just first sample
             max_length=max_length,
@@ -530,7 +530,7 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
     # Test 5: Without patching
     log.info("\nTest 5: Generation without patching")
     
-    with torch.no_grad():
+    with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
         result_nopatching = decoder_base.generate_soft(
             activation_input=random_activation[:1],  # Just first sample
             max_length=max_length,
@@ -552,7 +552,7 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
     # Test 5: Without patching
     log.info("\nTest 5.5: Generation without patching kv cached")
     
-    with torch.no_grad():
+    with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
         result_nopatching_kv_cached = decoder_base.generate_soft_kv_cached(
             activation_input=random_activation[:1],  # Just first sample
             max_length=max_length,
@@ -571,23 +571,24 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
 
 
     log.info("\nTest 5.5: Generation without patching kv cached non differentiable")
+
+    for i in range(3):
+        with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
+            result_nopatching_kv_cached_non_diff = decoder_base.generate_soft_kv_cached_nondiff(
+                activation_input=random_activation[:1],  # Just first sample
+                max_length=max_length*3,
+                gumbel_tau=gumbel_tau,
+                use_projection=False,  # Skip projection
+                print_prompt=False,
+                do_patching=False,
+                special_token=tokenizer.encode("1" if 'gemma3' in decoder_base.base.config.model_type else "1"),
+                original_token_pos=torch.tensor([0], device=device),
+            )
     
-    with torch.no_grad():
-        result_nopatching_kv_cached_non_diff = decoder_base.generate_soft_kv_cached_nondiff(
-            activation_input=random_activation[:1],  # Just first sample
-            max_length=max_length,
-            gumbel_tau=gumbel_tau,
-            use_projection=False,  # Skip projection
-            print_prompt=False,
-            do_patching=False,
-            special_token=tokenizer.encode("<|endoftext|>"),
-            original_token_pos=torch.tensor([0], device=device),
-        )
-    
-    no_patch_tokens_kv_cached_non_diff = result_nopatching_kv_cached_non_diff.hard_token_ids[0]
-    decoded_text = tokenizer.decode(no_patch_tokens_kv_cached_non_diff, skip_special_tokens=True)
-    decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
-    log.info(f" Test 5.6 Without patching kv cached non differentiable: {decoded_text}")
+        no_patch_tokens_kv_cached_non_diff = result_nopatching_kv_cached_non_diff.hard_token_ids[0]
+        decoded_text = tokenizer.decode(no_patch_tokens_kv_cached_non_diff, skip_special_tokens=True)
+        decoded_text = decoded_text.replace('\n', '\\n')  # Escape newlines
+        log.info(f" Test 5.6 Without patching kv cached non differentiable: {decoded_text}")
 
     
     # Put models back in train mode
@@ -600,7 +601,7 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
     
     test_activation = torch.randn(1, d_model, device=device, dtype=decoder_base.base.get_input_embeddings().weight.dtype) * 0.1
     for i in range(3):
-        with torch.no_grad():
+        with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
             result = decoder_base.generate_soft(
                 activation_input=test_activation,
                 max_length=max_length,
