@@ -396,6 +396,7 @@ def _prepare_dataloaders(
     world_size: Optional[int] = None,
     samples_per_regeneration_cycle: Optional[int] = None
 ):
+    # docstring
     on_the_fly_cfg = config.get('dataset', {}).get('on_the_fly', {'enabled': False})
     dataset_cfg = config.get('dataset', {})
 

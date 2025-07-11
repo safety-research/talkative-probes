@@ -184,8 +184,8 @@ def train_step(  # noqa: D401
             gen = dec.generate_soft_kv_flash(A, max_length=t_text, gumbel_tau=tau, original_token_pos=original_token_pos_A)
         elif dec.config.use_kv_cache:
             # Use KV-cached generation for O(n) attention computation
-            if GRPO_training and not GRPO_validate_mode:
-                gen = dec.generate_soft_kv_cached_nondiff(A, max_length=t_text, gumbel_tau=tau, original_token_pos=original_token_pos_A)
+            if GRPO_training:# and not GRPO_validate_mode:
+                gen = dec.generate_soft_kv_cached_nondiff(A, max_length=t_text, gumbel_tau=tau, original_token_pos=original_token_pos_A, return_logits=GRPO_validate_mode)
             else:
                 gen = dec.generate_soft_kv_cached(A, max_length=t_text, gumbel_tau=tau, original_token_pos=original_token_pos_A)
         elif dec.config.use_checkpointing:
@@ -566,13 +566,20 @@ def train_step(  # noqa: D401
             #A and A-train are both not-expanded
             if not GRPO_validate_mode:
                 advantage, mean_reward_std, mean_reward = compute_advantages(A,A_train.detach(),group_n)
-                advantage = advantage.unsqueeze(-1) # so we can broadcast over sequence length??
+                
+                # Track proportion of zero advantages
+                zero_advantage_threshold = 1e-6  # Consider advantages below this threshold as zero
+                zero_advantages_mask = torch.abs(advantage) < zero_advantage_threshold
+                zero_advantages_proportion = zero_advantages_mask.float().mean()
+                
+                advantage = advantage.unsqueeze(-1) # so we can broadcast over sequence length??
                 if mean_n_sequences and mean_n_sequences>1:
                     # repeat so each element of average is rewarded
                     advantage = advantage.repeat_interleave(mean_n_sequences, dim=0)
             else:
                 mean_reward_std, mean_reward = compute_advantages(A,A_train.detach(),group_n, no_advantage=True)
                 advantage = torch.tensor(0.0, device=A.device, dtype=A.dtype).unsqueeze(-1)
+                zero_advantages_proportion = torch.tensor(0.0, device=A.device, dtype=A.dtype)
 
         #fine to do mean because our rollouts are fixed length
         loss_GRPO = -torch.mean(probs_of_interest/probs_of_interest.detach() * advantage - GRPO_beta*KL_GRPO,axis=-1)
@@ -648,6 +655,7 @@ def train_step(  # noqa: D401
         "mean_reward_std": mean_reward_std if GRPO_training and not GRPO_validate_mode else torch.tensor(0.0),
         "KL_GRPO": KL_GRPO if GRPO_training else torch.tensor(0.0),
         "loss_GRPO": loss_GRPO,
+        "zero_advantages_proportion": zero_advantages_proportion if GRPO_training and not GRPO_validate_mode else torch.tensor(0.0),
     }
     
     if return_reconstruction:

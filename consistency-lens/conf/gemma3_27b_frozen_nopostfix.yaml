@@ -13,13 +13,13 @@ tokenizer_name: "google/gemma-3-27b-pt"
 model_name: "google/gemma-3-27b-pt"
 hf_dataset_name: "openwebtext"
 
-t_text: 4                       # Number of tokens to generate with the Decoder
+t_text: 8                      # Number of tokens to generate with the Decoder
 model_dtype: "bfloat16"
 # decoder_prompt: "<|endoftext|>Short explanation of <embed>. Language, topic, senitment, claims, speaker, points and message, style and details, etc:"
 # # encoder_prompt: "<|endoftext|>Text to summarise:<text>. Concise summary of the text, covering the language, topic, sentiment, claims, speaker, points, message, style and details, etc:" # this is an error
 # # lm_loss_natural_prefix: "<|endoftext|>Short explanation of something. Language, topic, sentiment, claims, speaker, points, message, style and details, etc:"  # Natural language prefix for base model in LM loss
 decoder_prompt: "<bos>Short explanation of <embed>. Language, topic, sentiment, claims, speaker, style, etc:"
-encoder_prompt: "<bos>Summary of the text, encapsulating the main points and message, style and details:<text>\n\n" # this is an error
+encoder_prompt: "<bos>Summary of the text, encapsulating the main points and message, style and details:<text>" # this is an error
 lm_loss_natural_prefix: "<bos>Short explanation of something. Language, topic, sentiment, claims, speaker, style, etc:"  # Natural language prefix for base model in LM loss
 layer_l: 45
 
@@ -58,8 +58,8 @@ trainable_components:
     use_dropout: false
     subtract_add_pos_embeddings: false 
     extra_pos_embeddings: false    
-    special_last_token_vector: false
-    add_current_token: false
+    special_last_token_vector: true
+    add_current_token: true
 
 
 

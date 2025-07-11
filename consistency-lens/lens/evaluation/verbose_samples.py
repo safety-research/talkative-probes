@@ -374,21 +374,22 @@ def compute_single_sample_losses(
     
     # Call train_step with verbose_eval=True to get intermediate values
     with torch.no_grad():  # We don't need gradients for verbose samples
-        losses = train_step(
-            batch=batch,
-            models=models,
-            _loss_fns=_loss_fns,
-            lm_loss_natural_prefix=config.get('lm_loss_natural_prefix') if config else None,
-            tokenizer=tokenizer,
-            cached_prefix_ids=cached_prefix_ids,
-            resample_ablation=resample_ablation,
-            should_run_interventions=False,  # Normal mode, not intervention mode
-            verbose_eval=True,  # Get intermediate values
-            GRPO_validate_mode=True,
-            mean_n_sequences=config.get('mean_n_sequences_eval', False),
-            do_kl_computation=do_kl_computation,
-            do_lm_computation=do_lm_computation,
-        )
+        with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+            losses = train_step(
+                batch=batch,
+                models=models,
+                _loss_fns=_loss_fns,
+                lm_loss_natural_prefix=config.get('lm_loss_natural_prefix') if config else None,
+                tokenizer=tokenizer,
+                cached_prefix_ids=cached_prefix_ids,
+                resample_ablation=resample_ablation,
+                should_run_interventions=False,  # Normal mode, not intervention mode
+                verbose_eval=True,  # Get intermediate values
+                GRPO_validate_mode=True,
+                mean_n_sequences=config.get('mean_n_sequences_eval', False),
+                do_kl_computation=do_kl_computation,
+                do_lm_computation=do_lm_computation,
+            )
         # log.info(f"Not doing mean sequences for eval: {config.get('mean_n_sequences_eval', False)}")
     
     # Extract intermediate values from verbose output

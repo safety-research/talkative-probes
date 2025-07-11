@@ -12,6 +12,7 @@ tokenizer_name: "SimpleStories/SimpleStories-5M"
 # while keeping the encoder/decoder using the original model
 # orig_model_name: "SimpleStories/SimpleStories-5M-Chat"  # Example: chat-tuned variant
 orig_model_name: ${model_name}  # null = use same as model_name (default behavior)
+orig_tokenizer_name: ${tokenizer_name}
 # this is the layer idx!!!!
 layer_l: 5                      # Target layer for activation extraction (LLM_orig)
 #token_pos_p: 0                   # Target token position for activation extraction (LLM_orig) - currently fixed in MVP dumper
@@ -94,7 +95,7 @@ trainable_components:
     use_dropout: false        # Whether to use dropout during training (False = deterministic, recommended for frozen models)
     detach_after_each_sample: false
     end_to_end: true
-    projection_init_method: "default"  # Options: "default", "tuned_lens_composition"
+    projection_init_method: "scale"  # Options: "default", "tuned_lens_composition"
     # TunedLens initialization (when projection_init_method = "tuned_lens_composition"):
     # RECOMMENDED: Leave checkpoint null to auto-load pre-trained lens from HuggingFace
     projection_init_tl_checkpoint: null  # null = auto-load, or specify "username/model-tuned-lens" or "/path/to/checkpoint"
@@ -118,7 +119,7 @@ trainable_components:
     soft_prompt_init_text: ${encoder_prompt} # Text to initialize soft prompt from (overrides random init, e.g. "reconstruct activation:")
     output_layer: -1          # Which layer to extract encoder activations from (-1 = last layer, 0 = embeddings, 1..n = specific layer)
     use_dropout: false        # Whether to use dropout during training (False = deterministic, recommended for frozen models)
-    projection_init_method: "default"
+    projection_init_method: "scale"
     subtract_add_pos_embeddings: false  
     extra_pos_embeddings: false
     add_current_token: false
