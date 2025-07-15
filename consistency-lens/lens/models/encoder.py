@@ -21,7 +21,8 @@ class EncoderConfig:
     base_model: bool = True  # YAML `base_model`
     pos_embeddings: bool = True  # YAML `pos_embeddings` - whether to train positional embeddings
     projection_layer: bool = True  # YAML `projection_layer`
-    use_base_model: bool = False  # YAML `use_base_model`
+    use_base_model: bool = True  # YAML `use_base_model`
+    use_projection_layer: bool = True  # YAML `use_projection_layer`
     embedding_head: bool = False  # YAML `embedding_head`
     eye_init: bool = True  # YAML `eye_init`
     stop_grad_aprime: bool = False  # YAML `stop_grad_aprime`
@@ -130,15 +131,18 @@ class Encoder(nn.Module):
         #     log.info(f"Separately control 'input embeddings' trainability with 'embedding_head'")
 
         # This is Proj_E_hidden_to_A from the README
-        self.proj = nn.Linear(d_model, d_model, bias=True)
-        # Initialize as identity matrix
-        if cfg.eye_init:
-            nn.init.eye_(self.proj.weight)
-            nn.init.zeros_(self.proj.bias)  # Also initialize bias to zeros with eye_init
-            log.info("Initialized projection layer as identity matrix (encoder)")
-        # Configure trainability of the output projection layer
-        for p in self.proj.parameters():
-            p.requires_grad_(cfg.projection_layer)
+        if cfg.use_projection_layer:
+            self.proj = nn.Linear(d_model, d_model, bias=True)
+            # Initialize as identity matrix
+            if cfg.eye_init:
+                nn.init.eye_(self.proj.weight)
+                nn.init.zeros_(self.proj.bias)  # Also initialize bias to zeros with eye_init
+                log.info("Initialized projection layer as identity matrix (encoder)")
+            # Configure trainability of the output projection layer
+            for p in self.proj.parameters():
+                p.requires_grad_(cfg.projection_layer)
+        else:
+            self.proj = None
 
         # Configure trainability of the embedding heads (input/output embeddings) if using base model
         if self._use_base:
@@ -462,7 +466,10 @@ class Encoder(nn.Module):
             # Project the last token embedding directly if `self.base` is not in use.
             last_emb_to_proj = embeddings[:, -1]  # (B, d_model)
 
-        A_hat_intermediate = self.proj(last_emb_to_proj)
+        if self.proj is not None:
+            A_hat_intermediate = self.proj(last_emb_to_proj)
+        else:
+            A_hat_intermediate = last_emb_to_proj
 
         if (
             self.config.subtract_add_pos_embeddings

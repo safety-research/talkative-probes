@@ -1189,8 +1189,8 @@ class Decoder(nn.Module):
         past_key_values = None
 
         # Initialize cache_position for Gemma2
-        if self.is_gemma:
-            cache_position = torch.arange(seq_embs.size(1), device=device, dtype=torch.long)
+        # if self.is_gemma:
+        #     cache_position = torch.arange(seq_embs.size(1), device=device, dtype=torch.long)
 
         # Get the transformer and detect architecture
         if hasattr(main_base, "transformer"):
@@ -1497,6 +1497,399 @@ class Decoder(nn.Module):
         # text_embs = torch.stack(output_embs_list, dim=1)
         # should be embedded with enc's input, but it's the same so ok for now!
         return Generated(text_embs, logits_seq, hard_ids)
+
+    def _process_prefix(
+        self,
+        activation_input: torch.Tensor,
+        use_projection: bool = True,
+        print_prompt: bool = False,
+        hard_left_emb: list[int] = None,
+        hard_right_emb: list[int] = None,
+        override_model_base_and_out=None,
+        do_patching: bool = True,
+        special_token=None,
+        original_token_pos: Optional[torch.Tensor] = None,
+        add_tokens: list[int] = None,
+        max_length: int = 0,  # Only used for cache sizing for Gemma
+    ) -> tuple[torch.Tensor, any, dict]:
+        """
+        Processes the prefix and returns the initial hidden states, KV cache, and context.
+        """
+        if print_prompt and hasattr(self, "prompt_text"):
+            print(f"Prompt template: {self.prompt_text}")
+
+        if override_model_base_and_out is not None:
+            main_model = override_model_base_and_out
+            if hasattr(main_model, "model"):
+                main_base = main_model.model
+            else:
+                main_base = main_model
+        else:
+            main_base = self.base
+
+        config_for_cache = main_base.config
+        if hasattr(config_for_cache, "text_config"):
+            config_for_cache = config_for_cache.text_config
+
+        if hard_left_emb is not None:
+            prompt_left_emb = main_base.get_input_embeddings().weight[hard_left_emb].clone()
+        else:
+            prompt_left_emb = self.prompt_left_emb
+        if hard_right_emb is not None:
+            prompt_right_emb = main_base.get_input_embeddings().weight[hard_right_emb].clone()
+        else:
+            prompt_right_emb = self.prompt_right_emb
+
+        if self.config.per_layer_projections:
+            activation_input = activation_input.to(self.proj_weight.dtype)
+        else:
+            activation_input = activation_input.to(self.proj.weight.dtype)
+        B, d_model = activation_input.shape
+        device = activation_input.device
+
+        activation_input_modified = activation_input
+        if (
+            self.config.subtract_add_pos_embeddings
+            and original_token_pos is not None
+            and self.activation_pos_embedder is not None
+        ):
+            original_token_pos = original_token_pos.to(device=device, dtype=torch.long)
+            original_token_pos = original_token_pos.squeeze() if original_token_pos.dim() == 2 else original_token_pos
+            pos_embeds_to_subtract = self.activation_pos_embedder(original_token_pos)
+            if pos_embeds_to_subtract.shape != activation_input.shape:
+                if pos_embeds_to_subtract.shape[0] == 1 and activation_input.shape[0] > 1:
+                    pos_embeds_to_subtract = pos_embeds_to_subtract.expand_as(activation_input)
+                else:
+                    raise ValueError(
+                        f"Shape mismatch for positional embedding subtraction: "
+                        f"activation_input shape {activation_input.shape}, "
+                        f"pos_embeds_to_subtract shape {pos_embeds_to_subtract.shape}"
+                    )
+            activation_input_modified = activation_input - pos_embeds_to_subtract
+
+        input_emb_table = main_base.get_input_embeddings().weight
+        output_emb_table = main_base.get_output_embeddings().weight
+        embeddings_tied = input_emb_table.data_ptr() == output_emb_table.data_ptr()
+
+        parts = []
+        if prompt_left_emb is not None:
+            parts.append(prompt_left_emb.expand(B, -1, -1))
+
+        if use_projection:
+            if self.config.patch_all_layers and self.config.per_layer_projections:
+                a_proj = self._apply_projection(activation_input_modified, layer_idx=0).unsqueeze(1)
+            else:
+                a_proj = self._apply_projection(activation_input_modified).unsqueeze(1)
+        else:
+            a_proj = activation_input_modified.unsqueeze(1)
+
+        if do_patching:
+            parts.append(a_proj)
+        else:
+            parts.append(
+                input_emb_table[
+                    special_token.squeeze().item() if isinstance(special_token, torch.Tensor) else special_token
+                ]
+                .clone()
+                .unsqueeze(0)
+                .repeat(B, 1, 1)
+            )
+
+        if prompt_right_emb is not None:
+            parts.append(prompt_right_emb.expand(B, -1, -1))
+
+        if add_tokens is not None:
+            token_ids_tensor = torch.tensor(add_tokens, dtype=torch.long, device=input_emb_table.device)
+            added_token_embeddings = input_emb_table[token_ids_tensor].unsqueeze(0).expand(B, -1, -1)
+            parts.append(added_token_embeddings)
+
+        seq_embs = torch.cat(parts, dim=1)
+
+        if self.config.patch_all_layers:
+            max_total_length_for_cache = seq_embs.size(1) + max_length
+            hidden_states, past_key_values = self._patched_forward(
+                main_base=main_base,
+                seq_embs=seq_embs,
+                activation_input_modified=activation_input_modified,
+                use_projection=use_projection,
+                do_patching=do_patching,
+                prompt_left_emb=prompt_left_emb,
+                past_key_values=None,
+                use_cache=True,
+                attention_mask=None,
+                max_total_len_for_cache=max_total_length_for_cache if self.is_gemma else None,
+                return_past_key_values=True,
+            )
+        else:
+            transformer = self._get_transformer(main_base)
+            past_key_values = None
+            if self.is_gemma and HybridCache is not None:
+                past_key_values = HybridCache(
+                    config=config_for_cache,
+                    max_batch_size=B,
+                    max_cache_len=seq_embs.size(1) + max_length,
+                    device=device,
+                    dtype=seq_embs.dtype,
+                )
+            with self._maybe_disable_dropout():
+                outputs = transformer(inputs_embeds=seq_embs, use_cache=True, past_key_values=past_key_values)
+
+            if self.is_gemma3:
+                hidden_states = outputs.hidden_states
+            else:
+                hidden_states = outputs.last_hidden_state
+            past_key_values = outputs.past_key_values
+
+        context = {
+            "override_model_base_and_out": override_model_base_and_out,
+            "input_emb_table": input_emb_table,
+            "output_emb_table": output_emb_table,
+            "embeddings_tied": embeddings_tied,
+            "config_for_cache": config_for_cache,
+        }
+        return hidden_states, past_key_values, context
+
+    def _generate_from_state(
+        self,
+        hidden_states: torch.Tensor,
+        past_key_values: any,
+        context: dict,
+        max_length: int,
+        gumbel_tau: float,
+        return_logits: bool,
+        temperature: float,
+    ) -> Generated:
+        """
+        Generates sequences from a given state (hidden_states, kv_cache).
+        """
+        override_model_base_and_out = context["override_model_base_and_out"]
+        input_emb_table = context["input_emb_table"]
+        output_emb_table = context["output_emb_table"]
+        embeddings_tied = context["embeddings_tied"]
+
+        if override_model_base_and_out is not None:
+            main_model = override_model_base_and_out
+            if hasattr(main_model, "model"):
+                main_base = main_model.model
+                main_out = (
+                    main_model.model.lm_head
+                    if hasattr(main_model.model, "lm_head")
+                    else main_model.model.get_output_embeddings()
+                )
+            else:
+                main_base = main_model
+                main_out = main_model.lm_head if hasattr(main_model, "lm_head") else main_model.get_output_embeddings()
+        else:
+            main_base = self.base
+            main_out = self.base.get_output_embeddings()
+
+        transformer = self._get_transformer(main_base)
+
+        logits_list = []
+        hard_ids_list = []
+        output_embs_list = []
+
+        if self.config.detach_after_each_sample and not self.is_gemma:
+            past_key_values.disable_new_grads()
+
+        if not self.config.end_to_end:
+            ctxt = torch.no_grad()
+            if self.is_gemma:
+                copy_of_kvs = past_key_values
+            else:
+                copy_of_kvs = clone_dynamic_cache_detach(past_key_values)
+        elif self.config.end_to_end:
+            ctxt = nullcontext()
+            copy_of_kvs = past_key_values
+
+        with ctxt:
+            for step in range(max_length):
+                logits_t = main_out(hidden_states[:, -1])
+                if self.config.final_logit_softcapping:
+                    logits_t = (
+                        torch.tanh(logits_t / self.config.final_logit_softcapping) * self.config.final_logit_softcapping
+                    )
+
+                logits_t_scaled = logits_t / temperature
+                with torch.amp.autocast("cuda", enabled=False):
+                    logits_f32 = logits_t_scaled.float()
+                    logits_f32 = logits_f32 - logits_f32.max(dim=-1, keepdim=True)[0].detach()
+                    ste_token_dist = torch.nn.functional.gumbel_softmax(
+                        logits_f32, tau=max(gumbel_tau, 0.1), hard=True
+                    ).to(logits_t.dtype)
+
+                if return_logits:
+                    logits_list.append(logits_t)
+
+                hard_token_indices = ste_token_dist.argmax(dim=-1)
+                emb_t_input = input_emb_table[hard_token_indices]
+                if self.is_gemma3:
+                    emb_t_input = emb_t_input * self.normalizer
+
+                if embeddings_tied:
+                    emb_t_output = emb_t_input
+                else:
+                    emb_t_output = output_emb_table[hard_token_indices]
+                    if self.is_gemma3:
+                        emb_t_output = emb_t_output * self.normalizer
+
+                if self.config.end_to_end:
+                    output_embs_list.append(emb_t_output)
+                hard_ids_list.append(hard_token_indices)
+
+                if step < max_length - 1:
+                    with self._maybe_disable_dropout():
+                        if self.is_gemma3:
+                            outputs = main_base.model(
+                                inputs_embeds=emb_t_input.unsqueeze(1),
+                                past_key_values=copy_of_kvs,
+                                use_cache=True,
+                            )
+                        elif self.is_gemma2:
+                            outputs = transformer(
+                                inputs_embeds=emb_t_input.unsqueeze(1),
+                                past_key_values=copy_of_kvs,
+                                use_cache=True,
+                            )
+                        else:
+                            outputs = transformer(
+                                inputs_embeds=emb_t_input.unsqueeze(1),
+                                past_key_values=copy_of_kvs,
+                                use_cache=True,
+                            )
+                    hidden_states = outputs.last_hidden_state
+                    if self.config.detach_after_each_sample:
+                        hidden_states = hidden_states.detach()
+                    copy_of_kvs = outputs.past_key_values
+
+        hard_ids = torch.stack(hard_ids_list, dim=1)
+        text_embs = torch.stack(output_embs_list, dim=1) if output_embs_list else None
+        logits = torch.stack(logits_list, dim=1) if return_logits else None
+
+        return Generated(text_embs, logits, hard_ids)
+
+    def _get_transformer(self, main_base):
+        if hasattr(main_base, "transformer"):
+            return main_base.transformer
+        elif hasattr(main_base, "model"):
+            if hasattr(main_base.model, "language_model"):
+                return main_base.model.language_model
+            return main_base.model
+        raise ValueError("Unknown model architecture. Expected transformer or model attribute.")
+
+    def _expand_kv_cache(self, past_key_values, K, context=None):
+        if past_key_values is None:
+            return None
+
+        # Handle tuple-based KV cache, common in Hugging Face models
+        if isinstance(past_key_values, tuple):
+            new_cache = []
+            for layer_past in past_key_values:
+                key, value = layer_past
+                B, n_heads, seq_len, head_dim = key.shape
+
+                new_key = torch.repeat_interleave(key, K, dim=0)
+                new_value = torch.repeat_interleave(value, K, dim=0)
+                new_cache.append((new_key, new_value))
+            return tuple(new_cache)
+        if isinstance(past_key_values, DynamicCache):
+            return past_key_values.batch_repeat_interleave(K)
+
+        if isinstance(past_key_values, HybridCache):
+            if context is None or "config_for_cache" not in context:
+                raise ValueError("`context` with `config_for_cache` must be provided to expand HybridCache.")
+
+            # Reconstruct the layer_device_map from the existing cache
+            layer_device_map = {i: layer.device for i, layer in enumerate(past_key_values.key_cache)}
+
+            # Create a new HybridCache instance with an expanded batch size.
+            new_cache = type(past_key_values)(
+                config=context["config_for_cache"],
+                max_batch_size=past_key_values.max_batch_size * K,
+                max_cache_len=past_key_values.max_cache_len,
+                layer_device_map=layer_device_map,
+            )
+
+            for i in range(len(past_key_values.key_cache)):
+                expanded_key = torch.repeat_interleave(past_key_values.key_cache[i], K, dim=0)
+                expanded_value = torch.repeat_interleave(past_key_values.value_cache[i], K, dim=0)
+                # The new_cache is already on the correct devices thanks to layer_device_map
+                new_cache.key_cache[i].copy_(expanded_key)
+                new_cache.value_cache[i].copy_(expanded_value)
+            return new_cache
+
+        # For custom cache objects like HybridCache, a more specific implementation may be needed
+        # if they don't conform to the tuple structure.
+        raise NotImplementedError(f"KV cache expansion not implemented for type {type(past_key_values)}")
+
+    def _expand_hidden_states(self, hidden_states, K):
+        B, seq_len, d_model = hidden_states.shape
+        return torch.repeat_interleave(hidden_states, K, dim=0)
+
+    def generate_k(
+        self,
+        activation_input: torch.Tensor,
+        max_length: int,
+        gumbel_tau: float,
+        use_projection: bool = True,
+        print_prompt: bool = False,
+        hard_left_emb: list[int] = None,
+        hard_right_emb: list[int] = None,
+        override_model_base_and_out=None,
+        do_patching: bool = True,
+        special_token=None,
+        original_token_pos: Optional[torch.Tensor] = None,
+        return_logits: bool = False,
+        add_tokens: list[int] = None,
+        temperature: float = 1.0,
+        group_size: int = 1,
+    ) -> Generated:
+        """
+        Generates K samples for each input in the batch, reusing the prefix computation.
+        """
+        B, _ = activation_input.shape
+
+        hidden_states, past_key_values, context = self._process_prefix(
+            activation_input=activation_input,
+            use_projection=use_projection,
+            print_prompt=print_prompt,
+            hard_left_emb=hard_left_emb,
+            hard_right_emb=hard_right_emb,
+            override_model_base_and_out=override_model_base_and_out,
+            do_patching=do_patching,
+            special_token=special_token,
+            original_token_pos=original_token_pos,
+            add_tokens=add_tokens,
+            max_length=max_length,
+        )
+
+        expanded_hidden_states = self._expand_hidden_states(hidden_states, group_size)
+        expanded_kv_cache = self._expand_kv_cache(past_key_values, group_size, context)
+
+        # The context items are shared across all K samples, no need to expand them.
+
+        return self._generate_from_state(
+            hidden_states=expanded_hidden_states,
+            past_key_values=expanded_kv_cache,
+            context=context,
+            max_length=max_length,
+            gumbel_tau=gumbel_tau,
+            return_logits=return_logits,
+            temperature=temperature,
+        )
+
+        # # Reshape the outputs to group K samples per original input
+        # def reshape_output(tensor):
+        #     if tensor is None:
+        #         return None
+        # #     _, *dims = tensor.shape
+        # #     return tensor.view(B, group_size, *dims)
+
+        # return Generated(
+        #     generated.text_embs,
+        #     generated.logits,
+        #     generated.hard_ids,
+        # )
 
     def generate_soft_kv_cached_nondiff(
         self,

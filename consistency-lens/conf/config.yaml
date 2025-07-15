@@ -110,6 +110,7 @@ trainable_components:
   encoder:
     base_model: false          # Train the underlying LLM weights of the Encoder
     use_base_model: true      # Use the base model to process the embeddings
+    use_projection_layer: true   # Train Proj_E_hidden_to_A (self.proj)
     projection_layer: true   # Train Proj_E_hidden_to_A (self.proj)
     embedding_head: false      # Train the input/output embeddings of the base model (may be tied)
     eye_init: true
@@ -194,6 +195,14 @@ gumbel_tau_schedule:
   start_value: 1.0
   end_value: 0.1
   num_steps: "-1"       # Duration of schedule - "-1" = full training, or use "10000s", "5e", etc.
+
+GRPO_beta_schedule:
+  type: "constant"
+  value: ${GRPO_beta}
+  constant_steps_before_decay: "400os"
+  start_value: ${GRPO_beta}
+  end_value: 0
+  num_steps: "1000os"
 
 # Language model loss weight (alpha) schedule  
 # Alpha ramps up the LM loss component to gradually introduce linguistic fluency constraints

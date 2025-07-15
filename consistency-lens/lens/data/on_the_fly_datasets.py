@@ -268,8 +268,18 @@ class RankInMemoryTrainingCache(Dataset):
         self.data_store: List[Dict[str, Any]] = []
         self.total_samples_in_pretokenised_dataset = 0
         
+        # Track ordering across regenerations
+        self._shuffled_indices: List[int] = []  # holds a permutation of shard indices
+        self._cursor: int = 0  # next unread position in _shuffled_indices
+        
         # Load the pretokenized shard once
         self.pretok_dataset_shard: Optional[HFDataset] = self._load_pretok_shard()
+        
+        # Initialise index order if shard loaded
+        if self.pretok_dataset_shard is not None:
+            import random
+            self._shuffled_indices = list(range(len(self.pretok_dataset_shard)))
+            random.shuffle(self._shuffled_indices)
         
         # Initialize with data if requested
         if initial_cache_size > 0 and self.pretok_dataset_shard is not None:
@@ -300,6 +310,25 @@ class RankInMemoryTrainingCache(Dataset):
         except Exception as e:
             self._log(f"Failed to load/shard pretokenized training dataset: {e}", "error")
             return None
+
+    def _next_indices(self, n: int) -> List[int]:
+        """Return the next *n* indices from the shard, reshuffling when exhausted."""
+        if self.pretok_dataset_shard is None or n <= 0:
+            return []
+
+        import random
+        out: List[int] = []
+        while len(out) < n:
+            remaining = len(self._shuffled_indices) - self._cursor
+            if remaining == 0:
+                random.shuffle(self._shuffled_indices)
+                self._cursor = 0
+                remaining = len(self._shuffled_indices)
+
+            take = min(n - len(out), remaining)
+            out.extend(self._shuffled_indices[self._cursor : self._cursor + take])
+            self._cursor += take
+        return out
 
     def regenerate_cache(self, num_samples_to_generate: int) -> None:
         """Clear cache and generate new samples."""
@@ -333,38 +362,13 @@ class RankInMemoryTrainingCache(Dataset):
         # if self.orig_model_for_gen.model != se
         #     self.orig_model_for_gen.to(self.generation_device)
         
-        shard_iter = iter(self.pretok_dataset_shard)
         generated_count = 0
-        cycle_count = 0
-        samples_in_current_cycle = 0
+        indices_to_use = self._next_indices(num_samples_to_generate)
         
         with torch.no_grad():
             while generated_count < num_samples_to_generate:
-                batch_samples = []
-                for _ in range(min(self.generation_batch_size, num_samples_to_generate - generated_count)):
-                    try:
-                        sample = next(shard_iter)
-                        samples_in_current_cycle += 1
-                    except StopIteration:
-                        # Dataset exhausted, cycling back to beginning
-                        cycle_count += 1
-                        if cycle_count == 1:
-                            self._log(
-                                f"Dataset shard exhausted after {samples_in_current_cycle} samples. "
-                                f"Starting cycle #{cycle_count + 1}...", 
-                                "warning"
-                            )
-                        elif cycle_count % 5 == 0:  # Log every 5 cycles to avoid spam
-                            self._log(
-                                f"Completed {cycle_count} cycles through dataset shard. "
-                                f"Generated {generated_count}/{num_samples_to_generate} samples so far.",
-                                "warning"
-                            )
-                        samples_in_current_cycle = 0
-                        shard_iter = iter(self.pretok_dataset_shard)
-                        sample = next(shard_iter)
-                        samples_in_current_cycle += 1
-                    batch_samples.append(sample)
+                batch_indices = indices_to_use[generated_count : generated_count + self.generation_batch_size]
+                batch_samples = [self.pretok_dataset_shard[i] for i in batch_indices]  # type: ignore
                 
                 def get_attn_mask(sample_batch: List[Dict[str, Any]], tokenizer: PreTrainedTokenizer) -> List[List[int]]:
                     masks = []
@@ -397,14 +401,7 @@ class RankInMemoryTrainingCache(Dataset):
             progress_bar.close()
         
         # Final logging with cycle information
-        if cycle_count > 0:
-            self._log(
-                f"Cache regeneration complete. Generated {len(self.data_store)} samples with {cycle_count} complete cycles "
-                f"through the dataset shard (plus {samples_in_current_cycle} samples from partial cycle).",
-                "info"
-            )
-        else:
-            self._log(f"Cache regeneration complete. Generated {len(self.data_store)} samples without cycling.", "info")
+        self._log(f"Cache regeneration complete. Generated {len(self.data_store)} samples.", "info")
 
     def __len__(self) -> int:
         return len(self.data_store)

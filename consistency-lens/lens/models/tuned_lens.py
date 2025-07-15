@@ -431,6 +431,9 @@ def initialize_consistency_lens_projection(
 
     if init_method == "default":
         return
+    if hasattr(model_component.config, "use_projection_layer") and not model_component.config.use_projection_layer:
+        print("Skipping projection initialization as not using projection layer")
+        return
 
     if is_main_process:
         log.info(f"Attempting '{init_method}' initialization for {component_name}")

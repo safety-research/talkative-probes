@@ -407,7 +407,7 @@ submit_train_job() {
     local config_file=$5
     local run_suffix=$6
     local nice_flag=$7 # Added nice_flag argument
-    
+
     if [ "$USE_SLURM" = true ]; then
         echo -e "${YELLOW}Submitting training job via SLURM...${NC}" >&2
         echo "Config: $config_file" >&2
@@ -478,6 +478,8 @@ submit_train_job() {
             sbatch_args+=(--gres=gpu:$NUM_GPUS_TRAIN)
             sbatch_args+=(--nodes=1)  # Force single node
             sbatch_args+=(--ntasks-per-node=$NUM_GPUS_TRAIN)  # One task per GPU
+            # give some reasonable number of cpus?
+            sbatch_args+=(--cpus-per-task=16)
             
             # Request exclusive node for 8 GPUs (full node)
             if [ "$NUM_GPUS_TRAIN" -eq 8 ]; then

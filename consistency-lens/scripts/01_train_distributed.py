@@ -362,7 +362,14 @@ def distributed_train_step(
         "mse_weight": config.get("mse_weight", 0.0),
         "lm_base_weight": config.get("lm_base_weight"),
         "GRPO_weight": config["GRPO_weight"],
-        "GRPO_beta": config["GRPO_beta"],
+        "GRPO_beta": get_schedule_value(
+            config["GRPO_beta_schedule"],
+            step,
+            config["max_train_steps"],
+            current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0,
+            steps_per_epoch=steps_per_epoch,
+            grad_accum_steps=gradient_accumulation_steps,
+        ),
         "GRPO_entropy_weight": config["GRPO_entropy_weight"],
         "group_n": config["group_n"],
         "skip_tokens_KL_GRPO": config["skip_tokens_KL_GRPO"],
@@ -765,7 +772,14 @@ def generate_verbose_samples_from_batch(
         "mse_weight": config["mse_weight"],
         "lm_base_weight": config["lm_base_weight"],
         "GRPO_weight": config["GRPO_weight"],
-        "GRPO_beta": config["GRPO_beta"],
+        "GRPO_beta": get_schedule_value(
+            config["GRPO_beta_schedule"],
+            step,
+            config["max_train_steps"],
+            current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0,
+            steps_per_epoch=steps_per_epoch,
+            grad_accum_steps=gradient_accumulation_steps,
+        ),
         "GRPO_entropy_weight": config["GRPO_entropy_weight"],
         "group_n": config["group_n"],
         "skip_tokens_KL_GRPO": config["skip_tokens_KL_GRPO"],
@@ -1357,7 +1371,14 @@ def validate_distributed(
         "mse_weight": config.get("mse_weight", 0.0),
         "lm_base_weight": config.get("lm_base_weight"),
         "GRPO_weight": config["GRPO_weight"],
-        "GRPO_beta": config["GRPO_beta"],
+        "GRPO_beta": get_schedule_value(
+            config["GRPO_beta_schedule"],
+            step,
+            config["max_train_steps"],
+            current_epoch=step // steps_per_epoch if steps_per_epoch > 0 else 0,
+            steps_per_epoch=steps_per_epoch,
+            grad_accum_steps=gradient_accumulation_steps,
+        ),
         "GRPO_entropy_weight": config["GRPO_entropy_weight"],
         "group_n": config["group_n"],
         "skip_tokens_KL_GRPO": config.get("skip_tokens_KL_GRPO", 0),
@@ -3308,59 +3329,6 @@ def main(cfg: DictConfig) -> None:
         decoder_base = decoder.module if hasattr(decoder, "module") else decoder
         encoder_base = encoder.module if hasattr(encoder, "module") else encoder
 
-        # CRITICAL FIX: Restore requires_grad state based on freeze schedule when resuming
-        # This must happen BEFORE creating the optimizer
-        # if checkpoint_data and start_step > 0:
-        #    # freeze_schedule = config.get('freeze_schedule', {})
-        #    # if freeze_schedule.get('enabled', False):
-        #    #     unfreeze_at_parsed = freeze_schedule.get('unfreeze_at_parsed', {})
-        #    #     unfreeze_step = unfreeze_at_parsed.get('value', 0)
-        #
-        #    #     if is_main():
-        #    #         log.info(f"Restoring requires_grad state for resumed training at step {start_step}")
-        #    #         log.info(f"Freeze schedule: unfreeze_at={unfreeze_step}, current_step={start_step}")
-        #
-        #    #     # Check if we should be unfrozen at this step
-        #    #     if start_step >= unfreeze_step:
-        #    #         # We're past the unfreeze point - need to unfreeze base models
-        #    #         current_epoch_for_unfreeze = start_step // steps_per_epoch if steps_per_epoch > 0 else 0
-        #
-        #    #         # Apply unfreezing using the same logic as during training
-        #    #         # Note: unfreeze_non_adapters returns (optimizer, trainable_params, newly_unfrozen_params) tuple
-        #    #         # but we don't want the optimizer it creates - we'll create our own
-        #    #         _, _, newly_unfrozen_params = unfreeze_non_adapters(
-        #    #             decoder_base,
-        #    #             encoder_base,
-        #    #             config,
-        #    #             learning_rate,
-        #    #             projection_lr_multiplier,
-        #    #             embedding_lr_multiplier,
-        #    #             prompt_lr_multiplier,
-        #    #             base_model_lr_multiplier,
-        #    #             overall_encoder_lr_multiplier,
-        #    #             opt_state_dict=None,  # We'll handle optimizer state later
-        #    #             current_step=start_step,
-        #    #             current_epoch=current_epoch_for_unfreeze, # Use correct epoch
-        #    #             grad_accum_steps=gradient_accumulation_steps
-        #    #         )
-        #
-        #    #         if is_main():
-        #    #             # Count and log the number of trainable parameters after unfreezing
-        #    #             num_trainable_dec = sum(p.numel() for p in decoder_base.parameters() if p.requires_grad)
-        #    #             num_trainable_enc = sum(p.numel() for p in encoder_base.parameters() if p.requires_grad)
-        #    #             log.info("After restoring freeze state:")
-        #    #             log.info(f"  Decoder trainable parameters: {num_trainable_dec:,}")
-        #    #             log.info(f"  Encoder trainable parameters: {num_trainable_enc:,}")
-        #
-        #    #             # Log which parameter groups are trainable
-        #    #             dec_base_trainable = any(p.requires_grad for n, p in decoder_base.named_parameters() if n.startswith('base.'))
-        #    #             enc_base_trainable = any(p.requires_grad for n, p in encoder_base.named_parameters() if n.startswith('base.'))
-        #    #             log.info(f"  Decoder base model trainable: {dec_base_trainable}")
-        #    #             log.info(f"  Encoder base model trainable: {enc_base_trainable}")
-        #    #     else:
-        #    #         if is_main():
-        #    #             log.info(f"Not yet at unfreeze point ({start_step} < {unfreeze_step}), keeping original frozen state")
-
         # Now create optimizer with correctly set requires_grad states
         params = param_groups(
             [decoder_base, encoder_base],
@@ -3541,6 +3509,18 @@ def main(cfg: DictConfig) -> None:
     total_samples_seen_on_the_fly = 0
     if on_the_fly_generation_enabled and is_main() and pretokenized_dataset_size > 0:
         log.info(f"On-the-fly training with pretokenized dataset of size: {pretokenized_dataset_size} samples.")
+
+        # Calculate and log expected dataset passes
+        total_samples_to_process = max_steps * batch_size * world_size
+        expected_dataset_passes = total_samples_to_process / pretokenized_dataset_size
+        log.info(
+            f"Expected to go through the pretokenized dataset ~{expected_dataset_passes:.2f} times during training."
+        )
+        log.info(f"  - Total samples to process: {total_samples_to_process:,} (across all GPUs)")
+        log.info(f"  - Pretokenized dataset size: {pretokenized_dataset_size:,}")
+        log.info(f"  - Max steps: {max_steps:,}")
+        log.info(f"  - Batch size per GPU: {batch_size}")
+        log.info(f"  - World size: {world_size}")
 
     # Handle resuming from checkpoint
     reset_steps = config.get("resume_reset_steps", False)
@@ -3800,6 +3780,11 @@ def main(cfg: DictConfig) -> None:
                     0
                 )  # Assuming 'A' key exists and indicates batch items
 
+                # Also track total samples seen across all training (not just since last regeneration)
+                # This is the actual number of unique samples from the pretokenized dataset
+                # that have been used for training (per GPU count)
+                total_samples_seen_on_the_fly += raw_batch["A"].size(0)
+
             if step == 0:
                 # log warning the first 10 tokens of the first element of the batch, on all gpus
                 log.warning(
@@ -3967,6 +3952,14 @@ def main(cfg: DictConfig) -> None:
                     steps_per_epoch=steps_per_epoch,
                     grad_accum_steps=gradient_accumulation_steps,
                 )
+                current_GRPO_beta_log = get_schedule_value(
+                    config["GRPO_beta_schedule"],
+                    step,
+                    max_steps,
+                    current_epoch=current_epoch,
+                    steps_per_epoch=steps_per_epoch,
+                    grad_accum_steps=gradient_accumulation_steps,
+                )
 
                 # Get current entropy weight for logging
                 entropy_schedule_log = config.get("entropy_schedule", None)
@@ -4019,7 +4012,7 @@ def main(cfg: DictConfig) -> None:
                     "params/entropy_clamp": current_entropy_clamp_log,
                     "params/GRPO_entropy_w": config.get("GRPO_entropy_weight", 0.0),
                     "params/GRPO_w": config.get("GRPO_weight", 0.0),
-                    "params/GRPO_beta": config.get("GRPO_beta", 0.0),
+                    "params/GRPO_beta": current_GRPO_beta_log,
                     "optim/lr": lr_scheduler.get_last_lr()[0] if lr_scheduler else current_lr,
                     "gradient_accumulation/is_update_step": 1
                     if ((step + 1) % gradient_accumulation_steps == 0) or (step == max_steps - 1)
@@ -4053,9 +4046,10 @@ def main(cfg: DictConfig) -> None:
                 wandb_metrics = {k: _get_item(v) for k, v in wandb_metrics.items()}
 
                 if on_the_fly_generation_enabled and pretokenized_dataset_size > 0:
-                    wandb_metrics["progress/pretokenized_dataset_pct"] = (
-                        total_samples_seen_on_the_fly / pretokenized_dataset_size
-                    )
+                    dataset_passes = total_samples_seen_on_the_fly / pretokenized_dataset_size
+                    wandb_metrics["progress/pretokenized_dataset_pct"] = dataset_passes
+                    wandb_metrics["progress/pretokenized_dataset_passes"] = dataset_passes  # More intuitive name
+                    wandb_metrics["progress/unique_samples_seen_per_gpu"] = total_samples_seen_on_the_fly
 
                 # Always log gradient and update metrics using last computed values
                 # These are only updated at accumulation boundaries but we want consistent logging
