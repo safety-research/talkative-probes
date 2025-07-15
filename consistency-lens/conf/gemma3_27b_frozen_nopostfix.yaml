@@ -105,6 +105,25 @@ mse_weight: 0.000001
 # Entropy weight configuration
 entropy_weight: 0.0  # Static value (used if entropy_schedule is not defined)
 
+
+GRPO_beta_schedule:
+  type: "constant"
+  value: ${GRPO_beta}
+  constant_steps_before_decay: "400os"
+  start_value: ${GRPO_beta}
+  end_value: 0
+  num_steps: "1000os"
+
+
+
+entropy_clamp_schedule:
+  type: "linear_decay_after_constant"
+  constant_steps_before_decay: "1000s"
+  start_value: 2.0
+  end_value: 0.1
+  num_steps: "5000os"
+  value: 0.1
+
 attn_implementation: "eager" # apparently need this, https://huggingface.co/google/gemma-2-27b-it/discussions/22, also gemma3
 
 # Entropy weight schedule - dynamically adjust entropy bonus during training

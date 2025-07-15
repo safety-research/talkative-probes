@@ -81,6 +81,24 @@ alpha_schedule:
 
 num_train_epochs: 2                   # 2 epochs should be plenty for OpenWebText
 
+
+GRPO_beta_schedule:
+  type: "constant"
+  value: ${GRPO_beta}
+  constant_steps_before_decay: "400os"
+  start_value: ${GRPO_beta}
+  end_value: 0
+  num_steps: "1000os"
+
+
+entropy_clamp_schedule:
+  type: "linear_decay_after_constant"
+  constant_steps_before_decay: "1000s"
+  start_value: 2.0
+  end_value: 0.1
+  num_steps: "5000os"
+  value: 0.1
+
 learning_rate: 1.0e-3
 # Learning rate scheduler
 lr_scheduler:

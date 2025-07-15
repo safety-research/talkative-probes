@@ -63,6 +63,15 @@ trainable_components:
 
 
 
+GRPO_beta_schedule:
+  type: "constant"
+  value: ${GRPO_beta}
+  constant_steps_before_decay: "400os"
+  start_value: ${GRPO_beta}
+  end_value: 0
+  num_steps: "1000os"
+
+
 activation_dumper:
   num_samples: -1               # 5M samples from OpenWebText
   min_pos: 5
