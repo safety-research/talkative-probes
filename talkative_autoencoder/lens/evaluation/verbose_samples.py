@@ -861,6 +861,7 @@ def process_and_print_verbose_batch_samples(
                 logit_lens_logits_from_A_i = None
                 logits_shuffled_at_p_batched = None
                 logits_full_shuffled_at_p_batched = None
+                zero_activation = None
                 top_n_zero_tokens = ["N/A"] * top_n_analysis
                 top_n_orig_A_tokens = ["N/A"] * top_n_analysis
                 top_n_aprime_tokens = ["N/A"] * top_n_analysis
@@ -1323,39 +1324,46 @@ def process_and_print_verbose_batch_samples(
                 )
             num_printed_this_batch += 1
 
+            def cleanup_local_variables(listofvars):
+                for var in listofvars:
+                    if var is not None:
+                        del var
+
             # Force cleanup after each sample to prevent accumulation
-            del (
-                A_i,
-                input_ids_seq,
-                gen_single,
-                A_hat_single,
-                A_train_i_for_kl,
-                logits_orig_at_p_batched,
-                logits_train_at_p_batched,
-                logits_natural_at_p_batched,
-                logits_zero_at_p_batched,
-                logits_approx_at_p_batched,
-                logits_baseline_at_p_batched,
-                logits_shuffled_at_p_batched,
-                logits_full_shuffled_at_p_batched,
-                logit_lens_logits_from_A_i,
-                zero_activation,
-                prev_token_ids_tensor,
-                base_gen_tokens,
-                base_gen_tokens_hard,
-                base_gen_tokens_hard_no_map,
-                results_from_compute,
-                computed_tensors,
-                analysis_preds_dict,
-                analysis_metrics_for_print,
-                sample_losses,
-                kl_divergences_for_print_section,
-                gen_tokens,
-                decoder_preds_by_rank,
-                base_preds_by_rank,
-                base_preds_by_rank_hard,
-                base_preds_by_rank_hard_no_map,
-                context_data_rows,
+            cleanup_local_variables(
+                [
+                    A_i,
+                    input_ids_seq,
+                    gen_single,
+                    A_hat_single,
+                    A_train_i_for_kl,
+                    logits_orig_at_p_batched,
+                    logits_train_at_p_batched,
+                    logits_natural_at_p_batched,
+                    logits_zero_at_p_batched,
+                    logits_approx_at_p_batched,
+                    logits_baseline_at_p_batched,
+                    logits_shuffled_at_p_batched,
+                    logits_full_shuffled_at_p_batched,
+                    logit_lens_logits_from_A_i,
+                    zero_activation,
+                    prev_token_ids_tensor,
+                    base_gen_tokens,
+                    base_gen_tokens_hard,
+                    base_gen_tokens_hard_no_map,
+                    results_from_compute,
+                    computed_tensors,
+                    analysis_preds_dict,
+                    analysis_metrics_for_print,
+                    sample_losses,
+                    kl_divergences_for_print_section,
+                    gen_tokens,
+                    decoder_preds_by_rank,
+                    base_preds_by_rank,
+                    base_preds_by_rank_hard,
+                    base_preds_by_rank_hard_no_map,
+                    context_data_rows,
+                ]
             )
             if A_prime_i is not None:
                 del A_prime_i
