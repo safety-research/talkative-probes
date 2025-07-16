@@ -32,3 +32,4 @@ sae_cache
 *.pth
 *.pt
 pgn_results
+consistency-lens
