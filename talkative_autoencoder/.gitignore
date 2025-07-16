@@ -8,5 +8,3 @@ outputs/*
 /.venv/
 transformers
 transformers/*
-tuned-lens
-tuned-lens/*

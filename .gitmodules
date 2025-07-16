@@ -13,3 +13,6 @@
 [submodule "talkative_autoencoder/agent-guides"]
 	path = talkative_autoencoder/agent-guides
 	url = https://github.com/tokenbender/agent-guides
+[submodule "talkative_autoencoder/talkative_autoencoder/tuned-lens"]
+	path = talkative_autoencoder/talkative_autoencoder/tuned-lens
+	url = https://github.com/AlignmentResearch/tuned-lens
