@@ -199,10 +199,10 @@ verbose_samples:
 do_kl_computation: false
 do_lm_computation: false
 
-# WandB configuration
-# wandb:
-#   project: "consistency-lens-gemma3-27b"
-#   mode: "online"
+WandB configuration
+wandb:
+  project: "consistency-lens-gemma3-27b"
+  mode: "online"
 
 # dataset:
 #   # ... existing dataset configs like train_split, val_split ...

@@ -522,6 +522,9 @@ def process_and_print_verbose_batch_samples(
         device_swap_needed = hasattr(encbase, "base") and encbase.base != orig.model and "cuda" in str(device)
         do_kl_computation = not device_swap_needed
         do_lm_computation = not device_swap_needed
+        if device_swap_needed:
+            print("Disabling device swapping for speed, too slow on 27B model.")
+            device_swap_needed = False
 
         if random_from_batch:
             num_samples = min(num_samples, batch["A"].size(0))
