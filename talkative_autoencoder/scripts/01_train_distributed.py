@@ -532,6 +532,7 @@ def distributed_train_step(
         # )
     return metrics
 
+
 def count_params(model, is_human: bool = False):
     params: int = sum(p.numel() for p in model.parameters() if p.requires_grad)
     return f"{params / 1e6:.2f}M" if is_human else params
@@ -558,7 +559,9 @@ def setup_distributed_models(
     log.info(f"Using distributed strategy: {strategy}")
     offload_during_compilation = False
     if count_params(decoder, is_human=False) > 20_000_000:
-        log.info(f'decoder has more than 20B params {count_params(decoder, is_human=True)}, offloading orig_model to CPU for compilation')
+        log.info(
+            f"decoder has more than 20B params {count_params(decoder, is_human=True)}, offloading orig_model to CPU for compilation"
+        )
         offload_during_compilation = True
         orig_model.to("cpu")
 
@@ -664,8 +667,8 @@ def setup_distributed_models(
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        decoder.to(device)
-        encoder.to(device)
+    decoder.to(device)
+    encoder.to(device)
 
     if not compile_models:
         log.info("Not compiling models.")
@@ -832,6 +835,7 @@ def generate_verbose_samples_from_batch(
                         resample_ablation=config.get("resample_ablation", True),
                         comparison_tuned_lens=comparison_tuned_lens,  # Pass it down
                         do_soft_token_embeds=config.get("do_soft_token_embeds", True),
+                        log=log,
                     )
 
                 # Log to wandb
