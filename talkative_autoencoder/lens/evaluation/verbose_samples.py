@@ -1067,7 +1067,8 @@ def process_and_print_verbose_batch_samples(
                 list(displayed_prefix_tokens),
                 list(shifted_preds_for_display),
             ]
-            del preds_prefix_full_single_top  if preds_prefix_full_single_top is not None else None # No longer needed
+            if preds_prefix_full_single_top is not None:
+                del preds_prefix_full_single_top  # No longer needed
             relative_p = p - display_start_idx
             if 0 <= relative_p < len(displayed_prefix_tokens):
                 context_data_rows[0][relative_p] = f"[{context_data_rows[0][relative_p]}]P"
