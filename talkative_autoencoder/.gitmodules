@@ -1,3 +1,0 @@
-[submodule "talkative_autoencoder/agent-guides"]
-	path = talkative_autoencoder/agent-guides
-	url = https://github.com/tokenbender/agent-guides
