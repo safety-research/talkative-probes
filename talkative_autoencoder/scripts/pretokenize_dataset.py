@@ -67,7 +67,7 @@ def do_pretokenize(cfg: DictConfig):
     num_proc = pretokenize_cfg.get("num_proc", 4)
     batch_size = pretokenize_cfg.get("batch_size", 1000)
     force = pretokenize_cfg.get("force", False)
-    
+    name_of_sub_dataset = pretokenize_cfg.get("name_of_sub_dataset", None)
     # Output directory - now includes seq_len for versioning
     if output_dir_cfg:
         output_dir = Path(output_dir_cfg)
@@ -104,7 +104,7 @@ def do_pretokenize(cfg: DictConfig):
         log.info(f"No separate validation split specified. Creating one from '{train_split_name}'.")
         
         try:
-            full_train_dataset = load_dataset(dataset_name, split=train_split_name, trust_remote_code=True, num_proc=num_proc)
+            full_train_dataset = load_dataset(dataset_name, name = name_of_sub_dataset, split=train_split_name, trust_remote_code=True, num_proc=num_proc)
         except Exception as e:
             log.error(f"Failed to load '{train_split_name}' split for '{dataset_name}': {e}")
             raise

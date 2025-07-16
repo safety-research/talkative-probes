@@ -225,6 +225,7 @@ pretokenize:
   batch_size: 10000
   force: true
   run_before_training: false
+  name_of_sub_dataset: null
 
 activation_dumper:
   num_samples: -1  # -1 means process entire dataset
