@@ -199,7 +199,7 @@ verbose_samples:
 do_kl_computation: false
 do_lm_computation: false
 
-WandB configuration
+#WandB configuration
 wandb:
   project: "consistency-lens-gemma3-27b"
   mode: "online"
