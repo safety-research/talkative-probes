@@ -2308,7 +2308,7 @@ class LensAnalyzer:
                     generated_portion = tokenizer.decode(generated[i][-num_tokens:], skip_special_tokens=False)
                     generated_portion = generated_portion.replace(chr(10), "\\n").replace(chr(13), "\\r")
                     print(f"{i}: {generated_portion}")
-                if return_full_text == "full_and_completion":
+                elif return_full_text == "full_and_completion":
                     if is_chat:
                         full_text = tokenizer.decode(generated[i], skip_special_tokens=skip_special_tokens_for_decode)
                     else:

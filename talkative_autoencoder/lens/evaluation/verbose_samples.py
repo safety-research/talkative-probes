@@ -91,6 +91,8 @@ def generate_autoregressive_continuation(
 def get_top_n_tokens(logits_tensor_slice: torch.Tensor, tok: PreTrainedTokenizerBase, top_n: int) -> List[str]:
     """Decodes the top N tokens from a logits slice."""
     # Ensure logits_tensor_slice is 1D
+    if logits_tensor_slice is None:
+        return ["N/A"] * top_n
     if logits_tensor_slice.dim() > 1:
         logits_tensor_slice = logits_tensor_slice.squeeze()
     if logits_tensor_slice.dim() == 0:  # Should not happen if vocab_size > 0
@@ -913,7 +915,9 @@ def process_and_print_verbose_batch_samples(
             raw_prefix_ids = input_ids_seq[0].tolist()
 
             top_n_natural_base_preds_for_p_plus_1: List[str]
-            natural_base_logits_at_p = logits_natural_at_p_batched[0]
+            natural_base_logits_at_p = (
+                logits_natural_at_p_batched[0] if logits_natural_at_p_batched is not None else None
+            )
             top_n_natural_base_preds_for_p_plus_1 = get_top_n_tokens(natural_base_logits_at_p, tok, top_n_analysis)
 
             del logits_shuffled_all_pos, logits_full_shuffled_all_pos
@@ -989,37 +993,53 @@ def process_and_print_verbose_batch_samples(
             )
 
             # base_gen_single = dec.generate_soft_kv_cached_nondiff(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, use_projection=True,return_logits=True ).detach().clone()
-            base_token_ids_full = base_gen_single.hard_token_ids[0].cpu().tolist()
-            base_gen_tokens = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full]
-            base_preds_by_rank = build_topk_preds_by_rank(
-                base_gen_single.raw_lm_logits.cpu(), len(base_gen_tokens), k_for_decoder_preds, tok
-            )
-            # Clean up generation results
-            del base_gen_single
+            if base_gen_single is not None:
+                base_token_ids_full = base_gen_single.hard_token_ids[0].cpu().tolist()
+                base_gen_tokens = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full]
+                base_preds_by_rank = build_topk_preds_by_rank(
+                    base_gen_single.raw_lm_logits.cpu(), len(base_gen_tokens), k_for_decoder_preds, tok
+                )
+                # Clean up generation results
+                del base_gen_single
+            else:
+                base_token_ids_full = None
+                base_gen_tokens = None
+                base_preds_by_rank = None
 
             # left_ids, right_ids, _, _ = dec.tokenize_and_embed_prompt(cfg["decoder_prompt"], tok)
             # base_gen_single_hard = dec.generate_soft_kv_cached_nondiff(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, hard_left_emb=left_ids, hard_right_emb=right_ids, use_projection=True,return_logits=True).detach().clone()
-            base_token_ids_full_hard = base_gen_single_hard.hard_token_ids[0].cpu().tolist()
-            base_gen_tokens_hard = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full_hard]
-            base_preds_by_rank_hard = build_topk_preds_by_rank(
-                base_gen_single_hard.raw_lm_logits.cpu(), len(base_gen_tokens_hard), k_for_decoder_preds, tok
-            )
-            # # Clean up generation results
-            del base_gen_single_hard
+            if base_gen_single_hard is not None:
+                base_token_ids_full_hard = base_gen_single_hard.hard_token_ids[0].cpu().tolist()
+                base_gen_tokens_hard = [escape_newlines(tok.decode([tid])) for tid in base_token_ids_full_hard]
+                base_preds_by_rank_hard = build_topk_preds_by_rank(
+                    base_gen_single_hard.raw_lm_logits.cpu(), len(base_gen_tokens_hard), k_for_decoder_preds, tok
+                )
+                # # Clean up generation results
+                del base_gen_single_hard
+            else:
+                base_token_ids_full_hard = None
+                base_gen_tokens_hard = None
+                base_preds_by_rank_hard = None
 
             # base_gen_single_hard_no_map = dec.generate_soft_kv_cached_nondiff(A_i, max_length=cfg["t_text"], gumbel_tau=sch_args["tau"], override_model_base_and_out=orig, hard_left_emb=left_ids, hard_right_emb=right_ids, use_projection=False,return_logits=True).detach().clone()
-            base_token_ids_full_hard_no_map = base_gen_single_hard_no_map.hard_token_ids[0].cpu().tolist()
-            base_gen_tokens_hard_no_map = [
-                escape_newlines(tok.decode([tid])) for tid in base_token_ids_full_hard_no_map
-            ]
-            base_preds_by_rank_hard_no_map = build_topk_preds_by_rank(
-                base_gen_single_hard_no_map.raw_lm_logits.cpu(),
-                len(base_gen_tokens_hard_no_map),
-                k_for_decoder_preds,
-                tok,
-            )
+            if base_gen_single_hard_no_map is not None:
+                base_token_ids_full_hard_no_map = base_gen_single_hard_no_map.hard_token_ids[0].cpu().tolist()
+                base_gen_tokens_hard_no_map = [
+                    escape_newlines(tok.decode([tid])) for tid in base_token_ids_full_hard_no_map
+                ]
+                base_preds_by_rank_hard_no_map = build_topk_preds_by_rank(
+                    base_gen_single_hard_no_map.raw_lm_logits.cpu(),
+                    len(base_gen_tokens_hard_no_map),
+                    k_for_decoder_preds,
+                    tok,
+                )
+                del base_gen_single_hard_no_map
+            else:
+                base_token_ids_full_hard_no_map = None
+                base_gen_tokens_hard_no_map = None
+                base_preds_by_rank_hard_no_map = None
+
             # # Clean up generation results
-            del base_gen_single_hard_no_map
 
             context_display_range = f"{display_start_idx}-{display_end_idx - 1}" if displayed_positions else "empty"
             context_labels = ["Position:", "Token:", "BaseLM (shift):"]
