@@ -635,6 +635,7 @@ def initialize_consistency_lens_projection(
                 bscheck = main_run_config["dataset"]["on_the_fly"]["generation_batch_size"]
             else:
                 bscheck = main_run_config["activation_dumper"]["batch_size"]
+            bscheck = min(bscheck, 48)
             attention_mask = inputs[:bscheck] != tokenizer.pad_token_id
             outputs = orig_model.model(
                 input_ids=inputs[:bscheck], attention_mask=attention_mask, output_hidden_states=True

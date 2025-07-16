@@ -3838,8 +3838,14 @@ def main(cfg: DictConfig) -> None:
                 is_distinct_orig_model_val = (
                     config["orig_model_name"] and config["orig_model_name"] != config["model_name"]
                 )
-                if not is_distinct_orig_model_val:
+                if not is_distinct_orig_model_val and decoder.config.projection_init_method != "scale":
                     log.info("Checking layer indexing for orig_model")
+                    if decoder.device != "cpu":
+                        log.info(f"Moving decoder to device {'cpu'}")
+                        decoder.to("cpu")
+                    if encoder.device != "cpu":
+                        log.info(f"Moving encoder to device {'cpu'}")
+                        encoder.to("cpu")
                     if orig_model.model.device != device:
                         log.info(f"Moving orig_model to device {device}")
                         orig_model.model.to(device)
@@ -3847,7 +3853,13 @@ def main(cfg: DictConfig) -> None:
                         bscheck = config["dataset"]["on_the_fly"]["generation_batch_size"]
                     else:
                         bscheck = config["activation_dumper"]["batch_size"]
+                    bscheck = min(bscheck, 10)
+                    log.info(f"Checking layer indexing for orig_model with batch size {bscheck}")
                     check_layer_indexing(orig_model, batch["input_ids_A"][:bscheck], device, nlayers=True)
+                    if encoder.device != device:
+                        encoder.to(device)
+                    if decoder.device != device:
+                        decoder.to(device)
                 #     #do_all_initial_validation(batch, orig_model, tokenizer, device, log, activation_dir)
                 #     log.info("Moving orig_model back to CPU after initial validation (weights are shared).")
                 #     orig_model.to('cpu')
