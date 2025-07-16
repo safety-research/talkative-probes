@@ -862,6 +862,10 @@ def process_and_print_verbose_batch_samples(
                 top_n_train_ablation_tokens = ["N/A"] * top_n_analysis
                 top_n_baseline_tokens = ["N/A"] * top_n_analysis
                 top_n_shuffled_tokens = ["N/A"] * top_n_analysis
+                top_n_full_shuffled_tokens = ["N/A"] * top_n_analysis
+                top_n_hard_prompt_tokens = ["N/A"] * top_n_analysis
+                top_n_logit_lens_tokens = ["N/A"] * top_n_analysis
+                top_n_tuned_lens_tokens = ["N/A"] * top_n_analysis
 
             # --- TunedLens predictions (can be done with orig on GPU) ---
             top_n_tuned_lens_tokens = ["N/A"] * top_n_analysis
