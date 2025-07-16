@@ -11,6 +11,7 @@ from lens.models.encoder import Encoder
 from lens.models.orig import OrigWrapper
 from lens.training.loop import compute_kl_divergence_robust
 from transformers import PreTrainedTokenizerBase
+import logging
 
 if TYPE_CHECKING:
     from tuned_lens import TunedLens
@@ -524,7 +525,10 @@ def process_and_print_verbose_batch_samples(
         do_lm_computation = not device_swap_needed
         if device_swap_needed:
             print("Disabling device swapping for speed, too slow on 27B model.")
-            device_swap_needed = False
+            device_swap_neded = False
+            do_orig_model_computations = False
+        else:
+            do_orig_model_computations = True
 
         if random_from_batch:
             num_samples = min(num_samples, batch["A"].size(0))
