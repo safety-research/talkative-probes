@@ -532,6 +532,10 @@ def distributed_train_step(
         # )
     return metrics
 
+def count_params(model, is_human: bool = False):
+    params: int = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return f"{params / 1e6:.2f}M" if is_human else params
+
 
 def setup_distributed_models(
     decoder,
@@ -552,6 +556,11 @@ def setup_distributed_models(
     """
     strategy = config.get("distributed_strategy", "ddp").lower()
     log.info(f"Using distributed strategy: {strategy}")
+    offload_during_compilation = False
+    if count_params(decoder, is_human=False) > 20_000_000:
+        log.info(f'decoder has more than 20B params {count_params(decoder, is_human=True)}, offloading orig_model to CPU for compilation')
+        offload_during_compilation = True
+        orig_model.to("cpu")
 
     if world_size > 1:
         decoder = decoder.to(device)
@@ -634,23 +643,29 @@ def setup_distributed_models(
 
     # Now, handle the orig_model separately to manage memory.
     # It must be on the GPU for compilation.
+    if offload_during_compilation:
+        decoder.to("cpu")
+        encoder.to("cpu")
     orig_model.to(device)
+
     if compile_models:
         log.info("Compiling OrigWrapper model...")
         orig_model.model = torch.compile(orig_model.model)
         log.info("✓ OrigWrapper compiled.")
 
-    # After potential compilation, move orig_model to CPU if its weights are shared
+    # After potential compilation, move orig_model to CPU if its weights are not shared
     # and it is not a distinct model, to conserve GPU memory.
     is_distinct_orig_model = config.get("orig_model_name") and config.get("orig_model_name") != config["model_name"]
 
     if is_distinct_orig_model:
         if log and is_main():
-            log.info("Moving orig_model to CPU to conserve GPU memory for training (weights are shared).")
+            log.info("Moving orig_model to CPU to conserve GPU memory for training (weights are not shared).")
         orig_model.to("cpu")
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        decoder.to(device)
+        encoder.to(device)
 
     if not compile_models:
         log.info("Not compiling models.")
