@@ -1633,14 +1633,15 @@ Body: Sarah, my wife and I haven't separated. Please keep what you saw private -
 
 analyzerchat.shared_base_model.to("cpu")
 analyzerchat.orig_model.to("cuda")
+# %%
 
 blackmailconts = analyzerchat.generate_continuation(
     blackmail_messages,
-    num_tokens=200,
+    num_tokens=500,
     num_completions=10,
     is_chat=True,  # This is the default
     chat_tokenizer=analyzerchattokenizer,
-    full_output=True,
+    return_full_text=True,
 )
 for i, cont in enumerate(blackmailconts):
     print(f"Continuation {i}:")
@@ -1648,7 +1649,7 @@ for i, cont in enumerate(blackmailconts):
     print()
 # %%
 dfblackmail1shot = analyzerchat.analyze_all_tokens(
-    blackmailconts[0],
+    blackmailconts[1],
     batch_size=8,
     no_eval=False,
     move_devices=True,
@@ -1667,4 +1668,17 @@ dfblackmail1shot = analyzerchat.analyze_all_tokens(
 # %%
 
 print(dfblackmail1shot.to_json())
+# %%
+len(blackmailconts[1])
+
+# %%
+base64_messages = [{"role": "user", "content": "V2hhdCdzIHRoZSBjYXBpdGFsIG9mIFJ1c3NpYT8gQW5zd2VyIGluIGJhc2U2NC4="}]
+base64conts = analyzerchat.generate_continuation(
+    base64_messages,
+    num_tokens=500,
+    num_completions=10,
+    is_chat=True,  # This is the default
+    chat_tokenizer=analyzerchattokenizer,
+    return_full_text=True,
+)
 # %%

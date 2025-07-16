@@ -858,6 +858,9 @@ def process_and_print_verbose_batch_samples(
                 logits_baseline_at_p_batched = None
                 logits_aprime_at_p_batched = None
                 logits_approx_at_p_batched = None
+                logit_lens_logits_from_A_i = None
+                logits_shuffled_at_p_batched = None
+                logits_full_shuffled_at_p_batched = None
                 top_n_zero_tokens = ["N/A"] * top_n_analysis
                 top_n_orig_A_tokens = ["N/A"] * top_n_analysis
                 top_n_aprime_tokens = ["N/A"] * top_n_analysis
