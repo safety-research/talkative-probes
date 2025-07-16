@@ -527,7 +527,7 @@ def process_and_print_verbose_batch_samples(
         do_lm_computation = not device_swap_needed
         if device_swap_needed:
             print("Disabling device swapping for speed, too slow on 27B model.")
-            device_swap_neded = False
+            device_swap_needed = False
             do_orig_model_computations = False
         else:
             do_orig_model_computations = True
@@ -866,6 +866,7 @@ def process_and_print_verbose_batch_samples(
                 top_n_hard_prompt_tokens = ["N/A"] * top_n_analysis
                 top_n_logit_lens_tokens = ["N/A"] * top_n_analysis
                 top_n_tuned_lens_tokens = ["N/A"] * top_n_analysis
+                preds_prefix_full_single_top = ["N/A"] * input_ids_seq.size(-1)
 
             # --- TunedLens predictions (can be done with orig on GPU) ---
             top_n_tuned_lens_tokens = ["N/A"] * top_n_analysis
@@ -1066,7 +1067,7 @@ def process_and_print_verbose_batch_samples(
                 list(displayed_prefix_tokens),
                 list(shifted_preds_for_display),
             ]
-            del preds_prefix_full_single_top  # No longer needed
+            del preds_prefix_full_single_top  if preds_prefix_full_single_top is not None else None # No longer needed
             relative_p = p - display_start_idx
             if 0 <= relative_p < len(displayed_prefix_tokens):
                 context_data_rows[0][relative_p] = f"[{context_data_rows[0][relative_p]}]P"
