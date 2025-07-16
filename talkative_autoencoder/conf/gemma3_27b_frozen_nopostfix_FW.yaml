@@ -215,3 +215,6 @@ dataset:
   validation_samples_override: 50000
   train_split: "train"
   val_split: "validation"
+
+pretokenize:  
+  name_of_sub_dataset=sample-10BT
