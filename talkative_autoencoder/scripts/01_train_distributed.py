@@ -534,7 +534,7 @@ def distributed_train_step(
 
 
 def count_params(model, is_human: bool = False):
-    params: int = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    params: int = sum(p.numel() for p in model.parameters())
     return f"{params / 1e6:.2f}M" if is_human else params
 
 
@@ -558,7 +558,7 @@ def setup_distributed_models(
     strategy = config.get("distributed_strategy", "ddp").lower()
     log.info(f"Using distributed strategy: {strategy}")
     offload_during_compilation = False
-    if count_params(decoder, is_human=False) > 20_000_000:
+    if count_params(decoder, is_human=False) > 20_000_000_000:
         log.info(
             f"decoder has more than 20B params {count_params(decoder, is_human=True)}, offloading orig_model to CPU for compilation"
         )

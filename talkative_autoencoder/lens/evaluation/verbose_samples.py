@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import torch
@@ -11,7 +12,6 @@ from lens.models.encoder import Encoder
 from lens.models.orig import OrigWrapper
 from lens.training.loop import compute_kl_divergence_robust
 from transformers import PreTrainedTokenizerBase
-import logging
 
 if TYPE_CHECKING:
     from tuned_lens import TunedLens
@@ -852,6 +852,7 @@ def process_and_print_verbose_batch_samples(
                 logits_tuned_lens_at_p_batched = None
                 logits_zero_at_p_batched = None
                 logits_orig_at_p_batched = None
+                logits_natural_at_p_batched = None
 
             # --- TunedLens predictions (can be done with orig on GPU) ---
             top_n_tuned_lens_tokens = ["N/A"] * top_n_analysis
