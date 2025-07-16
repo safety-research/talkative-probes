@@ -692,149 +692,162 @@ def process_and_print_verbose_batch_samples(
             # ==================================================================
             # STAGE 2: Orig model computations (on GPU if swapped)
             # ==================================================================
+            if do_orig_model_computations:
+                A_i_cast = A_i.to(orig.model.lm_head.weight.dtype)
+                logit_lens_logits_from_A_i = orig.model.lm_head(A_i_cast)
+                top_n_logit_lens_tokens = get_top_n_tokens(logit_lens_logits_from_A_i.squeeze(0), tok, top_n_analysis)
+                del A_i_cast
 
-            A_i_cast = A_i.to(orig.model.lm_head.weight.dtype)
-            logit_lens_logits_from_A_i = orig.model.lm_head(A_i_cast)
-            top_n_logit_lens_tokens = get_top_n_tokens(logit_lens_logits_from_A_i.squeeze(0), tok, top_n_analysis)
-            del A_i_cast
+                with torch.no_grad():
+                    logits_natural_all_pos = orig.model(input_ids=input_ids_seq).logits.detach().clone()
+                    logits_natural_at_p_batched = logits_natural_all_pos[:, p]
 
-            with torch.no_grad():
-                logits_natural_all_pos = orig.model(input_ids=input_ids_seq).logits.detach().clone()
-                logits_natural_at_p_batched = logits_natural_all_pos[:, p]
+                preds_prefix_full_single_top = [
+                    escape_newlines(tok.decode([logits_natural_all_pos[0, t_idx].argmax().item()]))
+                    if t_idx < logits_natural_all_pos.size(1)
+                    else "N/A"
+                    for t_idx in range(input_ids_seq.size(-1))
+                ]
 
-            preds_prefix_full_single_top = [
-                escape_newlines(tok.decode([logits_natural_all_pos[0, t_idx].argmax().item()]))
-                if t_idx < logits_natural_all_pos.size(1)
-                else "N/A"
-                for t_idx in range(input_ids_seq.size(-1))
-            ]
-
-            zero_activation = torch.zeros_like(A_i)
-            logits_zero_at_p_batched = (
-                orig.forward_with_replacement(input_ids_seq, zero_activation, l, p).logits[:, p].detach().clone()
-            )
-            top_n_zero_tokens = get_top_n_tokens(logits_zero_at_p_batched.squeeze(0), tok, top_n_analysis)
-
-            if logits_orig_at_p_batched is not None:
-                top_n_orig_A_tokens = get_top_n_tokens(logits_orig_at_p_batched.squeeze(0), tok, top_n_analysis)
-            else:
-                top_n_orig_A_tokens = ["N/A (orig not avail)"] * top_n_analysis
-
-            top_n_aprime_tokens = ["N/A (A_prime not avail)"] * top_n_analysis
-            logits_aprime_at_p_batched = None
-            if A_prime_i is not None:
-                logits_aprime_at_p_batched = (
-                    orig.forward_with_replacement(input_ids_seq, A_prime_i, l, p).logits[:, p].detach().clone()
+                zero_activation = torch.zeros_like(A_i)
+                logits_zero_at_p_batched = (
+                    orig.forward_with_replacement(input_ids_seq, zero_activation, l, p).logits[:, p].detach().clone()
                 )
-                top_n_aprime_tokens = get_top_n_tokens(logits_aprime_at_p_batched.squeeze(0), tok, top_n_analysis)
+                top_n_zero_tokens = get_top_n_tokens(logits_zero_at_p_batched.squeeze(0), tok, top_n_analysis)
 
-            logits_approx_at_p_batched = (
-                orig.forward_with_replacement(input_ids_seq, A_hat_single.to(device), l, p)
-                .logits[:, p]
-                .detach()
-                .clone()
-            )
-            top_n_lens_recon_tokens = get_top_n_tokens(logits_approx_at_p_batched.squeeze(0), tok, top_n_analysis)
+                if logits_orig_at_p_batched is not None:
+                    top_n_orig_A_tokens = get_top_n_tokens(logits_orig_at_p_batched.squeeze(0), tok, top_n_analysis)
+                else:
+                    top_n_orig_A_tokens = ["N/A (orig not avail)"] * top_n_analysis
 
-            top_n_train_ablation_tokens = ["N/A (A_train_kl not avail)"] * top_n_analysis
-            if A_train_i_for_kl is not None and logits_train_at_p_batched is not None:
-                top_n_train_ablation_tokens = get_top_n_tokens(
-                    logits_train_at_p_batched.squeeze(0), tok, top_n_analysis
-                )
+                top_n_aprime_tokens = ["N/A (A_prime not avail)"] * top_n_analysis
+                logits_aprime_at_p_batched = None
+                if A_prime_i is not None:
+                    logits_aprime_at_p_batched = (
+                        orig.forward_with_replacement(input_ids_seq, A_prime_i, l, p).logits[:, p].detach().clone()
+                    )
+                    top_n_aprime_tokens = get_top_n_tokens(logits_aprime_at_p_batched.squeeze(0), tok, top_n_analysis)
 
-            logits_baseline_at_p_batched = (
-                orig.forward_with_replacement(input_ids_seq, A_hat_baseline.to(device), l, p)
-                .logits[:, p]
-                .detach()
-                .clone()
-            )
-            top_n_baseline_tokens = get_top_n_tokens(logits_baseline_at_p_batched.squeeze(0), tok, top_n_analysis)
-
-            logits_shuffled_all_pos = (
-                orig.forward_with_replacement(input_ids_seq, A_hat_shuffled.to(device), l, p).logits.detach().clone()
-            )
-            logits_shuffled_at_p_batched = logits_shuffled_all_pos[:, p]
-            top_n_shuffled_tokens = get_top_n_tokens(logits_shuffled_at_p_batched.squeeze(0), tok, top_n_analysis)
-
-            logits_full_shuffled_all_pos = (
-                orig.forward_with_replacement(input_ids_seq, A_hat_full_shuffled.to(device), l, p)
-                .logits.detach()
-                .clone()
-            )
-            logits_full_shuffled_at_p_batched = logits_full_shuffled_all_pos[:, p]
-            top_n_full_shuffled_tokens = get_top_n_tokens(
-                logits_full_shuffled_at_p_batched.squeeze(0), tok, top_n_analysis
-            )
-
-            top_n_hard_prompt_tokens = ["N/A (no prompt)"] * top_n_analysis
-            logits_hard_prompt_at_p_batched = None
-            if A_hat_hard_prompt is not None:
-                logits_hard_prompt_at_p_batched = (
-                    orig.forward_with_replacement(input_ids_seq, A_hat_hard_prompt.to(device), l, p)
+                logits_approx_at_p_batched = (
+                    orig.forward_with_replacement(input_ids_seq, A_hat_single.to(device), l, p)
                     .logits[:, p]
                     .detach()
                     .clone()
                 )
-                top_n_hard_prompt_tokens = get_top_n_tokens(
-                    logits_hard_prompt_at_p_batched.squeeze(0), tok, top_n_analysis
+                top_n_lens_recon_tokens = get_top_n_tokens(logits_approx_at_p_batched.squeeze(0), tok, top_n_analysis)
+
+                top_n_train_ablation_tokens = ["N/A (A_train_kl not avail)"] * top_n_analysis
+                if A_train_i_for_kl is not None and logits_train_at_p_batched is not None:
+                    top_n_train_ablation_tokens = get_top_n_tokens(
+                        logits_train_at_p_batched.squeeze(0), tok, top_n_analysis
+                    )
+
+                logits_baseline_at_p_batched = (
+                    orig.forward_with_replacement(input_ids_seq, A_hat_baseline.to(device), l, p)
+                    .logits[:, p]
+                    .detach()
+                    .clone()
                 )
-            if dec.config.base_model == True:
-                override = orig
+                top_n_baseline_tokens = get_top_n_tokens(logits_baseline_at_p_batched.squeeze(0), tok, top_n_analysis)
+
+                logits_shuffled_all_pos = (
+                    orig.forward_with_replacement(input_ids_seq, A_hat_shuffled.to(device), l, p)
+                    .logits.detach()
+                    .clone()
+                )
+                logits_shuffled_at_p_batched = logits_shuffled_all_pos[:, p]
+                top_n_shuffled_tokens = get_top_n_tokens(logits_shuffled_at_p_batched.squeeze(0), tok, top_n_analysis)
+
+                logits_full_shuffled_all_pos = (
+                    orig.forward_with_replacement(input_ids_seq, A_hat_full_shuffled.to(device), l, p)
+                    .logits.detach()
+                    .clone()
+                )
+                logits_full_shuffled_at_p_batched = logits_full_shuffled_all_pos[:, p]
+                top_n_full_shuffled_tokens = get_top_n_tokens(
+                    logits_full_shuffled_at_p_batched.squeeze(0), tok, top_n_analysis
+                )
+
+                top_n_hard_prompt_tokens = ["N/A (no prompt)"] * top_n_analysis
+                logits_hard_prompt_at_p_batched = None
+                if A_hat_hard_prompt is not None:
+                    logits_hard_prompt_at_p_batched = (
+                        orig.forward_with_replacement(input_ids_seq, A_hat_hard_prompt.to(device), l, p)
+                        .logits[:, p]
+                        .detach()
+                        .clone()
+                    )
+                    top_n_hard_prompt_tokens = get_top_n_tokens(
+                        logits_hard_prompt_at_p_batched.squeeze(0), tok, top_n_analysis
+                    )
+                if dec.config.base_model == True:
+                    override = orig
+                else:
+                    override = None
+                if device_swap_needed and dec.config.base_model != True:
+                    log.info("Verbose samples: swapping device")
+                    orig.model.to("cpu")
+                    dec.to(device)
+                    enc.to(device)
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    log.info("Verbose samples: swapped device")
+
+                with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+                    base_gen_single = (
+                        dec.generate_soft_kv_cached_nondiff(
+                            A_i,
+                            max_length=cfg["t_text"],
+                            gumbel_tau=sch_args["tau"],
+                            override_model_base_and_out=override,
+                            use_projection=True,
+                            return_logits=True,
+                        )
+                        .detach()
+                        .clone()
+                    )
+
+                left_ids_hard, right_ids_hard, _, _ = dec.tokenize_and_embed_prompt(cfg["decoder_prompt"], tok)
+                with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+                    base_gen_single_hard = (
+                        dec.generate_soft_kv_cached_nondiff(
+                            A_i,
+                            max_length=cfg["t_text"],
+                            gumbel_tau=sch_args["tau"],
+                            override_model_base_and_out=override,
+                            hard_left_emb=left_ids_hard,
+                            hard_right_emb=right_ids_hard,
+                            use_projection=True,
+                            return_logits=True,
+                        )
+                        .detach()
+                        .clone()
+                    )
+                    base_gen_single_hard_no_map = (
+                        dec.generate_soft_kv_cached_nondiff(
+                            A_i,
+                            max_length=cfg["t_text"],
+                            gumbel_tau=sch_args["tau"],
+                            override_model_base_and_out=override,
+                            hard_left_emb=left_ids_hard,
+                            hard_right_emb=right_ids_hard,
+                            use_projection=False,
+                            return_logits=True,
+                        )
+                        .detach()
+                        .clone()
+                    )
             else:
-                override = None
-            if device_swap_needed and dec.config.base_model != True:
-                log.info("Verbose samples: swapping device")
-                orig.model.to("cpu")
-                dec.to(device)
-                enc.to(device)
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                log.info("Verbose samples: swapped device")
-
-            with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-                base_gen_single = (
-                    dec.generate_soft_kv_cached_nondiff(
-                        A_i,
-                        max_length=cfg["t_text"],
-                        gumbel_tau=sch_args["tau"],
-                        override_model_base_and_out=override,
-                        use_projection=True,
-                        return_logits=True,
-                    )
-                    .detach()
-                    .clone()
-                )
-
-            left_ids_hard, right_ids_hard, _, _ = dec.tokenize_and_embed_prompt(cfg["decoder_prompt"], tok)
-            with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-                base_gen_single_hard = (
-                    dec.generate_soft_kv_cached_nondiff(
-                        A_i,
-                        max_length=cfg["t_text"],
-                        gumbel_tau=sch_args["tau"],
-                        override_model_base_and_out=override,
-                        hard_left_emb=left_ids_hard,
-                        hard_right_emb=right_ids_hard,
-                        use_projection=True,
-                        return_logits=True,
-                    )
-                    .detach()
-                    .clone()
-                )
-                base_gen_single_hard_no_map = (
-                    dec.generate_soft_kv_cached_nondiff(
-                        A_i,
-                        max_length=cfg["t_text"],
-                        gumbel_tau=sch_args["tau"],
-                        override_model_base_and_out=override,
-                        hard_left_emb=left_ids_hard,
-                        hard_right_emb=right_ids_hard,
-                        use_projection=False,
-                        return_logits=True,
-                    )
-                    .detach()
-                    .clone()
-                )
+                base_gen_single = None
+                base_gen_single_hard = None
+                base_gen_single_hard_no_map = None
+                base_gen_single_hard_for_enc = None
+                logits_shuffled_all_pos = None
+                logits_full_shuffled_all_pos = None
+                logits_hard_prompt_at_p_batched = None
+                logits_tuned_lens_at_p_batched = None
+                logits_zero_at_p_batched = None
+                logits_orig_at_p_batched = None
 
             # --- TunedLens predictions (can be done with orig on GPU) ---
             top_n_tuned_lens_tokens = ["N/A"] * top_n_analysis
