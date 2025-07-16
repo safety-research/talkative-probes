@@ -3,8 +3,8 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "consistency-lens"
-description = "Train and evaluate Consistency Lenses"
+name = "talkative-autoencoders"
+description = "Train and evaluate talkative autoencoders"
 requires-python = ">=3.10"
 version = "0.1.0"
 readme = "README.md"

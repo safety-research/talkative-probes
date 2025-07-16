@@ -1,4 +1,4 @@
-# Consistency Lens Environment Setup - Simplified for Multi-Node
+# Talkative proves autoencoder Environment Setup - Simplified for Multi-Node
 # 
 # This Makefile provides a simplified setup using uv's built-in environment management.
 # 
@@ -19,7 +19,7 @@ all: setup
 
 # Help target
 help:
-	@echo "Consistency Lens Simplified Setup"
+	@echo "Talkative Probes Autoencoder Setup"
 	@echo "  make              - Initial setup (install uv, create env, sync dependencies)"
 	@echo "  make sync-env     - Sync/update the environment with latest dependencies"
 	@echo "  make wandb-login  - Login to Weights & Biases (requires WANDB_API_KEY env var)"

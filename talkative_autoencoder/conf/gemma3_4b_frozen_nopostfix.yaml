@@ -7,17 +7,21 @@ defaults:
 
 # Training hyperparameters
 
-model_name: "google/gemma-2-2b"
-tokenizer_name: "google/gemma-2-2b"
+#model_name: "gghfez/gemma-3-27b-novision"
+#tokenizer_name: "gghfez/gemma-3-27b-novision"
+tokenizer_name: "google/gemma-3-4b-pt"
+model_name: "google/gemma-3-4b-pt"
+hf_dataset_name: "openwebtext"
 
-t_text: 8                       # Number of tokens to generate with the Decoder
+t_text: 8                      # Number of tokens to generate with the Decoder
+model_dtype: "bfloat16"
 # decoder_prompt: "<|endoftext|>Short explanation of <embed>. Language, topic, senitment, claims, speaker, points and message, style and details, etc:"
 # # encoder_prompt: "<|endoftext|>Text to summarise:<text>. Concise summary of the text, covering the language, topic, sentiment, claims, speaker, points, message, style and details, etc:" # this is an error
 # # lm_loss_natural_prefix: "<|endoftext|>Short explanation of something. Language, topic, sentiment, claims, speaker, points, message, style and details, etc:"  # Natural language prefix for base model in LM loss
 decoder_prompt: "<bos>Short explanation of <embed>. Language, topic, sentiment, claims, speaker, style, etc:"
 encoder_prompt: "<bos>Summary of the text, encapsulating the main points and message, style and details:<text>" # this is an error
 lm_loss_natural_prefix: "<bos>Short explanation of something. Language, topic, sentiment, claims, speaker, style, etc:"  # Natural language prefix for base model in LM loss
-layer_l: 20
+layer_l: 45
 
 
 skip_tokens_KL_GRPO: 3
@@ -38,7 +42,7 @@ trainable_components:
     use_gumbel_for_LMorig: false # shouldn't matter too much
     projection_init_method: "default"  # Options: "default", "tuned_lens_composition"
     projection_init_tl_comp_use_composed_bias: true
-    projection_init_tl_checkpoint: "/workspace/kitf/talkative-probes/consistency-lens/tuned-lens/my_lenses/google/gemma-2-2b"
+    projection_init_tl_checkpoint: "/workspace/kitf/talkative-probes/talkative_autoencoder/tuned-lens/my_lenses/google/gemma-3-4b-pt"
     subtract_add_pos_embeddings: false 
     extra_pos_embeddings: false
     clamp_entropy: ${clamp_entropy} # deprecated - see schedule
@@ -49,7 +53,7 @@ trainable_components:
     projection_layer:  true           # Train projection
     trainable_soft_prompt: true
     eye_init: true
-    output_layer: 20 # this is the 7th layer, as this is the idx
+    output_layer: 45 # this is the 7th layer, as this is the idx
     soft_prompt_init_text: ${encoder_prompt}
     use_dropout: false
     subtract_add_pos_embeddings: false 
@@ -64,7 +68,7 @@ activation_dumper:
   min_pos: 5
   seq_len: 256                        # Longer sequences for Gemma-2-2b
   use_hf_dataset: true
-  hf_dataset_name: "openwebtext"      # OpenWebText dataset
+  hf_dataset_name: "${hf_dataset_name}"      # OpenWebText dataset
   hf_split: "train"
   dataset_cache_dir: "./data/corpus/openwebtext"
   output_dir: "./data/openwebtext_train"
@@ -101,7 +105,7 @@ mse_weight: 0.000001
 # Entropy weight configuration
 entropy_weight: 0.0  # Static value (used if entropy_schedule is not defined)
 
-attn_implementation: "eager" # apparently need this, https://huggingface.co/google/gemma-2-27b-it/discussions/22
+attn_implementation: "eager" # apparently need this, https://huggingface.co/google/gemma-2-27b-it/discussions/22, also gemma3
 
 # Entropy weight schedule - dynamically adjust entropy bonus during training
 # Start with higher entropy to encourage diversity, then ramp down to avoid interfering with learning
@@ -166,8 +170,8 @@ verbose_samples:
   top_n_predictions: 5
   generate_continuation: true
   continuation_tokens: 50
-  compare_with_tuned_lens: true
-  tuned_lens_checkpoint_path_or_name: "/workspace/kitf/talkative-probes/consistency-lens/tuned-lens/my_lenses/google/gemma-2-2b"
+  compare_with_tuned_lens: false
+  tuned_lens_checkpoint_path_or_name: "/workspace/kitf/talkative-probes/talkative_autoencoder/tuned-lens/my_lenses/google/gemma-3-4b-pt"
 
 
 
@@ -176,20 +180,19 @@ do_lm_computation: false
 
 # WandB configuration
 wandb:
-  project: "consistency-lens-gemma2-2b"
+  project: "consistency-lens-gemma3-4b"
   mode: "online"
 
 dataset:
   # ... existing dataset configs like train_split, val_split ...
   on_the_fly:
-    pretokenized_path: "/workspace/kitf/talkative-probes/consistency-lens/data/pretokenized/openwebtext_seq256/" # 
-    generation_batch_size: 64
+    pretokenized_path: "/workspace/kitf/talkative-probes/talkative_autoencoder/data/pretokenized/google_gemma-3-27b-pt_openwebtext_seq256/"
+    generation_batch_size: 16
     layer_l: ${layer_l}
-    samples_per_regeneration_cycle: 100000
+    samples_per_regeneration_cycle: 10000
     training_initial_cache_size_per_rank: ${dataset.on_the_fly.samples_per_regeneration_cycle}
     max_val_samples: 50000 # this is used
 
   validation_samples_override: 50000
   train_split: "train"
   val_split: "validation"
-  use_mmap: true

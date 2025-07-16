@@ -11,14 +11,16 @@ model_name: "google/gemma-2-2b"
 tokenizer_name: "google/gemma-2-2b"
 
 t_text: 8                       # Number of tokens to generate with the Decoder
-skip_tokens_KL_GRPO: 3
 # decoder_prompt: "<|endoftext|>Short explanation of <embed>. Language, topic, senitment, claims, speaker, points and message, style and details, etc:"
 # # encoder_prompt: "<|endoftext|>Text to summarise:<text>. Concise summary of the text, covering the language, topic, sentiment, claims, speaker, points, message, style and details, etc:" # this is an error
 # # lm_loss_natural_prefix: "<|endoftext|>Short explanation of something. Language, topic, sentiment, claims, speaker, points, message, style and details, etc:"  # Natural language prefix for base model in LM loss
 decoder_prompt: "<bos>Short explanation of <embed>. Language, topic, sentiment, claims, speaker, style, etc:"
-encoder_prompt: "<bos>Summary of the text, encapsulating the main points and message, style and details:<text>\n\n" # this is an error
+encoder_prompt: "<bos>Summary of the text, encapsulating the main points and message, style and details:<text>" # this is an error
 lm_loss_natural_prefix: "<bos>Short explanation of something. Language, topic, sentiment, claims, speaker, style, etc:"  # Natural language prefix for base model in LM loss
 layer_l: 20
+
+
+skip_tokens_KL_GRPO: 3
 # Trainable components - FROZEN base model
 trainable_components:
   decoder:
@@ -36,7 +38,7 @@ trainable_components:
     use_gumbel_for_LMorig: false # shouldn't matter too much
     projection_init_method: "default"  # Options: "default", "tuned_lens_composition"
     projection_init_tl_comp_use_composed_bias: true
-    projection_init_tl_checkpoint: "/workspace/kitf/talkative-probes/consistency-lens/tuned-lens/my_lenses/google/gemma-2-2b"
+    projection_init_tl_checkpoint: "/workspace/kitf/talkative-probes/talkative_autoencoder/tuned-lens/my_lenses/google/gemma-2-2b"
     subtract_add_pos_embeddings: false 
     extra_pos_embeddings: false
     clamp_entropy: ${clamp_entropy} # deprecated - see schedule
@@ -53,7 +55,7 @@ trainable_components:
     subtract_add_pos_embeddings: false 
     extra_pos_embeddings: false    
     special_last_token_vector: true
-    add_current_token: false
+    add_current_token: true
 
 
 
@@ -92,7 +94,7 @@ gumbel_tau_schedule:
   constant_steps_before_decay: "512os"  # 31 optimizer steps = ~1000 micro-steps (with grad_accum=32)
   type: "cosine_decay_after_constant"
 
-lm_base_weight: 0.000
+lm_base_weight: 0.001
 kl_base_weight: 0
 mse_weight: 0.000001
 
@@ -165,7 +167,7 @@ verbose_samples:
   generate_continuation: true
   continuation_tokens: 50
   compare_with_tuned_lens: true
-  tuned_lens_checkpoint_path_or_name: "/workspace/kitf/talkative-probes/consistency-lens/tuned-lens/my_lenses/google/gemma-2-2b"
+  tuned_lens_checkpoint_path_or_name: "/workspace/kitf/talkative-probes/talkative_autoencoder/tuned-lens/my_lenses/google/gemma-2-2b"
 
 
 
@@ -180,7 +182,7 @@ wandb:
 dataset:
   # ... existing dataset configs like train_split, val_split ...
   on_the_fly:
-    pretokenized_path: "/workspace/kitf/talkative-probes/consistency-lens/data/pretokenized/openwebtext_seq256/" # 
+    pretokenized_path: "/workspace/kitf/talkative-probes/talkative_autoencoder/data/pretokenized/openwebtext_seq256/" # 
     generation_batch_size: 64
     layer_l: ${layer_l}
     samples_per_regeneration_cycle: 100000

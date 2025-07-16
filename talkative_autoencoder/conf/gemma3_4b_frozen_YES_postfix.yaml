@@ -13,13 +13,13 @@ tokenizer_name: "google/gemma-3-4b-pt"
 model_name: "google/gemma-3-4b-pt"
 hf_dataset_name: "openwebtext"
 
-t_text: 8                      # Number of tokens to generate with the Decoder
+t_text: 4                       # Number of tokens to generate with the Decoder
 model_dtype: "bfloat16"
 # decoder_prompt: "<|endoftext|>Short explanation of <embed>. Language, topic, senitment, claims, speaker, points and message, style and details, etc:"
 # # encoder_prompt: "<|endoftext|>Text to summarise:<text>. Concise summary of the text, covering the language, topic, sentiment, claims, speaker, points, message, style and details, etc:" # this is an error
 # # lm_loss_natural_prefix: "<|endoftext|>Short explanation of something. Language, topic, sentiment, claims, speaker, points, message, style and details, etc:"  # Natural language prefix for base model in LM loss
 decoder_prompt: "<bos>Short explanation of <embed>. Language, topic, sentiment, claims, speaker, style, etc:"
-encoder_prompt: "<bos>Summary of the text, encapsulating the main points and message, style and details:<text>" # this is an error
+encoder_prompt: "<bos>Summary of the text, encapsulating the main points and message, style and details:<text>\n\n" # this is an error
 lm_loss_natural_prefix: "<bos>Short explanation of something. Language, topic, sentiment, claims, speaker, style, etc:"  # Natural language prefix for base model in LM loss
 layer_l: 45
 
@@ -42,7 +42,7 @@ trainable_components:
     use_gumbel_for_LMorig: false # shouldn't matter too much
     projection_init_method: "default"  # Options: "default", "tuned_lens_composition"
     projection_init_tl_comp_use_composed_bias: true
-    projection_init_tl_checkpoint: "/workspace/kitf/talkative-probes/consistency-lens/tuned-lens/my_lenses/google/gemma-3-4b-pt"
+    projection_init_tl_checkpoint: "/workspace/kitf/talkative-probes/talkative_autoencoder/tuned-lens/my_lenses/google/gemma-3-4b-pt"
     subtract_add_pos_embeddings: false 
     extra_pos_embeddings: false
     clamp_entropy: ${clamp_entropy} # deprecated - see schedule
@@ -58,8 +58,8 @@ trainable_components:
     use_dropout: false
     subtract_add_pos_embeddings: false 
     extra_pos_embeddings: false    
-    special_last_token_vector: true
-    add_current_token: true
+    special_last_token_vector: false
+    add_current_token: false
 
 
 
@@ -171,7 +171,7 @@ verbose_samples:
   generate_continuation: true
   continuation_tokens: 50
   compare_with_tuned_lens: false
-  tuned_lens_checkpoint_path_or_name: "/workspace/kitf/talkative-probes/consistency-lens/tuned-lens/my_lenses/google/gemma-3-4b-pt"
+  tuned_lens_checkpoint_path_or_name: "/workspace/kitf/talkative-probes/talkative_autoencoder/tuned-lens/my_lenses/google/gemma-3-4b-pt"
 
 
 
@@ -186,7 +186,7 @@ wandb:
 dataset:
   # ... existing dataset configs like train_split, val_split ...
   on_the_fly:
-    pretokenized_path: "/workspace/kitf/talkative-probes/consistency-lens/data/pretokenized/google_gemma-3-27b-pt_openwebtext_seq256/"
+    pretokenized_path: "/workspace/kitf/talkative-probes/talkative_autoencoder/data/pretokenized/google_gemma-3-27b-pt_openwebtext_seq256/"
     generation_batch_size: 16
     layer_l: ${layer_l}
     samples_per_regeneration_cycle: 10000

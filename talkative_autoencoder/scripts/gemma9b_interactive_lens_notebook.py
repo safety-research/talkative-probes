@@ -75,10 +75,10 @@ from lens.analysis import LensAnalyzer, LensDataFrame
 #chatmodelstr = "bcywinski/gemma-2-9b-it-mms-bark-eval"
 #chatmodelstr = "FelixHofstaetter/gemma-2-9b-it-code-gen-locked"
 chatmodelstr = "google/gemma-2-9b-it"
-# CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_9b_frozen_nopostfix_gemma-2-9b_L30_e30_frozen_lr1e-4_t8_2ep_resume_0703_160332_frozenenc_add_patch3tinylrEclip_OTF_dist4_slurm1783"
-CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_9b_frozen_nopostfix_OS_gemma-2-9b_L30_e30_frozen_lr1e-4_t8_2ep_resume_0705_104412_frozenenc_add_patch3tinylrEclipENTBOOST_OTF_dist4"
-CHECKPOINT_PATH_SHALLOW_5 = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_9b_frozen_nopostfix_OS_gemma-2-9b_L30_e5_frozen_lr1e-4_t8_2ep_resume_0706_143023_frozenenc_add_patch3tinylrEclipENTBOOST_lowout5_OTF_dist4"
-CHECKPOINT_PATH_SHALLOW_10 = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_9b_frozen_nopostfix_OS_gemma-2-9b_L30_e10_frozen_lr1e-4_t8_2ep_resume_0707_070742_frozenenc_add_patch3tinylrEclipENTBOOST_lowout10_OTF_dist4_slurm2102"
+# CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_9b_frozen_nopostfix_gemma-2-9b_L30_e30_frozen_lr1e-4_t8_2ep_resume_0703_160332_frozenenc_add_patch3tinylrEclip_OTF_dist4_slurm1783"
+CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_9b_frozen_nopostfix_OS_gemma-2-9b_L30_e30_frozen_lr1e-4_t8_2ep_resume_0705_104412_frozenenc_add_patch3tinylrEclipENTBOOST_OTF_dist4"
+CHECKPOINT_PATH_SHALLOW_5 = "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_9b_frozen_nopostfix_OS_gemma-2-9b_L30_e5_frozen_lr1e-4_t8_2ep_resume_0706_143023_frozenenc_add_patch3tinylrEclipENTBOOST_lowout5_OTF_dist4"
+CHECKPOINT_PATH_SHALLOW_10 = "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_9b_frozen_nopostfix_OS_gemma-2-9b_L30_e10_frozen_lr1e-4_t8_2ep_resume_0707_070742_frozenenc_add_patch3tinylrEclipENTBOOST_lowout10_OTF_dist4_slurm2102"
 # %%
 analyzer = LensAnalyzer(CHECKPOINT_PATH, DEVICE, do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=False, old_lens=analyzer if 'analyzer' in globals() else None, batch_size=64, shared_base_model=analyzer.shared_base_model if 'analyzer' in globals() else None, initialise_on_cpu=True)
 # %%
@@ -89,17 +89,17 @@ analyzerchattokenizer=AutoTokenizer.from_pretrained('google/gemma-2-9b-it')#bcyw
 
 # analyzerchatchat= LensAnalyzer(CHECKPOINT_PATH, DEVICE, do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=False,  batch_size=64, shared_base_model=analyzerchat.orig_model.model, different_activations_orig=analyzerchat.orig_model if 'analyzerchat' in globals() else chatmodelstr, old_lens = analyzerchatchat if 'analyzerchatchat' in locals() else None, initialise_on_cpu=True)
 # %%
-CHECKPOINT_PATH_CHATTUNED = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_CHAT_9b_frozen_nopostfix_SUS_gemma-2-9b_L30_e30_frozen_lr1e-4_t8_2ep_resume_0704_172253_frozenenc_add_patchsmalllrEclip0p01wide_entboost_OTF_dist8"
+CHECKPOINT_PATH_CHATTUNED = "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_CHAT_9b_frozen_nopostfix_SUS_gemma-2-9b_L30_e30_frozen_lr1e-4_t8_2ep_resume_0704_172253_frozenenc_add_patchsmalllrEclip0p01wide_entboost_OTF_dist8"
 analyzerchattuned = LensAnalyzer(CHECKPOINT_PATH_CHATTUNED, DEVICE, do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=False,  batch_size=64, shared_base_model=analyzer.shared_base_model, different_activations_orig=analyzerchat.orig_model if 'analyzerchat' in globals() else chatmodelstr, old_lens = analyzerchattuned if 'analyzerchattuned' in locals() else None, initialise_on_cpu=True)
 
 # %%
 analyzerchat_out5 = LensAnalyzer(CHECKPOINT_PATH_SHALLOW_5, DEVICE, do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=False,  batch_size=64, shared_base_model=analyzer.shared_base_model, different_activations_orig=analyzerchat.orig_model if 'analyzerchat' in globals() else chatmodelstr, old_lens = analyzerchat_out5 if 'analyzerchat_out5' in locals() else None, initialise_on_cpu=True)
 analyzerchat_out10 = LensAnalyzer(CHECKPOINT_PATH_SHALLOW_10, DEVICE, do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=False,  batch_size=64, shared_base_model=analyzer.shared_base_model, different_activations_orig=analyzerchat.orig_model if 'analyzerchat' in globals() else chatmodelstr, old_lens = analyzerchat_out10 if 'analyzerchat_out10' in locals() else None, initialise_on_cpu=True)
 # %%
-CHECKPOINT_POSTFIX = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_9b_frozen_YES_postfix_OS_gemma-2-9b_L30_e30_frozen_lr1e-4_t8_2ep_resume_0707_202449_frozenenc_add_patch3_suffix_OTF_dist4"
+CHECKPOINT_POSTFIX = "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_9b_frozen_YES_postfix_OS_gemma-2-9b_L30_e30_frozen_lr1e-4_t8_2ep_resume_0707_202449_frozenenc_add_patch3_suffix_OTF_dist4"
 analyzer_postfix = LensAnalyzer(CHECKPOINT_POSTFIX, DEVICE, do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=False,  batch_size=64, shared_base_model=analyzer.shared_base_model, different_activations_orig=analyzerchat.orig_model if 'analyzerchat' in globals() else chatmodelstr, old_lens = analyzer_postfix if 'analyzer_postfix' in locals() else None, initialise_on_cpu=True)
 # %%
-CHECKPOINT_PATH_CHATTUNED_BASECHAT = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_CHAT_9b_frozen_nopostfix_SUS_gemma-2-9b-it_L30_e30_frozen_lr3e-4_t8_2ep_resume_0710_115130_frozenenc_add_patchsmalllrEclip0p01wide_entboost_ITBASE_OTF_dist8_slurm2315"
+CHECKPOINT_PATH_CHATTUNED_BASECHAT = "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_CHAT_9b_frozen_nopostfix_SUS_gemma-2-9b-it_L30_e30_frozen_lr3e-4_t8_2ep_resume_0710_115130_frozenenc_add_patchsmalllrEclip0p01wide_entboost_ITBASE_OTF_dist8_slurm2315"
 analyzerchattuned_basechat = LensAnalyzer(CHECKPOINT_PATH_CHATTUNED_BASECHAT, DEVICE, do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=False,  batch_size=64, shared_base_model=analyzerchat.orig_model.model if 'analyzerchat' in globals() else None, different_activations_orig=analyzerchat.orig_model if 'analyzerchat' in globals() else chatmodelstr, old_lens = analyzerchattuned_basechat if 'analyzerchattuned_basechat' in locals() else None, initialise_on_cpu=True)
 # bcywinski/gemma-2-9b-it-taboo-smile
 # # %%
@@ -425,7 +425,7 @@ print(df.to_string(index=False))
 
 torch.cuda.empty_cache()
 # %%
-CHECKPOINT_PATH_16 = "/workspace/kitf/talkative-probes/consistency-lens/outputs/checkpoints/gemma2_9b_frozen_nopostfix_gemma-2-9b_L30_e30_frozen_lr1e-4_t16_2ep_resume_0703_132828_frozenenc_add_patch3_clip_lowlr_OTF_dist4"
+CHECKPOINT_PATH_16 = "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_9b_frozen_nopostfix_gemma-2-9b_L30_e30_frozen_lr1e-4_t16_2ep_resume_0703_132828_frozenenc_add_patch3_clip_lowlr_OTF_dist4"
 # %%
 analyzerchat16 = LensAnalyzer(CHECKPOINT_PATH_16, DEVICE, do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=False,  batch_size=64, shared_base_model=analyzer.shared_base_model, different_activations_analyzerchat.orig_model.model if 'analyzerchat' in globals() else 'bcywinski/gemma-2-9b-it-mms-bark', old_lens = analyzerchat16 if 'analyzerchat16' in locals() else None, initialise_on_cpu=True)
 # %%

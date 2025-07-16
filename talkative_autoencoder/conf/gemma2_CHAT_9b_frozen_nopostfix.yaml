@@ -9,7 +9,9 @@ defaults:
 
 model_name: "google/gemma-2-9b"
 tokenizer_name: "google/gemma-2-9b"
-hf_dataset_name: "openwebtext"
+orig_model_name: "google/gemma-2-9b-it"
+orig_tokenizer_name: "${orig_model_name}"
+hf_dataset_name: "stingning/ultrachat"
 
 t_text: 8                       # Number of tokens to generate with the Decoder
 # decoder_prompt: "<|endoftext|>Short explanation of <embed>. Language, topic, senitment, claims, speaker, points and message, style and details, etc:"
@@ -20,14 +22,6 @@ encoder_prompt: "<bos>Summary of the text, encapsulating the main points and mes
 lm_loss_natural_prefix: "<bos>Short explanation of something. Language, topic, sentiment, claims, speaker, style, etc:"  # Natural language prefix for base model in LM loss
 layer_l: 30
 
-
-GRPO_beta_schedule:
-  type: "constant"
-  value: ${GRPO_beta}
-  constant_steps_before_decay: "400os"
-  start_value: ${GRPO_beta}
-  end_value: 0
-  num_steps: "1000os"
 
 skip_tokens_KL_GRPO: 3
 # Trainable components - FROZEN base model
@@ -47,7 +41,7 @@ trainable_components:
     use_gumbel_for_LMorig: false # shouldn't matter too much
     projection_init_method: "default"  # Options: "default", "tuned_lens_composition"
     projection_init_tl_comp_use_composed_bias: true
-    projection_init_tl_checkpoint: "/workspace/kitf/talkative-probes/consistency-lens/tuned-lens/my_lenses/google/gemma-2-9b"
+    projection_init_tl_checkpoint: "/workspace/kitf/talkative-probes/talkative_autoencoder/tuned-lens/my_lenses/google/gemma-2-9b"
     subtract_add_pos_embeddings: false 
     extra_pos_embeddings: false
     clamp_entropy: ${clamp_entropy} # deprecated - see schedule
@@ -71,16 +65,16 @@ trainable_components:
 activation_dumper:
   num_samples: -1               # 5M samples from OpenWebText
   min_pos: 5
-  seq_len: 256                        # Longer sequences for Gemma-2-2b
+  seq_len: 1024                        # Longer sequences for Gemma-2-2b
   use_hf_dataset: true
   hf_dataset_name: "${hf_dataset_name}"      # OpenWebText dataset
   hf_split: "train"
-  dataset_cache_dir: "./data/corpus/openwebtext"
-  output_dir: "./data/openwebtext_train"
+  dataset_cache_dir: "./data/corpus/${hf_dataset_name}"
+  output_dir: "./data/${hf_dataset_name}_train"
   batch_size:  64                    # Large batch for dumping
   # Validation split
   val_hf_split: "train"               # OpenWebText only has train split
-  val_output_dir: "./data/openwebtext_val"
+  val_output_dir: "./data/${hf_dataset_name}_val"
   val_num_samples: 5000       
 
 alpha_schedule: 
@@ -109,6 +103,16 @@ mse_weight: 0.000001
 
 # Entropy weight configuration
 entropy_weight: 0.0  # Static value (used if entropy_schedule is not defined)
+
+
+GRPO_beta_schedule:
+  type: "constant"
+  value: ${GRPO_beta}
+  constant_steps_before_decay: "400os"
+  start_value: ${GRPO_beta}
+  end_value: 0
+  num_steps: "1000os"
+
 
 entropy_clamp_schedule:
   type: "linear_decay_after_constant"
@@ -184,7 +188,7 @@ verbose_samples:
   generate_continuation: true
   continuation_tokens: 50
   compare_with_tuned_lens: false
-  tuned_lens_checkpoint_path_or_name: "/workspace/kitf/talkative-probes/consistency-lens/tuned-lens/my_lenses/google/gemma-2-9b"
+  tuned_lens_checkpoint_path_or_name: "/workspace/kitf/talkative-probes/talkative_autoencoder/tuned-lens/my_lenses/google/gemma-2-2b"
 
 
 
@@ -199,7 +203,7 @@ wandb:
 dataset:
   # ... existing dataset configs like train_split, val_split ...
   on_the_fly:
-    pretokenized_path: "/workspace/kitf/talkative-probes/consistency-lens/data/pretokenized/openwebtext_seq256/"
+    pretokenized_path: "/workspace/kitf/talkative-probes/talkative_autoencoder/data/pretokenized/stingning_ultrachat_seq1024/" # 
     generation_batch_size: 16
     layer_l: ${layer_l}
     samples_per_regeneration_cycle: 10000
