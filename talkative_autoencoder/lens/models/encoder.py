@@ -216,6 +216,16 @@ class Encoder(nn.Module):
         self._captured_states = {}  # layer_idx -> captured tensor
         self._capture_enabled = {}  # layer_idx -> bool
 
+    def to(self, device: torch.device):
+        super().to(device)
+        if self.proj is not None:
+            self.proj.to(device)
+        if self.activation_pos_embedder is not None:
+            self.activation_pos_embedder.to(device)
+        if self.base is not None:
+            self.base.to(device)
+        return self
+
     def set_soft_prompt_from_text(self, string: str, tokenizer) -> None:
         """Initialize soft prompt embeddings from text string using tokenizer.
         When called, this will create or recreate the soft prompt with length matching the tokenized text.

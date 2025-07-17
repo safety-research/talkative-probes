@@ -289,6 +289,25 @@ class Decoder(nn.Module):
         if self.is_gemma:
             self.normalizer = torch.tensor(self.d_model**0.5, dtype=self.base.dtype)
 
+    def to(self, device: torch.device):
+        super().to(device)
+        if self.proj is not None:
+            self.proj.to(device)
+        if self.proj_weight is not None:
+            self.proj_weight.to(device)
+        if self.proj_bias is not None:
+            self.proj_bias.to(device)
+        if self.prompt_left_emb is not None:
+            self.prompt_left_emb.to(device)
+        if self.prompt_right_emb is not None:
+            self.prompt_right_emb.to(device)
+        if self.prompt_ids is not None:
+            self.prompt_ids.to(device)
+        if self.activation_pos_embedder is not None:
+            self.activation_pos_embedder.to(device)
+        if self.base is not None:
+            self.base.to(device)
+        return self
     def forward(self, *args: Any, **kwargs: Any):  # noqa: D401
         raise NotImplementedError
 

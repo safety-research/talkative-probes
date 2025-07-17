@@ -3884,6 +3884,14 @@ def main(cfg: DictConfig) -> None:
                 shared_base_model_obj.to(device)
                 log.info(f"Moved shared_base_model_obj to device {device}")
 
+            if step==0:
+                log.info(f"Decoder device: {decoder.device}")
+                log.info(f"Encoder device: {encoder.device}")
+                log.info(f"Orig model device: {orig_model.model.device}")
+                log.info(f"Shared base model device: {shared_base_model_obj.device}")
+                log.info(f"batch device: {batch['input_ids_A'].device}")
+                log.info(f"batch input_ids_A: {batch['A'].device}")
+
             metrics = distributed_train_step(
                 decoder,
                 encoder,
