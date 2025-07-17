@@ -199,6 +199,21 @@ class InMemoryValidationDataset(Dataset):
                 if batch_input_ids_A_prime_device.numel() == 0 or batch_attn_mask_A_prime_device.numel() == 0:
                     _dataset_log_fn(log, f"Empty tensor detected in batch {current_batch_indices_A_prime}. Skipping batch.", "warning", rank=self.rank)
                     continue
+                # _dataset_log_fn(log, f"batch_input_ids_A_device.numel(): {batch_input_ids_A_device.numel()}", "warning", rank=self.rank)
+                # _dataset_log_fn(log, f"batch_attn_mask_A_device.numel(): {batch_attn_mask_A_device.numel()}", "warning", rank=self.rank)
+                # _dataset_log_fn(log, f"batch_input_ids_A_prime_device.numel(): {batch_input_ids_A_prime_device.numel()}", "warning", rank=self.rank)
+                # _dataset_log_fn(log, f"batch_attn_mask_A_prime_device.numel(): {batch_attn_mask_A_prime_device.numel()}", "warning", rank=self.rank)
+                # _dataset_log_fn(log, f" shape of batch_input_ids_A_device: {batch_input_ids_A_device.shape}", "warning", rank=self.rank)
+                # _dataset_log_fn(log, f" shape of batch_attn_mask_A_device: {batch_attn_mask_A_device.shape}", "warning", rank=self.rank)
+                # _dataset_log_fn(log, f" shape of batch_input_ids_A_prime_device: {batch_input_ids_A_prime_device.shape}", "warning", rank=self.rank)
+                # _dataset_log_fn(log, f" shape of batch_attn_mask_A_prime_device: {batch_attn_mask_A_prime_device.shape}", "warning", rank=self.rank)
+                # _dataset_log_fn(log, f"first element of batch_input_ids_A_device: {batch_input_ids_A_device[0]}", "warning", rank=self.rank)
+                # _dataset_log_fn(log, f"first element of batch_attn_mask_A_device: {batch_attn_mask_A_device[0]}", "warning", rank=self.rank)
+                # _dataset_log_fn(log, f"first element of batch_input_ids_A_prime_device: {batch_input_ids_A_prime_device[0]}", "warning", rank=self.rank)
+                # _dataset_log_fn(log, f"first element of batch_attn_mask_A_prime_device: {batch_attn_mask_A_prime_device[0]}", "warning", rank=self.rank)
+                # _dataset_log_fn(log, f"first element of batch_input_ids_A_device: {batch_input_ids_A_device[0]}", "warning", rank=self.rank)
+                # _dataset_log_fn(log, f"first element of batch_attn_mask_A_device: {batch_attn_mask_A_device[0]}", "warning", rank=self.rank)
+                # _dataset_log_fn(log, f"first element of batch_input_ids_A_prime_device: {batch_input_ids_A_prime_device[0]}", "warning", rank=self.rank)
 
                 batch_act_A, batch_pos_A = _generate_activations_batched(self.orig_model_for_gen, batch_input_ids_A_device, self.layer_l, self.min_pos, batch_attn_mask_A_device, self.position_selection_strategy)
                 batch_act_A_prime, batch_pos_A_prime = _generate_activations_batched(self.orig_model_for_gen, batch_input_ids_A_prime_device, self.layer_l, self.min_pos, batch_attn_mask_A_prime_device, self.position_selection_strategy)

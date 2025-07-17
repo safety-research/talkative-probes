@@ -203,7 +203,7 @@ wandb:
 dataset:
   # ... existing dataset configs like train_split, val_split ...
   on_the_fly:
-    pretokenized_path: "/workspace/kitf/talkative-probes/talkative_autoencoder/data/pretokenized/stingning_ultrachat_seq1024/" # 
+    pretokenized_path: "/workspace/kitf/talkative-probes/talkative_autoencoder/data/pretokenized/google_gemma-2-9b_stingning_ultrachat_seq1024/" # 
     generation_batch_size: 16
     layer_l: ${layer_l}
     samples_per_regeneration_cycle: 10000

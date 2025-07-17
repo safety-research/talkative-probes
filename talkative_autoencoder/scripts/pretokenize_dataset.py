@@ -178,8 +178,11 @@ def do_pretokenize(cfg: DictConfig):
     if data_format in ["chat", "chat_list"]:
         if not tokenizer.chat_template:
             log.warning("Tokenizer does not have a chat_template. Applying a default ChatML template.")
+            raise ValueError(
+                "Tokenizer does not have a chat_template. Please use a tokenizer that supports chat templates."
+            )
             # A common chatML template
-            tokenizer.chat_template = "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>' + '\\n'}}{% endfor %}"
+            # tokenizer.chat_template = "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>' + '\\n'}}{% endfor %}"
 
         def tokenize_function(examples):
             conversations = examples[input_column]
@@ -206,7 +209,9 @@ def do_pretokenize(cfg: DictConfig):
                 truncation=True,
                 max_length=seq_len,
                 return_special_tokens_mask=False,
+                add_special_tokens=False,
             )
+
     else:  # data_format == 'text'
 
         def tokenize_function(examples):
