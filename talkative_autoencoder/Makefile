@@ -7,12 +7,13 @@
 # - Configures shared UV cache in /workspace/.uv_cache
 # - Creates and syncs the uv environment
 # - Works seamlessly across multiple nodes
+# - Handles B200 node-specific dependencies
 #
 # Usage:
 #   make          - Initial setup (install uv, create env, sync dependencies)
 #   uv run python scripts/01_train.py  - Run any Python command
 
-.PHONY: all setup help flash-attention sync-env wandb-login
+.PHONY: all setup help flash-attention sync-env wandb-login check-b200
 
 # Default target
 all: setup
@@ -30,6 +31,14 @@ help:
 	@echo "  uv run pytest tests/"
 	@echo ""
 	@echo "No manual venv activation needed!"
+
+# Check if running on B200 node
+check-b200:
+	@if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q "B200"; then \
+		echo "DETECTED_B200=true"; \
+	else \
+		echo "DETECTED_B200=false"; \
+	fi
 
 # Setup - install uv, configure cache, and create environment
 setup:
@@ -54,17 +63,23 @@ setup:
 	fi
 	@# Configure shared cache
 	@mkdir -p /workspace/.uv_cache
-	@# Source ensure_env.sh to get environment variables
+	@# Source ensure_env.sh and sync environment first
 	@echo "Sourcing environment setup..."
-	@export UV_CACHE_DIR="/workspace/.uv_cache" && \
-	export UV_PROJECT_ROOT="$$(pwd)" && \
-	if [ -n "$$SLURM_JOB_ID" ] && [ -n "$${SLURM_TMPDIR:-}" ]; then \
-		export UV_PROJECT_ENVIRONMENT="$$SLURM_TMPDIR/uv-venv-consistency-lens"; \
-	else \
-		export UV_PROJECT_ENVIRONMENT="$$HOME/.cache/uv/envs/consistency-lens"; \
-	fi && \
-	echo "Creating/syncing uv environment at $$UV_PROJECT_ENVIRONMENT..." && \
-	PATH="$$HOME/.local/bin:$$PATH" uv sync --frozen
+	@. ./scripts/ensure_env.sh && \
+	echo "Creating/syncing uv environment..." && \
+	uv sync --frozen
+	@# Check if on B200 node and remove packages if needed
+	@if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q "B200"; then \
+		echo "Detected B200 node - removing incompatible packages..."; \
+		. ./scripts/ensure_env.sh && \
+		uv remove bitsandbytes cairosvg || true; \
+		echo "Removed bitsandbytes and cairosvg for B200 compatibility"; \
+		# Install torch packages and markupsafe with source
+		echo "Installing PyTorch and markupsafe..."
+		. ./scripts/ensure_env.sh && \
+		uv add torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu128 && \
+		uv add "markupsafe==2.1.3"
+	fi
 	@# Login to wandb if API key is available (source .env first)
 	@if [ -f .env ]; then \
 		echo "Loading environment variables from .env..."; \
@@ -72,14 +87,8 @@ setup:
 	fi && \
 	if [ -n "$$WANDB_API_KEY" ]; then \
 		echo "Logging into Weights & Biases..."; \
-		export UV_CACHE_DIR="/workspace/.uv_cache" && \
-		export UV_PROJECT_ROOT="$$(pwd)" && \
-		if [ -n "$$SLURM_JOB_ID" ] && [ -n "$${SLURM_TMPDIR:-}" ]; then \
-			export UV_PROJECT_ENVIRONMENT="$$SLURM_TMPDIR/uv-venv-consistency-lens"; \
-		else \
-			export UV_PROJECT_ENVIRONMENT="$$HOME/.cache/uv/envs/consistency-lens"; \
-		fi && \
-		PATH="$$HOME/.local/bin:$$PATH" uv run wandb login $$WANDB_API_KEY && \
+		. ./scripts/ensure_env.sh && \
+		uv run wandb login $$WANDB_API_KEY && \
 		echo "✓ Successfully logged into Weights & Biases!"; \
 	else \
 		echo "Skipping wandb login (WANDB_API_KEY not found)"; \
@@ -96,14 +105,8 @@ setup:
 # Sync environment with latest dependencies
 sync-env:
 	@echo "Syncing environment with latest dependencies..."
-	@export UV_CACHE_DIR="/workspace/.uv_cache" && \
-	export UV_PROJECT_ROOT="$$(pwd)" && \
-	if [ -n "$$SLURM_JOB_ID" ] && [ -n "$${SLURM_TMPDIR:-}" ]; then \
-		export UV_PROJECT_ENVIRONMENT="$$SLURM_TMPDIR/uv-venv-consistency-lens"; \
-	else \
-		export UV_PROJECT_ENVIRONMENT="$$HOME/.cache/uv/envs/consistency-lens"; \
-	fi && \
-	PATH="$$HOME/.local/bin:$$PATH" uv sync
+	@. ./scripts/ensure_env.sh && \
+	uv sync
 	@echo "✓ Environment synced successfully!"
 
 # Login to Weights & Biases
@@ -114,14 +117,8 @@ wandb-login:
 		exit 1; \
 	fi
 	@echo "Logging into Weights & Biases..."
-	@export UV_CACHE_DIR="/workspace/.uv_cache" && \
-	export UV_PROJECT_ROOT="$$(pwd)" && \
-	if [ -n "$$SLURM_JOB_ID" ] && [ -n "$${SLURM_TMPDIR:-}" ]; then \
-		export UV_PROJECT_ENVIRONMENT="$$SLURM_TMPDIR/uv-venv-consistency-lens"; \
-	else \
-		export UV_PROJECT_ENVIRONMENT="$$HOME/.cache/uv/envs/consistency-lens"; \
-	fi && \
-	PATH="$$HOME/.local/bin:$$PATH" uv run wandb login $$WANDB_API_KEY
+	@. ./scripts/ensure_env.sh && \
+	uv run wandb login $$WANDB_API_KEY
 	@echo "✓ Successfully logged into Weights & Biases!"
 
 # Install Flash Attention 2 (optional)

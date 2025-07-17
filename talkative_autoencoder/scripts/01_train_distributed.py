@@ -3823,6 +3823,7 @@ def main(cfg: DictConfig) -> None:
             batch = {k: v.to(device, non_blocking=True) for k, v in batch.items() if isinstance(v, torch.Tensor)}
 
             if step == 0 and is_main():
+                torch.cuda.synchronize()
                 # For initial validation, orig_model must be on the GPU.
                 # is_distinct_orig_model_val = config.get('orig_model_name') and config.get('orig_model_name') != config['model_name']
                 # if not is_distinct_orig_model_val:
@@ -3839,6 +3840,7 @@ def main(cfg: DictConfig) -> None:
                     config["orig_model_name"] and config["orig_model_name"] != config["model_name"]
                 )
                 if not is_distinct_orig_model_val and decoder_base.config.projection_init_method != "scale":
+                    print("if this happens, we can end up messing up the device placement.")
                     log.info("Checking layer indexing for orig_model")
                     if decoder.device != "cpu":
                         log.info(f"Moving decoder to device {'cpu'}")
