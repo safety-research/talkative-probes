@@ -217,5 +217,5 @@ dataset:
   val_split: "validation"
 
 pretokenize:  
-  num_proc: 8
+  num_proc: 32
   name_of_sub_dataset: "sample-10BT"

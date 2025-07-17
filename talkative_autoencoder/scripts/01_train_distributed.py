@@ -3838,7 +3838,7 @@ def main(cfg: DictConfig) -> None:
                 is_distinct_orig_model_val = (
                     config["orig_model_name"] and config["orig_model_name"] != config["model_name"]
                 )
-                if not is_distinct_orig_model_val and decoder.config.projection_init_method != "scale":
+                if not is_distinct_orig_model_val and decoder_base.config.projection_init_method != "scale":
                     log.info("Checking layer indexing for orig_model")
                     if decoder.device != "cpu":
                         log.info(f"Moving decoder to device {'cpu'}")
