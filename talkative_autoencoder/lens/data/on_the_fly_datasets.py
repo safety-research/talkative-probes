@@ -193,6 +193,12 @@ class InMemoryValidationDataset(Dataset):
                 batch_attn_mask_A_device = torch.tensor(batch_attn_mask_A_list, dtype=torch.long, device=self.generation_device)
                 batch_attn_mask_A_prime_device = torch.tensor(batch_attn_mask_A_prime_list, dtype=torch.long, device=self.generation_device)
 
+                if batch_input_ids_A_device.numel() == 0 or batch_attn_mask_A_device.numel() == 0:
+                    _dataset_log_fn(log, f"Empty tensor detected in batch {current_batch_indices_A}. Skipping batch.", "warning", rank=self.rank)
+                    continue
+                if batch_input_ids_A_prime_device.numel() == 0 or batch_attn_mask_A_prime_device.numel() == 0:
+                    _dataset_log_fn(log, f"Empty tensor detected in batch {current_batch_indices_A_prime}. Skipping batch.", "warning", rank=self.rank)
+                    continue
 
                 batch_act_A, batch_pos_A = _generate_activations_batched(self.orig_model_for_gen, batch_input_ids_A_device, self.layer_l, self.min_pos, batch_attn_mask_A_device, self.position_selection_strategy)
                 batch_act_A_prime, batch_pos_A_prime = _generate_activations_batched(self.orig_model_for_gen, batch_input_ids_A_prime_device, self.layer_l, self.min_pos, batch_attn_mask_A_prime_device, self.position_selection_strategy)
@@ -382,6 +388,10 @@ class RankInMemoryTrainingCache(Dataset):
                 batch_attn_mask_list = get_attn_mask(batch_samples, self.tokenizer)
                 batch_input_ids_tensor = torch.tensor([s['input_ids'] for s in batch_samples], dtype=torch.long, device=self.generation_device)
                 batch_attn_mask_tensor = torch.tensor(batch_attn_mask_list, dtype=torch.long, device=self.generation_device)
+                # add check for empty tensors
+                if batch_input_ids_tensor.numel() == 0 or batch_attn_mask_tensor.numel() == 0:
+                    self._log(f"Empty tensor detected in batch {batch_indices}. Skipping batch.", "warning")
+                    continue
 
                 batch_activations, batch_positions = _generate_activations_batched(
                     self.orig_model_for_gen, batch_input_ids_tensor, self.layer_l, self.min_pos, batch_attn_mask_tensor, self.position_selection_strategy
