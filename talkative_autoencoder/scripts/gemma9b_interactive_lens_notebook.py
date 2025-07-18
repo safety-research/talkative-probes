@@ -89,7 +89,7 @@ analyzerchattokenizer=AutoTokenizer.from_pretrained('google/gemma-2-9b-it')#bcyw
 
 # analyzerchatchat= LensAnalyzer(CHECKPOINT_PATH, DEVICE, do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=False,  batch_size=64, shared_base_model=analyzerchat.orig_model.model, different_activations_orig=analyzerchat.orig_model if 'analyzerchat' in globals() else chatmodelstr, old_lens = analyzerchatchat if 'analyzerchatchat' in locals() else None, initialise_on_cpu=True)
 # %%
-CHECKPOINT_PATH_CHATTUNED = "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_CHAT_9b_frozen_nopostfix_SUS_gemma-2-9b_L30_e30_frozen_lr1e-4_t8_2ep_resume_0704_172253_frozenenc_add_patchsmalllrEclip0p01wide_entboost_OTF_dist8"
+CHECKPOINT_PATH_CHATTUNED = "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_CHAT_9b_frozen_nopostfix_SUS_gemma-2-9b-it_L30_e30_frozen_lr1e-4_t8_2ep_resume_0714_171106_ITBASE_NO_ENC_PROJ_OTF_dist2_slurm6053"
 analyzerchattuned = LensAnalyzer(CHECKPOINT_PATH_CHATTUNED, DEVICE, do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=False,  batch_size=64, shared_base_model=analyzer.shared_base_model, different_activations_orig=analyzerchat.orig_model if 'analyzerchat' in globals() else chatmodelstr, old_lens = analyzerchattuned if 'analyzerchattuned' in locals() else None, initialise_on_cpu=True)
 
 # %%

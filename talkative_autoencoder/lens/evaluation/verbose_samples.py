@@ -198,7 +198,7 @@ def print_verbose_sample_details(
         print("Loss Components for this sample:")
         print(f"  Total Loss: {sample_losses['total']:.4f}")
         print(
-            f"  - MSE Loss (A_i vs A_hat): {sample_losses['mse']:.4f} (weighted: {sample_losses['mse_weighted']:.4f})"
+            f"  - MSE Loss (A_i vs A_hat): {sample_losses['mse']:.4f} (weighted: {sample_losses['mse_weighted']:.4f}) (squared norm of A_i: {torch.norm(sample_losses['A_single'])**2 if hasattr(sample_losses, 'A_single') else 'N/A'}:.4f)"
         )
         print(
             f"  - LM Loss (KL[P_Orig||P_Dec]): {sample_losses['lm']:.4f} (weighted: {sample_losses['lm_weighted']:.4f})"
@@ -586,6 +586,7 @@ def process_and_print_verbose_batch_samples(
                 cfg["lm_loss_natural_prefix"] = original_lm_loss_setting
 
             sample_losses = results_from_compute["losses"]
+            sample_losses["A_single"] = A_i.detach().clone()
             computed_tensors = results_from_compute["computed_values"]
 
             gen_single = computed_tensors["gen_A_single"].detach()
