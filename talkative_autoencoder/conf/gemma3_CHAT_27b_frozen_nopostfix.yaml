@@ -14,7 +14,8 @@ model_name: "google/gemma-3-27b-pt"
 
 orig_model_name: "google/gemma-3-27b-it"
 orig_tokenizer_name: "${orig_model_name}"
-hf_dataset_name: "stingning/ultrachat"
+#hf_dataset_name: "stingning/ultrachat"
+hf_dataset_name: "allenai/WildChat-1M"
 
 t_text: 8                      # Number of tokens to generate with the Decoder
 model_dtype: "bfloat16"
@@ -222,7 +223,8 @@ wandb:
 dataset:
   # ... existing dataset configs like train_split, val_split ...
   on_the_fly:
-    pretokenized_path: "/workspace/kitf/talkative-probes/talkative_autoencoder/data/pretokenized/google_gemma-3-27b-pt_stingning_ultrachat_seq1024/" # 
+    #pretokenized_path: "/workspace/kitf/talkative-probes/talkative_autoencoder/data/pretokenized/google_gemma-3-27b-pt_stingning_ultrachat_seq1024/" # 
+    pretokenized_path: "/workspace/kitf/talkative-probes/talkative_autoencoder/data/pretokenized/google_gemma-3-27b-pt_allenai_WildChat-1M_seq1024/"
     generation_batch_size: 16
     layer_l: ${layer_l}
     samples_per_regeneration_cycle: 10000
