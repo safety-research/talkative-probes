@@ -15,7 +15,7 @@
 # %%
 # Imports and setup
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "4"
+os.environ["CUDA_VISIBLE_DEVICES"] = "7"
 import torch
 torch.set_float32_matmul_precision('high')
 import sys

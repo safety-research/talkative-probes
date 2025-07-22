@@ -1,10 +1,11 @@
 """Frozen original model with single-layer activation swap hook."""
 
-import torch
-import transformers
-from transformers import AutoModelForCausalLM, Gemma3TextConfig, Gemma3ForCausalLM
-from typing import Optional, Tuple, Union
 from contextlib import nullcontext
+from typing import Optional, Tuple, Union
+
+import torch
+
+from transformers import AutoModelForCausalLM, Gemma3ForCausalLM
 
 __all__ = ["OrigWrapper"]
 
@@ -17,42 +18,43 @@ class OrigWrapper:
     def _static_reshape_inputs(x, **__) -> dict:
         return {"input_ids": x}
 
-    def __init__(self, model_name: str, torch_dtype=None, load_in_8bit: bool = False, base_to_use = None, lora_name: str = None) -> None:
+    def __init__(
+        self, model_name: str, torch_dtype=None, load_in_8bit: bool = False, base_to_use=None, lora_name: str = None
+    ) -> None:
         if base_to_use is None:
             # Load model with specified dtype
-            if 'gemma-3' in model_name:
+            if "gemma-3" in model_name:
                 print(f"Loading Gemma3ModelForCausalLM for model '{model_name}'")
                 self.model = Gemma3ForCausalLM.from_pretrained(
-                    model_name, 
+                    model_name,
                     torch_dtype=torch_dtype,
                     load_in_8bit=load_in_8bit,
                 )
             else:
                 self.model = AutoModelForCausalLM.from_pretrained(
-                    model_name, 
+                    model_name,
                     torch_dtype=torch_dtype,
                     load_in_8bit=load_in_8bit,
                 )
             self.name = model_name
             self.lora_name = None
-            if hasattr(self.model, 'peft_config'):
+            if hasattr(self.model, "peft_config"):
                 self.lora_name = model_name
         else:
             self.model = base_to_use
             self.name = base_to_use.config._name_or_path
-            if hasattr(base_to_use, 'peft_config') and lora_name is None:
+            if hasattr(base_to_use, "peft_config") and lora_name is None:
                 self.lora_name = "????"
                 self.name += "_" + "LORA" + "_" + self.lora_name
-            elif hasattr(base_to_use, 'peft_config') and lora_name is not None:
+            elif hasattr(base_to_use, "peft_config") and lora_name is not None:
                 self.lora_name = lora_name
                 self.name += "_" + self.lora_name
             else:
                 self.lora_name = None
-            
+
         self.model.eval()
 
-
-        self.name = model_name # self.model.config._name_or_path if  not hasattr(self.model, 'active_adapter') else  self.model.config._name_or_path + "_LORA"
+        self.name = model_name  # self.model.config._name_or_path if  not hasattr(self.model, 'active_adapter') else  self.model.config._name_or_path + "_LORA"
         # if hasattr(self.model, 'active_adapter'):
         #     self.lora_name = self.model.active_adapter
         # else:
@@ -68,15 +70,19 @@ class OrigWrapper:
 
         # Lazy hook management
         self._registered_hooks = {}  # layer_idx -> hook handle
-        self._hook_enabled = {}      # layer_idx -> bool
-        self._hook_data = {}         # layer_idx -> data dict
-        self.num_hidden_layers = self.model.config.num_hidden_layers if not hasattr(self.model.config, "text_config") else self.model.config.text_config.num_hidden_layers
-        
+        self._hook_enabled = {}  # layer_idx -> bool
+        self._hook_data = {}  # layer_idx -> data dict
+        self.num_hidden_layers = (
+            self.model.config.num_hidden_layers
+            if not hasattr(self.model.config, "text_config")
+            else self.model.config.text_config.num_hidden_layers
+        )
+
         # # Pre-register hooks for all layers
         # for layer_idx in range(self.model.config.num_hidden_layers):
         #     self._hook_enabled[layer_idx] = False
         #     self._hook_data[layer_idx] = None
-            
+
         #     try:
         #         target_block = self.model.get_submodule(f"model.layers.{layer_idx}")
         #     except AttributeError:
@@ -85,7 +91,7 @@ class OrigWrapper:
         #             target_block = self.model.transformer.h[layer_idx]
         #         except AttributeError:
         #             target_block = self.model.get_submodule(f"transformer.h.{layer_idx}")
-            
+
         #     # Create a layer-specific hook
         #     def make_hook(idx):
         #         def hook_fn(module, input, output):
@@ -93,9 +99,8 @@ class OrigWrapper:
         #                 return self._apply_swap(output, idx)
         #             return output
         #         return hook_fn
-            
-        #     self._registered_hooks[layer_idx] = target_block.register_forward_hook(make_hook(layer_idx))
 
+        #     self._registered_hooks[layer_idx] = target_block.register_forward_hook(make_hook(layer_idx))
 
     def _validate_layer_idx(self, layer_idx: int) -> None:
         """Checks if the provided layer_idx is valid for the model."""
@@ -122,20 +127,20 @@ class OrigWrapper:
         data = self._hook_data[layer_idx]
         if data is None:
             return output
-            
+
         hidden = output[0]
-        new_activation = data['new_activation']
-        token_pos = data['token_pos']
-        
+        new_activation = data["new_activation"]
+        token_pos = data["token_pos"]
+
         # Ensure dtype consistency
         if new_activation.dtype != hidden.dtype:
             new_activation = new_activation.to(hidden.dtype)
-        
+
         if new_activation.dim() == 1:
             hidden[:, token_pos] = new_activation.unsqueeze(0)
         else:
             hidden[:, token_pos] = new_activation
-            
+
         return (hidden,) + output[1:]
 
     def forward_with_replacement(
@@ -150,17 +155,14 @@ class OrigWrapper:
     ):
         """Forward pass with activation replacement using lazy-loaded persistent hooks."""
         self._validate_layer_idx(layer_idx)
-        
+
         # Ensure hook exists for this layer (lazy registration)
         self._ensure_hook_registered(layer_idx)
-        
+
         # Set hook data
-        self._hook_data[layer_idx] = {
-            'new_activation': new_activation,
-            'token_pos': token_pos
-        }
+        self._hook_data[layer_idx] = {"new_activation": new_activation, "token_pos": token_pos}
         self._hook_enabled[layer_idx] = True
-        
+
         grad_ctx = torch.no_grad() if no_grad else nullcontext()
         with grad_ctx:
             try:
@@ -169,7 +171,7 @@ class OrigWrapper:
                 # Disable the hook after use (but keep it registered)
                 self._hook_enabled[layer_idx] = False
                 self._hook_data[layer_idx] = None
-        
+
         return out
 
     def forward_with_replacement_vectorized(
@@ -183,7 +185,7 @@ class OrigWrapper:
         no_grad: bool = True,
     ):
         """Vectorized forward pass replacing activations at multiple positions in a single layer.
-        
+
         Args:
             input_ids: Input token ids of shape (B, seq_len)
             new_activations: Activations to insert of shape (B, hidden_dim)
@@ -192,16 +194,17 @@ class OrigWrapper:
             attention_mask: Optional attention mask. If None, created from pad tokens.
             no_grad: Whether to run in no_grad context. Set to False if gradients
                      w.r.t. new_activations are needed.
-            
+
         Returns:
             Model output with activations replaced at specified positions
-            
+
         Note: All samples must use the same layer_idx. For mixed layers, use multiple
         calls to forward_with_replacement() instead.
         """
 
         from contextlib import nullcontext
-        self._validate_layer_idx(layer_idx) # Validate layer index at the beginning
+
+        self._validate_layer_idx(layer_idx)  # Validate layer index at the beginning
 
         # If no attention mask is provided, create one from pad tokens
         if attention_mask is None and self.model.config.pad_token_id is not None:
@@ -209,6 +212,7 @@ class OrigWrapper:
 
         grad_ctx = torch.no_grad() if no_grad else nullcontext()
         with grad_ctx:
+
             def _vectorized_swap_hook(_, __, output):  # noqa: ANN001
                 hidden = output[0]  # (B, seq_len, dim)
                 batch_indices = torch.arange(hidden.shape[0], device=hidden.device)
@@ -247,7 +251,7 @@ class OrigWrapper:
         *,
         attention_mask: Optional[torch.Tensor] = None,
         no_grad: bool = True,
-        position_selection_strategy: str = 'midpoint',
+        position_selection_strategy: str = "random",
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Extracts hidden state activations from a specified layer at given or calculated token positions
@@ -289,9 +293,9 @@ class OrigWrapper:
             was_1d_input = True
             if isinstance(token_positions, int):
                 token_positions = torch.tensor([token_positions], device=input_ids.device, dtype=torch.long)
-        
+
         if not isinstance(input_ids, torch.Tensor):
-             raise TypeError(f"input_ids must be a torch.Tensor, got {type(input_ids)}")
+            raise TypeError(f"input_ids must be a torch.Tensor, got {type(input_ids)}")
 
         batch_size = input_ids.shape[0]
 
@@ -306,7 +310,7 @@ class OrigWrapper:
                 if token_positions.ndim == 0:
                     calculated_positions = token_positions.repeat(batch_size).to(input_ids.device, dtype=torch.long)
                 elif token_positions.ndim == 1 and token_positions.shape[0] == 1 and batch_size > 1:
-                     calculated_positions = token_positions.repeat(batch_size).to(input_ids.device, dtype=torch.long)
+                    calculated_positions = token_positions.repeat(batch_size).to(input_ids.device, dtype=torch.long)
                 elif token_positions.ndim == 1 and token_positions.shape[0] == batch_size:
                     calculated_positions = token_positions.to(input_ids.device, dtype=torch.long)
                 else:
@@ -317,20 +321,25 @@ class OrigWrapper:
             else:
                 raise TypeError(f"token_positions must be int, torch.Tensor, or None, got {type(token_positions)}")
         elif min_pos_to_select_from is not None:
-            pad_token_id = self.model.config.pad_token_id
-            
-            if pad_token_id is None:
-                # If no pad token, sequence is the full length
+            if attention_mask is None:
+                # If no attention mask at all, assume the entire sequence is valid.
                 start_indices = torch.zeros(batch_size, device=input_ids.device, dtype=torch.long)
                 end_indices = torch.full((batch_size,), input_ids.shape[1] - 1, device=input_ids.device, dtype=torch.long)
             else:
-                is_not_pad = input_ids.ne(pad_token_id)
-                
-                # Find first non-pad token (handles left-padding)
-                start_indices = torch.argmax(is_not_pad.int(), dim=1)
-                
-                # Find last non-pad token
-                end_indices = input_ids.shape[1] - 1 - torch.argmax(torch.flip(is_not_pad, dims=[1]).int(), dim=1)
+                # Use the attention_mask to find the valid range of tokens.
+                # `argmax` finds the first '1'.
+                start_indices = torch.argmax(attention_mask.int(), dim=1)
+                # Flip the mask to find the last '1' from the end.
+                end_indices = input_ids.shape[1] - 1 - torch.argmax(torch.flip(attention_mask, dims=[1]).int(), dim=1)
+
+                # --- Edge Case Fix ---
+                # For sequences that are all padding, attention_mask is all zeros. `argmax` will return 0 for both start and end,
+                # which incorrectly implies the whole sequence is valid. We correct this by setting start > end for such cases.
+                has_no_valid_tokens = ~torch.any(attention_mask, dim=1)
+                start_indices[has_no_valid_tokens] = 1
+                end_indices[has_no_valid_tokens] = 0
+                if has_no_valid_tokens.any():
+                    print(f"Warning: {has_no_valid_tokens.sum()} sequences have no valid tokens.")
 
             # Interpret min_pos_to_select_from as a relative offset from the start of content.
             lower_bounds = start_indices + min_pos_to_select_from
@@ -339,10 +348,10 @@ class OrigWrapper:
             # If it does (sequence too short), this will select the last token.
             effective_lower_bounds = torch.minimum(lower_bounds, end_indices)
             upper_bounds = end_indices
-            
-            if position_selection_strategy == 'midpoint':
+
+            if position_selection_strategy == "midpoint":
                 calculated_positions = (effective_lower_bounds + upper_bounds) // 2
-            elif position_selection_strategy == 'random':
+            elif position_selection_strategy == "random":
                 # Generate random floats in [0, 1) and scale them to the valid range
                 rand_floats = torch.rand(batch_size, device=input_ids.device)
                 range_size = (upper_bounds - effective_lower_bounds + 1).clamp(min=1)
@@ -359,7 +368,7 @@ class OrigWrapper:
         # --- Hook-based activation extraction ---
         captured_activations = None
 
-        def _capture_hook(_, __, output): # noqa: ANN001
+        def _capture_hook(_, __, output):  # noqa: ANN001
             nonlocal captured_activations
             # Output of a transformer block is usually a tuple (hidden_state, present_key_value, ...)
             # or just hidden_state. We are interested in the first element.
@@ -367,26 +376,26 @@ class OrigWrapper:
                 captured_activations = output[0].detach()
             else:
                 captured_activations = output.detach()
-            return output # Pass through the output
+            return output  # Pass through the output
 
         try:
             target_block = self.model.get_submodule(f"model.layers.{layer_idx}")
         except AttributeError:
             try:
-                target_block = self.model.transformer.h[layer_idx] # type: ignore[attr-defined]
+                target_block = self.model.transformer.h[layer_idx]  # type: ignore[attr-defined]
             except AttributeError:
                 target_block = self.model.get_submodule(f"transformer.h.{layer_idx}")
-        
+
         handle = target_block.register_forward_hook(_capture_hook)
-        
+
         grad_ctx = torch.no_grad() if no_grad else nullcontext()
         with grad_ctx:
-            _ = self.model( # We don't need the model's final output here
+            _ = self.model(  # We don't need the model's final output here
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                output_hidden_states=False, # Not needed as we use a hook
+                output_hidden_states=False,  # Not needed as we use a hook
             )
-        
+
         handle.remove()
 
         if captured_activations is None:
@@ -394,10 +403,10 @@ class OrigWrapper:
                 f"Hook did not capture activations from layer {layer_idx}. "
                 "This might indicate an issue with the model structure or hook registration."
             )
-        
+
         # captured_activations is (B, seq_len, dim)
         batch_indices = torch.arange(batch_size, device=captured_activations.device)
-        selected_activations = captured_activations[batch_indices, calculated_positions] # (B, dim)
+        selected_activations = captured_activations[batch_indices, calculated_positions]  # (B, dim)
         # --- End hook-based activation extraction ---
 
         if was_1d_input:
@@ -408,10 +417,10 @@ class OrigWrapper:
 
     def get_all_activations_at_layer(
         self,
-        input_ids: torch.Tensor, # Expected shape (seq_len,) or (1, seq_len)
+        input_ids: torch.Tensor,  # Expected shape (seq_len,) or (1, seq_len)
         layer_idx: int,
         *,
-        attention_mask: Optional[torch.Tensor] = None, # Expected shape (seq_len,) or (1, seq_len)
+        attention_mask: Optional[torch.Tensor] = None,  # Expected shape (seq_len,) or (1, seq_len)
         no_grad: bool = True,
     ) -> torch.Tensor:
         """
@@ -431,13 +440,13 @@ class OrigWrapper:
         self._validate_layer_idx(layer_idx)
 
         if not isinstance(input_ids, torch.Tensor):
-             raise TypeError(f"input_ids must be a torch.Tensor, got {type(input_ids)}")
+            raise TypeError(f"input_ids must be a torch.Tensor, got {type(input_ids)}")
 
         _processed_input_ids = input_ids
         _processed_attention_mask = attention_mask
 
-        if input_ids.ndim == 1: # Shape (seq_len,)
-            _processed_input_ids = input_ids.unsqueeze(0) # Convert to (1, seq_len)
+        if input_ids.ndim == 1:  # Shape (seq_len,)
+            _processed_input_ids = input_ids.unsqueeze(0)  # Convert to (1, seq_len)
             if attention_mask is not None and attention_mask.ndim == 1:
                 if attention_mask.shape[0] != input_ids.shape[0]:
                     raise ValueError(
@@ -445,34 +454,32 @@ class OrigWrapper:
                         f"does not match 1D input_ids length {input_ids.shape[0]}"
                     )
                 _processed_attention_mask = attention_mask.unsqueeze(0)
-        elif input_ids.ndim == 2: # Shape (possibly 1, seq_len)
+        elif input_ids.ndim == 2:  # Shape (possibly 1, seq_len)
             if input_ids.shape[0] != 1:
-                raise ValueError(
-                    f"For 2D input_ids, batch size must be 1. Got shape {input_ids.shape}"
-                )
+                raise ValueError(f"For 2D input_ids, batch size must be 1. Got shape {input_ids.shape}")
             if attention_mask is not None and attention_mask.ndim == 1:
-                 raise ValueError(
+                raise ValueError(
                     f"Cannot use 1D attention_mask with 2D input_ids. Mask shape: {attention_mask.shape}, "
                     f"Input shape: {input_ids.shape}"
-                 )
-        else: # ndim is 0 or > 2
+                )
+        else:  # ndim is 0 or > 2
             raise ValueError(
                 f"input_ids must be 1D (seq_len,) or 2D (1, seq_len). "
                 f"Got {input_ids.ndim}D tensor with shape {input_ids.shape}"
             )
-        
+
         # At this point, _processed_input_ids is (1, seq_len)
 
         if _processed_attention_mask is None and self.model.config.pad_token_id is not None:
             _processed_attention_mask = _processed_input_ids.ne(self.model.config.pad_token_id).long()
         elif _processed_attention_mask is not None:
             if not isinstance(_processed_attention_mask, torch.Tensor):
-                 raise TypeError(f"attention_mask must be a torch.Tensor or None, got {type(_processed_attention_mask)}")
-            
+                raise TypeError(f"attention_mask must be a torch.Tensor or None, got {type(_processed_attention_mask)}")
+
             is_valid_mask_shape = (
-                _processed_attention_mask.ndim == 2 and
-                _processed_attention_mask.shape[0] == 1 and
-                _processed_attention_mask.shape[1] == _processed_input_ids.shape[1]
+                _processed_attention_mask.ndim == 2
+                and _processed_attention_mask.shape[0] == 1
+                and _processed_attention_mask.shape[1] == _processed_input_ids.shape[1]
             )
             if not is_valid_mask_shape:
                 raise ValueError(
@@ -488,7 +495,7 @@ class OrigWrapper:
                 captured_layer_activations = output[0].detach()
             else:
                 captured_layer_activations = output.detach()
-            return output 
+            return output
 
         try:
             target_block = self.model.get_submodule(f"model.layers.{layer_idx}")
@@ -497,17 +504,17 @@ class OrigWrapper:
                 target_block = self.model.transformer.h[layer_idx]  # type: ignore[attr-defined]
             except AttributeError:
                 target_block = self.model.get_submodule(f"transformer.h.{layer_idx}")
-        
+
         handle = target_block.register_forward_hook(_capture_all_hook)
-        
+
         grad_ctx = torch.no_grad() if no_grad else nullcontext()
         with grad_ctx:
-            _ = self.model( 
+            _ = self.model(
                 input_ids=_processed_input_ids,
                 attention_mask=_processed_attention_mask,
-                output_hidden_states=False, 
+                output_hidden_states=False,
             )
-        
+
         handle.remove()
 
         if captured_layer_activations is None:
@@ -515,15 +522,15 @@ class OrigWrapper:
                 f"Hook did not capture activations from layer {layer_idx}. "
                 "This might indicate an issue with the model structure or hook registration."
             )
-        
+
         return captured_layer_activations.squeeze(0)
 
     def get_all_layers_activations_at_position(
         self,
-        input_ids: torch.Tensor, # Expected shape (seq_len,) or (1, seq_len)
+        input_ids: torch.Tensor,  # Expected shape (seq_len,) or (1, seq_len)
         position_to_analyze: int,
         *,
-        attention_mask: Optional[torch.Tensor] = None, # Expected shape (seq_len,) or (1, seq_len)
+        attention_mask: Optional[torch.Tensor] = None,  # Expected shape (seq_len,) or (1, seq_len)
         no_grad: bool = True,
     ) -> torch.Tensor:
         """
@@ -540,16 +547,16 @@ class OrigWrapper:
         Returns:
             torch.Tensor: Hidden states for the layer, shape (seq_len, hidden_dim).
         """
-        #self._validate_layer_idx(layer_idx)
+        # self._validate_layer_idx(layer_idx)
 
         if not isinstance(input_ids, torch.Tensor):
-             raise TypeError(f"input_ids must be a torch.Tensor, got {type(input_ids)}")
+            raise TypeError(f"input_ids must be a torch.Tensor, got {type(input_ids)}")
 
         _processed_input_ids = input_ids
         _processed_attention_mask = attention_mask
 
-        if input_ids.ndim == 1: # Shape (seq_len,)
-            _processed_input_ids = input_ids.unsqueeze(0) # Convert to (1, seq_len)
+        if input_ids.ndim == 1:  # Shape (seq_len,)
+            _processed_input_ids = input_ids.unsqueeze(0)  # Convert to (1, seq_len)
             if attention_mask is not None and attention_mask.ndim == 1:
                 if attention_mask.shape[0] != input_ids.shape[0]:
                     raise ValueError(
@@ -557,22 +564,20 @@ class OrigWrapper:
                         f"does not match 1D input_ids length {input_ids.shape[0]}"
                     )
                 _processed_attention_mask = attention_mask.unsqueeze(0)
-        elif input_ids.ndim == 2: # Shape (possibly 1, seq_len)
+        elif input_ids.ndim == 2:  # Shape (possibly 1, seq_len)
             if input_ids.shape[0] != 1:
-                raise ValueError(
-                    f"For 2D input_ids, batch size must be 1. Got shape {input_ids.shape}"
-                )
+                raise ValueError(f"For 2D input_ids, batch size must be 1. Got shape {input_ids.shape}")
             if attention_mask is not None and attention_mask.ndim == 1:
-                 raise ValueError(
+                raise ValueError(
                     f"Cannot use 1D attention_mask with 2D input_ids. Mask shape: {attention_mask.shape}, "
                     f"Input shape: {input_ids.shape}"
-                 )
-        else: # ndim is 0 or > 2
+                )
+        else:  # ndim is 0 or > 2
             raise ValueError(
                 f"input_ids must be 1D (seq_len,) or 2D (1, seq_len). "
                 f"Got {input_ids.ndim}D tensor with shape {input_ids.shape}"
             )
-        
+
         # At this point, _processed_input_ids is (1, seq_len)
 
         if _processed_attention_mask is None and self.model.config.pad_token_id is not None:
@@ -581,9 +586,9 @@ class OrigWrapper:
             if not isinstance(_processed_attention_mask, torch.Tensor):
                 raise TypeError(f"attention_mask must be a torch.Tensor or None, got {type(_processed_attention_mask)}")
             is_valid_mask_shape = (
-                _processed_attention_mask.ndim == 2 and
-                _processed_attention_mask.shape[0] == 1 and
-                _processed_attention_mask.shape[1] == _processed_input_ids.shape[1]
+                _processed_attention_mask.ndim == 2
+                and _processed_attention_mask.shape[0] == 1
+                and _processed_attention_mask.shape[1] == _processed_input_ids.shape[1]
             )
             if not is_valid_mask_shape:
                 raise ValueError(
@@ -601,6 +606,7 @@ class OrigWrapper:
                 else:
                     activations_by_layer.append(output.detach())
                 return output
+
             return _hook
 
         handles = []
@@ -664,11 +670,11 @@ class OrigWrapper:
         """Thread-safe lazy hook registration."""
         if layer_idx in self._registered_hooks:
             return
-            
+
         # Double-check pattern
         if layer_idx in self._registered_hooks:
             return
-            
+
         # Find the target layer
         try:
             target_block = self.model.get_submodule(f"model.layers.{layer_idx}")
@@ -677,13 +683,13 @@ class OrigWrapper:
                 target_block = self.model.transformer.h[layer_idx]
             except AttributeError:
                 target_block = self.model.get_submodule(f"transformer.h.{layer_idx}")
-        
+
         # Create a layer-specific hook
         def hook_fn(module, input, output):
             if self._hook_enabled.get(layer_idx, False):
                 return self._apply_swap(output, layer_idx)
             return output
-        
+
         # Register and store the handle
         self._registered_hooks[layer_idx] = target_block.register_forward_hook(hook_fn)
         self._hook_enabled[layer_idx] = False

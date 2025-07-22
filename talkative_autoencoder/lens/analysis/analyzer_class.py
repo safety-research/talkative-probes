@@ -192,7 +192,7 @@ class LensAnalyzer:
                     comparison_tl_checkpoint = self.config["verbose_samples"]["tuned_lens_checkpoint_path_or_name"]
             else:
                 raise ValueError("No config found in checkpoint")
-
+            print("model dtype", self.model_dtype)
             # Load tokenizer
             print(f"Loading tokenizer: {tokenizer_name}...")
             self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
@@ -242,6 +242,8 @@ class LensAnalyzer:
 
             encoder_config_obj = EncoderConfig(model_name=self.model_name, **encoder_train_cfg)
             self.encoder = Encoder(encoder_config_obj, base_to_use=self.shared_base_model)
+            if isinstance(different_activations_orig, str) and different_activations_orig==self.model_name:
+                different_activations_orig = None
             if different_activations_orig is not None:
                 if isinstance(different_activations_orig, str):
                     diff_model_str = different_activations_orig

@@ -1,0 +1,215 @@
+# Configuration for GPT-2 Frozen Base Model Experiment
+# This config trains consistency lens on GPT-2 with the base model frozen throughout
+
+defaults:
+  - config
+  - _self_
+
+# Training hyperparameters
+
+model_name: "google/gemma-2-9b"
+tokenizer_name: "google/gemma-2-9b"
+orig_model_name: "google/gemma-2-9b-it"
+orig_tokenizer_name: "${orig_model_name}"
+hf_dataset_name: "allenai/WildChat-1M"
+
+t_text: 8                       # Number of tokens to generate with the Decoder
+# decoder_prompt: "<|endoftext|>Short explanation of <embed>. Language, topic, senitment, claims, speaker, points and message, style and details, etc:"
+# # encoder_prompt: "<|endoftext|>Text to summarise:<text>. Concise summary of the text, covering the language, topic, sentiment, claims, speaker, points, message, style and details, etc:" # this is an error
+# # lm_loss_natural_prefix: "<|endoftext|>Short explanation of something. Language, topic, sentiment, claims, speaker, points, message, style and details, etc:"  # Natural language prefix for base model in LM loss
+decoder_prompt: "<bos>Short explanation of <embed>. Language, topic, sentiment, claims, speaker, style, etc:"
+encoder_prompt: "<bos>Summary of the text, encapsulating the main points and message, style and details:<text>" # this is an error
+lm_loss_natural_prefix: "<bos>Short explanation of something. Language, topic, sentiment, claims, speaker, style, etc:"  # Natural language prefix for base model in LM loss
+layer_l: 30
+
+
+skip_tokens_KL_GRPO: 3
+# Trainable components - FROZEN base model
+trainable_components:
+  decoder:
+    base_model: false                 # FROZEN throughout
+    projection_layer: true            # Train projection
+    eye_init: true
+    output_head: false                # Keep LM head frozen too
+    pos_embeddings: false
+    use_flash_attention: false
+    use_checkpointing: false
+    use_kv_cache: true
+    patch_all_layers: true
+    per_layer_projections: true 
+    use_dropout: false
+    use_gumbel_for_LMorig: false # shouldn't matter too much
+    projection_init_method: "default"  # Options: "default", "tuned_lens_composition"
+    projection_init_tl_comp_use_composed_bias: true
+    projection_init_tl_checkpoint: "/workspace/kitf/talkative-probes/talkative_autoencoder/tuned-lens/my_lenses/google/gemma-2-9b"
+    subtract_add_pos_embeddings: false 
+    extra_pos_embeddings: false
+    clamp_entropy: ${clamp_entropy} # deprecated - see schedule
+  encoder:
+    base_model: false                 # FROZEN throughout
+    pos_embeddings: false
+    use_base_model: true
+    projection_layer:  true           # Train projection
+    trainable_soft_prompt: true
+    eye_init: true
+    output_layer: 30 # this is the 7th layer, as this is the idx
+    soft_prompt_init_text: ${encoder_prompt}
+    use_dropout: false
+    subtract_add_pos_embeddings: false 
+    extra_pos_embeddings: false    
+    special_last_token_vector: true
+    add_current_token: true
+
+
+
+activation_dumper:
+  num_samples: -1               # 5M samples from OpenWebText
+  min_pos: 5
+  seq_len: 1024                        # Longer sequences for Gemma-2-2b
+  use_hf_dataset: true
+  hf_dataset_name: "${hf_dataset_name}"      # OpenWebText dataset
+  hf_split: "train"
+  dataset_cache_dir: "./data/corpus/${hf_dataset_name}"
+  output_dir: "./data/${hf_dataset_name}_train"
+  batch_size:  64                    # Large batch for dumping
+  # Validation split
+  val_hf_split: "train"               # OpenWebText only has train split
+  val_output_dir: "./data/${hf_dataset_name}_val"
+  val_num_samples: 5000       
+
+alpha_schedule: 
+  type: "constant"
+  value: 1.0
+
+num_train_epochs: 2                   # 2 epochs should be plenty for OpenWebText
+
+learning_rate: 1.0e-3
+# Learning rate scheduler
+lr_scheduler:
+  type: "cosine"                      # Cosine annealing works well
+  warmup_steps: "10os"                # 10 optimizer steps = ~320 micro-steps (with grad_accum=32)
+  warmup_start_factor: 0.0000001            # Start at 10% of target LR
+  eta_min: 1.0e-5   
+
+gumbel_tau_schedule:
+  start_value: 5.0
+  end_value: 0.1
+  constant_steps_before_decay: "512os"  # 31 optimizer steps = ~1000 micro-steps (with grad_accum=32)
+  type: "cosine_decay_after_constant"
+
+lm_base_weight: 0.001
+kl_base_weight: 0
+mse_weight: 0.000001
+
+# Entropy weight configuration
+entropy_weight: 0.0  # Static value (used if entropy_schedule is not defined)
+
+
+GRPO_beta_schedule:
+  type: "constant"
+  value: ${GRPO_beta}
+  constant_steps_before_decay: "400os"
+  start_value: ${GRPO_beta}
+  end_value: 0
+  num_steps: "1000os"
+
+
+entropy_clamp_schedule:
+  type: "linear_decay_after_constant"
+  constant_steps_before_decay: "1000s"
+  start_value: 2.0
+  end_value: 0.1
+  num_steps: "5000os"
+  value: 0.1
+
+attn_implementation: "eager" # apparently need this, https://huggingface.co/google/gemma-2-27b-it/discussions/22
+
+# Entropy weight schedule - dynamically adjust entropy bonus during training
+# Start with higher entropy to encourage diversity, then ramp down to avoid interfering with learning
+entropy_schedule:
+  type: constant
+  value: 1.0
+  #type: "linear_decay_after_constant"  # Keep high initially, then decay
+  #constant_steps_before_decay: "50os"  # Keep high entropy for 50 optimizer steps
+  #start_value: 1                   # Start with higher entropy bonus
+  #end_value:  0.1                    # Decay to smaller constant value
+  #num_steps: "1000os"                   # Total duration (50os constant + 150os decay)
+
+resample_ablation: false
+
+batch_size: 256
+gradient_accumulation_steps: 16
+
+custom_lr_multipliers:
+  overall_encoder: 0.1
+  base_models: 0.0
+
+freeze_schedule:
+  enabled: false                 # Enable freeze schedule
+  
+  # Global unfreeze timing (applies to all components unless overridden)
+  unfreeze_at: "256os"         # When to unfreeze non-adapter parameters
+                               # Examples: "1000s", "5e", "2000steps", "10epochs"
+  
+  # Warmup settings for newly unfrozen parameters
+  warmup_duration: "100os"      # Duration to warmup newly unfrozen parameters
+  warmup_start_factor: 0.0001    # Starting LR multiplier for warmup (1% of target LR)
+  # The learning rate will linearly increase from start_factor * lr to full lr over warmup_duration
+  
+  # Fine-grained component control with individual timing
+  # Each component can have its own unfreeze timing that overrides the global unfreeze_at
+  components:
+    decoder:
+      base_model:
+        enabled: null          # null = use trainable_components setting, true/false = override
+        unfreeze_at: null      # null = use global unfreeze_at, or specify like "500s", "3e"
+      output_head:
+        enabled: null
+        unfreeze_at: null      # Can unfreeze at different time than base_model
+      embedding_head:
+        enabled: null
+        unfreeze_at: null      # Embedding heads can have their own schedule
+    encoder:
+      base_model:
+        enabled: null
+        unfreeze_at: null
+      embedding_head:
+        enabled: null
+        unfreeze_at: null
+
+
+#Verbose samples for monitoring
+verbose_samples:
+  enabled: true
+  num_samples: 5
+  interval_type: "steps"
+  interval: 1000                    # Every 62 optimizer steps = ~1000 micro-steps
+  top_n_predictions: 5
+  generate_continuation: true
+  continuation_tokens: 50
+  compare_with_tuned_lens: false
+  tuned_lens_checkpoint_path_or_name: "/workspace/kitf/talkative-probes/talkative_autoencoder/tuned-lens/my_lenses/google/gemma-2-2b"
+
+
+
+do_kl_computation: false
+do_lm_computation: false
+
+# WandB configuration
+wandb:
+  project: "consistency-lens-gemma2-9b"
+  mode: "online"
+
+dataset:
+  # ... existing dataset configs like train_split, val_split ...
+  on_the_fly:
+    pretokenized_path: "/workspace/kitf/talkative-probes/talkative_autoencoder/data/pretokenized/google_gemma-2-9b_allenai_WildChat-1M_seq1024/" # 
+    generation_batch_size: 16
+    layer_l: ${layer_l}
+    samples_per_regeneration_cycle: 10000
+    training_initial_cache_size_per_rank: ${dataset.on_the_fly.samples_per_regeneration_cycle}
+    max_val_samples: 50000 # this is used
+
+  validation_samples_override: 50000
+  train_split: "train"
+  val_split: "validation"

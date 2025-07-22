@@ -130,6 +130,7 @@ class Decoder(nn.Module):
         for p in self.base.parameters():
             p.requires_grad_(cfg.base_model)
 
+        self.is_qwen2 = hasattr(self.base.config, "model_type") and "qwen2" in self.base.config.model_type.lower()
         self.is_gemma2 = hasattr(self.base.config, "model_type") and "gemma2" in self.base.config.model_type.lower()
         self.is_gemma3 = (
             hasattr(self.base.config, "model_type") and "gemma3" in self.base.config.model_type.lower()
@@ -241,9 +242,14 @@ class Decoder(nn.Module):
 
         input_emb_table = self.base.get_input_embeddings().weight
         output_emb_table = self.base.get_output_embeddings().weight
-        embeddings_tied = input_emb_table.data_ptr() == output_emb_table.data_ptr()
+        self.embeddings_tied = input_emb_table.data_ptr() == output_emb_table.data_ptr()
+        if not self.embeddings_tied:
+            log.warning(
+                "Embeddings are not tied - this is not supported! Given the current setup of passing embedding vectors, we simply set embeddings_tied to True."
+            )
+            self.embeddings_tied = True
 
-        if not embeddings_tied:
+        if not self.embeddings_tied:
             try:
                 output_embeddings = self.base.get_output_embeddings()
                 if output_embeddings is not None:
@@ -308,6 +314,7 @@ class Decoder(nn.Module):
         if self.base is not None:
             self.base.to(device)
         return self
+
     def forward(self, *args: Any, **kwargs: Any):  # noqa: D401
         raise NotImplementedError
 
@@ -574,12 +581,12 @@ class Decoder(nn.Module):
                     )
                 hidden_states = layer_outputs[0]
 
-        elif self.is_gemma:  # Matches "gemma2" in main_base.config.model_type
-            # --- Gemma-2 Style ---
+        elif self.is_gemma or self.is_qwen2:  # Matches "gemma2" in main_base.config.model_type
+            # --- Gemma-2/Qwen2 Style ---
             # main_base is likely Gemma2ForCausalLM, so main_base.model is Gemma2Model
-            gemma2_model = main_base.model
-            layers = gemma2_model.layers
-            final_norm = gemma2_model.norm
+            model_core = main_base.model
+            layers = model_core.layers
+            final_norm = model_core.norm
 
             if use_cache and past_key_values is None:
                 # Gemma2 uses HybridCache, but can also work with DynamicCache if that's what's passed.
@@ -596,36 +603,46 @@ class Decoder(nn.Module):
 
             # For Gemma-2, cache_position for mask creation is crucial.
             # If not provided by caller, compute it based on past_seen_tokens.
-            gemma2_cache_position = cache_position
-            if gemma2_cache_position is None:
+            model_cache_position = cache_position
+            if model_cache_position is None:
                 past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
-                gemma2_cache_position = torch.arange(
+                model_cache_position = torch.arange(
                     past_seen_tokens, past_seen_tokens + seq_length, device=device, dtype=torch.long
                 )
 
-            # Prepare mask arguments for Gemma-2 utilities
+            # Prepare mask arguments for Gemma-2/Qwen2 utilities
             mask_creation_kwargs = {
-                "config": gemma2_model.config,  # Use Gemma2Model's config
+                "config": model_core.config,  # Use Model's config
                 "input_embeds": hidden_states,
                 "attention_mask": attention_mask,  # User-provided 2D mask or None
-                "cache_position": gemma2_cache_position,
+                "cache_position": model_cache_position,
                 "past_key_values": past_key_values,
+                "position_ids": position_ids,
             }
+            if self.is_qwen2:
+                mask_creation_kwargs["position_ids"] = position_ids
+
             causal_mask_mapping = {
                 "full_attention": create_causal_mask(**mask_creation_kwargs),
-                "sliding_attention": create_sliding_window_causal_mask(**mask_creation_kwargs),
             }
+            if not self.is_qwen2 or (
+                self.is_qwen2 and hasattr(model_core, "has_sliding_layers") and model_core.has_sliding_layers
+            ):
+                causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(**mask_creation_kwargs)
+            # if hasattr(model_core, "has_sliding_layers") and model_core.has_sliding_layers:
+            #    causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(**mask_creation_kwargs)
 
             # if 'gemma3' not in gemma2_model.config.model_type:#this is only in gemma2, not gemma3
             # this is in both! Weirdly. Ok.
-            hidden_states = hidden_states * self.normalizer
+            if self.is_gemma:
+                hidden_states = hidden_states * self.normalizer
 
             if self.is_gemma3:
                 # create position embeddings to be shared across the decoder layers
-                position_embeddings_global = gemma2_model.rotary_emb(hidden_states, position_ids)
-                position_embeddings_local = gemma2_model.rotary_emb_local(hidden_states, position_ids)
+                position_embeddings_global = model_core.rotary_emb(hidden_states, position_ids)
+                position_embeddings_local = model_core.rotary_emb_local(hidden_states, position_ids)
             else:
-                position_embeddings = gemma2_model.rotary_emb(
+                position_embeddings = model_core.rotary_emb(
                     hidden_states, position_ids
                 )  # Use originally computed position_ids
 
@@ -651,7 +668,10 @@ class Decoder(nn.Module):
                             input_to_this_layer[:, embed_pos] = single_proj
 
                 # Select the correct mask based on the layer's attention type
-                current_attention_mask = causal_mask_mapping[layer_module.attention_type]
+                attention_type = (
+                    layer_module.attention_type if hasattr(layer_module, "attention_type") else "full_attention"
+                )
+                current_attention_mask = causal_mask_mapping[attention_type]
 
                 with self._maybe_disable_dropout():
                     if self.is_gemma3:
@@ -663,18 +683,22 @@ class Decoder(nn.Module):
                             position_ids=position_ids,  # Pass original position_ids for RoPE in attention
                             past_key_value=past_key_values,
                             use_cache=use_cache,
-                            cache_position=gemma2_cache_position,  # Pass the absolute cache_position
+                            cache_position=model_cache_position,  # Pass the absolute cache_position
                         )
                     else:
-                        layer_outputs = layer_module(
-                            input_to_this_layer,
-                            position_embeddings=position_embeddings,
-                            attention_mask=current_attention_mask,  # Pass the selected 4D mask
-                            position_ids=position_ids,  # Pass original position_ids for RoPE in attention
-                            past_key_value=past_key_values,
-                            use_cache=use_cache,
-                            cache_position=gemma2_cache_position,  # Pass the absolute cache_position
-                        )
+                        layer_kwargs = {
+                            "attention_mask": current_attention_mask,
+                            "position_ids": position_ids,
+                            "past_key_value": past_key_values,
+                            "use_cache": use_cache,
+                            "cache_position": model_cache_position,
+                        }
+                        if self.is_qwen2:
+                            layer_kwargs["position_embeddings"] = position_embeddings
+                        else:  # Gemma2
+                            layer_kwargs["position_embeddings"] = position_embeddings
+
+                        layer_outputs = layer_module(input_to_this_layer, **layer_kwargs)
                 hidden_states = layer_outputs[0]
 
         elif hasattr(main_base, "model"):  # Fallback for LLaMA-style if not Gemma2
@@ -845,11 +869,11 @@ class Decoder(nn.Module):
         # Get both input and output embedding tables
         input_emb_table = main_base.get_input_embeddings().weight
         output_emb_table = main_base.get_output_embeddings().weight
-        embeddings_tied = input_emb_table.data_ptr() == output_emb_table.data_ptr()
+        # embeddings_tied = input_emb_table.data_ptr() == output_emb_table.data_ptr()
 
         # Check if embeddings are tied (same memory location)
-        if not embeddings_tied or self.config.output_head:
-            raise ValueError("Embeddings are not tied or output head is trainable - this is not supported")
+        # if (not embeddings_tied or self.config.output_head) and self.config.end_to_end:
+        #     raise ValueError("Embeddings are not tied or output head is trainable - this is not supported")
 
         # 0) prepend textual prompt (pre-computed at set_prompt)
         parts = []
@@ -938,7 +962,7 @@ class Decoder(nn.Module):
             emb_t_input = ste_token_dist @ input_emb_table  # (B, d_model)
 
             # Use output embeddings for the encoder (or reuse input if tied)
-            if embeddings_tied:
+            if self.embeddings_tied:
                 emb_t_output = emb_t_input
             else:
                 emb_t_output = ste_token_dist @ output_emb_table  # (B, d_model)
@@ -1162,7 +1186,7 @@ class Decoder(nn.Module):
         # Get embedding tables
         input_emb_table = main_base.get_input_embeddings().weight
         output_emb_table = main_base.get_output_embeddings().weight
-        embeddings_tied = input_emb_table.data_ptr() == output_emb_table.data_ptr()
+        # embeddings_tied = input_emb_table.data_ptr() == output_emb_table.data_ptr()
         #  if not embeddings_tied or self.config.output_head:
         #     raise ValueError("Embeddings are not tied or output head is trainable - this is not supported")
 
@@ -1375,15 +1399,19 @@ class Decoder(nn.Module):
 
                 # Get embeddings
                 emb_t_input = ste_token_dist @ input_emb_table
-                if not embeddings_tied:
+                if not self.embeddings_tied and self.config.end_to_end:
+                    print("Warning - confusion between input/output emb table.")
+                    # raise ValueError("Warning - confusion between input/output emb table.")
                     emb_t_output = ste_token_dist @ output_emb_table
 
                 if self.is_gemma3:
                     hidden_states = hidden_states * self.normalizer
                     emb_t_input = emb_t_input * self.normalizer
-                    if not embeddings_tied:
+                    if not self.embeddings_tied and self.config.end_to_end:
+                        # raise ValueError("Sort this out")
+                        print("Sort htis out")
                         emb_t_output = emb_t_output * self.normalizer
-                if embeddings_tied:
+                if self.embeddings_tied:
                     emb_t_output = emb_t_input
 
                 # Store outputs
@@ -1438,7 +1466,7 @@ class Decoder(nn.Module):
             inputs_embeds = torch.cat(  # want the logits for these guys - the next tokens
                 [copy_of_last_of_last_hidden_state.unsqueeze(1), newembs], dim=1
             )
-            print("WTF???")
+            print("FIX - error here???")
 
             # For Gemma2, we need cache_position for the final forward pass
             if self.is_gemma3:
@@ -1588,7 +1616,7 @@ class Decoder(nn.Module):
 
         input_emb_table = main_base.get_input_embeddings().weight
         output_emb_table = main_base.get_output_embeddings().weight
-        embeddings_tied = input_emb_table.data_ptr() == output_emb_table.data_ptr()
+        # embeddings_tied = input_emb_table.data_ptr() == output_emb_table.data_ptr()
 
         parts = []
         if prompt_left_emb is not None:
@@ -1663,7 +1691,7 @@ class Decoder(nn.Module):
             "override_model_base_and_out": override_model_base_and_out,
             "input_emb_table": input_emb_table,
             "output_emb_table": output_emb_table,
-            "embeddings_tied": embeddings_tied,
+            "embeddings_tied": self.embeddings_tied,
             "config_for_cache": config_for_cache,
         }
         return hidden_states, past_key_values, context
@@ -1684,7 +1712,7 @@ class Decoder(nn.Module):
         override_model_base_and_out = context["override_model_base_and_out"]
         input_emb_table = context["input_emb_table"]
         output_emb_table = context["output_emb_table"]
-        embeddings_tied = context["embeddings_tied"]
+        # embeddings_tied = context["embeddings_tied"]
 
         if override_model_base_and_out is not None:
             main_model = override_model_base_and_out
@@ -1745,7 +1773,7 @@ class Decoder(nn.Module):
                 if self.is_gemma3:
                     emb_t_input = emb_t_input * self.normalizer
 
-                if embeddings_tied:
+                if self.embeddings_tied:
                     emb_t_output = emb_t_input
                 else:
                     emb_t_output = output_emb_table[hard_token_indices]
@@ -1969,7 +1997,6 @@ class Decoder(nn.Module):
 
         if hard_left_emb is not None:
             prompt_left_emb = main_base.get_input_embeddings().weight[hard_left_emb].clone()
-            # no need to scale, done in patched_forward
         else:
             prompt_left_emb = self.prompt_left_emb
         if hard_right_emb is not None:
@@ -2013,7 +2040,7 @@ class Decoder(nn.Module):
         # Get embedding tables
         input_emb_table = main_base.get_input_embeddings().weight
         output_emb_table = main_base.get_output_embeddings().weight
-        embeddings_tied = input_emb_table.data_ptr() == output_emb_table.data_ptr()
+        # embeddings_tied = input_emb_table.data_ptr() == output_emb_table.data_ptr()
         #  if not embeddings_tied or self.config.output_head:
         #     raise ValueError("Embeddings are not tied or output head is trainable - this is not supported")
 
@@ -2189,7 +2216,7 @@ class Decoder(nn.Module):
                 emb_t_input = input_emb_table[hard_token_indices]
                 if self.is_gemma3:
                     emb_t_input = emb_t_input * self.normalizer
-                if embeddings_tied:
+                if self.embeddings_tied:
                     emb_t_output = emb_t_input
                 else:
                     emb_t_output = output_emb_table[hard_token_indices]
@@ -2331,9 +2358,10 @@ class Decoder(nn.Module):
         # Get embedding tables
         input_emb_table = main_base.get_input_embeddings().weight
         output_emb_table = main_base.get_output_embeddings().weight
-        embeddings_tied = input_emb_table.data_ptr() == output_emb_table.data_ptr()
-        if not embeddings_tied:
-            raise ValueError("Embeddings are not tied - this is not supported")
+        # embeddings_tied = input_emb_table.data_ptr() == output_emb_table.data_ptr()
+        # if not embeddings_tied and self.config.end_to_end:
+        #    #print("Embeddings are not tied - this is not supported")
+        #    # raise ValueError("Embeddings are not tied - this is not supported")
 
         # Prepare initial sequence
         parts = []

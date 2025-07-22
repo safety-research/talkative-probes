@@ -1435,6 +1435,15 @@ def validate_distributed(
             # Determine if this batch should have heavy metrics computed
             is_heavy_batch = batch_idx < max_intervention_batches
 
+            if step == 0:
+                token_pos_s = batch["token_pos_A"]
+                token_chosen_ids = batch["input_ids_A"][:, token_pos_s]
+                pad_token_id = tokenizer.pad_token_id if hasattr(tokenizer, "pad_token_id") else None
+                if pad_token_id is not None and (token_chosen_ids == pad_token_id).any():
+                    log.warning("PAD token id encountered in token_chosen_ids during validation batch.")
+                elif pad_token_id is None:
+                    log.warning("No pad token id found in tokenizer during validation batch.")
+
             batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
             convert_batch_dtype(batch, config, device)
 
@@ -3877,16 +3886,16 @@ def main(cfg: DictConfig) -> None:
                 orig_model.to("cpu")
                 orig_model.model.to("cpu")
             if decoder.device != device:
+                log.info(f"Moved decoder to device {device} from {decoder.device}")
                 decoder.to(device)
-                log.info(f"Moved decoder to device {device}")
             if encoder.device != device:
+                log.info(f"Moved encoder to device {device} from {encoder.device}")
                 encoder.to(device)
-                log.info(f"Moved encoder to device {device}")
             if shared_base_model_obj.device != device:
+                log.info(f"Moved shared_base_model_obj to device {device} from {shared_base_model_obj.device}")
                 shared_base_model_obj.to(device)
-                log.info(f"Moved shared_base_model_obj to device {device}")
 
-            if step==0:
+            if step == 0:
                 log.info(f"Decoder device: {decoder.device}")
                 log.info(f"Encoder device: {encoder.device}")
                 log.info(f"Orig model device: {orig_model.model.device}")

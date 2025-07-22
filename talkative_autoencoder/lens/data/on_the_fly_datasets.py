@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import logging
+import random
 import sys  # For RankInMemoryTrainingCache logging fallback
-from collections import deque
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Tuple  # Added Callable
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple
 
 import torch
 import torch.distributed as dist
@@ -17,6 +17,40 @@ from lens.models.orig import OrigWrapper
 # from omegaconf import DictConfig # If we pass the hydra dict directly
 
 log = logging.getLogger(__name__)
+
+
+def _get_attn_mask(
+    sample_batch: List[Dict[str, Any]], tokenizer: PreTrainedTokenizer
+) -> List[List[int]]:
+    """Helper to get or create attention masks for a batch of samples."""
+    masks = []
+    for s in sample_batch:
+        if "attention_mask" in s and s["attention_mask"] is not None:
+            masks.append(
+                (torch.tensor(s["input_ids"]) != tokenizer.pad_token_id)
+                .long()
+                .tolist()
+            )
+            # if tokenizer.pad_token_id is not None and (torch.tensor(s["input_ids"]) == tokenizer.pad_token_id).any():
+            #     print(f"PAD token id encountered in attention mask during get attn mask batch.")
+            #     mask = s["attention_mask"]
+            #     input_ids_tensor = torch.tensor(s["input_ids"])
+            #     pad_mask = (input_ids_tensor == tokenizer.pad_token_id)
+            #     # Ensure mask is a tensor for assignment, then convert back to list
+            #     mask_tensor = torch.tensor(mask)
+            #     mask_tensor[pad_mask] = 0
+            #     masks.append(mask_tensor.tolist())
+            #     print('fixing')
+            # else:
+            #     masks.append(s["attention_mask"])
+        else:
+            # Create a mask assuming pad_token_id is defined
+            masks.append(
+                (torch.tensor(s["input_ids"]) != tokenizer.pad_token_id)
+                .long()
+                .tolist()
+            )
+    return masks
 
 
 def _dataset_log_fn(log_instance: logging.Logger, message: str, level: str = "info", rank: Optional[int] = None):
@@ -151,7 +185,6 @@ class InMemoryValidationDataset(Dataset):
         indices_A_all = list(range(num_samples_on_this_rank))
         indices_A_prime_all = indices_A_all[:]
         if num_samples_on_this_rank > 1:
-            import random
             random.shuffle(indices_A_prime_all)
             for i in range(num_samples_on_this_rank):
                 if indices_A_all[i] == indices_A_prime_all[i]:
@@ -176,17 +209,8 @@ class InMemoryValidationDataset(Dataset):
                 batch_input_ids_A_list = [s["input_ids"] for s in batch_samples_A]
                 batch_input_ids_A_prime_list = [s["input_ids"] for s in batch_samples_A_prime]
 
-                def get_attn_mask(sample_batch: List[Dict[str, Any]], tokenizer: PreTrainedTokenizer) -> List[List[int]]:
-                    masks = []
-                    for s in sample_batch:
-                        if "attention_mask" in s and s["attention_mask"] is not None:
-                            masks.append(s["attention_mask"])
-                        else:
-                            masks.append((torch.tensor(s["input_ids"]) != tokenizer.pad_token_id).long().tolist())
-                    return masks
-
-                batch_attn_mask_A_list = get_attn_mask(batch_samples_A, self.tokenizer)
-                batch_attn_mask_A_prime_list = get_attn_mask(batch_samples_A_prime, self.tokenizer)
+                batch_attn_mask_A_list = _get_attn_mask(batch_samples_A, self.tokenizer)
+                batch_attn_mask_A_prime_list = _get_attn_mask(batch_samples_A_prime, self.tokenizer)
 
                 batch_input_ids_A_device = torch.tensor(batch_input_ids_A_list, dtype=torch.long, device=self.generation_device)
                 batch_input_ids_A_prime_device = torch.tensor(batch_input_ids_A_prime_list, dtype=torch.long, device=self.generation_device)
@@ -285,6 +309,7 @@ class RankInMemoryTrainingCache(Dataset):
         self.min_pos = self.config['min_pos']
         self.generation_batch_size = self.config.get('generation_batch_size', 32)
         self.position_selection_strategy = self.config.get('position_selection_strategy', 'random')
+        logger.info("Position selection strategy: %s", self.position_selection_strategy)
 
         self.data_store: List[Dict[str, Any]] = []
         self.total_samples_in_pretokenised_dataset = 0
@@ -298,7 +323,6 @@ class RankInMemoryTrainingCache(Dataset):
         
         # Initialise index order if shard loaded
         if self.pretok_dataset_shard is not None:
-            import random
             self._shuffled_indices = list(range(len(self.pretok_dataset_shard)))
             random.shuffle(self._shuffled_indices)
         
@@ -337,7 +361,6 @@ class RankInMemoryTrainingCache(Dataset):
         if self.pretok_dataset_shard is None or n <= 0:
             return []
 
-        import random
         out: List[int] = []
         while len(out) < n:
             remaining = len(self._shuffled_indices) - self._cursor
@@ -391,16 +414,7 @@ class RankInMemoryTrainingCache(Dataset):
                 batch_indices = indices_to_use[generated_count : generated_count + self.generation_batch_size]
                 batch_samples = [self.pretok_dataset_shard[i] for i in batch_indices]  # type: ignore
                 
-                def get_attn_mask(sample_batch: List[Dict[str, Any]], tokenizer: PreTrainedTokenizer) -> List[List[int]]:
-                    masks = []
-                    for s in sample_batch:
-                        if "attention_mask" in s and s["attention_mask"] is not None:
-                            masks.append(s["attention_mask"])
-                        else:
-                            masks.append((torch.tensor(s["input_ids"]) != tokenizer.pad_token_id).long().tolist())
-                    return masks
-
-                batch_attn_mask_list = get_attn_mask(batch_samples, self.tokenizer)
+                batch_attn_mask_list = _get_attn_mask(batch_samples, self.tokenizer)
                 batch_input_ids_tensor = torch.tensor([s['input_ids'] for s in batch_samples], dtype=torch.long, device=self.generation_device)
                 batch_attn_mask_tensor = torch.tensor(batch_attn_mask_list, dtype=torch.long, device=self.generation_device)
                 # add check for empty tensors

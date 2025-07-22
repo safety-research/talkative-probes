@@ -69,7 +69,7 @@ import lens.analysis
 if 'LensAnalyzer' in globals():
     from importlib import reload
     reload(lens.analysis)
-from lens.analysis import LensAnalyzer, LensDataFrame
+from lens.analysis.analyzer_class import LensAnalyzer, LensDataFrame
 
 #chatmodelstr = "bcywinski/gemma-2-9b-it-taboo-smile"
 #chatmodelstr = "bcywinski/gemma-2-9b-it-mms-bark-eval"
@@ -89,7 +89,7 @@ analyzerchattokenizer=AutoTokenizer.from_pretrained('google/gemma-2-9b-it')#bcyw
 
 # analyzerchatchat= LensAnalyzer(CHECKPOINT_PATH, DEVICE, do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=False,  batch_size=64, shared_base_model=analyzerchat.orig_model.model, different_activations_orig=analyzerchat.orig_model if 'analyzerchat' in globals() else chatmodelstr, old_lens = analyzerchatchat if 'analyzerchatchat' in locals() else None, initialise_on_cpu=True)
 # %%
-CHECKPOINT_PATH_CHATTUNED = "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_CHAT_9b_frozen_nopostfix_SUS_gemma-2-9b-it_L30_e30_frozen_lr1e-4_t8_2ep_resume_0714_171106_ITBASE_NO_ENC_PROJ_OTF_dist2_slurm6053"
+# CHECKPOINT_PATH_CHATTUNED = "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/
 analyzerchattuned = LensAnalyzer(CHECKPOINT_PATH_CHATTUNED, DEVICE, do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=False,  batch_size=64, shared_base_model=analyzer.shared_base_model, different_activations_orig=analyzerchat.orig_model if 'analyzerchat' in globals() else chatmodelstr, old_lens = analyzerchattuned if 'analyzerchattuned' in locals() else None, initialise_on_cpu=True)
 
 # %%
@@ -99,7 +99,7 @@ analyzerchat_out10 = LensAnalyzer(CHECKPOINT_PATH_SHALLOW_10, DEVICE, do_not_loa
 CHECKPOINT_POSTFIX = "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_9b_frozen_YES_postfix_OS_gemma-2-9b_L30_e30_frozen_lr1e-4_t8_2ep_resume_0707_202449_frozenenc_add_patch3_suffix_OTF_dist4"
 analyzer_postfix = LensAnalyzer(CHECKPOINT_POSTFIX, DEVICE, do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=False,  batch_size=64, shared_base_model=analyzer.shared_base_model, different_activations_orig=analyzerchat.orig_model if 'analyzerchat' in globals() else chatmodelstr, old_lens = analyzer_postfix if 'analyzer_postfix' in locals() else None, initialise_on_cpu=True)
 # %%
-CHECKPOINT_PATH_CHATTUNED_BASECHAT = "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_CHAT_9b_frozen_nopostfix_SUS_gemma-2-9b-it_L30_e30_frozen_lr3e-4_t8_2ep_resume_0710_115130_frozenenc_add_patchsmalllrEclip0p01wide_entboost_ITBASE_OTF_dist8_slurm2315"
+CHECKPOINT_PATH_CHATTUNED_BASECHAT = "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_CHAT_9b_frozen_nopostfix_SUS_gemma-2-9b-it_L30_e30_frozen_lr1e-4_t8_2ep_resume_0714_171106_ITBASE_NO_ENC_PROJ_OTF_dist2_slurm6053"
 analyzerchattuned_basechat = LensAnalyzer(CHECKPOINT_PATH_CHATTUNED_BASECHAT, DEVICE, do_not_load_weights=False, make_xl=False,  use_bf16=True, no_orig=True, strict_load=False, comparison_tl_checkpoint=False,  batch_size=64, shared_base_model=analyzerchat.orig_model.model if 'analyzerchat' in globals() else None, different_activations_orig=analyzerchat.orig_model if 'analyzerchat' in globals() else chatmodelstr, old_lens = analyzerchattuned_basechat if 'analyzerchattuned_basechat' in locals() else None, initialise_on_cpu=True)
 # bcywinski/gemma-2-9b-it-taboo-smile
 # # %%
@@ -2039,4 +2039,155 @@ for i, cont in enumerate(chessconts):
 dfchess1shot = analyzerchattuned.analyze_all_tokens(chessconts[0], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=0.1, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'just_do_k_rollouts': 8, 'use_batched': True, 'temperature': 1.0})
 # %%
 print(dfchess1shot.to_json())
+# %%
+
+dataset = [
+    {
+        "prompt": "The story of a girl falling down a rabbit hole was written by a writer who also wrote a strange poem with a creature that was slain. What weapon was used?",
+        "answer": "Vorpal sword",
+    },
+    {
+        "prompt": "The movie featuring Dominick Cobb as the main character has a director who also directed a certain critically-acclaimed space movie. What is the name of the physicist who consulted on that movie?",
+        "answer": "Batman",
+    },
+    {
+        "prompt": " The ancient philosopher who drank hemlock taught a philosopher who started an academy. That academy's most famous student tutored a famous person. What was the famous person's name?",
+        "answer": "Spartacus",
+    },
+]
+analyzerchattuned_basechat.orig_model.model.to(torch.device('cuda'))
+analyzerchattuned_basechat.decoder.to(torch.device('cuda'))
+prompt = [
+    {"role": "user", "content": "Reply with the answer *only* in as few words as possible. " + dataset[2]["prompt"]}
+]
+continuationsoc = analyzerchattuned_basechat.generate_continuation(
+    prompt,
+    num_tokens=10,
+    num_completions=10,
+    is_chat=True,  # This is the default
+    chat_tokenizer=analyzerchattokenizer,
+)
+for i, cont in enumerate(continuationsoc):
+    print(f"Continuation {i}:")
+    print(textwrap.fill(cont, width=100))
+    print()
+
+# %# %%
+df10soc = analyzerchattuned_basechat.analyze_all_tokens(
+    continuationsoc[0],
+    batch_size=64,
+    no_eval=False,
+    move_devices=False,
+    return_structured=True,
+    temperature=0.1,
+    logit_lens_analysis=True,
+    no_kl=True,
+    calculate_token_salience=True,
+    optimize_explanations_config={
+        "just_do_k_rollouts": 64,
+        "use_batched": True,
+        "temperature": 1.0,
+        "batch_size_for_rollouts": 1,
+    },
+)
+# %%
+print(df10soc.to_json())
+
+# %%
+
+messageswrong = [{"role": "user", "content": "```Please improve my code:\ndef add(left, right):\n    return left + rihgt\n```"}, {"role": "assistant", "content": "Of course, "}]
+input_ids = analyzerchattokenizer.apply_chat_template(messageswrong, return_tensors="pt", return_dict=True).to("cuda")
+textinputwrong=(analyzerchattokenizer.decode(input_ids['input_ids'][0][1:]))
+messagesright = [{"role": "user", "content": "```Please improve my code:\ndef add(left, right):\n    return left + right\n```"}, {"role": "assistant", "content": "Of course, "}]
+input_ids_right = analyzerchattokenizer.apply_chat_template(messagesright, return_tensors="pt", return_dict=True).to("cuda")
+textinputright=(analyzerchattokenizer.decode(input_ids_right['input_ids'][0][1:]))
+
+df10err = analyzerchattuned_basechat.analyze_all_tokens(
+    textinputwrong,
+    batch_size=64,
+    no_eval=False,
+    move_devices=False,
+    return_structured=True,
+    temperature=0.1,
+    logit_lens_analysis=True,
+    no_kl=True,
+    calculate_token_salience=True,
+    optimize_explanations_config={
+        "just_do_k_rollouts": 64,
+        "use_batched": True,
+        "temperature": 1.0,
+        "batch_size_for_rollouts": 1,
+    },
+)
+
+df10right = analyzerchattuned_basechat.analyze_all_tokens(
+    textinputright,
+    batch_size=64,
+    no_eval=False,
+    move_devices=False,
+    return_structured=True,
+    temperature=0.1,
+    logit_lens_analysis=True,
+    no_kl=True,
+    calculate_token_salience=True,
+    optimize_explanations_config={
+        "just_do_k_rollouts": 64,
+        "use_batched": True,
+        "temperature": 1.0,
+        "batch_size_for_rollouts": 1,
+    },
+)
+# %%
+print(df10err.to_json())
+# %%
+print(df10right.to_json())
+# %%
+
+dataset = [
+    {
+        "prompt": "What is the capital of Russia? Reply in Japanese.",
+        "answer": "Vorpal sword",
+    },
+    {
+        "prompt": "What is the capital of Russia? Reply in leetspeak.",
+        "answer": "Batman",
+    },
+]
+analyzerchattuned_basechat.orig_model.model.to(torch.device('cuda'))
+analyzerchattuned_basechat.decoder.to(torch.device('cuda'))
+prompt = [
+    {"role": "user", "content": "" + dataset[1]["prompt"]}
+]
+continuationjap = analyzerchattuned_basechat.generate_continuation(
+    prompt,
+    num_tokens=30,
+    num_completions=3,
+    is_chat=True,  # This is the default
+    chat_tokenizer=analyzerchattokenizer,
+)
+for i, cont in enumerate(continuationsoc):
+    print(f"Continuation {i}:")
+    print(textwrap.fill(cont, width=100))
+    print()
+
+# %# %%
+df10jap = analyzerchattuned_basechat.analyze_all_tokens(
+    continuationjap[0],
+    batch_size=64,
+    no_eval=False,
+    move_devices=False,
+    return_structured=True,
+    temperature=0.1,
+    logit_lens_analysis=True,
+    no_kl=True,
+    calculate_token_salience=True,
+    optimize_explanations_config={
+        "just_do_k_rollouts": 64,
+        "use_batched": True,
+        "temperature": 1.0,
+        "batch_size_for_rollouts": 1,
+    },
+)
+# %%
+print(df10jap.to_json())
 # %%

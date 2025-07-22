@@ -210,6 +210,7 @@ def do_pretokenize(cfg: DictConfig):
                 max_length=seq_len,
                 return_special_tokens_mask=False,
                 add_special_tokens=False,
+                return_attention_mask=True,
             )
 
     else:  # data_format == 'text'
@@ -221,6 +222,7 @@ def do_pretokenize(cfg: DictConfig):
                 truncation=True,
                 max_length=seq_len,
                 return_special_tokens_mask=False,  # Save space
+                return_attention_mask=True,
             )
 
     # Print an example of the tokenized output for inspection
@@ -228,6 +230,8 @@ def do_pretokenize(cfg: DictConfig):
         example = sample_dataset[0]
         example_tokenized = tokenize_function({input_column: [example[input_column]]})
         log.info(f"Example tokenized output: {example_tokenized}")
+        example_decoded = tokenizer.decode(example_tokenized["input_ids"][0], skip_special_tokens=False)
+        log.info(f"Example decoded output: {example_decoded}")
     except Exception as e:
         log.error(f"Error printing example tokenized output: {e}")
 

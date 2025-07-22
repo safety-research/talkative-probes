@@ -198,7 +198,7 @@ def print_verbose_sample_details(
         print("Loss Components for this sample:")
         print(f"  Total Loss: {sample_losses['total']:.4f}")
         print(
-            f"  - MSE Loss (A_i vs A_hat): {sample_losses['mse']:.4f} (weighted: {sample_losses['mse_weighted']:.4f}) (squared norm of A_i: {torch.norm(sample_losses['A_single'])**2 if hasattr(sample_losses, 'A_single') else 'N/A'}:.4f)"
+            f"  - MSE Loss (A_i vs A_hat): {sample_losses['mse']:.4f} (weighted: {sample_losses['mse_weighted']:.4f}) (squared norm of A_i: {torch.norm(sample_losses['A_single']) ** 2 if hasattr(sample_losses, 'A_single') else 'N/A'}:.4f)"
         )
         print(
             f"  - LM Loss (KL[P_Orig||P_Dec]): {sample_losses['lm']:.4f} (weighted: {sample_losses['lm_weighted']:.4f})"
@@ -991,8 +991,8 @@ def process_and_print_verbose_batch_samples(
             displayed_prefix_tokens = [escape_newlines(tok.decode([tid])) for tid in displayed_raw_ids]
             displayed_positions = [str(k) for k in range(display_start_idx, display_end_idx)]
 
-            crop_start_idx = max(0, p - 100)
-            crop_end_idx = min(len(raw_prefix_ids), p + 30 + 1)
+            crop_start_idx = max(0, p - 500)
+            crop_end_idx = min(len(raw_prefix_ids), p + 100 + 1)
             before_p = tok.decode(raw_prefix_ids[crop_start_idx:p]) if p > crop_start_idx else ""
             token_at_p_val = tok.decode([raw_prefix_ids[p]]) if p < len(raw_prefix_ids) else ""
             after_p = tok.decode(raw_prefix_ids[p + 1 : crop_end_idx]) if p + 1 < crop_end_idx else ""
