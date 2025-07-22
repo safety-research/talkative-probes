@@ -76,8 +76,8 @@ setup:
 		echo "Removed bitsandbytes and cairosvg for B200 compatibility"; \
 		echo "Installing PyTorch and markupsafe..."; \
 		. ./scripts/ensure_env.sh && \
-		uv add torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu128 && \
-		uv add "markupsafe==2.1.3"; \
+		uv add "markupsafe==2.1.3" && \
+		uv add torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu128 ; \
 	fi
 	@# Login to wandb if API key is available (source .env first)
 	@if [ -f .env ]; then \
