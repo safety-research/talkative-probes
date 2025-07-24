@@ -355,7 +355,7 @@ document.addEventListener('DOMContentLoaded', () => {
             elements.outputPlaceholder.classList.remove('hidden');
             elements.outputTable.classList.add('hidden');
             elements.transposedView.classList.add('hidden');
-            elements.fullTextContainer.classList.add('hidden');
+            elements.fullTextPlaceholder.classList.remove('hidden');
             elements.navigationContainer.classList.add('hidden');
             elements.displayControls.classList.add('hidden');
             elements.controlsSeparator.classList.add('hidden');
@@ -368,6 +368,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         elements.outputPlaceholder.classList.add('hidden');
         elements.fullTextContainer.classList.remove('hidden');
+        elements.fullTextPlaceholder.classList.add('hidden');
         elements.displayControls.style.display = 'flex';
         elements.controlsSeparator.classList.remove('hidden');
         
@@ -377,13 +378,18 @@ document.addEventListener('DOMContentLoaded', () => {
             container: elements.metadataDisplay
         });
         
-        VisualizationCore.createColumnToggleUI({
-            container: elements.columnToggleContainer,
-            columnVisibility: columnVisibility,
-            onChange: (column, visible) => {
-                updateColumnVisibility();
-            }
-        });
+        // Only show column toggles in table view
+        if (!isTransposed) {
+            VisualizationCore.createColumnToggleUI({
+                container: elements.columnToggleContainer,
+                columnVisibility: columnVisibility,
+                onChange: (column, visible) => {
+                    updateColumnVisibility();
+                }
+            });
+        } else {
+            elements.columnToggleContainer.innerHTML = '';
+        }
         
         VisualizationCore.renderFullTextBox({
             data: currentItem.data,
@@ -575,7 +581,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 processData(content);
             }
         } else {
-            processData('');
+            // Initialize empty state
+            render();
         }
     })();
 });

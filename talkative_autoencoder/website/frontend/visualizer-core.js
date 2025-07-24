@@ -112,12 +112,21 @@ const VisualizationCore = (function() {
     const renderFullTextBox = (config) => {
         const { data, container, salienceColoringEnabled = false } = config;
         
+        // Clear container but preserve the placeholder if it exists
+        const existingPlaceholder = container.querySelector('#full-text-placeholder');
         container.innerHTML = '';
+        
         if (!data || data.length === 0) {
-            const placeholder = document.createElement('p');
-            placeholder.className = 'text-slate-500';
-            placeholder.textContent = 'Full text will appear here after visualizing.';
-            container.appendChild(placeholder);
+            if (existingPlaceholder) {
+                existingPlaceholder.classList.remove('hidden');
+                container.appendChild(existingPlaceholder);
+            } else {
+                const placeholder = document.createElement('p');
+                placeholder.id = 'full-text-placeholder';
+                placeholder.className = 'text-slate-500';
+                placeholder.textContent = 'Full text will appear here after visualizing.';
+                container.appendChild(placeholder);
+            }
             return;
         }
         
@@ -395,6 +404,9 @@ const VisualizationCore = (function() {
         const { container, columnVisibility, onChange } = config;
         
         container.innerHTML = '';
+        
+        // Remove any existing dropdowns
+        document.querySelectorAll('#column-toggle-dropdown').forEach(el => el.remove());
         
         const toggleButton = document.createElement('button');
         toggleButton.className = "px-4 py-2 text-sm secondary-btn font-semibold rounded-lg shadow-sm transition-all duration-200 transform hover:scale-105 flex items-center gap-2";
