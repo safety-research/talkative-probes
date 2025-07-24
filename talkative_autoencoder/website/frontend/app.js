@@ -21,7 +21,7 @@ if (window.location.port === '3001') {
 } else if (window.location.hostname.includes('kitft')) {
     // kitft.github.io deployment - needs to connect to RunPod backend
     // This will be replaced by deploy-frontend make target with actual RunPod URL
-    API_URL = 'https://a88b21597f7b-8000.proxy.runpod.net';
+    API_URL = 'https://lzl87kptd5n85n-8000.proxy.runpod.net';
 } else {
     API_URL = window.location.origin;
 }
