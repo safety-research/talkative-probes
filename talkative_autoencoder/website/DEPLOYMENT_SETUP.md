@@ -73,6 +73,35 @@ git push
 
 Watch the Actions tab in both repositories to see the automation in action!
 
+## Local Development Tips
+
+### Running in Cursor
+
+1. **Always start with environment setup**:
+   ```bash
+   cd /workspace/kitf/talkative-probes
+   source scripts/ensure_env.sh
+   cd talkative_autoencoder/website
+   ```
+
+2. **Start the demo**:
+   ```bash
+   make demo  # Starts both backend (port 8000) and frontend (port 3000)
+   ```
+
+3. **Access the frontend in Cursor**:
+   - When the server starts, Cursor shows a notification
+   - Click "Open in Browser" in the popup
+   - Or use Cmd/Ctrl+Shift+P → "Ports: Focus on Ports View" → Click globe icon for port 3000
+
+4. **Backend API docs**: http://localhost:8000/docs
+
+### Common Issues
+
+- **"uv: command not found"**: You forgot to run `source scripts/ensure_env.sh`
+- **Module import errors**: Same issue - source the environment script
+- **Port already in use**: Kill existing processes with `pkill -f "python3 -m http.server"`
+
 ## How It Works
 
 1. When you push changes to `talkative_autoencoder/website/frontend/**` in talkative-probes

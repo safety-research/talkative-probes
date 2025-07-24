@@ -6,336 +6,314 @@
     <title>Consistency Lens - Talkative Autoencoder</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        body {
-            font-family: 'Inter', sans-serif;
-            background-color: #F9F5F0;
-            color: #5D4037;
-        }
-
-        /* Custom scrollbar */
-        ::-webkit-scrollbar { width: 8px; height: 8px; }
-        ::-webkit-scrollbar-track { background: #EFEBE9; }
-        ::-webkit-scrollbar-thumb { background: #D7CCC8; border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: #BCAAA4; }
-        
-        .token-box-container {
-            display: inline-block;
-            position: relative;
-            vertical-align: bottom;
-            border: 1px solid #D7CCC8;
-            background-color: white;
-            padding: 2px 6px;
-            margin: 2px;
-            border-radius: 4px;
-        }
-
-        .token-box {
-            line-height: 1.5;
-        }
-        
-        .tooltip {
-            position: absolute;
-            bottom: 100%;
-            left: 50%;
-            transform: translateX(-50%) translateY(-8px);
-            background-color: #3E2723;
-            color: white;
-            padding: 8px 12px;
-            border-radius: 6px;
-            font-size: 14px;
-            font-family: 'Inter', sans-serif;
-            white-space: pre-wrap;
-            word-break: break-word;
-            width: max-content; 
-            max-width: 300px;
-            z-index: 20;
-            visibility: hidden;
-            opacity: 0;
-            transition: opacity 0.2s, visibility 0.2s;
-        }
-
-        .token-box-container:hover .tooltip {
-            visibility: visible;
-            opacity: 1;
-        }
-        
-        .rotated-token-wrapper {
-            position: relative;
-            height: 120px;
-            width: 100%;
-        }
-
-        .rotated-token {
-            position: absolute;
-            bottom: 10px;
-            left: 0;
-            transform: rotate(-15deg) translate(3px,0);
-            transform-origin: bottom left;
-            white-space: nowrap;
-            font-size: 0.8rem;
-            z-index: 10;
-        }
-        
-        .explanation-word {
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-
-        .primary-btn {
-            background-color: #E65100; color: white;
-            font-weight: 600; border-radius: 0.5rem;
-            transition: all 0.2s;
-        }
-        .primary-btn:hover { background-color: #BF360C; }
-        
-        .secondary-btn {
-            background-color: white; border: 1px solid #D7CCC8; color: #5D4037;
-            font-weight: 600; border-radius: 0.5rem;
-            transition: all 0.2s;
-        }
-        .secondary-btn:hover { border-color: #BCAAA4; background-color: #F5F5F5; }
-        .secondary-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-        .parameter-section {
-            background: #EFEBE9;
-            border-radius: 8px;
-            padding: 1rem;
-            margin-bottom: 1rem;
-        }
-
-        .loading {
-            display: none;
-        }
-        .loading.active {
-            display: block;
-        }
-
-        .error-message {
-            background-color: #fee;
-            border: 1px solid #fcc;
-            padding: 10px;
-            border-radius: 5px;
-            margin-top: 10px;
-        }
-
-        #advancedSettings {
-            transition: max-height 0.3s ease-out;
-            overflow: hidden;
-        }
-        #advancedSettings.collapsed {
-            max-height: 0;
-        }
-        #advancedSettings.expanded {
-            max-height: 2000px;
-        }
-
-        .resize-handle {
-            position: absolute;
-            top: 0;
-            right: -4px;
-            width: 8px;
-            height: 100%;
-            cursor: col-resize;
-            z-index: 10;
-        }
-        
-        #output-table th {
-            position: relative;
-        }
-    </style>
+    <link rel="stylesheet" href="visualizer-styles.css">
 </head>
 <body class="antialiased">
-    <div class="container mx-auto px-4 py-8 max-w-7xl">
-        <h1 class="text-3xl font-bold mb-8 text-center text-[#5D4037]">Consistency Lens - Talkative Autoencoder</h1>
-        
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            <!-- Input & Parameters Section -->
-            <div class="lg:col-span-1">
-                <div class="bg-white rounded-lg shadow-md p-6">
-                    <h2 class="text-xl font-semibold mb-4">Input Text</h2>
-                    <textarea id="inputText" 
-                        class="w-full h-32 p-3 border rounded-md resize-none bg-transparent text-[#5D4037] border-slate-200 focus:ring-2 focus:ring-orange-500"
-                        placeholder="Enter text to analyze...">The capital of France is Paris.</textarea>
-                    
-                    <!-- Basic Settings -->
-                    <div class="parameter-section mt-4">
-                        <h3 class="font-semibold mb-3">Optimization Settings</h3>
-                        
-                        <div class="mb-3">
-                            <label class="block text-sm font-medium mb-1">Number of Rollouts (k)</label>
-                            <input type="range" id="kRollouts" min="1" max="64" value="8" class="w-full">
-                            <div class="flex justify-between text-xs text-gray-600">
-                                <span>1</span>
-                                <span id="kRolloutsValue" class="font-medium">8</span>
-                                <span>64</span>
-                            </div>
-                            <p class="text-xs text-gray-500 mt-1">More rollouts = better explanations but slower</p>
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label class="block text-sm font-medium mb-1">Batch Size</label>
-                            <div class="flex items-center">
-                                <input type="checkbox" id="autoBatchSize" checked class="mr-2">
-                                <label for="autoBatchSize" class="text-sm">Auto-calculate (256 ÷ k)</label>
-                            </div>
-                            <input type="number" id="batchSize" min="1" max="256" value="32" 
-                                class="w-full mt-2 p-2 border rounded" disabled>
-                            <p id="batchSizeInfo" class="text-xs text-gray-500 mt-1">Auto-calculated: 32</p>
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label class="block text-sm font-medium mb-1">Temperature</label>
-                            <input type="range" id="temperature" min="0.1" max="2.0" step="0.1" value="1.0" class="w-full">
-                            <div class="flex justify-between text-xs text-gray-600">
-                                <span>0.1</span>
-                                <span id="temperatureValue" class="font-medium">1.0</span>
-                                <span>2.0</span>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- Advanced Settings Toggle -->
-                    <button id="advancedToggle" class="text-blue-600 text-sm mb-3">
-                        ▶ Show Advanced Settings
-                    </button>
-                    
-                    <!-- Advanced Settings -->
-                    <div id="advancedSettings" class="collapsed">
-                        <div class="parameter-section">
-                            <h3 class="font-semibold mb-3">Analysis Options</h3>
-                            
-                            <div class="grid grid-cols-2 gap-3">
-                                <label class="flex items-center">
-                                    <input type="checkbox" id="calculateSalience" checked class="mr-2">
-                                    <span class="text-sm">Calculate Salience</span>
-                                </label>
-                                
-                                <label class="flex items-center">
-                                    <input type="checkbox" id="tunedLens" checked class="mr-2">
-                                    <span class="text-sm">Tuned Lens</span>
-                                </label>
-                                
-                                <label class="flex items-center">
-                                    <input type="checkbox" id="logitLens" class="mr-2">
-                                    <span class="text-sm">Logit Lens</span>
-                                </label>
-                                
-                                <label class="flex items-center">
-                                    <input type="checkbox" id="noEval" class="mr-2">
-                                    <span class="text-sm">Skip Evaluation</span>
-                                </label>
-                                
-                                <label class="flex items-center">
-                                    <input type="checkbox" id="noKL" class="mr-2">
-                                    <span class="text-sm">Skip KL Divergence</span>
-                                </label>
-                                
-                                <label class="flex items-center">
-                                    <input type="checkbox" id="doHardTokens" class="mr-2">
-                                    <span class="text-sm">Hard Tokens</span>
-                                </label>
-                            </div>
-                            
-                            <div class="mt-3">
-                                <label class="block text-sm font-medium mb-1">Random Seed</label>
-                                <input type="number" id="seed" value="42" class="w-full p-2 border rounded">
-                            </div>
-                        </div>
-                        
-                        <div class="parameter-section">
-                            <h3 class="font-semibold mb-3">Rollout Settings</h3>
-                            
-                            <div class="mb-3">
-                                <label class="block text-sm font-medium mb-1">Rollout Batch Size</label>
-                                <input type="number" id="rolloutBatchSize" min="1" max="32" value="8" 
-                                    class="w-full p-2 border rounded">
-                                <p class="text-xs text-gray-500 mt-1">How many positions to process at once</p>
-                            </div>
-                            
-                            <div class="mb-3">
-                                <label class="block text-sm font-medium mb-1">Samples per Iteration</label>
-                                <input type="number" id="numSamples" min="1" max="64" value="16" 
-                                    class="w-full p-2 border rounded">
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <button id="analyzeBtn" 
-                        class="w-full primary-btn py-2 px-4 shadow-sm transform hover:scale-105 mt-4">
+    <div class="container mx-auto">
+        <div class="p-4 sm:p-6 md:p-8">
+            <!-- Header -->
+            <div class="mb-6">
+                <h1 class="text-3xl font-bold text-[#5D4037] mb-2">Consistency Lens Analyzer</h1>
+                <p class="text-[#795548]">Interactive analysis with the Talkative Autoencoder</p>
+            </div>
+
+            <!-- Connection Status -->
+            <div id="connectionStatus" class="mb-4 p-3 rounded-lg bg-gray-100 text-gray-700">
+                <span class="font-semibold">Status:</span> <span id="statusText">Disconnected</span>
+            </div>
+
+            <!-- Tab Navigation -->
+            <div class="mb-6 border-b border-gray-200">
+                <nav class="-mb-px flex space-x-8">
+                    <button id="analyzeTab" class="py-2 px-1 border-b-2 border-orange-500 font-medium text-sm text-gray-900">
                         Analyze Text
                     </button>
+                    <button id="loadDataTab" class="py-2 px-1 border-b-2 border-transparent font-medium text-sm text-gray-500 hover:text-gray-700 hover:border-gray-300">
+                        Load Data
+                    </button>
+                    <button id="shareTab" class="py-2 px-1 border-b-2 border-transparent font-medium text-sm text-gray-500 hover:text-gray-700 hover:border-gray-300">
+                        Share & Export
+                    </button>
+                </nav>
+            </div>
+
+            <!-- Analyze Tab Content -->
+            <div id="analyzeContent" class="tab-content">
+                <!-- Input Section -->
+                <div class="mb-6">
+                    <h2 class="text-2xl font-semibold mb-4 text-[#5D4037]">Input Text</h2>
+                    <div class="bg-white rounded-lg border border-slate-200 shadow-sm">
+                        <textarea id="inputText" class="w-full h-48 p-4 bg-transparent text-[#5D4037] border-none rounded-lg focus:ring-0 resize-y" 
+                                  placeholder="Enter text to analyze..."></textarea>
+                    </div>
+                </div>
+
+                <!-- Parameter Controls -->
+                <div class="mb-6 bg-white rounded-lg border border-slate-200 shadow-sm p-6">
+                    <h3 class="text-lg font-semibold mb-4 text-[#5D4037]">Analysis Parameters</h3>
                     
-                    <div id="loading" class="loading text-center mt-4">
-                        <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-orange-600"></div>
-                        <p class="mt-2 text-gray-600">Processing...</p>
-                        <p id="queuePosition" class="text-sm text-gray-500"></p>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <!-- K Rollouts -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">
+                                Number of Rollouts (k): <span id="kRolloutsValue" class="font-semibold">8</span>
+                            </label>
+                            <input type="range" id="kRollouts" min="1" max="64" value="8" 
+                                   class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer">
+                            <div class="flex justify-between text-xs text-gray-500 mt-1">
+                                <span>1 (fast)</span>
+                                <span>64 (best)</span>
+                            </div>
+                        </div>
+
+                        <!-- Batch Size -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">
+                                Batch Size: <span id="batchSizeInfo" class="font-semibold">32 (auto)</span>
+                            </label>
+                            <div class="flex items-center space-x-2">
+                                <input type="checkbox" id="autoBatchSize" checked 
+                                       class="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded">
+                                <label for="autoBatchSize" class="text-sm text-gray-700">Auto-calculate (256÷k)</label>
+                            </div>
+                            <input type="number" id="batchSize" min="1" max="256" value="32" disabled
+                                   class="mt-2 w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-orange-500 focus:border-orange-500 disabled:opacity-50">
+                        </div>
+
+                        <!-- Temperature -->
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">
+                                Temperature: <span id="temperatureValue" class="font-semibold">0.1</span>
+                            </label>
+                            <input type="range" id="temperature" min="0.01" max="2.0" step="0.01" value="0.1"
+                                   class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer">
+                        </div>
+                    </div>
+
+                    <!-- Advanced Settings -->
+                    <details id="advancedSettings" class="mt-6">
+                        <summary id="advancedToggle" class="cursor-pointer font-semibold text-[#5D4037]">Advanced Settings</summary>
+                        <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div class="space-y-3">
+                                <label class="flex items-center space-x-2">
+                                    <input type="checkbox" id="calculateSalience" checked 
+                                           class="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded">
+                                    <span class="text-sm text-gray-700">Calculate token salience</span>
+                                </label>
+                                <label class="flex items-center space-x-2">
+                                    <input type="checkbox" id="tunedLens" 
+                                           class="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded">
+                                    <span class="text-sm text-gray-700">Use tuned lens</span>
+                                </label>
+                                <label class="flex items-center space-x-2">
+                                    <input type="checkbox" id="logitLens" 
+                                           class="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded">
+                                    <span class="text-sm text-gray-700">Use logit lens</span>
+                                </label>
+                            </div>
+                            <div class="space-y-3">
+                                <label class="flex items-center space-x-2">
+                                    <input type="checkbox" id="noEval" 
+                                           class="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded">
+                                    <span class="text-sm text-gray-700">No evaluation (MSE only)</span>
+                                </label>
+                                <label class="flex items-center space-x-2">
+                                    <input type="checkbox" id="noKL" 
+                                           class="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded">
+                                    <span class="text-sm text-gray-700">No KL divergence</span>
+                                </label>
+                                <label class="flex items-center space-x-2">
+                                    <input type="checkbox" id="doHardTokens" 
+                                           class="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded">
+                                    <span class="text-sm text-gray-700">Generate hard tokens</span>
+                                </label>
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Seed (optional)</label>
+                                <input type="number" id="seed" placeholder="Random" 
+                                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-orange-500 focus:border-orange-500">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Rollout batch size</label>
+                                <input type="number" id="rolloutBatchSize" value="32" min="1" max="256"
+                                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-orange-500 focus:border-orange-500">
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Number of samples</label>
+                                <input type="number" id="numSamples" value="1" min="1" max="10"
+                                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-orange-500 focus:border-orange-500">
+                            </div>
+                        </div>
+                    </details>
+                </div>
+
+                <!-- Action Buttons -->
+                <div class="mb-6 flex gap-4">
+                    <button id="analyzeBtn" class="flex items-center justify-center gap-2 px-6 py-3 primary-btn shadow-sm transform hover:scale-105" disabled>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/></svg>
+                        Analyze Text
+                    </button>
+                </div>
+            </div>
+
+            <!-- Load Data Tab Content -->
+            <div id="loadDataContent" class="tab-content hidden">
+                <div class="mb-6">
+                    <h2 class="text-2xl font-semibold mb-4 text-[#5D4037]">Load Analysis Data</h2>
+                    <div class="bg-white rounded-lg border border-slate-200 shadow-sm p-6">
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Load from File</label>
+                                <label for="file-upload" class="cursor-pointer flex items-center justify-center gap-2 px-5 py-2 secondary-btn shadow-sm w-full md:w-auto">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22h14a2 2 0 0 0 2-2V7.5L14.5 2H6a2 2 0 0 0-2 2v4"/><polyline points="14 2 14 8 20 8"/><path d="M2 15h10"/><path d="m5 12-3 3 3 3"/></svg>
+                                    Choose JSON/TXT File
+                                </label>
+                                <input id="file-upload" type="file" class="hidden" accept=".json,.txt,application/json">
+                            </div>
+
+                            <div class="border-t pt-4">
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Or Paste JSON Data</label>
+                                <textarea id="json-input" class="w-full h-48 p-4 border border-gray-300 rounded-lg focus:ring-orange-500 focus:border-orange-500" 
+                                          placeholder="Paste one or more JSON objects from previous analyses..."></textarea>
+                                <button id="load-json-btn" class="mt-2 px-5 py-2 secondary-btn">
+                                    Load JSON Data
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Share Tab Content -->
+            <div id="shareContent" class="tab-content hidden">
+                <div class="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                    <h3 class="font-semibold text-[#5D4037] mb-4">Sharing Settings</h3>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block font-medium text-sm text-[#5D4037]">Storage Service:</label>
+                            <div id="service-switcher" class="mt-1 flex rounded-md shadow-sm" style="width: 300px;">
+                               <button id="pantry-btn" class="service-btn">Pantry</button>
+                               <button id="jsonbin-btn" class="service-btn">JSONBin.io</button>
+                            </div>
+                        </div>
+                        <div>
+                            <label for="api-key-input" class="block font-medium text-sm text-[#5D4037]">API Key / Pantry ID:</label>
+                            <input type="text" id="api-key-input" class="mt-1 settings-input" placeholder="Paste your API key here">
+                        </div>
+                        <div>
+                            <label for="collection-id-input" class="block font-medium text-sm text-[#5D4037]">Collection ID / Basket Name:</label>
+                            <input type="text" id="collection-id-input" class="mt-1 settings-input" placeholder="Paste your collection ID here">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="flex gap-4">
+                    <button id="upload-btn" class="flex items-center justify-center gap-2 px-5 py-2 secondary-btn shadow-sm" disabled>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
+                        Upload & Get Link
+                    </button>
+                    <button id="export-json-btn" class="flex items-center justify-center gap-2 px-5 py-2 secondary-btn shadow-sm" disabled>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+                        Export JSON
+                    </button>
+                </div>
+            </div>
+
+            <!-- Status Messages -->
+            <div id="loading" class="hidden mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                <div class="flex items-center">
+                    <svg class="animate-spin h-5 w-5 mr-3 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <span class="text-blue-700">Processing...</span>
+                </div>
+            </div>
+
+            <div id="error" class="hidden mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+                <p class="text-red-700"></p>
+            </div>
+
+            <div id="queuePosition" class="hidden mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+                <p class="text-yellow-700"></p>
+            </div>
+
+            <!-- Navigation (for multiple transcripts) -->
+            <div id="navigation-container" class="mt-4 flex items-center justify-center gap-4 hidden">
+                <button id="prev-btn" class="px-4 py-2 secondary-btn shadow-sm">&lt; Prev</button>
+                <span id="nav-counter" class="font-semibold text-[#5D4037]"></span>
+                <button id="next-btn" class="px-4 py-2 secondary-btn shadow-sm">Next &gt;</button>
+            </div>
+
+            <!-- Display Controls -->
+            <div id="display-controls" class="mt-6 flex-wrap items-center gap-x-8 gap-y-4 hidden">
+                <div id="column-toggle-container" class="flex items-center gap-4"></div>
+                <button id="transpose-btn" class="flex items-center justify-center gap-2 px-5 py-2 secondary-btn shadow-sm transform hover:scale-105">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+                    Transpose
+                </button>
+                <div id="line-spacing-control" class="flex items-center gap-4">
+                    <label for="line-spacing-slider" class="font-semibold text-[#5D4037]">Line Spacing:</label>
+                    <input id="line-spacing-slider" type="range" min="0" max="10" value="0" class="w-48">
+                </div>
+                <div id="col-width-control" class="flex items-center gap-4 hidden">
+                    <label for="col-width-slider" class="font-semibold text-[#5D4037]">Column Width:</label>
+                    <input id="col-width-slider" type="range" min="80" max="400" value="80" class="w-48">
+                </div>
+                <div id="salience-control" class="flex items-center gap-2">
+                    <input type="checkbox" id="salience-toggle" class="h-4 w-4 rounded border-slate-300 text-orange-600 focus:ring-orange-500">
+                    <label for="salience-toggle" class="font-semibold text-[#5D4037]">Color by Salience</label>
+                </div>
+                <div id="salience-colorbar" class="h-2 w-56 rounded hidden" title="Salience scale"></div>
+                <p id="salience-definition" class="text-xs text-[#5D4037] mt-1 hidden">
+                    Salience = % increase in MSE when the decoded token is replaced with a space token ` `. Higher (red) ⇒ more important.
+                </p>
+            </div>
+
+            <!-- Metadata Display -->
+            <div id="metadata-display" class="my-4 p-4 bg-amber-50 border border-amber-200 rounded-lg hidden text-sm text-[#5D4037]"></div>
+
+            <!-- Full Text View -->
+            <div class="mb-8">
+                <h2 class="text-2xl font-semibold mb-4 text-[#5D4037]">Full Text</h2>
+                <div id="full-text-container" class="p-4 bg-white rounded-lg border border-slate-200 shadow-sm leading-relaxed">
+                    <p id="full-text-placeholder" class="text-slate-500">Full text will appear here after analysis.</p>
+                </div>
+            </div>
+
+            <!-- Visualization -->
+            <div id="output-container">
+                <h2 class="text-2xl font-semibold my-4 text-[#5D4037]">Visualization</h2>
+                <div id="output-container-wrapper" class="relative">
+                    <!-- Side navigation buttons -->
+                    <button id="side-prev-btn" class="absolute left-0 top-0 h-full w-6 bg-transparent hover:bg-slate-200/50 z-20 transition-colors cursor-pointer border-none p-0 hidden group flex items-center justify-center rounded-l-lg">
+                        <svg class="w-5 h-5 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                    </button>
+                    
+                    <div id="output-inner-wrapper" class="overflow-x-auto w-full">
+                        <p id="output-placeholder" class="text-slate-500 text-center mt-16">Your analysis results will appear here.</p>
+                        <table id="output-table" class="min-w-full hidden">
+                            <thead id="table-head"></thead>
+                            <tbody id="table-body"></tbody>
+                        </table>
+                        <div id="transposed-view" class="hidden"></div>
                     </div>
                     
-                    <div id="error" class="error-message" style="display: none;"></div>
-                </div>
-                
-                <!-- Connection Status -->
-                <div class="mt-4 text-center">
-                    <span id="connectionStatus" class="text-sm text-gray-600">Disconnected</span>
+                    <button id="side-next-btn" class="absolute right-0 top-0 h-full w-6 bg-transparent hover:bg-slate-200/50 z-20 transition-colors cursor-pointer border-none p-0 hidden group flex items-center justify-center rounded-r-lg">
+                        <svg class="w-5 h-5 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                    </button>
                 </div>
             </div>
             
-            <!-- Results Section -->
-            <div class="lg:col-span-2">
-                <div class="bg-white rounded-lg shadow-md p-6">
-                    <h2 class="text-xl font-semibold mb-4">Analysis Results</h2>
-                    
-                    <!-- Metadata Display -->
-                    <div id="metadata-display" class="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-lg hidden text-sm text-[#5D4037]"></div>
-                    
-                    <!-- Full Text Display -->
-                    <div class="mb-6">
-                        <h3 class="text-lg font-semibold mb-2 text-[#5D4037]">Full Text</h3>
-                        <div id="full-text-container" class="p-4 bg-white rounded-lg border border-slate-200 shadow-sm leading-relaxed">
-                            <p id="full-text-placeholder" class="text-slate-500">Full text will appear here after analyzing.</p>
-                        </div>
-                    </div>
-                    
-                    <!-- Display Controls -->
-                    <div id="display-controls" class="mb-4 flex-wrap items-center gap-x-8 gap-y-4 hidden">
-                        <div id="column-toggle-container" class="flex items-center gap-4"></div>
-                        <button id="transpose-btn" class="flex items-center justify-center gap-2 px-5 py-2 secondary-btn shadow-sm transform hover:scale-105">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
-                            Transpose
-                        </button>
-                        <div id="line-spacing-control" class="flex items-center gap-4">
-                            <label for="line-spacing-slider" class="font-semibold text-[#5D4037]">Line Spacing:</label>
-                            <input id="line-spacing-slider" type="range" min="0" max="10" value="0" class="w-48">
-                        </div>
-                        <div id="col-width-control" class="flex items-center gap-4 hidden">
-                            <label for="col-width-slider" class="font-semibold text-[#5D4037]">Column Width:</label>
-                            <input id="col-width-slider" type="range" min="80" max="400" value="80" class="w-48">
-                        </div>
-                        <div id="salience-control" class="flex items-center gap-2">
-                            <input type="checkbox" id="salience-toggle" class="h-4 w-4 rounded border-slate-300 text-orange-600 focus:ring-orange-500">
-                            <label for="salience-toggle" class="font-semibold text-[#5D4037]">Color by Salience</label>
-                        </div>
-                        <div id="salience-colorbar" class="h-2 w-56 rounded hidden" title="Salience scale"></div>
-                    </div>
-                    
-                    <!-- Visualization -->
-                    <div id="output-container">
-                        <div id="output-inner-wrapper" class="overflow-x-auto w-full">
-                            <p id="output-placeholder" class="text-slate-500 text-center mt-16">Your analysis results will appear here.</p>
-                            <table id="output-table" class="min-w-full hidden">
-                                <thead id="table-head"></thead>
-                                <tbody id="table-body"></tbody>
-                            </table>
-                            <div id="transposed-view" class="hidden"></div>
-                        </div>
-                    </div>
-                </div>
+            <!-- Bottom Navigation -->
+            <div id="bottom-navigation-container" class="mt-8 flex items-center justify-center gap-4 hidden">
+                <button id="bottom-prev-btn" class="px-4 py-2 secondary-btn shadow-sm">&lt; Prev</button>
+                <span id="bottom-nav-counter" class="font-semibold text-[#5D4037]"></span>
+                <button id="bottom-next-btn" class="px-4 py-2 secondary-btn shadow-sm">Next &gt;</button>
             </div>
         </div>
     </div>
-    
-    <script src="app.js"></script>
+
+    <script type="module" src="./app.js"></script>
 </body>
 </html>

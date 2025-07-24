@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Talkative Autoencoder Data Visualizer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../talkative-autoencoder/visualizer-styles.css">
+</head>
+<body class="antialiased">
+    <div class="container mx-auto">
+        <div class="p-4 sm:p-6 md:p-8">
+            <!-- Header -->
+            <div class="mb-6">
+                <h1 class="text-3xl font-bold text-[#5D4037] mb-2">Talkative Autoencoder Data Visualizer</h1>
+                <p class="text-[#795548]">Visualize and share Consistency Lens analysis results</p>
+            </div>
+
+            <!-- Settings Panel -->
+            <div class="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                <details>
+                    <summary class="cursor-pointer font-semibold text-[#5D4037]">Settings for Sharing</summary>
+                    <div class="mt-4 space-y-4">
+                        <div>
+                            <label class="block font-medium text-sm text-[#5D4037]">Storage Service:</label>
+                            <div id="service-switcher" class="mt-1 flex rounded-md shadow-sm" style="width: 300px;">
+                               <button id="pantry-btn" class="service-btn">Pantry</button>
+                               <button id="jsonbin-btn" class="service-btn">JSONBin.io</button>
+                            </div>
+                        </div>
+                        <div>
+                            <label for="api-key-input" class="block font-medium text-sm text-[#5D4037]">Your Public, Scoped API Key:</label>
+                            <input type="text" id="api-key-input" class="mt-1 settings-input" placeholder="Paste your public API key here">
+                        </div>
+                        <div>
+                            <label for="collection-id-input" class="block font-medium text-sm text-[#5D4037]">Your Public Collection ID:</label>
+                            <input type="text" id="collection-id-input" class="mt-1 settings-input" placeholder="Paste your public Collection ID here">
+                        </div>
+                        <p class="mt-2 text-xs text-amber-800">To allow anyone to upload, you must provide a public, write-only API key and the ID of the Collection it belongs to.</p>
+                    </div>
+                </details>
+            </div>
+
+            <!-- Input Section -->
+            <div class="mb-8">
+                <h2 class="text-2xl font-semibold mb-4 text-[#5D4037]">Input Data</h2>
+                <div class="bg-white rounded-lg border border-slate-200 shadow-sm">
+                    <textarea id="text-input" class="w-full h-48 p-4 bg-transparent text-[#5D4037] border-none rounded-lg focus:ring-0 resize-y" 
+                              placeholder="Paste one or more JSON objects from Consistency Lens analysis..."></textarea>
+                </div>
+                <div class="mt-4 flex flex-wrap items-center justify-start gap-4">
+                    <button id="parse-btn" class="flex items-center justify-center gap-2 px-5 py-2 primary-btn shadow-sm transform hover:scale-105">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/><path d="m12 12-2 2 2 2"/><path d="m19 12-2 2 2 2"/></svg>
+                        Visualize
+                    </button>
+                    <button id="upload-btn" class="flex items-center justify-center gap-2 px-5 py-2 secondary-btn shadow-sm transform hover:scale-105" disabled>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
+                        Upload & Get Link
+                    </button>
+                    <label for="file-upload" class="cursor-pointer flex items-center justify-center gap-2 px-5 py-2 secondary-btn shadow-sm transform hover:scale-105">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22h14a2 2 0 0 0 2-2V7.5L14.5 2H6a2 2 0 0 0-2 2v4"/><polyline points="14 2 14 8 20 8"/><path d="M2 15h10"/><path d="m5 12-3 3 3 3"/></svg>
+                        Load from File
+                    </label>
+                    <input id="file-upload" type="file" class="hidden" accept=".json,.txt,application/json">
+                </div>
+                
+                <!-- Navigation (hidden initially) -->
+                <div id="controls-separator" class="my-4 border-b border-slate-200 hidden"></div>
+                <div id="navigation-container" class="mt-4 flex items-center justify-center gap-4 hidden">
+                    <button id="prev-btn" class="px-4 py-2 secondary-btn shadow-sm">&lt; Prev</button>
+                    <span id="nav-counter" class="font-semibold text-[#5D4037]"></span>
+                    <button id="next-btn" class="px-4 py-2 secondary-btn shadow-sm">Next &gt;</button>
+                </div>
+                
+                <!-- Display Controls (hidden initially) -->
+                <div id="display-controls" class="mt-4 flex-wrap items-center gap-x-8 gap-y-4 hidden">
+                    <div id="column-toggle-container" class="flex items-center gap-4"></div>
+                    <button id="transpose-btn" class="flex items-center justify-center gap-2 px-5 py-2 secondary-btn shadow-sm transform hover:scale-105">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+                        Transpose
+                    </button>
+                    <div id="line-spacing-control" class="flex items-center gap-4">
+                        <label for="line-spacing-slider" class="font-semibold text-[#5D4037]">Line Spacing:</label>
+                        <input id="line-spacing-slider" type="range" min="0" max="10" value="0" class="w-48">
+                    </div>
+                    <div id="col-width-control" class="flex items-center gap-4 hidden">
+                        <label for="col-width-slider" class="font-semibold text-[#5D4037]">Column Width:</label>
+                        <input id="col-width-slider" type="range" min="80" max="400" value="80" class="w-48">
+                    </div>
+                    <div id="salience-control" class="flex items-center gap-2">
+                        <input type="checkbox" id="salience-toggle" class="h-4 w-4 rounded border-slate-300 text-orange-600 focus:ring-orange-500">
+                        <label for="salience-toggle" class="font-semibold text-[#5D4037]">Color by Salience</label>
+                    </div>
+                    <div id="salience-colorbar" class="h-2 w-56 rounded hidden" title="Salience scale"></div>
+                    <p id="salience-definition" class="text-xs text-[#5D4037] mt-1 hidden">
+                        Salience = % increase in MSE when the decoded token is replaced with a space token ` `. Higher (red) ⇒ more important.
+                    </p>
+                </div>
+            </div>
+            
+            <!-- Metadata Display -->
+            <div id="metadata-display" class="my-4 p-4 bg-amber-50 border border-amber-200 rounded-lg hidden text-sm text-[#5D4037]"></div>
+
+            <!-- Full Text View -->
+            <div class="mb-8">
+                <h2 class="text-2xl font-semibold mb-4 text-[#5D4037]">Full Text</h2>
+                <div id="full-text-container" class="p-4 bg-white rounded-lg border border-slate-200 shadow-sm leading-relaxed">
+                    <p id="full-text-placeholder" class="text-slate-500">Full text will appear here after visualizing.</p>
+                </div>
+            </div>
+
+            <!-- Visualization -->
+            <div id="output-container">
+                <h2 class="text-2xl font-semibold my-4 text-[#5D4037]">Visualization</h2>
+                <div id="output-container-wrapper" class="relative">
+                    <!-- Side navigation buttons -->
+                    <button id="side-prev-btn" class="absolute left-0 top-0 h-full w-6 bg-transparent hover:bg-slate-200/50 z-20 transition-colors cursor-pointer border-none p-0 hidden group flex items-center justify-center rounded-l-lg">
+                        <svg class="w-5 h-5 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                    </button>
+                    
+                    <div id="output-inner-wrapper" class="overflow-x-auto w-full">
+                        <p id="output-placeholder" class="text-slate-500 text-center mt-16">Your parsed data will appear here.</p>
+                        <table id="output-table" class="min-w-full hidden">
+                            <thead id="table-head"></thead>
+                            <tbody id="table-body"></tbody>
+                        </table>
+                        <div id="transposed-view" class="hidden"></div>
+                    </div>
+                    
+                    <button id="side-next-btn" class="absolute right-0 top-0 h-full w-6 bg-transparent hover:bg-slate-200/50 z-20 transition-colors cursor-pointer border-none p-0 hidden group flex items-center justify-center rounded-r-lg">
+                        <svg class="w-5 h-5 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Bottom Navigation -->
+            <div id="bottom-navigation-container" class="mt-8 flex items-center justify-center gap-4 hidden">
+                <button id="bottom-prev-btn" class="px-4 py-2 secondary-btn shadow-sm">&lt; Prev</button>
+                <span id="bottom-nav-counter" class="font-semibold text-[#5D4037]"></span>
+                <button id="bottom-next-btn" class="px-4 py-2 secondary-btn shadow-sm">Next &gt;</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Load visualization core first -->
+    <script src="../talkative-autoencoder/visualizer-core.js"></script>
+    <!-- Then load the standalone application -->
+    <script src="../talkative-autoencoder/visualizer-standalone.js"></script>
+</body>
+</html>

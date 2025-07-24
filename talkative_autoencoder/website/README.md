@@ -58,9 +58,15 @@ Visit http://localhost:3000 for frontend, http://localhost:8000/docs for API doc
    ```bash
    cd /workspace
    git clone https://github.com/kitft/talkative-probes.git
-   cd talkative-probes/talkative_autoencoder/website
+   cd talkative-probes
    
-   # Automated secure setup
+   # Set up the shared environment
+   source scripts/ensure_env.sh
+   
+   # Navigate to website
+   cd talkative_autoencoder/website
+   
+   # Install website-specific dependencies
    make setup
    make secure-env
    cp backend/.env.secure backend/.env
@@ -68,7 +74,7 @@ Visit http://localhost:3000 for frontend, http://localhost:8000/docs for API doc
    # Upload your model checkpoint to:
    # /workspace/checkpoints/qwen2_5_WCHAT_14b_frozen_nopostfix.pt
    
-   # Start server
+   # Start server (ensure_env.sh must be sourced first!)
    make run
    ```
 
@@ -143,11 +149,47 @@ The `make secure-env` command generates:
 
 ## 💻 Development
 
+### Important: Environment Management
+
+**Always run `source scripts/ensure_env.sh` before working with the code!**
+
+This project uses a shared `uv` environment managed at the repository root. The `ensure_env.sh` script:
+- Creates/activates the virtual environment
+- Sets up the correct Python paths
+- Ensures all dependencies from the main `pyproject.toml` are available
+
+If you see errors like:
+- `uv: command not found`
+- `No module named torch`
+- `No module named transformers`
+
+You forgot to source `ensure_env.sh`!
+
 ### Environment Setup
 
+#### First Time Setup
+
 ```bash
+# IMPORTANT: Source the shared environment first!
+cd /workspace/kitf/talkative-probes
+source scripts/ensure_env.sh
+
+# Then navigate to website directory
+cd talkative_autoencoder/website
+
 # Install dependencies
 make setup
+```
+
+#### Running the Application
+
+```bash
+# Always source the environment first (if in a new shell)
+cd /workspace/kitf/talkative-probes
+source scripts/ensure_env.sh
+
+# Navigate to website
+cd talkative_autoencoder/website
 
 # Run tests
 make test
@@ -156,10 +198,32 @@ make test
 make security-check
 
 # Run locally
-make run            # Backend only
-make run-frontend   # Frontend only  
+make run            # Backend only (uses uv run internally)
+make run-frontend   # Frontend only (Python HTTP server)
 make demo          # Both
 ```
+
+#### Opening Frontend in Cursor
+
+When you run `make run-frontend` or `make demo`, Cursor will show a notification:
+
+1. **Look for the popup**: "Your application running on port 3000 is available"
+2. **Click "Open in Browser"** to open in your default browser
+3. **Or use the Ports tab**:
+   - Open Command Palette (Cmd/Ctrl + Shift + P)
+   - Type "Ports: Focus on Ports View"
+   - Find port 3000 in the list
+   - Click the globe icon to open in browser
+
+The frontend will open at `http://localhost:3000`
+
+#### Why ensure_env.sh?
+
+The `ensure_env.sh` script:
+- Sets up the shared `uv` environment for the entire talkative-probes project
+- Ensures PyTorch and other heavy dependencies are available
+- Prevents duplicate installations across different parts of the project
+- Must be sourced in each new shell session
 
 ### Project Structure
 

@@ -1,0 +1,1325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Talkative Autoencoder Data Visualizer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #F9F5F0;
+            color: #5D4037;
+        }
+
+        /* Custom scrollbar */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: #EFEBE9; }
+        ::-webkit-scrollbar-thumb { background: #D7CCC8; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #BCAAA4; }
+        
+        /* Copy feedback tooltip */
+        .copy-feedback {
+            position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
+            background-color: #3E2723; color: white; padding: 4px 8px;
+            border-radius: 4px; font-size: 12px; opacity: 0;
+            transition: opacity 0.3s, transform 0.3s; pointer-events: none;
+        }
+        .copy-feedback.show { opacity: 1; transform: translateX(-50%) translateY(-5px); }
+        
+        .token-box-container {
+            display: inline-block;
+            position: relative;
+            vertical-align: bottom;
+            border: 1px solid #D7CCC8;
+            background-color: white;
+            padding: 2px 6px;
+            margin: 2px;
+            border-radius: 4px;
+        }
+
+        .token-box {
+            line-height: 1.5;
+        }
+        
+        .tooltip {
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%) translateY(-8px);
+            background-color: #3E2723;
+            color: white;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-family: 'Inter', sans-serif;
+            white-space: pre-wrap;
+            word-break: break-word;
+            width: max-content; 
+            max-width: 300px;
+            z-index: 20;
+            visibility: hidden;
+            opacity: 0;
+            transition: opacity 0.2s, visibility 0.2s;
+        }
+
+        .token-box-container:hover .tooltip {
+            visibility: visible;
+            opacity: 1;
+        }
+
+        .rotated-token-wrapper {
+            position: relative;
+            height: 120px;
+            width: 100%;
+        }
+
+        .rotated-token {
+            position: absolute;
+            bottom: 10px;
+            left: 0;
+            transform: rotate(-15deg) translate(3px,0);
+            transform-origin: bottom left;
+            white-space: nowrap;
+            font-size: 0.8rem;
+            z-index: 10;
+        }
+        
+        .explanation-word {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .primary-btn {
+            background-color: #E65100; color: white;
+            font-weight: 600; border-radius: 0.5rem;
+            transition: all 0.2s;
+        }
+        .primary-btn:hover { background-color: #BF360C; }
+        
+        .secondary-btn {
+            background-color: white; border: 1px solid #D7CCC8; color: #5D4037;
+            font-weight: 600; border-radius: 0.5rem;
+            transition: all 0.2s;
+        }
+        .secondary-btn:hover { border-color: #BCAAA4; background-color: #F5F5F5; }
+        .secondary-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .resize-handle {
+            position: absolute;
+            top: 0;
+            right: -4px;
+            width: 8px;
+            height: 100%;
+            cursor: col-resize;
+            z-index: 10;
+        }
+
+        .settings-input {
+            border: 1px solid #D7CCC8;
+            border-radius: 0.5rem;
+            padding: 4px 8px;
+            width: 300px;
+        }
+
+        .service-btn {
+            padding: 8px 12px;
+            border: 1px solid #D7CCC8;
+            background-color: white;
+            color: #5D4037;
+            cursor: pointer;
+            transition: all 0.2s;
+            flex-grow: 1;
+        }
+        .service-btn:first-child {
+            border-top-left-radius: 0.375rem;
+            border-bottom-left-radius: 0.375rem;
+        }
+        .service-btn:last-child {
+            border-top-right-radius: 0.375rem;
+            border-bottom-right-radius: 0.375rem;
+            border-left-width: 0;
+        }
+        .service-btn.active-service {
+            background-color: #A1887F;
+            color: white;
+            border-color: #A1887F;
+            font-weight: 600;
+        }
+        .service-btn:not(.active-service):hover {
+            background-color: #F5F5F5;
+        }
+    </style>
+</head>
+<body class="antialiased">
+    <div class="container mx-auto">
+        <div class="p-4 sm:p-6 md:p-8">
+            <!-- Header -->
+            <div class="mb-6">
+                <h1 class="text-3xl font-bold text-[#5D4037] mb-2">Talkative Autoencoder Data Visualizer</h1>
+                <p class="text-[#795548]">Visualize and share Consistency Lens analysis results</p>
+            </div>
+
+            <!-- Settings Panel -->
+            <div class="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                <details>
+                    <summary class="cursor-pointer font-semibold text-[#5D4037]">Settings for Sharing</summary>
+                    <div class="mt-4 space-y-4">
+                        <div>
+                            <label class="block font-medium text-sm text-[#5D4037]">Storage Service:</label>
+                            <div id="service-switcher" class="mt-1 flex rounded-md shadow-sm" style="width: 300px;">
+                               <button id="pantry-btn" class="service-btn">Pantry</button>
+                               <button id="jsonbin-btn" class="service-btn">JSONBin.io</button>
+                            </div>
+                        </div>
+                        <div>
+                            <label for="api-key-input" class="block font-medium text-sm text-[#5D4037]">Your Public, Scoped API Key:</label>
+                            <input type="text" id="api-key-input" class="mt-1 settings-input" placeholder="Paste your public API key here">
+                        </div>
+                        <div>
+                            <label for="collection-id-input" class="block font-medium text-sm text-[#5D4037]">Your Public Collection ID:</label>
+                            <input type="text" id="collection-id-input" class="mt-1 settings-input" placeholder="Paste your public Collection ID here">
+                        </div>
+                        <p class="mt-2 text-xs text-amber-800">To allow anyone to upload, you must provide a public, write-only API key and the ID of the Collection it belongs to.</p>
+                    </div>
+                </details>
+            </div>
+
+            <!-- Input Section -->
+            <div class="mb-8">
+                <h2 class="text-2xl font-semibold mb-4 text-[#5D4037]">Input Data</h2>
+                <div class="bg-white rounded-lg border border-slate-200 shadow-sm">
+                    <textarea id="text-input" class="w-full h-48 p-4 bg-transparent text-[#5D4037] border-none rounded-lg focus:ring-0 resize-y" 
+                              placeholder="Paste one or more JSON objects from Consistency Lens analysis..."></textarea>
+                </div>
+                <div class="mt-4 flex flex-wrap items-center justify-start gap-4">
+                    <button id="parse-btn" class="flex items-center justify-center gap-2 px-5 py-2 primary-btn shadow-sm transform hover:scale-105">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/><path d="m12 12-2 2 2 2"/><path d="m19 12-2 2 2 2"/></svg>
+                        Visualize
+                    </button>
+                    <button id="upload-btn" class="flex items-center justify-center gap-2 px-5 py-2 secondary-btn shadow-sm transform hover:scale-105" disabled>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
+                        Upload & Get Link
+                    </button>
+                    <label for="file-upload" class="cursor-pointer flex items-center justify-center gap-2 px-5 py-2 secondary-btn shadow-sm transform hover:scale-105">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22h14a2 2 0 0 0 2-2V7.5L14.5 2H6a2 2 0 0 0-2 2v4"/><polyline points="14 2 14 8 20 8"/><path d="M2 15h10"/><path d="m5 12-3 3 3 3"/></svg>
+                        Load from File
+                    </label>
+                    <input id="file-upload" type="file" class="hidden" accept=".json,.txt,application/json">
+                </div>
+                
+                <!-- Navigation (hidden initially) -->
+                <div id="controls-separator" class="my-4 border-b border-slate-200 hidden"></div>
+                <div id="navigation-container" class="mt-4 flex items-center justify-center gap-4 hidden">
+                    <button id="prev-btn" class="px-4 py-2 secondary-btn shadow-sm">&lt; Prev</button>
+                    <span id="nav-counter" class="font-semibold text-[#5D4037]"></span>
+                    <button id="next-btn" class="px-4 py-2 secondary-btn shadow-sm">Next &gt;</button>
+                </div>
+                
+                <!-- Display Controls (hidden initially) -->
+                <div id="display-controls" class="mt-4 flex-wrap items-center gap-x-8 gap-y-4 hidden">
+                    <div id="column-toggle-container" class="flex items-center gap-4"></div>
+                    <button id="transpose-btn" class="flex items-center justify-center gap-2 px-5 py-2 secondary-btn shadow-sm transform hover:scale-105">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+                        Transpose
+                    </button>
+                    <div id="line-spacing-control" class="flex items-center gap-4">
+                        <label for="line-spacing-slider" class="font-semibold text-[#5D4037]">Line Spacing:</label>
+                        <input id="line-spacing-slider" type="range" min="0" max="10" value="0" class="w-48">
+                    </div>
+                    <div id="col-width-control" class="flex items-center gap-4 hidden">
+                        <label for="col-width-slider" class="font-semibold text-[#5D4037]">Column Width:</label>
+                        <input id="col-width-slider" type="range" min="80" max="400" value="80" class="w-48">
+                    </div>
+                    <div id="salience-control" class="flex items-center gap-2">
+                        <input type="checkbox" id="salience-toggle" class="h-4 w-4 rounded border-slate-300 text-orange-600 focus:ring-orange-500">
+                        <label for="salience-toggle" class="font-semibold text-[#5D4037]">Color by Salience</label>
+                    </div>
+                    <div id="salience-colorbar" class="h-2 w-56 rounded hidden" title="Salience scale"></div>
+                    <p id="salience-definition" class="text-xs text-[#5D4037] mt-1 hidden">
+                        Salience = % increase in MSE when the decoded token is replaced with a space token ` `. Higher (red) ⇒ more important.
+                    </p>
+                </div>
+            </div>
+            
+            <!-- Metadata Display -->
+            <div id="metadata-display" class="my-4 p-4 bg-amber-50 border border-amber-200 rounded-lg hidden text-sm text-[#5D4037]"></div>
+
+            <!-- Full Text View -->
+            <div class="mb-8">
+                <h2 class="text-2xl font-semibold mb-4 text-[#5D4037]">Full Text</h2>
+                <div id="full-text-container" class="p-4 bg-white rounded-lg border border-slate-200 shadow-sm leading-relaxed">
+                    <p id="full-text-placeholder" class="text-slate-500">Full text will appear here after visualizing.</p>
+                </div>
+            </div>
+
+            <!-- Visualization -->
+            <div id="output-container">
+                <h2 class="text-2xl font-semibold my-4 text-[#5D4037]">Visualization</h2>
+                <div id="output-container-wrapper" class="relative">
+                    <!-- Side navigation buttons -->
+                    <button id="side-prev-btn" class="absolute left-0 top-0 h-full w-6 bg-transparent hover:bg-slate-200/50 z-20 transition-colors cursor-pointer border-none p-0 hidden group flex items-center justify-center rounded-l-lg">
+                        <svg class="w-5 h-5 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                    </button>
+                    
+                    <div id="output-inner-wrapper" class="overflow-x-auto w-full">
+                        <p id="output-placeholder" class="text-slate-500 text-center mt-16">Your parsed data will appear here.</p>
+                        <table id="output-table" class="min-w-full hidden">
+                            <thead id="table-head"></thead>
+                            <tbody id="table-body"></tbody>
+                        </table>
+                        <div id="transposed-view" class="hidden"></div>
+                    </div>
+                    
+                    <button id="side-next-btn" class="absolute right-0 top-0 h-full w-6 bg-transparent hover:bg-slate-200/50 z-20 transition-colors cursor-pointer border-none p-0 hidden group flex items-center justify-center rounded-r-lg">
+                        <svg class="w-5 h-5 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Bottom Navigation -->
+            <div id="bottom-navigation-container" class="mt-8 flex items-center justify-center gap-4 hidden">
+                <button id="bottom-prev-btn" class="px-4 py-2 secondary-btn shadow-sm">&lt; Prev</button>
+                <span id="bottom-nav-counter" class="font-semibold text-[#5D4037]"></span>
+                <button id="bottom-next-btn" class="px-4 py-2 secondary-btn shadow-sm">Next &gt;</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Embed VisualizationCore
+        const VisualizationCore = (function() {
+            'use strict';
+            
+            // Core configuration
+            const columnNames = ["position", "token", "explanation", "kl_divergence", "mse", "relative_rmse", 
+                                "tuned_lens_top", "explanation_structured", "token_salience", "logit_lens_top", "layer"];
+            
+            // Default column visibility
+            const getDefaultVisibility = () => {
+                const defaultVisibleCols = ['token', 'explanation', 'mse'];
+                const visibility = {};
+                columnNames.forEach(colName => {
+                    visibility[colName] = defaultVisibleCols.includes(colName);
+                });
+                return visibility;
+            };
+            
+            // Utility functions
+            const formatNewlines = (str) => {
+                if (typeof str !== 'string') return str;
+                return str.replace(/\\n|\n/g, '↵ ');
+            };
+            
+            const getSalienceColor = (value, min = -0.1, max = 0.3) => {
+                if (typeof value !== 'number' || isNaN(value)) return 'transparent';
+                
+                const v = Math.max(-1, Math.min(max, value));
+                
+                if (v >= 0) {
+                    // Log-scaled red side
+                    const beta = 50;
+                    const norm = max > 0 ? Math.log10(1 + beta * v) / Math.log10(1 + beta * max) : 0;
+                    const g = Math.round(255 * (1 - norm));
+                    const b = g;
+                    return `rgb(255,${g},${b})`;
+                } else {
+                    // Linear green side
+                    const norm = (-v) / 1;
+                    const r = Math.round(255 * (1 - norm));
+                    const b = r;
+                    return `rgb(${r},255,${b})`;
+                }
+            };
+            
+            const getTooltipTextColor = (salVal) => {
+                return '#3E2723';
+            };
+            
+            // Compute salience range (5-95 percentile)
+            const computeSalienceRange = (rows) => {
+                const raw = rows.flatMap(r => {
+                    if (Array.isArray(r.token_salience)) return r.token_salience;
+                    if (typeof r.token_salience === 'number') return [r.token_salience];
+                    return [];
+                }).filter(v => typeof v === 'number' && !isNaN(v));
+                
+                if (raw.length === 0) return { min: -0.1, max: 0.1 };
+                
+                const sorted = [...raw].sort((a, b) => a - b);
+                const low = sorted[Math.floor(sorted.length * 0.05)];
+                const high = sorted[Math.floor(sorted.length * 0.95)];
+                
+                return { min: Math.min(-0.05, low, -1), max: high };
+            };
+            
+            // Create token box element with tooltip
+            const createTokenBox = (token, explanation, tokenSalience, salienceColoringEnabled, row) => {
+                const container = document.createElement('div');
+                container.className = 'token-box-container';
+                
+                const tokenSpan = document.createElement('span');
+                tokenSpan.className = 'token-box';
+                tokenSpan.textContent = token;
+                
+                const tooltip = document.createElement('div');
+                tooltip.className = 'tooltip';
+                
+                // Build color-coded explanation for tooltip
+                if (row.explanation_structured && Array.isArray(row.explanation_structured)) {
+                    tooltip.innerHTML = '';
+                    row.explanation_structured.forEach((tok, idx) => {
+                        const span = document.createElement('span');
+                        span.textContent = formatNewlines(tok) + ' ';
+                        if (Array.isArray(row.token_salience) && idx < row.token_salience.length) {
+                            const sv = row.token_salience[idx];
+                            if (salienceColoringEnabled && typeof sv === 'number') {
+                                span.style.backgroundColor = getSalienceColor(sv);
+                                span.style.color = getTooltipTextColor(sv);
+                            }
+                            if (typeof sv === 'number') {
+                                span.title = `Decoded: ${tok}\nSalience: ${sv.toFixed(3)}\nMSE: ${row.mse?.toFixed ? row.mse.toFixed(3) : row.mse}`;
+                            }
+                        }
+                        tooltip.appendChild(span);
+                    });
+                } else {
+                    tooltip.textContent = formatNewlines(explanation || 'No explanation available.');
+                }
+                
+                container.appendChild(tokenSpan);
+                container.appendChild(tooltip);
+                
+                return container;
+            };
+            
+            // Render full text view
+            const renderFullTextBox = (config) => {
+                const { data, container, salienceColoringEnabled = false } = config;
+                
+                container.innerHTML = '';
+                if (!data || data.length === 0) {
+                    const placeholder = document.createElement('p');
+                    placeholder.className = 'text-slate-500';
+                    placeholder.textContent = 'Full text will appear here after visualizing.';
+                    container.appendChild(placeholder);
+                    return;
+                }
+                
+                const salienceRange = computeSalienceRange(data);
+                
+                data.forEach((row) => {
+                    const tokenString = String(row.token || '');
+                    const parts = tokenString.split(/\\n|\n/);
+                    
+                    parts.forEach((part, index) => {
+                        if (part === '' && index === parts.length - 1 && parts.length > 1) return;
+                        
+                        const textContent = (index < parts.length - 1) ? part + ' ↵' : part;
+                        const tokenBox = createTokenBox(
+                            textContent,
+                            row.explanation,
+                            row.token_salience,
+                            salienceColoringEnabled,
+                            row
+                        );
+                        
+                        container.appendChild(tokenBox);
+                        
+                        if (index < parts.length - 1) {
+                            container.appendChild(document.createElement('br'));
+                        }
+                    });
+                });
+            };
+            
+            // Render metadata display
+            const renderMetadata = (config) => {
+                const { metadata, container } = config;
+                
+                if (metadata && Object.keys(metadata).length > 0) {
+                    container.classList.remove('hidden');
+                    let html = '<ul class="list-disc list-inside space-y-1">';
+                    
+                    if (metadata.model_name) {
+                        html += `<li><strong>Decoder/Encoder Model:</strong> <span class="font-semibold">${metadata.model_name}</span></li>`;
+                    }
+                    if (metadata.orig_model_name) {
+                        html += `<li><strong>Subject Model:</strong> <span class="font-semibold">${metadata.orig_model_name}</span></li>`;
+                    }
+                    if (metadata.checkpoint_path) {
+                        html += `<li><strong>Checkpoint:</strong> <span class="font-mono text-xs">${metadata.checkpoint_path}</span></li>`;
+                    }
+                    
+                    html += '</ul>';
+                    container.innerHTML = html;
+                } else {
+                    container.classList.add('hidden');
+                    container.innerHTML = '';
+                }
+            };
+            
+            // Render table view
+            const renderTable = (config) => {
+                const { data, tableHead, tableBody, columnVisibility, salienceColoringEnabled = false } = config;
+                
+                tableHead.innerHTML = '';
+                tableBody.innerHTML = '';
+                
+                // Create header
+                const headerRow = document.createElement('tr');
+                headerRow.className = "bg-[#EFEBE9]";
+                
+                columnNames.forEach((colName, index) => {
+                    const th = document.createElement('th');
+                    th.className = "px-2 py-2 text-left text-sm font-semibold text-[#5D4037] uppercase tracking-wider";
+                    th.dataset.columnName = colName;
+                    th.dataset.columnIndex = index;
+                    th.textContent = colName.replace(/_/g, ' ');
+                    
+                    const resizeHandle = document.createElement('div');
+                    resizeHandle.className = 'resize-handle';
+                    th.appendChild(resizeHandle);
+                    
+                    headerRow.appendChild(th);
+                });
+                tableHead.appendChild(headerRow);
+                
+                // Calculate KL max for coloring
+                const klValues = data.map(row => parseFloat(row.kl_divergence)).filter(v => !isNaN(v));
+                const maxKl = Math.max(...klValues, 0);
+                
+                // Create rows
+                data.forEach((row) => {
+                    const tr = document.createElement('tr');
+                    tr.className = 'hover:bg-[#EFEBE9]/80 border-b border-[#EFEBE9]';
+                    
+                    columnNames.forEach(colName => {
+                        const td = document.createElement('td');
+                        td.className = "px-2 py-2 align-top font-mono text-sm text-[#5D4037]";
+                        td.dataset.columnName = colName;
+                        td.title = 'Click to copy';
+                        
+                        let value = row[colName] || '';
+                        
+                        // Format numeric values
+                        if (['kl_divergence', 'mse', 'relative_rmse'].includes(colName)) {
+                            const num = parseFloat(value);
+                            value = isNaN(num) ? 'N/A' : num.toFixed(6);
+                        }
+                        
+                        if (colName === 'token_salience') {
+                            if (Array.isArray(value)) {
+                                value = value.map(v => typeof v === 'number' ? v.toPrecision(3) : v).join(', ');
+                            } else if (typeof value === 'number') {
+                                value = value.toPrecision(3);
+                            }
+                        }
+                        
+                        // Handle structured explanations
+                        if ((colName === 'explanation' || colName === 'explanation_structured') && 
+                            Array.isArray(row.explanation_structured)) {
+                            td.textContent = '';
+                            row.explanation_structured.forEach((w, idx) => {
+                                const span = document.createElement('span');
+                                span.className = 'explanation-word';
+                                span.textContent = formatNewlines(w) + ' ';
+                                
+                                if (Array.isArray(row.token_salience) && idx < row.token_salience.length) {
+                                    const sv = row.token_salience[idx];
+                                    if (salienceColoringEnabled && typeof sv === 'number') {
+                                        span.style.backgroundColor = getSalienceColor(sv);
+                                        span.style.color = getTooltipTextColor(sv);
+                                    }
+                                    if (typeof sv === 'number') {
+                                        span.title = `Decoded: ${w}\nSalience: ${sv.toFixed(3)}\nMSE: ${row.mse?.toFixed ? row.mse.toFixed(3) : row.mse}`;
+                                    }
+                                }
+                                td.appendChild(span);
+                            });
+                        } else {
+                            td.textContent = formatNewlines(String(value));
+                        }
+                        
+                        // Special formatting
+                        if (['explanation', 'tuned_lens_top', 'logit_lens_top'].includes(colName)) {
+                            td.className = "px-2 py-2 align-top font-sans text-sm text-[#6D4C41]";
+                            td.style.whiteSpace = 'nowrap';
+                        }
+                        if (colName === 'token') {
+                            td.className = "px-2 py-2 align-top font-mono text-sm font-semibold text-[#BF360C]";
+                        }
+                        if (colName === 'position') {
+                            td.className = "px-2 py-2 align-top font-mono text-sm text-slate-400";
+                        }
+                        
+                        // KL divergence coloring
+                        if (colName === 'kl_divergence') {
+                            const klValue = parseFloat(row.kl_divergence);
+                            const klIntensity = isNaN(klValue) || maxKl === 0 ? 0 : Math.min(klValue / (maxKl * 0.8), 1);
+                            const r = 230 - (50 * klIntensity);
+                            const g = 81 - (20 * klIntensity);
+                            const b = 0;
+                            td.style.color = `rgb(${r}, ${g}, ${b})`;
+                            td.style.fontWeight = '500';
+                        }
+                        
+                        tr.appendChild(td);
+                    });
+                    
+                    tableBody.appendChild(tr);
+                });
+                
+                // Update visibility
+                for (const columnName in columnVisibility) {
+                    const visible = columnVisibility[columnName];
+                    document.querySelectorAll(`[data-column-name="${columnName}"]`).forEach(cell => {
+                        cell.style.display = visible ? '' : 'none';
+                    });
+                }
+            };
+            
+            // Render transposed view
+            const renderTransposedView = (config) => {
+                const { data, container, colWidth = 80, salienceColoringEnabled = false } = config;
+                
+                container.innerHTML = '';
+                const wrapper = document.createElement('div');
+                wrapper.className = 'flex flex-row flex-wrap gap-x-2';
+                
+                const salienceRange = computeSalienceRange(data);
+                
+                data.forEach((row) => {
+                    const colDiv = document.createElement('div');
+                    colDiv.className = 'flex flex-col items-start font-mono text-sm transpose-col';
+                    colDiv.style.width = `${colWidth}px`;
+                    
+                    // Token header (rotated)
+                    const tokenWrapper = document.createElement('div');
+                    tokenWrapper.className = 'rotated-token-wrapper';
+                    
+                    const tokenDiv = document.createElement('div');
+                    tokenDiv.className = 'font-semibold text-base rotated-token text-[#BF360C]';
+                    tokenDiv.textContent = formatNewlines(row.token);
+                    tokenDiv.title = `Token: ${formatNewlines(row.token)}\nMSE: ${Number(row.mse).toFixed(3)}`;
+                    
+                    tokenWrapper.appendChild(tokenDiv);
+                    colDiv.appendChild(tokenWrapper);
+                    
+                    // Explanation words
+                    let explanationWords = [];
+                    if (row.explanation_structured && Array.isArray(row.explanation_structured)) {
+                        explanationWords = row.explanation_structured;
+                    } else if (row.explanation) {
+                        explanationWords = formatNewlines(row.explanation).split(/[\s↵]+/);
+                    }
+                    
+                    explanationWords.forEach((word, wordIndex) => {
+                        const wordDiv = document.createElement('div');
+                        wordDiv.className = 'text-[#6D4C41] font-sans w-full text-left explanation-word';
+                        wordDiv.textContent = formatNewlines(word);
+                        
+                        // Apply salience coloring
+                        if (salienceColoringEnabled && Array.isArray(row.token_salience) && 
+                            wordIndex < row.token_salience.length) {
+                            const salienceValue = row.token_salience[wordIndex];
+                            if (typeof salienceValue === 'number' && !isNaN(salienceValue)) {
+                                wordDiv.style.backgroundColor = getSalienceColor(salienceValue, salienceRange.min, salienceRange.max);
+                                wordDiv.style.padding = '2px 4px';
+                                wordDiv.style.borderRadius = '2px';
+                                wordDiv.style.margin = '1px 0';
+                                wordDiv.title = `Decoded: ${word}\nSalience: ${salienceValue.toFixed(3)}\nMSE: ${row.mse?.toFixed ? row.mse.toFixed(3) : row.mse}`;
+                            }
+                        }
+                        
+                        colDiv.appendChild(wordDiv);
+                    });
+                    
+                    wrapper.appendChild(colDiv);
+                });
+                
+                container.appendChild(wrapper);
+            };
+            
+            // Create column toggle UI
+            const createColumnToggleUI = (config) => {
+                const { container, columnVisibility, onChange } = config;
+                
+                container.innerHTML = '';
+                
+                const toggleButton = document.createElement('button');
+                toggleButton.className = "px-4 py-2 text-sm secondary-btn font-semibold rounded-lg shadow-sm transition-all duration-200 transform hover:scale-105 flex items-center gap-2";
+                toggleButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3h7a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-7m0-18H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h7m0-18v18"/></svg> Toggle Columns`;
+                
+                const dropdown = document.createElement('div');
+                dropdown.id = 'column-toggle-dropdown';
+                dropdown.className = "absolute right-0 mt-2 w-56 origin-top-right bg-white rounded-md shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none hidden z-20 border border-slate-200";
+                
+                let checkboxesHTML = '';
+                columnNames.forEach(colName => {
+                    checkboxesHTML += `
+                        <label class="flex items-center px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 cursor-pointer">
+                            <input type="checkbox" data-column="${colName}" class="h-4 w-4 rounded border-slate-300 text-orange-600 focus:ring-orange-500" ${columnVisibility[colName] ? 'checked' : ''}>
+                            <span class="ml-3 select-none">${colName.replace(/_/g, ' ')}</span>
+                        </label>
+                    `;
+                });
+                dropdown.innerHTML = checkboxesHTML;
+                
+                toggleButton.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    dropdown.classList.toggle('hidden');
+                });
+                
+                dropdown.addEventListener('change', (e) => {
+                    if (e.target.type === 'checkbox') {
+                        const columnName = e.target.dataset.column;
+                        columnVisibility[columnName] = e.target.checked;
+                        if (onChange) onChange(columnName, e.target.checked);
+                    }
+                });
+                
+                container.appendChild(toggleButton);
+                document.body.appendChild(dropdown);
+                
+                // Position dropdown relative to button
+                toggleButton.addEventListener('click', () => {
+                    const rect = toggleButton.getBoundingClientRect();
+                    dropdown.style.left = `${rect.left + window.scrollX}px`;
+                    dropdown.style.top = `${rect.bottom + window.scrollY + 5}px`;
+                });
+                
+                return dropdown;
+            };
+            
+            // Copy to clipboard with feedback
+            const copyToClipboard = (text, element) => {
+                const textArea = document.createElement("textarea");
+                textArea.value = text;
+                document.body.appendChild(textArea);
+                textArea.select();
+                
+                try {
+                    document.execCommand('copy');
+                    showCopyFeedback(element);
+                } catch (err) {
+                    console.error('Failed to copy text:', err);
+                }
+                
+                document.body.removeChild(textArea);
+            };
+            
+            const showCopyFeedback = (element) => {
+                const feedback = document.createElement('div');
+                feedback.className = 'copy-feedback show';
+                feedback.textContent = 'Copied!';
+                element.style.position = 'relative';
+                element.appendChild(feedback);
+                
+                setTimeout(() => {
+                    feedback.remove();
+                }, 1000);
+            };
+            
+            // Return public API
+            return {
+                columnNames,
+                getDefaultVisibility,
+                formatNewlines,
+                getSalienceColor,
+                getTooltipTextColor,
+                computeSalienceRange,
+                createTokenBox,
+                renderFullTextBox,
+                renderMetadata,
+                renderTable,
+                renderTransposedView,
+                createColumnToggleUI,
+                copyToClipboard,
+                showCopyFeedback
+            };
+        })();
+
+        // Data adapters
+        const DataAdapters = {
+            // Transform column-oriented data to row format
+            transformColumnData: (colData) => {
+                const data = [];
+                const keys = Object.keys(colData);
+                if (keys.length === 0) return [];
+
+                const numRows = Object.keys(colData[keys[0]]).length;
+
+                for (let i = 0; i < numRows; i++) {
+                    const row = {};
+                    keys.forEach(key => {
+                        if (colData[key] && colData[key][String(i)] !== undefined) {
+                            row[key] = colData[key][String(i)];
+                        }
+                    });
+                    data.push(row);
+                }
+                return data;
+            },
+
+            // Parse text input (supports multiple JSON objects)
+            parseText: (text) => {
+                if (!text || text.trim() === '') return [];
+                try {
+                    const jsonBlocks = text.trim().replace(/}(?:\s|\n)*{/g, '}|||JSON_DELIMITER|||{').split('|||JSON_DELIMITER|||');
+                    const transcripts = [];
+
+                    for (const block of jsonBlocks) {
+                        if (block.trim() === "") continue;
+                        const parsed = JSON.parse(block);
+                        
+                        let dataPart = parsed;
+                        let metadata = null;
+
+                        // Check for new format with metadata
+                        if (parsed && parsed.metadata && parsed.data) {
+                            dataPart = parsed.data;
+                            metadata = parsed.metadata;
+                        }
+
+                        let transcriptData;
+                        if (dataPart && typeof dataPart === 'object' && !Array.isArray(dataPart) && dataPart.position) {
+                            // Column-oriented data
+                            transcriptData = DataAdapters.transformColumnData(dataPart);
+                        } else if (Array.isArray(dataPart)) {
+                            // Row-oriented data
+                            transcriptData = dataPart;
+                        }
+
+                        if (transcriptData && transcriptData.length > 0) {
+                            // Ensure explanation field exists
+                            transcriptData.forEach(row => {
+                                if (!row.explanation && Array.isArray(row.explanation_structured)) {
+                                    row.explanation = row.explanation_structured.join('');
+                                }
+                            });
+                            transcripts.push({ data: transcriptData, metadata: metadata });
+                        }
+                    }
+                    return transcripts;
+                } catch (e) {
+                    console.error("Invalid JSON input:", e);
+                    alert("There was an error parsing the JSON data. Please check the console for details.");
+                    return [];
+                }
+            }
+        };
+
+        // Storage adapters
+        const StorageAdapters = {
+            Pantry: {
+                upload: async (content, apiKey, collectionId) => {
+                    const uniqueId = 'log-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+                    
+                    const res = await fetch(`https://getpantry.cloud/apiv1/pantry/${apiKey}/basket/${collectionId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            [uniqueId]: {
+                                data: content,
+                                timestamp: new Date().toISOString()
+                            }
+                        })
+                    });
+                    
+                    if (!res.ok) {
+                        const errorText = await res.text();
+                        
+                        if (errorText.includes('does not exist')) {
+                            // Try creating basket
+                            const createRes = await fetch(`https://getpantry.cloud/apiv1/pantry/${apiKey}/basket/${collectionId}`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    [uniqueId]: {
+                                        data: content,
+                                        timestamp: new Date().toISOString()
+                                    }
+                                })
+                            });
+                            
+                            if (!createRes.ok) {
+                                throw new Error('Failed to create basket');
+                            }
+                        } else {
+                            throw new Error(errorText);
+                        }
+                    }
+                    
+                    return `${collectionId}/${uniqueId}`;
+                },
+                
+                fetch: async (binId, apiKey) => {
+                    const [basketName, uniqueId] = binId.split('/');
+                    const res = await fetch(`https://getpantry.cloud/apiv1/pantry/${apiKey}/basket/${basketName}`);
+                    
+                    if (!res.ok) throw new Error('Failed to fetch basket');
+                    
+                    const result = await res.json();
+                    if (uniqueId && result[uniqueId]) {
+                        return result[uniqueId].data;
+                    }
+                    return result;
+                }
+            },
+            
+            JSONBin: {
+                upload: async (content, apiKey, collectionId) => {
+                    const res = await fetch('https://api.jsonbin.io/v3/b', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Access-Key': apiKey,
+                            'X-Bin-Name': 'LogViewer-Data-' + new Date().toISOString(),
+                            'X-Collection-Id': collectionId,
+                            'X-Bin-Private': 'false'
+                        },
+                        body: JSON.stringify({ data: content })
+                    });
+                    
+                    if (!res.ok) throw new Error('Failed to upload');
+                    
+                    const result = await res.json();
+                    return result.metadata.id;
+                },
+                
+                fetch: async (binId) => {
+                    const res = await fetch(`https://api.jsonbin.io/v3/b/${binId}/latest`);
+                    if (!res.ok) throw new Error('Failed to fetch bin');
+                    
+                    const result = await res.json();
+                    return result.record.data;
+                }
+            }
+        };
+
+        // Main application
+        document.addEventListener('DOMContentLoaded', () => {
+            // State
+            let allTranscripts = [];
+            let currentTranscriptIndex = 0;
+            let isTransposed = false;
+            let salienceColoringEnabled = false;
+            let currentService = 'pantry';
+            let columnVisibility = VisualizationCore.getDefaultVisibility();
+
+            // DOM elements
+            const elements = {
+                // Input elements
+                textInput: document.getElementById('text-input'),
+                parseBtn: document.getElementById('parse-btn'),
+                uploadBtn: document.getElementById('upload-btn'),
+                fileUpload: document.getElementById('file-upload'),
+                
+                // Service settings
+                pantryBtn: document.getElementById('pantry-btn'),
+                jsonbinBtn: document.getElementById('jsonbin-btn'),
+                apiKeyInput: document.getElementById('api-key-input'),
+                collectionIdInput: document.getElementById('collection-id-input'),
+                
+                // Navigation
+                navigationContainer: document.getElementById('navigation-container'),
+                prevBtn: document.getElementById('prev-btn'),
+                nextBtn: document.getElementById('next-btn'),
+                navCounter: document.getElementById('nav-counter'),
+                bottomNavigationContainer: document.getElementById('bottom-navigation-container'),
+                bottomPrevBtn: document.getElementById('bottom-prev-btn'),
+                bottomNextBtn: document.getElementById('bottom-next-btn'),
+                bottomNavCounter: document.getElementById('bottom-nav-counter'),
+                sidePrevBtn: document.getElementById('side-prev-btn'),
+                sideNextBtn: document.getElementById('side-next-btn'),
+                
+                // Display controls
+                displayControls: document.getElementById('display-controls'),
+                controlsSeparator: document.getElementById('controls-separator'),
+                columnToggleContainer: document.getElementById('column-toggle-container'),
+                transposeBtn: document.getElementById('transpose-btn'),
+                lineSpacingSlider: document.getElementById('line-spacing-slider'),
+                colWidthControl: document.getElementById('col-width-control'),
+                colWidthSlider: document.getElementById('col-width-slider'),
+                salienceToggle: document.getElementById('salience-toggle'),
+                salienceColorbar: document.getElementById('salience-colorbar'),
+                salienceDefinition: document.getElementById('salience-definition'),
+                
+                // Output elements
+                outputPlaceholder: document.getElementById('output-placeholder'),
+                outputTable: document.getElementById('output-table'),
+                tableHead: document.getElementById('table-head'),
+                tableBody: document.getElementById('table-body'),
+                transposedView: document.getElementById('transposed-view'),
+                metadataDisplay: document.getElementById('metadata-display'),
+                fullTextContainer: document.getElementById('full-text-container'),
+                fullTextPlaceholder: document.getElementById('full-text-placeholder')
+            };
+
+            // Service management
+            const updateServiceUI = (service) => {
+                currentService = service;
+                
+                elements.pantryBtn.classList.toggle('active-service', service === 'pantry');
+                elements.jsonbinBtn.classList.toggle('active-service', service === 'jsonbin');
+
+                const apiKeyLabel = document.querySelector('label[for="api-key-input"]');
+                const collectionIdLabel = document.querySelector('label[for="collection-id-input"]');
+
+                if (service === 'pantry') {
+                    apiKeyLabel.textContent = 'Pantry ID:';
+                    elements.apiKeyInput.placeholder = 'Paste your Pantry ID here';
+                    elements.apiKeyInput.value = localStorage.getItem('logViewerPantryId') || '88947592-e047-4e50-bfc7-d55c93fb6f35';
+
+                    collectionIdLabel.textContent = 'Basket Name:';
+                    elements.collectionIdInput.placeholder = 'e.g., data-viewer-storage';
+                    elements.collectionIdInput.value = localStorage.getItem('logViewerPantryBasket') || 'data-viewer-storage';
+                } else {
+                    apiKeyLabel.textContent = 'Your Public, Scoped API Key:';
+                    elements.apiKeyInput.placeholder = 'Paste your public API key here';
+                    elements.apiKeyInput.value = localStorage.getItem('logViewerJsonbinApiKey') || '$2a$10$cYXiC7n7tURzBeNd7E2yx.NsMNqmaYgWCoAYTmiFfGHjZKC54V.Sq';
+
+                    collectionIdLabel.textContent = 'Your Public Collection ID:';
+                    elements.collectionIdInput.placeholder = 'Paste your public Collection ID here';
+                    elements.collectionIdInput.value = localStorage.getItem('logViewerJsonbinCollectionId') || '6867e9e58561e97a5031776b';
+                }
+            };
+
+            const saveSettings = () => {
+                if (currentService === 'pantry') {
+                    localStorage.setItem('logViewerPantryId', elements.apiKeyInput.value);
+                    localStorage.setItem('logViewerPantryBasket', elements.collectionIdInput.value);
+                } else {
+                    localStorage.setItem('logViewerJsonbinApiKey', elements.apiKeyInput.value);
+                    localStorage.setItem('logViewerJsonbinCollectionId', elements.collectionIdInput.value);
+                }
+                localStorage.setItem('logViewerService', currentService);
+            };
+
+            // Setup service switcher
+            elements.pantryBtn.addEventListener('click', () => updateServiceUI('pantry'));
+            elements.jsonbinBtn.addEventListener('click', () => updateServiceUI('jsonbin'));
+            elements.apiKeyInput.addEventListener('change', saveSettings);
+            elements.collectionIdInput.addEventListener('change', saveSettings);
+
+            const lastService = localStorage.getItem('logViewerService') || 'pantry';
+            updateServiceUI(lastService);
+
+            // Upload/fetch functions
+            const uploadToBin = async (content) => {
+                const apiKey = elements.apiKeyInput.value;
+                const collectionId = elements.collectionIdInput.value;
+                
+                if (!apiKey || !collectionId) {
+                    alert(currentService === 'pantry'
+                        ? 'Please provide both a Pantry ID and a Basket Name in the Settings section.'
+                        : 'Please provide both a JSONBin.io API Key and a Collection ID in the Settings section.');
+                    return null;
+                }
+                
+                elements.uploadBtn.disabled = true;
+                elements.uploadBtn.textContent = 'Uploading...';
+                
+                try {
+                    const adapter = currentService === 'pantry' ? StorageAdapters.Pantry : StorageAdapters.JSONBin;
+                    return await adapter.upload(content, apiKey, collectionId);
+                } catch (error) {
+                    console.error('Upload failed:', error);
+                    alert(`Upload failed: ${error.message}`);
+                    return null;
+                } finally {
+                    elements.uploadBtn.disabled = false;
+                    elements.uploadBtn.textContent = 'Upload & Get Link';
+                }
+            };
+
+            const fetchFromBin = async (binId) => {
+                const isPantry = binId.includes('/');
+                updateServiceUI(isPantry ? 'pantry' : 'jsonbin');
+                
+                try {
+                    if (isPantry) {
+                        const apiKey = elements.apiKeyInput.value;
+                        return await StorageAdapters.Pantry.fetch(binId, apiKey);
+                    } else {
+                        return await StorageAdapters.JSONBin.fetch(binId);
+                    }
+                } catch (error) {
+                    console.error('Fetch failed:', error);
+                    alert(`Could not load data: ${error.message}`);
+                    return null;
+                }
+            };
+
+            // Rendering functions
+            const updateColourbar = () => {
+                if (!salienceColoringEnabled) {
+                    elements.salienceColorbar.classList.add('hidden');
+                    elements.salienceDefinition.classList.add('hidden');
+                    return;
+                }
+                elements.salienceColorbar.classList.remove('hidden');
+                elements.salienceDefinition.classList.remove('hidden');
+                elements.salienceColorbar.style.background = 'linear-gradient(to right, rgb(0,200,0) 0%, #ffffff 50%, rgb(255,0,0) 100%)';
+            };
+
+            const applySpacing = () => {
+                const spacing = elements.lineSpacingSlider.value;
+                if (isTransposed) {
+                    document.querySelectorAll('.explanation-word').forEach(word => {
+                        word.style.paddingBottom = `${spacing}px`;
+                    });
+                } else {
+                    document.querySelectorAll('#table-body td').forEach(td => {
+                        td.style.paddingTop = `${spacing}px`;
+                        td.style.paddingBottom = `${spacing}px`;
+                    });
+                }
+            };
+
+            const updateColumnVisibility = () => {
+                for (const columnName in columnVisibility) {
+                    const visible = columnVisibility[columnName];
+                    document.querySelectorAll(`[data-column-name="${columnName}"]`).forEach(cell => {
+                        cell.style.display = visible ? '' : 'none';
+                    });
+                }
+            };
+
+            const render = () => {
+                const currentItem = allTranscripts[currentTranscriptIndex];
+                
+                if (!currentItem || allTranscripts.length === 0) {
+                    elements.outputPlaceholder.classList.remove('hidden');
+                    elements.outputTable.classList.add('hidden');
+                    elements.transposedView.classList.add('hidden');
+                    elements.fullTextContainer.classList.add('hidden');
+                    elements.navigationContainer.classList.add('hidden');
+                    elements.displayControls.classList.add('hidden');
+                    elements.controlsSeparator.classList.add('hidden');
+                    elements.metadataDisplay.classList.add('hidden');
+                    elements.bottomNavigationContainer.classList.add('hidden');
+                    elements.sidePrevBtn.classList.add('hidden');
+                    elements.sideNextBtn.classList.add('hidden');
+                    return;
+                }
+                
+                elements.outputPlaceholder.classList.add('hidden');
+                elements.fullTextContainer.classList.remove('hidden');
+                elements.displayControls.style.display = 'flex';
+                elements.controlsSeparator.classList.remove('hidden');
+                
+                // Render components
+                VisualizationCore.renderMetadata({
+                    metadata: currentItem.metadata,
+                    container: elements.metadataDisplay
+                });
+                
+                VisualizationCore.createColumnToggleUI({
+                    container: elements.columnToggleContainer,
+                    columnVisibility: columnVisibility,
+                    onChange: (column, visible) => {
+                        updateColumnVisibility();
+                    }
+                });
+                
+                VisualizationCore.renderFullTextBox({
+                    data: currentItem.data,
+                    container: elements.fullTextContainer,
+                    salienceColoringEnabled: salienceColoringEnabled
+                });
+                
+                if (isTransposed) {
+                    elements.outputTable.classList.add('hidden');
+                    elements.colWidthControl.classList.remove('hidden');
+                    elements.transposedView.classList.remove('hidden');
+                    
+                    VisualizationCore.renderTransposedView({
+                        data: currentItem.data,
+                        container: elements.transposedView,
+                        colWidth: parseInt(elements.colWidthSlider.value, 10),
+                        salienceColoringEnabled: salienceColoringEnabled
+                    });
+                } else {
+                    elements.outputTable.classList.remove('hidden');
+                    elements.colWidthControl.classList.add('hidden');
+                    elements.transposedView.classList.add('hidden');
+                    
+                    VisualizationCore.renderTable({
+                        data: currentItem.data,
+                        tableHead: elements.tableHead,
+                        tableBody: elements.tableBody,
+                        columnVisibility: columnVisibility,
+                        salienceColoringEnabled: salienceColoringEnabled
+                    });
+                }
+                
+                // Navigation visibility
+                if (allTranscripts.length > 1) {
+                    elements.navigationContainer.classList.remove('hidden');
+                    elements.navCounter.textContent = `${currentTranscriptIndex + 1} / ${allTranscripts.length}`;
+                    elements.prevBtn.disabled = currentTranscriptIndex === 0;
+                    elements.nextBtn.disabled = currentTranscriptIndex === allTranscripts.length - 1;
+                    
+                    elements.bottomNavigationContainer.classList.remove('hidden');
+                    elements.bottomNavCounter.textContent = `${currentTranscriptIndex + 1} / ${allTranscripts.length}`;
+                    elements.bottomPrevBtn.disabled = currentTranscriptIndex === 0;
+                    elements.bottomNextBtn.disabled = currentTranscriptIndex === allTranscripts.length - 1;
+                    
+                    if (isTransposed) {
+                        elements.sidePrevBtn.classList.add('hidden');
+                        elements.sideNextBtn.classList.add('hidden');
+                    } else {
+                        elements.sidePrevBtn.classList.remove('hidden');
+                        elements.sideNextBtn.classList.remove('hidden');
+                        elements.sidePrevBtn.style.visibility = (currentTranscriptIndex === 0) ? 'hidden' : 'visible';
+                        elements.sideNextBtn.style.visibility = (currentTranscriptIndex === allTranscripts.length - 1) ? 'hidden' : 'visible';
+                    }
+                } else {
+                    elements.navigationContainer.classList.add('hidden');
+                    elements.bottomNavigationContainer.classList.add('hidden');
+                    elements.sidePrevBtn.classList.add('hidden');
+                    elements.sideNextBtn.classList.add('hidden');
+                }
+                
+                applySpacing();
+            };
+
+            const processData = (text) => {
+                allTranscripts = DataAdapters.parseText(text);
+                currentTranscriptIndex = 0;
+                
+                // Default salience toggle to true if data present
+                const hasSalienceData = allTranscripts.some(t => t.data.some(r => r.token_salience !== undefined));
+                salienceColoringEnabled = hasSalienceData;
+                elements.salienceToggle.checked = hasSalienceData;
+                if (hasSalienceData) {
+                    updateColourbar();
+                }
+                
+                render();
+            };
+
+            // Event handlers
+            elements.parseBtn.addEventListener('click', () => {
+                elements.uploadBtn.disabled = elements.textInput.value.trim() === '';
+                processData(elements.textInput.value);
+            });
+
+            elements.uploadBtn.addEventListener('click', async () => {
+                const binId = await uploadToBin(elements.textInput.value);
+                if (binId) {
+                    const url = new URL(window.location);
+                    url.search = '';
+                    url.searchParams.set('bin', binId);
+                    window.history.pushState({}, '', url);
+                    alert('Link created! The URL has been updated. You can now copy it from your address bar.');
+                }
+            });
+
+            elements.transposeBtn.addEventListener('click', () => {
+                isTransposed = !isTransposed;
+                document.querySelectorAll('#column-toggle-dropdown').forEach(d => d.classList.add('hidden'));
+                render();
+            });
+
+            elements.salienceToggle.addEventListener('change', () => {
+                salienceColoringEnabled = elements.salienceToggle.checked;
+                updateColourbar();
+                render();
+            });
+
+            // Navigation
+            const navigate = (direction) => {
+                if (direction === 'prev' && currentTranscriptIndex > 0) {
+                    currentTranscriptIndex--;
+                    render();
+                } else if (direction === 'next' && currentTranscriptIndex < allTranscripts.length - 1) {
+                    currentTranscriptIndex++;
+                    render();
+                }
+            };
+
+            elements.prevBtn.addEventListener('click', () => navigate('prev'));
+            elements.nextBtn.addEventListener('click', () => navigate('next'));
+            elements.bottomPrevBtn.addEventListener('click', () => navigate('prev'));
+            elements.bottomNextBtn.addEventListener('click', () => navigate('next'));
+            elements.sidePrevBtn.addEventListener('click', () => navigate('prev'));
+            elements.sideNextBtn.addEventListener('click', () => navigate('next'));
+
+            // Spacing controls
+            elements.lineSpacingSlider.addEventListener('input', applySpacing);
+            elements.colWidthSlider.addEventListener('input', (e) => {
+                const newWidth = e.target.value;
+                document.querySelectorAll('.transpose-col').forEach(col => {
+                    col.style.width = `${newWidth}px`;
+                });
+            });
+
+            // File upload
+            elements.fileUpload.addEventListener('change', async (event) => {
+                const file = event.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = async (e) => {
+                        const fileContent = e.target.result;
+                        elements.textInput.value = fileContent;
+                        elements.uploadBtn.disabled = elements.textInput.value.trim() === '';
+                        processData(fileContent);
+                        const binId = await uploadToBin(fileContent);
+                        if (binId) {
+                            const url = new URL(window.location);
+                            url.search = '';
+                            url.searchParams.set('bin', binId);
+                            window.history.pushState({}, '', url);
+                            alert('File uploaded and link created! The URL has been updated.');
+                        }
+                    };
+                    reader.readAsText(file);
+                }
+            });
+
+            elements.textInput.addEventListener('input', () => {
+                elements.uploadBtn.disabled = elements.textInput.value.trim() === '';
+            });
+
+            // Click handlers
+            document.body.addEventListener('click', (e) => {
+                const target = e.target;
+                
+                // Copy to clipboard
+                if (target.tagName === 'TD' && target.title === 'Click to copy') {
+                    VisualizationCore.copyToClipboard(target.textContent, target);
+                }
+                
+                // Close dropdown
+                const dropdown = document.querySelector('#column-toggle-dropdown');
+                if (dropdown && !dropdown.classList.contains('hidden') && 
+                    !e.target.closest('#column-toggle-container')) {
+                    dropdown.classList.add('hidden');
+                }
+            });
+
+            // Load from URL
+            (async () => {
+                const urlParams = new URLSearchParams(window.location.search);
+                const binId = urlParams.get('bin');
+
+                if (binId) {
+                    const content = await fetchFromBin(binId);
+                    if (content) {
+                        elements.textInput.value = content;
+                        elements.uploadBtn.disabled = elements.textInput.value.trim() === '';
+                        processData(content);
+                    }
+                } else {
+                    processData('');
+                }
+            })();
+        });
+    </script>
+</body>
+</html>

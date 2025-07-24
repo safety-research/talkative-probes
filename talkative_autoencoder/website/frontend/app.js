@@ -1,40 +1,211 @@
+// Import visualization core
+import { VisualizationCore } from './visualizer-core.js';
+
 // Configuration
 const API_URL = window.location.hostname === 'localhost' 
     ? 'http://localhost:8000' 
-    : window.location.origin; // Use same origin for production
+    : window.location.origin;
 
 const WS_URL = API_URL.replace('http', 'ws') + '/ws';
 
-// State
-let ws = null;
-let currentRequestId = null;
-let isTransposed = false;
-let salienceColoringEnabled = false;
-let currentResultData = null; // Store the last received result for re-rendering
-
-// Column configuration
-const columnNames = ["position", "token", "explanation", "kl_divergence", "mse", "relative_rmse", "tuned_lens_top", "explanation_structured", "token_salience", "logit_lens_top", "layer"];
-let columnVisibility = {};
-
-// Initialize column visibility
-const setDefaultVisibility = () => {
-    const defaultVisibleCols = ['token', 'explanation', 'mse'];
-    columnNames.forEach(colName => {
-        columnVisibility[colName] = defaultVisibleCols.includes(colName);
-    });
+// State management
+const state = {
+    ws: null,
+    currentRequestId: null,
+    isTransposed: false,
+    salienceColoringEnabled: false,
+    allTranscripts: [],
+    currentTranscriptIndex: 0,
+    currentService: 'pantry',
+    columnVisibility: VisualizationCore.getDefaultVisibility(),
+    activeTab: 'analyze'
 };
-setDefaultVisibility();
+
+// Data adapters
+const DataAdapters = {
+    // Transform column-oriented data to row format
+    transformColumnData: (colData) => {
+        const data = [];
+        const keys = Object.keys(colData);
+        if (keys.length === 0) return [];
+
+        const numRows = Object.keys(colData[keys[0]]).length;
+
+        for (let i = 0; i < numRows; i++) {
+            const row = {};
+            keys.forEach(key => {
+                if (colData[key] && colData[key][String(i)] !== undefined) {
+                    row[key] = colData[key][String(i)];
+                }
+            });
+            data.push(row);
+        }
+        return data;
+    },
+
+    // Parse text input (supports multiple JSON objects)
+    parseText: (text) => {
+        if (!text || text.trim() === '') return [];
+        try {
+            const jsonBlocks = text.trim().replace(/}(?:\s|\n)*{/g, '}|||JSON_DELIMITER|||{').split('|||JSON_DELIMITER|||');
+            const transcripts = [];
+
+            for (const block of jsonBlocks) {
+                if (block.trim() === "") continue;
+                const parsed = JSON.parse(block);
+                
+                let dataPart = parsed;
+                let metadata = null;
+
+                // Check for new format with metadata
+                if (parsed && parsed.metadata && parsed.data) {
+                    dataPart = parsed.data;
+                    metadata = parsed.metadata;
+                }
+
+                let transcriptData;
+                if (dataPart && typeof dataPart === 'object' && !Array.isArray(dataPart) && dataPart.position) {
+                    // Column-oriented data
+                    transcriptData = DataAdapters.transformColumnData(dataPart);
+                } else if (Array.isArray(dataPart)) {
+                    // Row-oriented data
+                    transcriptData = dataPart;
+                }
+
+                if (transcriptData && transcriptData.length > 0) {
+                    // Ensure explanation field exists
+                    transcriptData.forEach(row => {
+                        if (!row.explanation && Array.isArray(row.explanation_structured)) {
+                            row.explanation = row.explanation_structured.join('');
+                        }
+                    });
+                    transcripts.push({ data: transcriptData, metadata: metadata });
+                }
+            }
+            return transcripts;
+        } catch (e) {
+            console.error("Invalid JSON input:", e);
+            showError("There was an error parsing the JSON data. Please check the format.");
+            return [];
+        }
+    }
+};
+
+// Storage adapters
+const StorageAdapters = {
+    Pantry: {
+        upload: async (content, apiKey, collectionId) => {
+            const uniqueId = 'log-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+            
+            const res = await fetch(`https://getpantry.cloud/apiv1/pantry/${apiKey}/basket/${collectionId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    [uniqueId]: {
+                        data: content,
+                        timestamp: new Date().toISOString()
+                    }
+                })
+            });
+            
+            if (!res.ok) {
+                const errorText = await res.text();
+                
+                if (errorText.includes('does not exist')) {
+                    // Try creating basket
+                    const createRes = await fetch(`https://getpantry.cloud/apiv1/pantry/${apiKey}/basket/${collectionId}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            [uniqueId]: {
+                                data: content,
+                                timestamp: new Date().toISOString()
+                            }
+                        })
+                    });
+                    
+                    if (!createRes.ok) {
+                        throw new Error('Failed to create basket');
+                    }
+                } else {
+                    throw new Error(errorText);
+                }
+            }
+            
+            return `${collectionId}/${uniqueId}`;
+        },
+        
+        fetch: async (binId, apiKey) => {
+            const [basketName, uniqueId] = binId.split('/');
+            const res = await fetch(`https://getpantry.cloud/apiv1/pantry/${apiKey}/basket/${basketName}`);
+            
+            if (!res.ok) throw new Error('Failed to fetch basket');
+            
+            const result = await res.json();
+            if (uniqueId && result[uniqueId]) {
+                return result[uniqueId].data;
+            }
+            return result;
+        }
+    },
+    
+    JSONBin: {
+        upload: async (content, apiKey, collectionId) => {
+            const res = await fetch('https://api.jsonbin.io/v3/b', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Access-Key': apiKey,
+                    'X-Bin-Name': 'ConsistencyLens-' + new Date().toISOString(),
+                    'X-Collection-Id': collectionId,
+                    'X-Bin-Private': 'false'
+                },
+                body: JSON.stringify({ data: content })
+            });
+            
+            if (!res.ok) throw new Error('Failed to upload');
+            
+            const result = await res.json();
+            return result.metadata.id;
+        },
+        
+        fetch: async (binId) => {
+            const res = await fetch(`https://api.jsonbin.io/v3/b/${binId}/latest`);
+            if (!res.ok) throw new Error('Failed to fetch bin');
+            
+            const result = await res.json();
+            return result.record.data;
+        }
+    }
+};
 
 // DOM Elements
 const elements = {
+    // Tabs
+    analyzeTab: document.getElementById('analyzeTab'),
+    loadDataTab: document.getElementById('loadDataTab'),
+    shareTab: document.getElementById('shareTab'),
+    analyzeContent: document.getElementById('analyzeContent'),
+    loadDataContent: document.getElementById('loadDataContent'),
+    shareContent: document.getElementById('shareContent'),
+    
+    // Connection
+    connectionStatus: document.getElementById('connectionStatus'),
+    statusText: document.getElementById('statusText'),
+    
+    // Input
     inputText: document.getElementById('inputText'),
     analyzeBtn: document.getElementById('analyzeBtn'),
-    connectionStatus: document.getElementById('connectionStatus'),
+    jsonInput: document.getElementById('json-input'),
+    loadJsonBtn: document.getElementById('load-json-btn'),
+    fileUpload: document.getElementById('file-upload'),
+    
+    // Status
     loading: document.getElementById('loading'),
     error: document.getElementById('error'),
     queuePosition: document.getElementById('queuePosition'),
     
-    // Parameter controls
+    // Parameters
     kRollouts: document.getElementById('kRollouts'),
     kRolloutsValue: document.getElementById('kRolloutsValue'),
     autoBatchSize: document.getElementById('autoBatchSize'),
@@ -56,7 +227,27 @@ const elements = {
     rolloutBatchSize: document.getElementById('rolloutBatchSize'),
     numSamples: document.getElementById('numSamples'),
     
-    // Visualization elements
+    // Sharing
+    pantryBtn: document.getElementById('pantry-btn'),
+    jsonbinBtn: document.getElementById('jsonbin-btn'),
+    apiKeyInput: document.getElementById('api-key-input'),
+    collectionIdInput: document.getElementById('collection-id-input'),
+    uploadBtn: document.getElementById('upload-btn'),
+    exportJsonBtn: document.getElementById('export-json-btn'),
+    
+    // Navigation
+    navigationContainer: document.getElementById('navigation-container'),
+    prevBtn: document.getElementById('prev-btn'),
+    nextBtn: document.getElementById('next-btn'),
+    navCounter: document.getElementById('nav-counter'),
+    bottomNavigationContainer: document.getElementById('bottom-navigation-container'),
+    bottomPrevBtn: document.getElementById('bottom-prev-btn'),
+    bottomNextBtn: document.getElementById('bottom-next-btn'),
+    bottomNavCounter: document.getElementById('bottom-nav-counter'),
+    sidePrevBtn: document.getElementById('side-prev-btn'),
+    sideNextBtn: document.getElementById('side-next-btn'),
+    
+    // Visualization
     outputPlaceholder: document.getElementById('output-placeholder'),
     outputTable: document.getElementById('output-table'),
     tableHead: document.getElementById('table-head'),
@@ -70,457 +261,249 @@ const elements = {
     colWidthSlider: document.getElementById('col-width-slider'),
     salienceToggle: document.getElementById('salience-toggle'),
     salienceColorbar: document.getElementById('salience-colorbar'),
+    salienceDefinition: document.getElementById('salience-definition'),
     metadataDisplay: document.getElementById('metadata-display'),
     fullTextContainer: document.getElementById('full-text-container'),
     fullTextPlaceholder: document.getElementById('full-text-placeholder')
 };
 
 // Helper functions
-const formatNewlines = (str) => {
-    if (typeof str !== 'string') return str;
-    return str.replace(/\\n|\n/g, '↵ ');
+const showError = (message) => {
+    elements.error.querySelector('p').textContent = message;
+    elements.error.classList.remove('hidden');
+    setTimeout(() => elements.error.classList.add('hidden'), 5000);
 };
 
-const getSalienceColor = (value, min = -0.1, max = 0.3) => {
-    if (typeof value !== 'number' || isNaN(value)) return 'transparent';
-    
-    const v = Math.max(-1, Math.min(max, value));
-    
-    if (v >= 0) {
-        const beta = 50;
-        const norm = max > 0 ? Math.log10(1 + beta * v) / Math.log10(1 + beta * max) : 0;
-        const g = Math.round(255 * (1 - norm));
-        const b = g;
-        return `rgb(255,${g},${b})`;
+const showLoading = (show) => {
+    elements.loading.classList.toggle('hidden', !show);
+};
+
+const showQueuePosition = (position) => {
+    if (position !== null) {
+        elements.queuePosition.querySelector('p').textContent = `Queue position: ${position}`;
+        elements.queuePosition.classList.remove('hidden');
     } else {
-        const norm = (-v) / 1;
-        const r = Math.round(255 * (1 - norm));
-        const b = r;
-        return `rgb(${r},255,${b})`;
+        elements.queuePosition.classList.add('hidden');
     }
 };
 
-// WebSocket connection
-const connectWebSocket = () => {
-    ws = new WebSocket(WS_URL);
+// Tab management
+const switchTab = (tabName) => {
+    state.activeTab = tabName;
     
-    ws.onopen = () => {
-        console.log('WebSocket connected');
-        elements.connectionStatus.textContent = 'Connected';
-        elements.connectionStatus.className = 'text-sm text-green-600';
-    };
+    // Update tab buttons
+    const tabs = { analyze: elements.analyzeTab, loadData: elements.loadDataTab, share: elements.shareTab };
+    const contents = { analyze: elements.analyzeContent, loadData: elements.loadDataContent, share: elements.shareContent };
     
-    ws.onclose = () => {
-        console.log('WebSocket disconnected');
-        elements.connectionStatus.textContent = 'Disconnected';
-        elements.connectionStatus.className = 'text-sm text-red-600';
-        setTimeout(connectWebSocket, 5000); // Auto-reconnect
-    };
-    
-    ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        console.log('WebSocket message:', data);
-        
-        if (data.type === 'queued') {
-            elements.queuePosition.textContent = `Queue position: ${data.queue_position}`;
-        } else if (data.type === 'status') {
-            elements.queuePosition.textContent = data.message;
-        } else if (data.type === 'result') {
-            elements.loading.classList.remove('active');
-            if (data.status === 'completed' && data.result) {
-                currentResultData = data.result; // Store the result for re-rendering
-                renderResults(data.result);
-            } else if (data.error) {
-                showError(data.error);
-            }
-        } else if (data.type === 'error') {
-            elements.loading.classList.remove('active');
-            showError(data.error);
+    Object.entries(tabs).forEach(([name, tab]) => {
+        if (name === tabName) {
+            tab.classList.add('border-orange-500', 'text-gray-900');
+            tab.classList.remove('border-transparent', 'text-gray-500');
+        } else {
+            tab.classList.remove('border-orange-500', 'text-gray-900');
+            tab.classList.add('border-transparent', 'text-gray-500');
         }
+    });
+    
+    Object.entries(contents).forEach(([name, content]) => {
+        content.classList.toggle('hidden', name !== tabName);
+    });
+};
+
+// Service management
+const updateServiceUI = (service) => {
+    state.currentService = service;
+    
+    elements.pantryBtn.classList.toggle('active-service', service === 'pantry');
+    elements.jsonbinBtn.classList.toggle('active-service', service === 'jsonbin');
+
+    const apiKeyLabel = document.querySelector('label[for="api-key-input"]');
+    const collectionIdLabel = document.querySelector('label[for="collection-id-input"]');
+
+    if (service === 'pantry') {
+        apiKeyLabel.textContent = 'Pantry ID:';
+        elements.apiKeyInput.placeholder = 'Paste your Pantry ID here';
+        elements.apiKeyInput.value = localStorage.getItem('consistencyLensPantryId') || '';
+
+        collectionIdLabel.textContent = 'Basket Name:';
+        elements.collectionIdInput.placeholder = 'e.g., consistency-lens-data';
+        elements.collectionIdInput.value = localStorage.getItem('consistencyLensPantryBasket') || 'consistency-lens-data';
+    } else {
+        apiKeyLabel.textContent = 'JSONBin.io API Key:';
+        elements.apiKeyInput.placeholder = 'Paste your API key here';
+        elements.apiKeyInput.value = localStorage.getItem('consistencyLensJsonbinApiKey') || '';
+
+        collectionIdLabel.textContent = 'Collection ID:';
+        elements.collectionIdInput.placeholder = 'Paste your collection ID here';
+        elements.collectionIdInput.value = localStorage.getItem('consistencyLensJsonbinCollectionId') || '';
+    }
+};
+
+const saveSettings = () => {
+    if (state.currentService === 'pantry') {
+        localStorage.setItem('consistencyLensPantryId', elements.apiKeyInput.value);
+        localStorage.setItem('consistencyLensPantryBasket', elements.collectionIdInput.value);
+    } else {
+        localStorage.setItem('consistencyLensJsonbinApiKey', elements.apiKeyInput.value);
+        localStorage.setItem('consistencyLensJsonbinCollectionId', elements.collectionIdInput.value);
+    }
+    localStorage.setItem('consistencyLensService', state.currentService);
+};
+
+// WebSocket management
+const connectWebSocket = () => {
+    if (state.ws && state.ws.readyState === WebSocket.OPEN) return;
+    
+    state.ws = new WebSocket(WS_URL);
+    
+    state.ws.onopen = () => {
+        console.log('WebSocket connected');
+        elements.statusText.textContent = 'Connected';
+        elements.connectionStatus.classList.remove('bg-gray-100', 'bg-red-100');
+        elements.connectionStatus.classList.add('bg-green-100');
+        elements.analyzeBtn.disabled = false;
     };
     
-    ws.onerror = (error) => {
+    state.ws.onclose = () => {
+        console.log('WebSocket disconnected');
+        elements.statusText.textContent = 'Disconnected';
+        elements.connectionStatus.classList.remove('bg-green-100');
+        elements.connectionStatus.classList.add('bg-red-100');
+        elements.analyzeBtn.disabled = true;
+        
+        // Reconnect after 2 seconds
+        setTimeout(connectWebSocket, 2000);
+    };
+    
+    state.ws.onerror = (error) => {
         console.error('WebSocket error:', error);
-        elements.connectionStatus.textContent = 'Error';
-        elements.connectionStatus.className = 'text-sm text-red-600';
+        showError('Connection error. Please check if the backend is running.');
+    };
+    
+    state.ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        handleWebSocketMessage(data);
     };
 };
 
-// Error display
-const showError = (message) => {
-    elements.error.textContent = message;
-    elements.error.style.display = 'block';
-    setTimeout(() => {
-        elements.error.style.display = 'none';
-    }, 5000);
+const handleWebSocketMessage = (data) => {
+    switch (data.type) {
+        case 'queued':
+            state.currentRequestId = data.request_id;
+            showQueuePosition(data.queue_position);
+            showLoading(true);
+            break;
+            
+        case 'processing':
+            showQueuePosition(null);
+            showLoading(true);
+            break;
+            
+        case 'result':
+            showLoading(false);
+            showQueuePosition(null);
+            processResults(data.result);
+            break;
+            
+        case 'error':
+            showLoading(false);
+            showQueuePosition(null);
+            showError(data.error || 'An error occurred during analysis');
+            break;
+    }
 };
 
-// Calculate batch size
-const calculateBatchSize = () => {
-    const k = parseInt(elements.kRollouts.value);
-    const batchSize = Math.max(1, Math.floor(256 / k));
-    elements.batchSize.value = batchSize;
-    elements.batchSizeInfo.textContent = `Auto-calculated: ${batchSize}`;
-    return batchSize;
-};
-
-// Analyze text
-const analyzeText = () => {
+// Analysis functions
+const analyze = () => {
     const text = elements.inputText.value.trim();
     if (!text) {
         showError('Please enter some text to analyze');
         return;
     }
     
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-        showError('WebSocket not connected. Please wait...');
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+        showError('Not connected to server. Please wait...');
+        connectWebSocket();
         return;
     }
     
-    elements.loading.classList.add('active');
-    elements.error.style.display = 'none';
-    
-    const k = parseInt(elements.kRollouts.value);
-    const batchSize = elements.autoBatchSize.checked 
-        ? calculateBatchSize() 
-        : parseInt(elements.batchSize.value);
-    
-    const request = {
-        type: 'analyze',
-        text: text,
-        options: {
-            batch_size: batchSize,
-            seed: parseInt(elements.seed.value),
-            no_eval: elements.noEval.checked,
-            tuned_lens: elements.tunedLens.checked,
-            logit_lens_analysis: elements.logitLens.checked,
-            temperature: parseFloat(elements.temperature.value),
-            do_hard_tokens: elements.doHardTokens.checked,
-            return_structured: true,
-            no_kl: elements.noKL.checked,
-            calculate_salience: elements.calculateSalience.checked,
-            calculate_token_salience: elements.calculateSalience.checked,
-            optimize_explanations_config: {
-                use_batched: true,
-                just_do_k_rollouts: k,
-                batch_size_for_rollouts: parseInt(elements.rolloutBatchSize.value),
-                temperature: parseFloat(elements.temperature.value),
-                num_samples_per_iteration: parseInt(elements.numSamples.value)
-            }
-        }
+    // Build options
+    const options = {
+        temperature: parseFloat(elements.temperature.value),
+        optimize_explanations_config: {
+            just_do_k_rollouts: parseInt(elements.kRollouts.value),
+            batch_size_for_rollouts: elements.autoBatchSize.checked 
+                ? Math.max(1, Math.floor(256 / parseInt(elements.kRollouts.value)))
+                : parseInt(elements.batchSize.value),
+            use_batched: true
+        },
+        calculate_salience: elements.calculateSalience.checked,
+        use_tuned_lens: elements.tunedLens.checked,
+        use_logit_lens: elements.logitLens.checked,
+        no_eval: elements.noEval.checked,
+        no_kl: elements.noKL.checked,
+        do_hard_tokens: elements.doHardTokens.checked
     };
     
-    console.log('Sending analysis request:', request);
-    ws.send(JSON.stringify(request));
-};
-
-// Render results
-const renderResults = (result) => {
-    console.log('Rendering results:', result);
-    
-    if (result.metadata) {
-        renderMetadata(result.metadata);
+    if (elements.seed.value) {
+        options.seed = parseInt(elements.seed.value);
     }
     
-    if (result.data && result.data.length > 0) {
-        elements.outputPlaceholder.classList.add('hidden');
-        elements.displayControls.style.display = 'flex';
-        
-        // Default salience toggle to true if data is present
-        const hasSalienceData = result.data.some(r => r.token_salience !== undefined);
-        salienceColoringEnabled = hasSalienceData;
-        elements.salienceToggle.checked = hasSalienceData;
-        
-        renderFullTextBox(result.data);
-        renderColumnToggles();
-        
-        if (isTransposed) {
-            renderTransposedView(result.data);
-        } else {
-            renderTable(result.data);
-        }
-        
-        updateColourbar();
+    if (elements.rolloutBatchSize.value) {
+        options.optimize_explanations_config.rollout_batch_size = parseInt(elements.rolloutBatchSize.value);
     }
+    
+    if (elements.numSamples.value && elements.numSamples.value !== '1') {
+        options.optimize_explanations_config.num_samples = parseInt(elements.numSamples.value);
+    }
+    
+    // Send request
+    state.ws.send(JSON.stringify({
+        type: 'analyze',
+        text: text,
+        options: options
+    }));
 };
 
-// Render metadata
-const renderMetadata = (metadata) => {
-    if (metadata && Object.keys(metadata).length > 0) {
-        elements.metadataDisplay.classList.remove('hidden');
-        let html = '<ul class="list-disc list-inside space-y-1">';
-        if (metadata.model_name) {
-            html += `<li><strong>Model:</strong> <span class="font-semibold">${metadata.model_name}</span></li>`;
-        }
-        if (metadata.device) {
-            html += `<li><strong>Device:</strong> <span class="font-semibold">${metadata.device}</span></li>`;
-        }
-        if (metadata.batch_size) {
-            html += `<li><strong>Batch Size:</strong> <span class="font-semibold">${metadata.batch_size}</span></li>`;
-        }
-        html += '</ul>';
-        elements.metadataDisplay.innerHTML = html;
-    } else {
-        elements.metadataDisplay.classList.add('hidden');
-    }
+// Process results
+const processResults = (result) => {
+    // Create transcript in expected format
+    const transcript = {
+        data: result.data || [],
+        metadata: result.metadata || {}
+    };
+    
+    // Reset transcripts for new analysis
+    state.allTranscripts = [transcript];
+    state.currentTranscriptIndex = 0;
+    
+    // Auto-enable salience if present
+    const hasSalienceData = transcript.data.some(r => r.token_salience !== undefined);
+    state.salienceColoringEnabled = hasSalienceData;
+    elements.salienceToggle.checked = hasSalienceData;
+    
+    // Enable export buttons
+    elements.uploadBtn.disabled = false;
+    elements.exportJsonBtn.disabled = false;
+    
+    render();
 };
 
-// Render full text box
-const renderFullTextBox = (data) => {
-    elements.fullTextContainer.innerHTML = '';
-    if (!data || data.length === 0) {
-        elements.fullTextContainer.appendChild(elements.fullTextPlaceholder);
+// Rendering
+const updateColourbar = () => {
+    if (!state.salienceColoringEnabled) {
+        elements.salienceColorbar.classList.add('hidden');
+        elements.salienceDefinition.classList.add('hidden');
         return;
     }
-    elements.fullTextPlaceholder.classList.add('hidden');
-    
-    data.forEach((row) => {
-        const tokenString = String(row.token || '');
-        const parts = tokenString.split(/\\n|\n/);
-        
-        parts.forEach((part, index) => {
-            if (part === '' && index === parts.length - 1 && parts.length > 1) return;
-            
-            const container = document.createElement('div');
-            container.className = 'token-box-container';
-            
-            const tokenSpan = document.createElement('span');
-            tokenSpan.className = 'token-box';
-            
-            const textContent = (index < parts.length - 1) ? part + ' ↵' : part;
-            tokenSpan.textContent = textContent;
-            
-            const tooltip = document.createElement('div');
-            tooltip.className = 'tooltip';
-            
-            // Build colour-coded explanation for tooltip
-            if (row.explanation_structured && Array.isArray(row.explanation_structured)) {
-                tooltip.innerHTML = '';
-                row.explanation_structured.forEach((tok, idx) => {
-                    const span = document.createElement('span');
-                    span.textContent = formatNewlines(tok) + ' ';
-                    if (Array.isArray(row.token_salience) && idx < row.token_salience.length) {
-                        const sv = row.token_salience[idx];
-                        if (salienceColoringEnabled && typeof sv === 'number') {
-                            span.style.backgroundColor = getSalienceColor(sv);
-                        }
-                    }
-                    tooltip.appendChild(span);
-                });
-            } else {
-                tooltip.textContent = formatNewlines(row.explanation || 'No explanation available.');
-            }
-            
-            container.appendChild(tokenSpan);
-            container.appendChild(tooltip);
-            elements.fullTextContainer.appendChild(container);
-            
-            if (index < parts.length - 1) {
-                elements.fullTextContainer.appendChild(document.createElement('br'));
-            }
-        });
-    });
+    elements.salienceColorbar.classList.remove('hidden');
+    elements.salienceDefinition.classList.remove('hidden');
+    elements.salienceColorbar.style.background = 'linear-gradient(to right, rgb(0,200,0) 0%, #ffffff 50%, rgb(255,0,0) 100%)';
 };
 
-// Render table
-const renderTable = (data) => {
-    elements.tableHead.innerHTML = '';
-    elements.tableBody.innerHTML = '';
-    elements.outputTable.classList.remove('hidden');
-    elements.transposedView.classList.add('hidden');
-    
-    // Create header
-    const headerRow = document.createElement('tr');
-    headerRow.className = "bg-[#EFEBE9]";
-    columnNames.forEach((colName) => {
-        const th = document.createElement('th');
-        th.className = "px-2 py-2 text-left text-sm font-semibold text-[#5D4037] uppercase tracking-wider";
-        th.dataset.columnName = colName;
-        th.textContent = colName.replace(/_/g, ' ');
-        
-        const resizeHandle = document.createElement('div');
-        resizeHandle.className = 'resize-handle';
-        th.appendChild(resizeHandle);
-        
-        headerRow.appendChild(th);
-    });
-    elements.tableHead.appendChild(headerRow);
-    
-    // Create rows
-    data.forEach((row) => {
-        const tr = document.createElement('tr');
-        tr.className = 'hover:bg-[#EFEBE9]/80 border-b border-[#EFEBE9]';
-        
-        columnNames.forEach(colName => {
-            const td = document.createElement('td');
-            td.className = "px-2 py-2 align-top font-mono text-sm text-[#5D4037]";
-            td.dataset.columnName = colName;
-            
-            let value = row[colName] || '';
-            
-            if (['kl_divergence', 'mse', 'relative_rmse'].includes(colName)) {
-                const num = parseFloat(value);
-                value = isNaN(num) ? 'N/A' : num.toFixed(6);
-            }
-            
-            if (colName === 'token_salience') {
-                if (Array.isArray(value)) {
-                    value = value.map(v => typeof v === 'number' ? v.toPrecision(3) : v).join(', ');
-                } else if (typeof value === 'number') {
-                    value = value.toPrecision(3);
-                }
-            }
-            
-            if (colName === 'explanation' && Array.isArray(row.explanation_structured)) {
-                td.textContent = '';
-                row.explanation_structured.forEach((w, idx) => {
-                    const span = document.createElement('span');
-                    span.className = 'explanation-word';
-                    span.textContent = formatNewlines(w) + ' ';
-                    
-                    if (Array.isArray(row.token_salience) && idx < row.token_salience.length) {
-                        const sv = row.token_salience[idx];
-                        if (salienceColoringEnabled && typeof sv === 'number') {
-                            span.style.backgroundColor = getSalienceColor(sv);
-                        }
-                    }
-                    td.appendChild(span);
-                });
-            } else {
-                td.textContent = formatNewlines(String(value));
-            }
-            
-            if (colName === 'token') {
-                td.className = "px-2 py-2 align-top font-mono text-sm font-semibold text-[#BF360C]";
-            }
-            
-            tr.appendChild(td);
-        });
-        
-        elements.tableBody.appendChild(tr);
-    });
-    
-    updateColumnVisibility();
-    applySpacing();
-};
-
-// Render transposed view
-const renderTransposedView = (data) => {
-    elements.transposedView.innerHTML = '';
-    elements.outputTable.classList.add('hidden');
-    elements.transposedView.classList.remove('hidden');
-    elements.colWidthControl.classList.remove('hidden');
-    
-    const container = document.createElement('div');
-    container.className = 'flex flex-row flex-wrap gap-x-2';
-    const colWidth = parseInt(elements.colWidthSlider.value, 10);
-    
-    data.forEach((row) => {
-        const colDiv = document.createElement('div');
-        colDiv.className = 'flex flex-col items-start font-mono text-sm transpose-col';
-        colDiv.style.width = `${colWidth}px`;
-        
-        const tokenWrapper = document.createElement('div');
-        tokenWrapper.className = 'rotated-token-wrapper';
-        
-        const tokenDiv = document.createElement('div');
-        tokenDiv.className = 'font-semibold text-base rotated-token text-[#BF360C]';
-        tokenDiv.textContent = formatNewlines(row.token);
-        
-        tokenWrapper.appendChild(tokenDiv);
-        colDiv.appendChild(tokenWrapper);
-        
-        let explanationWords = [];
-        if (row.explanation_structured && Array.isArray(row.explanation_structured)) {
-            explanationWords = row.explanation_structured;
-        } else if(row.explanation) {
-            explanationWords = formatNewlines(row.explanation).split(/[\s↵]+/);
-        }
-        
-        explanationWords.forEach((word, wordIndex) => {
-            const wordDiv = document.createElement('div');
-            wordDiv.className = 'text-[#6D4C41] font-sans w-full text-left explanation-word';
-            wordDiv.textContent = formatNewlines(word);
-            
-            if (salienceColoringEnabled && Array.isArray(row.token_salience) && wordIndex < row.token_salience.length) {
-                const salienceValue = row.token_salience[wordIndex];
-                if (typeof salienceValue === 'number' && !isNaN(salienceValue)) {
-                    wordDiv.style.backgroundColor = getSalienceColor(salienceValue);
-                    wordDiv.style.padding = '2px 4px';
-                    wordDiv.style.borderRadius = '2px';
-                    wordDiv.style.margin = '1px 0';
-                }
-            }
-            
-            colDiv.appendChild(wordDiv);
-        });
-        
-        container.appendChild(colDiv);
-    });
-    
-    elements.transposedView.appendChild(container);
-    applySpacing();
-};
-
-// Column toggles
-const renderColumnToggles = () => {
-    elements.columnToggleContainer.innerHTML = '';
-    if (isTransposed) return;
-    
-    const toggleButton = document.createElement('button');
-    toggleButton.className = "px-4 py-2 text-sm secondary-btn font-semibold rounded-lg shadow-sm transition-all duration-200 transform hover:scale-105 flex items-center gap-2";
-    toggleButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3h7a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-7m0-18H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h7m0-18v18"/></svg> Toggle Columns`;
-    
-    const dropdown = document.createElement('div');
-    dropdown.className = "absolute mt-2 w-56 origin-top-right bg-white rounded-md shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none hidden z-20 border border-slate-200";
-    
-    let checkboxesHTML = '';
-    columnNames.forEach(colName => {
-        checkboxesHTML += `
-            <label class="flex items-center px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 cursor-pointer">
-                <input type="checkbox" data-column="${colName}" class="h-4 w-4 rounded border-slate-300 text-orange-600 focus:ring-orange-500" ${columnVisibility[colName] ? 'checked' : ''}>
-                <span class="ml-3 select-none">${colName.replace(/_/g, ' ')}</span>
-            </label>
-        `;
-    });
-    dropdown.innerHTML = checkboxesHTML;
-    
-    toggleButton.addEventListener('click', (e) => {
-        e.stopPropagation();
-        dropdown.classList.toggle('hidden');
-    });
-    
-    dropdown.addEventListener('change', (e) => {
-        if (e.target.type === 'checkbox') {
-            const columnName = e.target.dataset.column;
-            columnVisibility[columnName] = e.target.checked;
-            updateColumnVisibility();
-        }
-    });
-    
-    elements.columnToggleContainer.appendChild(toggleButton);
-    elements.columnToggleContainer.appendChild(dropdown);
-    
-    // Close dropdown when clicking outside
-    document.addEventListener('click', () => {
-        dropdown.classList.add('hidden');
-    });
-};
-
-// Update column visibility
-const updateColumnVisibility = () => {
-    for (const columnName in columnVisibility) {
-        const visible = columnVisibility[columnName];
-        document.querySelectorAll(`[data-column-name="${columnName}"]`).forEach(cell => {
-            cell.style.display = visible ? '' : 'none';
-        });
-    }
-};
-
-// Apply spacing
 const applySpacing = () => {
     const spacing = elements.lineSpacingSlider.value;
-    if (isTransposed) {
+    if (state.isTransposed) {
         document.querySelectorAll('.explanation-word').forEach(word => {
             word.style.paddingBottom = `${spacing}px`;
         });
@@ -532,84 +515,394 @@ const applySpacing = () => {
     }
 };
 
-// Update colorbar
-const updateColourbar = () => {
-    if (!salienceColoringEnabled) {
-        elements.salienceColorbar.classList.add('hidden');
-        return;
+const updateColumnVisibility = () => {
+    for (const columnName in state.columnVisibility) {
+        const visible = state.columnVisibility[columnName];
+        document.querySelectorAll(`[data-column-name="${columnName}"]`).forEach(cell => {
+            cell.style.display = visible ? '' : 'none';
+        });
     }
-    elements.salienceColorbar.classList.remove('hidden');
-    elements.salienceColorbar.style.background = 'linear-gradient(to right, rgb(0,200,0) 0%, #ffffff 50%, rgb(255,0,0) 100%)';
 };
 
-// Event listeners
-elements.analyzeBtn.addEventListener('click', analyzeText);
-
-elements.inputText.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter' && e.ctrlKey) {
-        analyzeText();
+const render = () => {
+    const currentItem = state.allTranscripts[state.currentTranscriptIndex];
+    
+    if (!currentItem || state.allTranscripts.length === 0) {
+        elements.outputPlaceholder.classList.remove('hidden');
+        elements.outputTable.classList.add('hidden');
+        elements.transposedView.classList.add('hidden');
+        elements.fullTextContainer.classList.add('hidden');
+        elements.navigationContainer.classList.add('hidden');
+        elements.displayControls.classList.add('hidden');
+        elements.metadataDisplay.classList.add('hidden');
+        elements.bottomNavigationContainer.classList.add('hidden');
+        elements.sidePrevBtn.classList.add('hidden');
+        elements.sideNextBtn.classList.add('hidden');
+        return;
     }
-});
-
-// Parameter controls
-elements.kRollouts.addEventListener('input', () => {
-    elements.kRolloutsValue.textContent = elements.kRollouts.value;
-    if (elements.autoBatchSize.checked) {
-        calculateBatchSize();
-    }
-});
-
-elements.temperature.addEventListener('input', () => {
-    elements.temperatureValue.textContent = elements.temperature.value;
-});
-
-elements.autoBatchSize.addEventListener('change', () => {
-    elements.batchSize.disabled = elements.autoBatchSize.checked;
-    if (elements.autoBatchSize.checked) {
-        calculateBatchSize();
-    }
-});
-
-// Advanced settings toggle
-elements.advancedToggle.addEventListener('click', () => {
-    const isExpanded = elements.advancedSettings.classList.contains('expanded');
-    if (isExpanded) {
-        elements.advancedSettings.classList.remove('expanded');
-        elements.advancedSettings.classList.add('collapsed');
-        elements.advancedToggle.innerHTML = '▶ Show Advanced Settings';
-    } else {
-        elements.advancedSettings.classList.remove('collapsed');
-        elements.advancedSettings.classList.add('expanded');
-        elements.advancedToggle.innerHTML = '▼ Hide Advanced Settings';
-    }
-});
-
-// Visualization controls
-elements.transposeBtn.addEventListener('click', () => {
-    isTransposed = !isTransposed;
-    if (currentResultData) {
-        renderResults(currentResultData);
-    }
-});
-
-elements.salienceToggle.addEventListener('change', () => {
-    salienceColoringEnabled = elements.salienceToggle.checked;
-    updateColourbar();
-    // Re-render current results
-    if (currentResultData) {
-        renderResults(currentResultData);
-    }
-});
-
-elements.lineSpacingSlider.addEventListener('input', applySpacing);
-
-elements.colWidthSlider.addEventListener('input', (e) => {
-    const newWidth = e.target.value;
-    document.querySelectorAll('.transpose-col').forEach(col => {
-        col.style.width = `${newWidth}px`;
+    
+    elements.outputPlaceholder.classList.add('hidden');
+    elements.fullTextContainer.classList.remove('hidden');
+    elements.displayControls.style.display = 'flex';
+    
+    // Render components using VisualizationCore
+    VisualizationCore.renderMetadata({
+        metadata: currentItem.metadata,
+        container: elements.metadataDisplay
     });
-});
+    
+    VisualizationCore.createColumnToggleUI({
+        container: elements.columnToggleContainer,
+        columnVisibility: state.columnVisibility,
+        onChange: (column, visible) => {
+            updateColumnVisibility();
+        }
+    });
+    
+    VisualizationCore.renderFullTextBox({
+        data: currentItem.data,
+        container: elements.fullTextContainer,
+        salienceColoringEnabled: state.salienceColoringEnabled
+    });
+    
+    if (state.isTransposed) {
+        elements.outputTable.classList.add('hidden');
+        elements.colWidthControl.classList.remove('hidden');
+        elements.transposedView.classList.remove('hidden');
+        
+        VisualizationCore.renderTransposedView({
+            data: currentItem.data,
+            container: elements.transposedView,
+            colWidth: parseInt(elements.colWidthSlider.value, 10),
+            salienceColoringEnabled: state.salienceColoringEnabled
+        });
+    } else {
+        elements.outputTable.classList.remove('hidden');
+        elements.colWidthControl.classList.add('hidden');
+        elements.transposedView.classList.add('hidden');
+        
+        VisualizationCore.renderTable({
+            data: currentItem.data,
+            tableHead: elements.tableHead,
+            tableBody: elements.tableBody,
+            columnVisibility: state.columnVisibility,
+            salienceColoringEnabled: state.salienceColoringEnabled
+        });
+    }
+    
+    // Navigation visibility
+    if (state.allTranscripts.length > 1) {
+        elements.navigationContainer.classList.remove('hidden');
+        elements.navCounter.textContent = `${state.currentTranscriptIndex + 1} / ${state.allTranscripts.length}`;
+        elements.prevBtn.disabled = state.currentTranscriptIndex === 0;
+        elements.nextBtn.disabled = state.currentTranscriptIndex === state.allTranscripts.length - 1;
+        
+        elements.bottomNavigationContainer.classList.remove('hidden');
+        elements.bottomNavCounter.textContent = `${state.currentTranscriptIndex + 1} / ${state.allTranscripts.length}`;
+        elements.bottomPrevBtn.disabled = state.currentTranscriptIndex === 0;
+        elements.bottomNextBtn.disabled = state.currentTranscriptIndex === state.allTranscripts.length - 1;
+        
+        if (state.isTransposed) {
+            elements.sidePrevBtn.classList.add('hidden');
+            elements.sideNextBtn.classList.add('hidden');
+        } else {
+            elements.sidePrevBtn.classList.remove('hidden');
+            elements.sideNextBtn.classList.remove('hidden');
+            elements.sidePrevBtn.style.visibility = (state.currentTranscriptIndex === 0) ? 'hidden' : 'visible';
+            elements.sideNextBtn.style.visibility = (state.currentTranscriptIndex === state.allTranscripts.length - 1) ? 'hidden' : 'visible';
+        }
+    } else {
+        elements.navigationContainer.classList.add('hidden');
+        elements.bottomNavigationContainer.classList.add('hidden');
+        elements.sidePrevBtn.classList.add('hidden');
+        elements.sideNextBtn.classList.add('hidden');
+    }
+    
+    applySpacing();
+    updateColourbar();
+};
 
-// Initialize
-connectWebSocket();
-calculateBatchSize();
+// Navigation
+const navigate = (direction) => {
+    if (direction === 'prev' && state.currentTranscriptIndex > 0) {
+        state.currentTranscriptIndex--;
+        render();
+    } else if (direction === 'next' && state.currentTranscriptIndex < state.allTranscripts.length - 1) {
+        state.currentTranscriptIndex++;
+        render();
+    }
+};
+
+// Upload/Export functions
+const uploadData = async () => {
+    const apiKey = elements.apiKeyInput.value;
+    const collectionId = elements.collectionIdInput.value;
+    
+    if (!apiKey || !collectionId) {
+        showError(state.currentService === 'pantry'
+            ? 'Please provide both a Pantry ID and a Basket Name in the Share tab.'
+            : 'Please provide both a JSONBin.io API Key and a Collection ID in the Share tab.');
+        switchTab('share');
+        return;
+    }
+    
+    if (state.allTranscripts.length === 0) {
+        showError('No data to upload. Please analyze some text first.');
+        return;
+    }
+    
+    elements.uploadBtn.disabled = true;
+    elements.uploadBtn.textContent = 'Uploading...';
+    
+    try {
+        const dataToUpload = JSON.stringify(state.allTranscripts.length === 1 
+            ? state.allTranscripts[0] 
+            : state.allTranscripts);
+            
+        const adapter = state.currentService === 'pantry' ? StorageAdapters.Pantry : StorageAdapters.JSONBin;
+        const binId = await adapter.upload(dataToUpload, apiKey, collectionId);
+        
+        if (binId) {
+            const shareUrl = `${window.location.origin}/data-visualizer/?bin=${binId}`;
+            
+            // Copy to clipboard
+            navigator.clipboard.writeText(shareUrl).then(() => {
+                alert(`Link created and copied to clipboard!\n\n${shareUrl}\n\nYou can share this link with others to view the analysis.`);
+            }).catch(() => {
+                alert(`Link created!\n\n${shareUrl}\n\nPlease copy this link to share the analysis.`);
+            });
+        }
+    } catch (error) {
+        console.error('Upload failed:', error);
+        showError(`Upload failed: ${error.message}`);
+    } finally {
+        elements.uploadBtn.disabled = false;
+        elements.uploadBtn.textContent = 'Upload & Get Link';
+    }
+};
+
+const exportJSON = () => {
+    if (state.allTranscripts.length === 0) {
+        showError('No data to export. Please analyze some text first.');
+        return;
+    }
+    
+    const dataStr = JSON.stringify(state.allTranscripts.length === 1 
+        ? state.allTranscripts[0] 
+        : state.allTranscripts, null, 2);
+    
+    const blob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `consistency-lens-analysis-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+};
+
+// Load data functions
+const loadJSON = () => {
+    const jsonText = elements.jsonInput.value.trim();
+    if (!jsonText) {
+        showError('Please paste JSON data to load.');
+        return;
+    }
+    
+    const transcripts = DataAdapters.parseText(jsonText);
+    if (transcripts.length > 0) {
+        state.allTranscripts = transcripts;
+        state.currentTranscriptIndex = 0;
+        
+        // Enable export buttons
+        elements.uploadBtn.disabled = false;
+        elements.exportJsonBtn.disabled = false;
+        
+        // Auto-enable salience if present
+        const hasSalienceData = transcripts.some(t => t.data.some(r => r.token_salience !== undefined));
+        state.salienceColoringEnabled = hasSalienceData;
+        elements.salienceToggle.checked = hasSalienceData;
+        
+        render();
+        
+        // Switch to analyze tab to see results
+        switchTab('analyze');
+    }
+};
+
+const handleFileUpload = (event) => {
+    const file = event.target.files[0];
+    if (file) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const fileContent = e.target.result;
+            elements.jsonInput.value = fileContent;
+            loadJSON();
+        };
+        reader.readAsText(file);
+    }
+};
+
+// Initialize event listeners
+const initializeEventListeners = () => {
+    // Tab navigation
+    elements.analyzeTab.addEventListener('click', () => switchTab('analyze'));
+    elements.loadDataTab.addEventListener('click', () => switchTab('loadData'));
+    elements.shareTab.addEventListener('click', () => switchTab('share'));
+    
+    // Analysis
+    elements.analyzeBtn.addEventListener('click', analyze);
+    elements.inputText.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter' && e.ctrlKey) analyze();
+    });
+    
+    // Parameters
+    elements.kRollouts.addEventListener('input', (e) => {
+        const k = parseInt(e.target.value);
+        elements.kRolloutsValue.textContent = k;
+        if (elements.autoBatchSize.checked) {
+            const autoBatch = Math.max(1, Math.floor(256 / k));
+            elements.batchSize.value = autoBatch;
+            elements.batchSizeInfo.textContent = `${autoBatch} (auto)`;
+        }
+    });
+    
+    elements.autoBatchSize.addEventListener('change', (e) => {
+        elements.batchSize.disabled = e.target.checked;
+        if (e.target.checked) {
+            const k = parseInt(elements.kRollouts.value);
+            const autoBatch = Math.max(1, Math.floor(256 / k));
+            elements.batchSize.value = autoBatch;
+            elements.batchSizeInfo.textContent = `${autoBatch} (auto)`;
+        } else {
+            elements.batchSizeInfo.textContent = elements.batchSize.value;
+        }
+    });
+    
+    elements.batchSize.addEventListener('input', (e) => {
+        if (!elements.autoBatchSize.checked) {
+            elements.batchSizeInfo.textContent = e.target.value;
+        }
+    });
+    
+    elements.temperature.addEventListener('input', (e) => {
+        elements.temperatureValue.textContent = e.target.value;
+    });
+    
+    // Service management
+    elements.pantryBtn.addEventListener('click', () => updateServiceUI('pantry'));
+    elements.jsonbinBtn.addEventListener('click', () => updateServiceUI('jsonbin'));
+    elements.apiKeyInput.addEventListener('change', saveSettings);
+    elements.collectionIdInput.addEventListener('change', saveSettings);
+    
+    // Upload/Export
+    elements.uploadBtn.addEventListener('click', uploadData);
+    elements.exportJsonBtn.addEventListener('click', exportJSON);
+    
+    // Load data
+    elements.loadJsonBtn.addEventListener('click', loadJSON);
+    elements.fileUpload.addEventListener('change', handleFileUpload);
+    
+    // Visualization controls
+    elements.transposeBtn.addEventListener('click', () => {
+        state.isTransposed = !state.isTransposed;
+        document.querySelectorAll('#column-toggle-dropdown').forEach(d => d.classList.add('hidden'));
+        render();
+    });
+    
+    elements.salienceToggle.addEventListener('change', () => {
+        state.salienceColoringEnabled = elements.salienceToggle.checked;
+        render();
+    });
+    
+    // Navigation
+    elements.prevBtn.addEventListener('click', () => navigate('prev'));
+    elements.nextBtn.addEventListener('click', () => navigate('next'));
+    elements.bottomPrevBtn.addEventListener('click', () => navigate('prev'));
+    elements.bottomNextBtn.addEventListener('click', () => navigate('next'));
+    elements.sidePrevBtn.addEventListener('click', () => navigate('prev'));
+    elements.sideNextBtn.addEventListener('click', () => navigate('next'));
+    
+    // Spacing controls
+    elements.lineSpacingSlider.addEventListener('input', applySpacing);
+    elements.colWidthSlider.addEventListener('input', (e) => {
+        const newWidth = e.target.value;
+        document.querySelectorAll('.transpose-col').forEach(col => {
+            col.style.width = `${newWidth}px`;
+        });
+    });
+    
+    // Click handlers
+    document.body.addEventListener('click', (e) => {
+        const target = e.target;
+        
+        // Copy to clipboard
+        if (target.tagName === 'TD' && target.title === 'Click to copy') {
+            VisualizationCore.copyToClipboard(target.textContent, target);
+        }
+        
+        // Close dropdown
+        const dropdown = document.querySelector('#column-toggle-dropdown');
+        if (dropdown && !dropdown.classList.contains('hidden') && 
+            !e.target.closest('#column-toggle-container')) {
+            dropdown.classList.add('hidden');
+        }
+    });
+};
+
+// Load from URL parameters
+const loadFromURL = async () => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const binId = urlParams.get('bin');
+
+    if (binId) {
+        const isPantry = binId.includes('/');
+        updateServiceUI(isPantry ? 'pantry' : 'jsonbin');
+        
+        try {
+            let content;
+            if (isPantry) {
+                const apiKey = elements.apiKeyInput.value;
+                content = await StorageAdapters.Pantry.fetch(binId, apiKey);
+            } else {
+                content = await StorageAdapters.JSONBin.fetch(binId);
+            }
+            
+            if (content) {
+                const transcripts = DataAdapters.parseText(typeof content === 'string' ? content : JSON.stringify(content));
+                if (transcripts.length > 0) {
+                    state.allTranscripts = transcripts;
+                    state.currentTranscriptIndex = 0;
+                    elements.uploadBtn.disabled = false;
+                    elements.exportJsonBtn.disabled = false;
+                    render();
+                    switchTab('analyze');
+                }
+            }
+        } catch (error) {
+            console.error('Failed to load from URL:', error);
+            showError(`Could not load shared data: ${error.message}`);
+        }
+    }
+};
+
+// Initialize application
+const initialize = () => {
+    // Load saved settings
+    const lastService = localStorage.getItem('consistencyLensService') || 'pantry';
+    updateServiceUI(lastService);
+    
+    // Initialize event listeners
+    initializeEventListeners();
+    
+    // Connect WebSocket
+    connectWebSocket();
+    
+    // Load from URL if present
+    loadFromURL();
+};
+
+// Start the application
+initialize();
