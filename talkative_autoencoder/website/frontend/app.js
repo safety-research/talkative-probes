@@ -16,8 +16,8 @@ if (window.location.port === '3001') {
 } else if (window.location.hostname === 'localhost') {
     API_URL = 'http://localhost:8000';
 } else if (window.location.hostname.includes('proxy.runpod.net')) {
-    // RunPod proxy - frontend is on port 3000, backend is on port 8888
-    API_URL = window.location.origin.replace('-3000.proxy', '-8888.proxy').replace(':3000', ':8888');
+    // RunPod proxy - frontend is on port 3000, backend is on port 8000
+    API_URL = window.location.origin.replace('-3000.proxy', '-8000.proxy').replace(':3000', ':8000');
 } else if (window.location.hostname.includes('kitft')) {
     // kitft.github.io deployment - needs to connect to RunPod backend
     // This will be replaced by deploy-frontend make target with actual RunPod URL

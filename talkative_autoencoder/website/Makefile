@@ -9,7 +9,7 @@ SHELL := /bin/zsh
 BACKEND_DIR = backend
 FRONTEND_DIR = frontend
 API_PORT = 8000
-RUNPOD_PORT ?= 8888  # RunPod exposed port, can be overridden: make run RUNPOD_PORT=8888
+RUNPOD_PORT ?= 8000  # RunPod exposed port, can be overridden: make run RUNPOD_PORT=8000
 RUNPOD_URL ?= # Set via environment or command line: make deploy RUNPOD_URL=xxx
 
 # Colors for output
@@ -26,7 +26,7 @@ help:
 	@echo "  make setup          - Install dependencies and prepare environment"
 	@echo "  make test           - Run backend tests"
 	@echo "  make run            - Run backend server locally"
-	@echo "  make run RUNPOD_PORT=8888 - Run on RunPod with custom port"
+	@echo "  make run RUNPOD_PORT=8000 - Run on RunPod with custom port"
 	@echo "  make run-frontend   - Serve frontend locally"
 	@echo ""
 	@echo "$(YELLOW)Deployment:$(NC)"
@@ -167,8 +167,8 @@ deploy-frontend:
 	@echo ""
 	@echo "$(YELLOW)Updating frontend with RunPod URL...$(NC)"
 	@cp $(FRONTEND_DIR)/app.js $(FRONTEND_DIR)/app.js.backup
-	@sed -i.bak "s|'https://your-pod-id-8888.proxy.runpod.net'|'$(RUNPOD_URL)'|g" $(FRONTEND_DIR)/app.js || \
-		sed -i '' "s|'https://your-pod-id-8888.proxy.runpod.net'|'$(RUNPOD_URL)'|g" $(FRONTEND_DIR)/app.js
+	@sed -i.bak "s|'https://[^']*-8000.proxy.runpod.net'|'$(RUNPOD_URL)'|g" $(FRONTEND_DIR)/app.js || \
+		sed -i '' "s|'https://[^']*-8000.proxy.runpod.net'|'$(RUNPOD_URL)'|g" $(FRONTEND_DIR)/app.js
 	@echo "$(GREEN)✓ Updated API URL to: $(RUNPOD_URL)$(NC)"
 	@echo ""
 	@echo "$(YELLOW)Frontend has been configured!$(NC)"
