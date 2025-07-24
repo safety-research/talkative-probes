@@ -1,0 +1,42 @@
+# This file goes in your kitft.github.io repository at:
+# .github/workflows/update-talkative-autoencoder.yml
+
+name: Update Talkative Autoencoder Submodule
+
+on:
+  repository_dispatch:
+    types: [update-talkative-autoencoder]
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  update-submodule:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          submodules: true
+
+      - name: Update submodule
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email github-actions[bot]@users.noreply.github.com
+          git submodule update --init --recursive
+          git submodule update --remote talkative-autoencoder
+          
+      - name: Check for changes
+        id: check_changes
+        run: |
+          if [[ -n $(git status --porcelain) ]]; then
+            echo "changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "changes=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit and push if changed
+        if: steps.check_changes.outputs.changes == 'true'
+        run: |
+          git add talkative-autoencoder
+          git commit -m "Auto-update talkative-autoencoder submodule to ${{ github.event.client_payload.sha }}"
+          git push

@@ -1,0 +1,20 @@
+name: Update GitHub Pages Submodule
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'talkative_autoencoder/website/frontend/**'
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  update-submodule:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger GitHub Pages Update
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          token: ${{ secrets.PAGES_UPDATE_TOKEN }}
+          repository: kitft/kitft.github.io
+          event-type: update-talkative-autoencoder
+          client-payload: '{"ref": "${{ github.ref }}", "sha": "${{ github.sha }}"}'

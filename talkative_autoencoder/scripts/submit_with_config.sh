@@ -17,6 +17,7 @@ export TORCHINDUCTOR_CACHE_DIR="${HOME}/.cache/torchinductor"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TOKENIZERS_PARALLELISM=true
 export HYDRA_FULL_ERROR=1
+export NUM_CPUS_PER_TASK=16
 
 
 # Default values
@@ -76,6 +77,9 @@ for arg in "$@"; do
             ;;
         nice=*) # New argument for nice/requeueable jobs
             NICE_JOB="${arg#*=}"
+            ;;
+        num_cpus_per_task=*)
+            NUM_CPUS_PER_TASK="${arg#*=}"
             ;;
         # Special handling for positional config file (backwards compatibility)
         *.yaml)
@@ -479,7 +483,7 @@ submit_train_job() {
             sbatch_args+=(--nodes=1)  # Force single node
             sbatch_args+=(--ntasks-per-node=$NUM_GPUS_TRAIN)  # One task per GPU
             # give some reasonable number of cpus?
-            sbatch_args+=(--cpus-per-task=16)
+            sbatch_args+=(--cpus-per-task=$NUM_CPUS_PER_TASK)
             
             # Request exclusive node for 8 GPUs (full node)
             if [ "$NUM_GPUS_TRAIN" -eq 8 ]; then
@@ -506,6 +510,7 @@ submit_train_job() {
             fi
         fi
         
+        sbatch_args+=(--hint=nomultithread)
         # Add environment variables
         local export_vars="ALL,TORCHINDUCTOR_CACHE_DIR=${HOME}/.cache/torchinductor,SUBMIT_SCRIPT_COMMAND=$SUBMIT_SCRIPT_COMMAND"
         if [ -n "$resume_checkpoint" ]; then

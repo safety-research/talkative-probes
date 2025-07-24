@@ -260,6 +260,11 @@ class LensAnalyzer:
                             )
                         print(f"Loading adapter {diff_model_str} into {different_activations_model}")
                         different_activations_model.load_adapter(diff_model_str)
+                    elif 'ModelOrganismsForEM' in diff_model_str:
+                        print('Loading with adapter')
+                        different_activations_model = AutoModelForCausalLM.from_pretrained('Qwen/Qwen2.5-14B-Instruct', device_map="auto" if not initialise_on_cpu else "cpu", torch_dtype=self.model_dtype)
+                        print(f"Loading adapter {diff_model_str} into {different_activations_model}")
+                        different_activations_model.load_adapter(diff_model_str)
                     else:
                         print(f"Loading {different_activations_orig} (no lora)")
                         if 'gemma-3' in different_activations_orig:
