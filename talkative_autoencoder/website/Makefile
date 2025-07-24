@@ -9,6 +9,7 @@ SHELL := /bin/zsh
 BACKEND_DIR = backend
 FRONTEND_DIR = frontend
 API_PORT = 8000
+RUNPOD_PORT ?= 8888  # RunPod exposed port, can be overridden: make run RUNPOD_PORT=8888
 RUNPOD_URL ?= # Set via environment or command line: make deploy RUNPOD_URL=xxx
 
 # Colors for output
@@ -25,6 +26,7 @@ help:
 	@echo "  make setup          - Install dependencies and prepare environment"
 	@echo "  make test           - Run backend tests"
 	@echo "  make run            - Run backend server locally"
+	@echo "  make run RUNPOD_PORT=8888 - Run on RunPod with custom port"
 	@echo "  make run-frontend   - Serve frontend locally"
 	@echo ""
 	@echo "$(YELLOW)Deployment:$(NC)"
@@ -60,11 +62,19 @@ test:
 	@source ../scripts/ensure_env.sh && uv run pytest backend/tests/ -v
 	@echo "$(GREEN)✓ All tests passed$(NC)"
 
-# Run backend locally
+# Run backend locally or on RunPod
 run:
-	@echo "$(YELLOW)Starting backend server on http://localhost:$(API_PORT)$(NC)"
-	@echo "$(YELLOW)API docs available at http://localhost:$(API_PORT)/docs$(NC)"
-	@source ../scripts/ensure_env.sh && cd .. && uv run uvicorn website.backend.app.main:app --host 0.0.0.0 --port $(API_PORT) --reload || true
+	@if [ -n "$(RUNPOD_POD_ID)" ]; then \
+		echo "$(YELLOW)Running on RunPod - Backend will be accessible at:$(NC)"; \
+		echo "$(GREEN)https://$(RUNPOD_POD_ID)-$(RUNPOD_PORT).proxy.runpod.net$(NC)"; \
+		echo ""; \
+		echo "$(YELLOW)Starting backend server on port $(RUNPOD_PORT)...$(NC)"; \
+		source ../scripts/ensure_env.sh && cd .. && PORT=$(RUNPOD_PORT) uv run uvicorn website.backend.app.main:app --host 0.0.0.0 --port $(RUNPOD_PORT) --reload || true; \
+	else \
+		echo "$(YELLOW)Starting backend server on http://localhost:$(API_PORT)$(NC)"; \
+		echo "$(YELLOW)API docs available at http://localhost:$(API_PORT)/docs$(NC)"; \
+		source ../scripts/ensure_env.sh && cd .. && uv run uvicorn website.backend.app.main:app --host 0.0.0.0 --port $(API_PORT) --reload || true; \
+	fi
 
 # Run frontend locally
 run-frontend:
@@ -127,7 +137,7 @@ deploy-backend: security-check
 	@echo "  - GPU: A100 40GB or RTX 3090 (for cost savings)"
 	@echo "  - Container: runpod/pytorch:2.1.0-py3.10-cuda12.1.0-devel"
 	@echo "  - Disk: 50GB+"
-	@echo "  - Expose Port: $(API_PORT)"
+	@echo "  - Expose Port: $(RUNPOD_PORT)"
 	@echo ""
 	@echo "$(YELLOW)Step 2: SSH into your pod and run:$(NC)"
 	@echo "  cd /workspace"
@@ -136,29 +146,29 @@ deploy-backend: security-check
 	@echo "  make setup"
 	@echo "  make secure-env"
 	@echo "  # Edit backend/.env with your settings"
-	@echo "  make run"
+	@echo "  make run RUNPOD_PORT=$(RUNPOD_PORT)"
 	@echo ""
 	@echo "$(YELLOW)Step 3: Note your RunPod URL:$(NC)"
-	@echo "  https://YOUR-POD-ID-$(API_PORT).proxy.runpod.net"
+	@echo "  https://YOUR-POD-ID-$(RUNPOD_PORT).proxy.runpod.net"
 	@echo ""
 	@echo "$(YELLOW)Security Note:$(NC)"
 	@echo "  - RunPod proxy provides HTTPS automatically"
-	@echo "  - Port $(API_PORT) is only accessible through their proxy"
+	@echo "  - Port $(RUNPOD_PORT) is only accessible through their proxy"
 	@echo "  - Direct pod access requires RunPod authentication"
 
 # Deploy frontend to GitHub Pages
 deploy-frontend:
 	@if [ -z "$(RUNPOD_URL)" ]; then \
 		echo "$(RED)Error: RUNPOD_URL not set$(NC)"; \
-		echo "Usage: make deploy-frontend RUNPOD_URL=https://your-pod-id-$(API_PORT).proxy.runpod.net"; \
+		echo "Usage: make deploy-frontend RUNPOD_URL=https://your-pod-id-$(RUNPOD_PORT).proxy.runpod.net"; \
 		exit 1; \
 	fi
 	@echo "$(GREEN)=== Frontend Deployment ===$(NC)"
 	@echo ""
 	@echo "$(YELLOW)Updating frontend with RunPod URL...$(NC)"
 	@cp $(FRONTEND_DIR)/app.js $(FRONTEND_DIR)/app.js.backup
-	@sed -i.bak "s|'https://your-api-endpoint.com'|'$(RUNPOD_URL)'|g" $(FRONTEND_DIR)/app.js || \
-		sed -i '' "s|'https://your-api-endpoint.com'|'$(RUNPOD_URL)'|g" $(FRONTEND_DIR)/app.js
+	@sed -i.bak "s|'https://your-pod-id-8888.proxy.runpod.net'|'$(RUNPOD_URL)'|g" $(FRONTEND_DIR)/app.js || \
+		sed -i '' "s|'https://your-pod-id-8888.proxy.runpod.net'|'$(RUNPOD_URL)'|g" $(FRONTEND_DIR)/app.js
 	@echo "$(GREEN)✓ Updated API URL to: $(RUNPOD_URL)$(NC)"
 	@echo ""
 	@echo "$(YELLOW)Frontend has been configured!$(NC)"
