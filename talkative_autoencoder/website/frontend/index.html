@@ -7,19 +7,58 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="visualizer-styles.css">
+    <style>
+        .info-btn {
+            padding: 2px;
+            border-radius: 4px;
+            transition: background-color 0.2s;
+            cursor: pointer;
+            border: none;
+            background: transparent;
+            color: #6b7280;
+        }
+        .info-btn:hover {
+            background-color: #f3f4f6;
+            color: #374151;
+        }
+    </style>
 </head>
 <body class="antialiased">
     <div class="container mx-auto">
         <div class="p-4 sm:p-6 md:p-8">
             <!-- Header -->
             <div class="mb-6">
-                <h1 class="text-3xl font-bold text-[#5D4037] mb-2">Analyzer</h1>
-                <p class="text-[#795548]">Interactive analysis with the Talkative Autoencoder</p>
+                <h1 class="text-3xl font-bold text-[#5D4037] mb-2">Non-linear autoencoder analysis</h1>
+                <p class="text-[#795548]">Understand what language models are thinking by converting their internal states into human-readable explanations</p>
+                <details class="mt-3 text-sm text-gray-600">
+                    <summary class="cursor-pointer font-medium hover:text-gray-800">What is this? (click to expand)</summary>
+                    <div class="mt-2 p-3 bg-gray-50 rounded-lg">
+                        <p class="mb-2">Non-linear autoencoders (or talkative autoencoders) are a research tool for interpreting LLMs by:</p>
+                        <ul class="list-disc ml-5 space-y-1">
+                            <li>Converting the model's internal neural activations into natural language explanations</li>
+                            <li>Testing if these explanations can accurately reconstruct the original activations</li>
+                            <li>Hopefully showing what the model "thinking" at each token in the text</li>
+                        </ul>
+                        <p class="mt-2">Lower MSE values indicate the explanation better captures what the model is doing internally.</p>
+			<p class="mt-3">
+        <a href="https://drive.google.com/file/d/1TGPaF13pti1s5JE6tO11RBxMuy7hN33T/view"
+           target="_blank"
+           class="text-blue-600 hover:text-blue-800 underline">
+           Learn more about this research →
+        </a>
+    </p>
+                    </div>
+                </details>
             </div>
 
             <!-- Connection Status -->
-            <div id="connectionStatus" class="mb-4 p-3 rounded-lg bg-gray-100 text-gray-700">
-                <span class="font-semibold">Status:</span> <span id="statusText">Disconnected</span>
+            <div id="connectionStatus" class="mb-4 p-3 rounded-lg bg-gray-100 text-gray-700 flex justify-between items-center">
+                <div>
+                    <span class="font-semibold">Status:</span> <span id="statusText">Disconnected</span>
+                </div>
+                <button id="resetBtn" class="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700 transition-colors" title="Reset model and clear memory">
+                    Reset Model
+                </button>
             </div>
 
             <!-- Tab Navigation -->
@@ -43,8 +82,83 @@
                 <div class="mb-6">
                     <h2 class="text-2xl font-semibold mb-4 text-[#5D4037]">Input Text</h2>
                     <div class="bg-white rounded-lg border border-slate-200 shadow-sm">
-                        <textarea id="inputText" class="w-full h-48 p-4 bg-transparent text-[#5D4037] border-none rounded-lg focus:ring-0 resize-y" 
-                                  placeholder="Enter text to analyze..."></textarea>
+                        <textarea id="inputText" class="w-full h-48 p-4 bg-transparent text-[#5D4037] border-none rounded-lg focus:ring-0 resize-y font-mono text-sm" 
+                                  placeholder="Enter text to analyze or chat-formatted JSON..."></textarea>
+                        <div class="px-4 pb-3">
+                            <div class="flex items-center gap-4">
+                                <label class="flex items-center space-x-2">
+                                    <input type="checkbox" id="isChatFormatted" 
+                                           class="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded">
+                                    <span class="text-sm text-gray-700">JSON chat messages (with role/content). Tick to apply chat formatting.</span>
+                                </label>
+                                <button type="button" class="info-btn" onclick="document.getElementById('chatFormatInfo').classList.toggle('hidden')">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                    </svg>
+                                </button>
+                                <div id="chatWarning" class="hidden text-sm text-amber-600">
+                                    <svg class="inline w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                                    </svg>
+                                    Detected JSON array - check this box if it's chat data
+                                </div>
+                            </div>
+                            <p id="chatFormatInfo" class="text-xs text-gray-600 mt-2 ml-6 p-2 bg-gray-50 rounded hidden">Enable this if your input is a JSON array of chat messages with 'role' and 'content' fields. For plain text, the model will apply user prompt formatting if this box is selected. The model will use proper chat templates for formatting in both cases.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Continuation Generation Section -->
+                <div class="mb-6 bg-amber-50 border-2 border-amber-200 rounded-lg shadow-sm">
+                    <details id="continuationSection" open>
+                        <summary class="cursor-pointer font-semibold text-lg text-[#5D4037] p-4 hover:bg-amber-100 transition-colors">
+                            ✨ Generate Continuations (Optional)
+                        </summary>
+                        <div class="p-6 pt-2">
+                            <p class="text-sm text-gray-700 mb-4 font-medium">Generate text continuations before analysis. </p>
+                            
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Number of tokens</label>
+                                    <input type="number" id="numTokens" value="100" min="1" max="1000"
+                                           class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-orange-500 focus:border-orange-500">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Number of completions</label>
+                                    <input type="number" id="numCompletions" value="1" min="1" max="20"
+                                           class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-orange-500 focus:border-orange-500">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">Generation temperature</label>
+                                    <input type="number" id="genTemperature" value="1.0" min="0.01" max="2.0" step="0.01"
+                                           class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-orange-500 focus:border-orange-500">
+                                </div>
+                            </div>
+                            
+                            <div class="flex items-center gap-4">
+                                <button id="generateBtn" class="flex items-center justify-center gap-2 px-5 py-2 bg-amber-600 text-white font-medium rounded-lg hover:bg-amber-700 shadow-sm transform hover:scale-105 transition-all" disabled>
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2l6 6v12a2 2 0 01-2 2H6a2 2 0 01-2-2V4a2 2 0 012-2h8z"/><path d="M14 2v6h6"/><path d="M12 18v-6"/><path d="M9 15l3-3 3 3"/></svg>
+                                    Generate Continuations
+                                </button>
+                                <div id="generationStatus" class="hidden text-sm font-medium"></div>
+                            </div>
+                            
+                            <div id="continuationResults" class="mt-4 hidden">
+                                <h4 class="font-semibold text-sm text-gray-700 mb-2">Generated Continuations:</h4>
+                                <div id="continuationsList" class="space-y-2 max-h-96 overflow-y-auto"></div>
+                            </div>
+                        </div>
+                    </details>
+                </div>
+                
+                <!-- Generation Loading Status -->
+                <div id="generationLoading" class="hidden mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                    <div class="flex items-center gap-2">
+                        <svg class="animate-spin h-4 w-4 text-blue-600 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <div id="generationLoadingMessage" class="text-sm text-blue-700">Generating...</div>
                     </div>
                 </div>
 
@@ -56,36 +170,42 @@
                         <!-- K Rollouts -->
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-2">
-                                Number of Rollouts (k): <span id="kRolloutsValue" class="font-semibold">8</span>
+                                Per-token Best-of-N: <span id="kRolloutsValue" class="font-semibold">32</span>
+                                <button type="button" class="info-btn ml-1" onclick="document.getElementById('bestOfNInfo').classList.toggle('hidden')">
+                                    <svg class="w-4 h-4 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                    </svg>
+                                </button>
                             </label>
-                            <input type="range" id="kRollouts" min="1" max="64" value="8" 
+                            <input type="range" id="kRollouts" min="1" max="64" value="32" 
                                    class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer">
                             <div class="flex justify-between text-xs text-gray-500 mt-1">
                                 <span>1 (fast)</span>
                                 <span>64 (best)</span>
                             </div>
+                            <p id="bestOfNInfo" class="text-xs text-gray-600 mt-2 p-2 bg-gray-50 rounded hidden">Number of explanation candidates to generate per token. The model generates N explanations and picks the best one. Higher values give better quality but take longer.</p>
                         </div>
 
                         <!-- Batch Size -->
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-2">
-                                Batch Size: <span id="batchSizeInfo" class="font-semibold">32 (auto)</span>
+                                Batch Size: <span id="batchSizeInfo" class="font-semibold">8 (auto)</span>
                             </label>
                             <div class="flex items-center space-x-2">
                                 <input type="checkbox" id="autoBatchSize" checked 
                                        class="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded">
-                                <label for="autoBatchSize" class="text-sm text-gray-700">Auto-calculate (256÷k)</label>
+                                <label for="autoBatchSize" class="text-sm text-gray-700">Auto-calculate (256÷N)</label>
                             </div>
-                            <input type="number" id="batchSize" min="1" max="256" value="32" disabled
+                            <input type="number" id="batchSize" min="1" max="256" value="8" disabled
                                    class="mt-2 w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-orange-500 focus:border-orange-500 disabled:opacity-50">
                         </div>
 
                         <!-- Temperature -->
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-2">
-                                Temperature: <span id="temperatureValue" class="font-semibold">0.1</span>
+                                Temperature: <span id="temperatureValue" class="font-semibold">1.0</span>
                             </label>
-                            <input type="range" id="temperature" min="0.01" max="2.0" step="0.01" value="0.1"
+                            <input type="range" id="temperature" min="0.01" max="2.0" step="0.01" value="1.0"
                                    class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer">
                         </div>
                     </div>
@@ -118,7 +238,7 @@
                                     <span class="text-sm text-gray-700">No evaluation (MSE only)</span>
                                 </label>
                                 <label class="flex items-center space-x-2">
-                                    <input type="checkbox" id="noKL" 
+                                    <input type="checkbox" id="noKL" checked
                                            class="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded">
                                     <span class="text-sm text-gray-700">No KL divergence</span>
                                 </label>
@@ -133,19 +253,13 @@
                                 <input type="number" id="seed" placeholder="Random" 
                                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-orange-500 focus:border-orange-500">
                             </div>
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Rollout batch size</label>
-                                <input type="number" id="rolloutBatchSize" value="32" min="1" max="256"
-                                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-orange-500 focus:border-orange-500">
-                            </div>
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-1">Number of samples</label>
-                                <input type="number" id="numSamples" value="1" min="1" max="10"
-                                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-orange-500 focus:border-orange-500">
-                            </div>
+                            <!-- Hidden fields -->
+                            <input type="hidden" id="rolloutBatchSize" value="32">
+                            <input type="hidden" id="numSamples" value="1">
                         </div>
                     </details>
                 </div>
+
 
                 <!-- Action Buttons -->
                 <div class="mb-6 flex gap-4">
@@ -153,6 +267,25 @@
                         <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/></svg>
                         Analyze Text
                     </button>
+                </div>
+                
+                <!-- Analysis Loading Status -->
+                <div id="analysisLoading" class="hidden mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                    <div class="flex items-center gap-2">
+                        <svg class="animate-spin h-4 w-4 text-blue-600 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <div class="flex-1 min-w-0">
+                            <div id="analysisLoadingMessage" class="text-sm text-blue-700">Processing...</div>
+                            <div id="analysisLoadingProgress" class="mt-1 hidden">
+                                <div class="w-full bg-blue-200 rounded-full h-1.5">
+                                    <div id="analysisProgressBar" class="bg-blue-600 h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                                </div>
+                                <div id="analysisProgressText" class="text-xs text-blue-600 mt-0.5"></div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -188,6 +321,7 @@
             <div id="shareContent" class="tab-content hidden">
                 <div class="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
                     <h3 class="font-semibold text-[#5D4037] mb-4">Sharing Settings</h3>
+                    <p class="text-sm text-gray-700 mb-4">Share your analysis results with others using cloud storage services. The default API keys are provided for convenience, but you can use your own for private storage.</p>
                     <div class="space-y-4">
                         <div>
                             <label class="block font-medium text-sm text-[#5D4037]">Storage Service:</label>
@@ -199,6 +333,7 @@
                         <div>
                             <label for="api-key-input" class="block font-medium text-sm text-[#5D4037]">API Key / Pantry ID:</label>
                             <input type="text" id="api-key-input" class="mt-1 settings-input" placeholder="Paste your API key here">
+                            <p class="text-xs text-gray-600 mt-1">Default keys are public. Use your own for private storage.</p>
                         </div>
                         <div>
                             <label for="collection-id-input" class="block font-medium text-sm text-[#5D4037]">Collection ID / Basket Name:</label>
@@ -219,23 +354,9 @@
                 </div>
             </div>
 
-            <!-- Status Messages -->
-            <div id="loading" class="hidden mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-                <div class="flex items-center">
-                    <svg class="animate-spin h-5 w-5 mr-3 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    <span class="text-blue-700">Processing...</span>
-                </div>
-            </div>
-
+            <!-- Error Messages (keep these global) -->
             <div id="error" class="hidden mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
                 <p class="text-red-700"></p>
-            </div>
-
-            <div id="queuePosition" class="hidden mb-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-                <p class="text-yellow-700"></p>
             </div>
 
             <!-- Navigation (for multiple transcripts) -->
@@ -273,11 +394,39 @@
             <!-- Metadata Display -->
             <div id="metadata-display" class="my-4 p-4 bg-amber-50 border border-amber-200 rounded-lg hidden text-sm text-[#5D4037]"></div>
 
+            <!-- Generation Tabs (hidden by default) -->
+            <div id="generationTabs" class="mb-6 hidden">
+                <div class="flex items-center justify-between mb-3">
+                    <p class="text-sm text-gray-600">Compare multiple analyses by running new ones with different parameters</p>
+                    <button id="newAnalysisBtn" class="px-4 py-2 text-sm bg-green-600 text-white rounded hover:bg-green-700 transition-colors">
+                        + New Analysis
+                    </button>
+                </div>
+                <div class="border-b border-gray-200">
+                    <nav class="-mb-px flex space-x-4" id="tabNavigation">
+                        <!-- Tabs will be added dynamically -->
+                    </nav>
+                </div>
+            </div>
+
             <!-- Full Text View -->
             <div class="mb-8">
                 <h2 class="text-2xl font-semibold mb-4 text-[#5D4037]">Full Text</h2>
                 <div id="full-text-container" class="p-4 bg-white rounded-lg border border-slate-200 shadow-sm leading-relaxed">
                     <p id="full-text-placeholder" class="text-slate-500">Full text will appear here after analysis.</p>
+                </div>
+            </div>
+
+            <!-- Column Explanations -->
+            <div id="column-explanations" class="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg hidden">
+                <h3 class="font-semibold text-[#5D4037] mb-3">Understanding the Results</h3>
+                <div class="text-sm text-gray-700 space-y-2">
+                    <p><strong>Position:</strong> Token index in the input sequence</p>
+                    <p><strong>Token:</strong> The actual text token being analyzed</p>
+                    <p><strong>Explanation:</strong> Human-readable interpretation of what the model is "thinking" at this token</p>
+                    <p><strong>MSE:</strong> Mean Squared Error - measures how well the explanation reconstructs the model's internal state (lower is better)</p>
+                    <p><strong>Relative RMSE:</strong> The RMSE divided by the norm of the original vector.</p>
+                    <p><strong>Salience:</strong> Importance of this token - % increase in MSE when replaced with a space token (higher = more important)</p>
                 </div>
             </div>
 

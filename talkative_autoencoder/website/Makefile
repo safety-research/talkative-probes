@@ -1,6 +1,8 @@
 # Talkative Autoencoder Web Interface - Deployment Makefile
 # Usage: make [target]
 
+SHELL := /bin/zsh
+
 .PHONY: help setup test run deploy-backend deploy-frontend deploy clean security-check
 
 # Configuration
@@ -37,19 +39,11 @@ help:
 	@echo "  make clean          - Clean up generated files"
 	@echo "  make check-deps     - Check if all dependencies are installed"
 
-# Check if required tools are installed
-check-deps:
-	@echo "$(YELLOW)Checking dependencies...$(NC)"
-	@command -v uv >/dev/null 2>&1 || { echo "$(RED)Error: uv is not installed. Run: curl -LsSf https://astral.sh/uv/install.sh | sh$(NC)" >&2; exit 1; }
-	@command -v python3 >/dev/null 2>&1 || { echo "$(RED)Error: python3 is not installed$(NC)" >&2; exit 1; }
-	@command -v git >/dev/null 2>&1 || { echo "$(RED)Error: git is not installed$(NC)" >&2; exit 1; }
-	@echo "$(GREEN)✓ All dependencies installed$(NC)"
-
-# Setup environment
-setup: check-deps
-	@echo "$(YELLOW)Setting up backend environment...$(NC)"
-	@cd $(BACKEND_DIR) && uv sync
-	@echo "$(GREEN)✓ Backend environment ready$(NC)"
+# Setup environment using ensure_env.sh
+setup:
+	@echo "$(YELLOW)Setting up environment using ensure_env.sh...$(NC)"
+	@source ../scripts/ensure_env.sh
+	@echo "$(GREEN)✓ Environment ready$(NC)"
 	@echo ""
 	@echo "$(YELLOW)Creating .env file from example...$(NC)"
 	@if [ ! -f $(BACKEND_DIR)/.env ]; then \
@@ -61,21 +55,21 @@ setup: check-deps
 	fi
 
 # Run tests
-test: check-deps
+test:
 	@echo "$(YELLOW)Running backend tests...$(NC)"
-	@cd $(BACKEND_DIR) && uv run pytest -v
+	@source ../scripts/ensure_env.sh && uv run pytest backend/tests/ -v
 	@echo "$(GREEN)✓ All tests passed$(NC)"
 
 # Run backend locally
-run: check-deps
+run:
 	@echo "$(YELLOW)Starting backend server on http://localhost:$(API_PORT)$(NC)"
 	@echo "$(YELLOW)API docs available at http://localhost:$(API_PORT)/docs$(NC)"
-	@cd $(BACKEND_DIR) && uv run uvicorn app.main:app --host 0.0.0.0 --port $(API_PORT) --reload
+	@source ../scripts/ensure_env.sh && cd .. && uv run uvicorn website.backend.app.main:app --host 0.0.0.0 --port $(API_PORT) --reload || true
 
 # Run frontend locally
 run-frontend:
 	@echo "$(YELLOW)Starting frontend server on http://localhost:3000$(NC)"
-	@cd $(FRONTEND_DIR) && python3 -m http.server 3000
+	@cd $(FRONTEND_DIR) && python3 -m http.server 3000 || true
 
 # Security check
 security-check: check-deps
@@ -212,11 +206,31 @@ deployment-check:
 	@grep -q "allow_methods=\[\"GET\", \"POST\"\]" $(BACKEND_DIR)/app/main.py && echo "  $(GREEN)✓ CORS restricted$(NC)" || echo "  $(RED)✗ CORS not restricted$(NC)"
 
 # One-command local demo
-demo: setup
+demo:
 	@echo "$(GREEN)Starting local demo...$(NC)"
+	@echo ""
 	@echo "Backend will run on http://localhost:$(API_PORT)"
 	@echo "Frontend will run on http://localhost:3000"
 	@echo ""
-	@$(MAKE) run & 
-	@sleep 5
-	@$(MAKE) run-frontend
+	@echo "$(YELLOW)Press Ctrl+C to stop both servers$(NC)"
+	@echo ""
+	@bash -c '\
+	CLEANED_UP=0; \
+	cleanup() { \
+		if [ $$CLEANED_UP -eq 0 ]; then \
+			CLEANED_UP=1; \
+			echo ""; \
+			echo "$(RED)Stopping servers...$(NC)"; \
+			pkill -f "uvicorn website.backend.app.main:app" 2>/dev/null; \
+			pkill -f "python3 -m http.server 3000" 2>/dev/null; \
+			kill $$(jobs -p) 2>/dev/null; \
+			exit 0; \
+		fi; \
+	}; \
+	trap cleanup INT TERM EXIT; \
+	$(MAKE) -s run & \
+	BACKEND_PID=$$!; \
+	sleep 5; \
+	$(MAKE) -s run-frontend & \
+	FRONTEND_PID=$$!; \
+	wait $$BACKEND_PID $$FRONTEND_PID'

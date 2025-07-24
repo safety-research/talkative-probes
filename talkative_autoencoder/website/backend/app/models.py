@@ -19,7 +19,7 @@ class AnalyzeOptions(BaseModel):
     # Core analysis options
     seed: int = Field(default=42)
     no_eval: bool = Field(default=False, description="Skip evaluation metrics (MSE, KL)")
-    tuned_lens: bool = Field(default=True, description="Include TunedLens predictions")
+    tuned_lens: bool = Field(default=False, description="Include TunedLens predictions")
     logit_lens_analysis: bool = Field(default=False, description="Add logit-lens predictions")
     
     # Generation parameters

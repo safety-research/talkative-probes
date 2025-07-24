@@ -14,7 +14,7 @@ import asyncio
 from typing import Optional
 
 from .models import AnalyzeRequest, AnalyzeResponse, WebSocketMessage
-from .config import settings
+from .config import load_settings
 from .inference import ModelManager, ModelLoadError
 from .websocket import manager
 
@@ -22,13 +22,17 @@ from .websocket import manager
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-load_dotenv()
+# Load .env file from backend directory
+dotenv_location = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
+logger.info(f"Loading .env from {dotenv_location}")
+load_dotenv(dotenv_location)
 
 # Global model manager
 model_manager: Optional[ModelManager] = None
 
 # Rate limiter
 limiter = Limiter(key_func=get_remote_address)
+settings = load_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -201,6 +205,27 @@ async def websocket_endpoint(websocket: WebSocket):
     """WebSocket for real-time updates"""
     await manager.connect(websocket)
     
+    # Send model info - either loaded or pending
+    if model_manager:
+        if model_manager.analyzer:
+            # Model is loaded
+            model_info = {
+                'type': 'model_info',
+                'loaded': True,
+                'checkpoint_path': model_manager.checkpoint_path,
+                'model_name': model_manager.model_name or 'Unknown'
+            }
+        else:
+            # Model not loaded yet, but we know what will be loaded
+            checkpoint_name = os.path.basename(model_manager.checkpoint_path)
+            model_info = {
+                'type': 'model_info',
+                'loaded': False,
+                'checkpoint_path': model_manager.checkpoint_path,
+                'model_name': checkpoint_name  # Show checkpoint name as preview
+            }
+        await websocket.send_json(model_info)
+    
     try:
         while True:
             data = await websocket.receive_json()
@@ -213,15 +238,65 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                     continue
                 
+            elif data['type'] == 'generate':
+                if not model_manager:
+                    await websocket.send_json({
+                        'type': 'generation_error',
+                        'error': 'Model manager not initialized'
+                    })
+                    continue
+                
+                # Add generation request to queue
+                text = data.get('text', '')
+                options = data.get('options', {})
+                
+                # Add websocket to request for real-time updates
+                options['websocket'] = websocket
+                
+                # Add to queue with type 'generate'
+                request_id = await model_manager.queue.add_request(text, options, request_type='generate')
+                
+                # Get current queue position
+                queue_position = model_manager.queue.queue.qsize()
+                
+                await websocket.send_json({
+                    'type': 'queued',
+                    'request_id': request_id,
+                    'queue_position': queue_position,
+                    'context': 'generation'
+                })
+                
+                # Store request in context with websocket
+                request = model_manager.queue.active_requests[request_id]
+                request['websocket'] = websocket
+                
+                continue
+                
+                # This code was orphaned - it should be part of the analyze block
+                # Moving it inside the analyze condition
+                
+            if data['type'] == 'analyze':
+                # Model loading is already checked at the top
                 # Lazy load model if needed with lock to prevent race conditions
                 async with model_manager._load_lock:
                     if model_manager.analyzer is None:
                         await websocket.send_json({
                             'type': 'status',
-                            'message': 'Loading model...'
+                            'message': 'Loading model checkpoint... This may take a minute on first load.'
                         })
                         try:
                             await model_manager.load_model()
+                            await websocket.send_json({
+                                'type': 'status',
+                                'message': 'Model loaded successfully!'
+                            })
+                            # Send model info with the extracted name
+                            await websocket.send_json({
+                                'type': 'model_info',
+                                'loaded': True,
+                                'checkpoint_path': model_manager.checkpoint_path,
+                                'model_name': model_manager.model_name or 'Unknown'
+                            })
                         except ModelLoadError as e:
                             await websocket.send_json({
                                 'type': 'error',
@@ -241,7 +316,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 await websocket.send_json({
                     'type': 'queued',
                     'request_id': request_id,
-                    'queue_position': model_manager.queue.queue.qsize()
+                    'queue_position': model_manager.queue.queue.qsize(),
+                    'context': 'analysis'
                 })
             
             elif data['type'] == 'status':
@@ -301,6 +377,39 @@ async def metrics():
         "average_processing_time": avg_processing_time,
         "active_websocket_connections": len(manager.active_connections)
     }
+
+@app.post("/reset")
+async def reset_model():
+    """Reset the model and clear memory"""
+    global model_manager
+    
+    if model_manager:
+        # Cancel processing task
+        if model_manager.processing_task:
+            model_manager.processing_task.cancel()
+            try:
+                await model_manager.processing_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Clear the model from memory
+        if model_manager.analyzer:
+            model_manager.analyzer = None
+        if model_manager.chat_tokenizer:
+            model_manager.chat_tokenizer = None
+        
+        # Clear the queue
+        model_manager.queue.active_requests.clear()
+        
+        # Force garbage collection
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        logger.info("Model reset and memory cleared")
+    
+    return {"status": "reset", "message": "Model cleared from memory"}
 
 # Import datetime for the status endpoint
 from datetime import datetime

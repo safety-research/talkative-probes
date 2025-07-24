@@ -112,7 +112,7 @@ If you prefer to run components separately:
 1. **Start the inference backend**:
    ```bash
    cd /workspace/kitf/talkative-probes/talkative_autoencoder
-   uv run python -m website.backend.app.main
+   uv run uvicorn website.backend.app.main:app --host 0.0.0.0 --port 8000 --reload
    ```
    The backend will start on http://localhost:8000
    - WebSocket endpoint: ws://localhost:8765

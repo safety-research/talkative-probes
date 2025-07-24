@@ -1,428 +1,184 @@
-# Talkative Autoencoder Web Interface
+# Talkative Autoencoder Website
 
-A secure, production-ready web interface for the Talkative Autoencoder (Consistency Lens) model with real-time visualization.
+Web interface and API for the Talkative Autoencoder project.
 
-## 🚀 Quick Start
+## Components
 
-```bash
-# Local development
-make setup
-make demo  # Runs both backend and frontend
-```
+### 1. Frontend (`frontend/`)
+- **Main Application**: Real-time analysis interface with WebSocket connection
+- **Standalone Viewer**: Offline data visualization tool
+- **Shared Components**: Modular visualization library used by both
 
-Visit http://localhost:3000 for frontend, http://localhost:8000/docs for API docs.
+See [frontend/README.md](frontend/README.md) for detailed documentation.
 
-## 📋 Table of Contents
+### 2. Backend (`backend/`)
+- **FastAPI Server**: Handles model inference and WebSocket connections
+- **Queue Management**: Manages concurrent analysis requests
+- **Model Integration**: Loads and runs the Talkative Autoencoder model
 
-- [Architecture](#architecture)
-- [Quick Deployment](#quick-deployment)
-- [Security Features](#security-features)
-- [Development](#development)
-- [API Reference](#api-reference)
-- [Troubleshooting](#troubleshooting)
+See [backend/README.md](backend/README.md) for detailed documentation.
 
-## 🏗️ Architecture
-
-```
-┌─────────────────┐         ┌──────────────────┐         ┌─────────────────┐
-│  GitHub Pages   │  HTTPS  │    RunPod GPU    │         │     Model       │
-│   (Frontend)    │ ──────> │    (Backend)     │ ──────> │   Checkpoint    │
-│     FREE        │   WSS   │   $0.40-4/hour   │         │  (Volume Mount) │
-└─────────────────┘         └──────────────────┘         └─────────────────┘
-```
-
-### Why This Architecture?
-
-- **Cost-Effective**: Free frontend hosting, pay-per-use GPU backend
-- **Secure**: HTTPS/WSS encryption, API keys, rate limiting
-- **Scalable**: Independent scaling of frontend/backend
-- **Simple**: No complex infrastructure to manage
-
-## 🚀 Quick Deployment
+## Quick Start
 
 ### Prerequisites
 
-- RunPod account with credits
-- GitHub account with Pages enabled  
-- Model checkpoint file (~28GB for 14B model)
+```bash
+cd /workspace/kitf/talkative-probes/talkative_autoencoder
+source scripts/ensure_env.sh
+```
 
-### Step 1: Deploy Backend on RunPod
+This sets up the Python environment with uv and installs all dependencies.
 
-1. **Create RunPod Pod**:
-   - GPU: RTX 3090 ($0.44/hr) or A100 ($1.14/hr)
-   - Image: `runpod/pytorch:2.1.0-py3.10-cuda12.1.0-devel`
-   - Disk: 50GB
-   - Expose Port: 8000
+### Where to Run
 
-2. **SSH into pod and run**:
+#### For Development/Testing
+
+**Local Testing (Recommended)**:
+- Run everything on your local machine for fast iteration
+- Works well if you have any GPU (even small ones)
+- Best for frontend development and debugging
+
+**RunPod Testing**:
+- Use when you need powerful GPUs (H100/A100)
+- Required for large model testing
+- Good for production-like testing
+
+**Hybrid Approach (Often Best)**:
+- Backend on RunPod (for GPU power)
+- Frontend on local machine (for fast iteration)
+- Just update `API_URL` in `frontend/app.js` to your RunPod URL
+
+### Running Everything Locally
+
+The easiest way to run both frontend and backend:
+
+```bash
+cd /workspace/kitf/talkative-probes/talkative_autoencoder/website
+make demo
+```
+
+This will:
+1. Start the backend server on http://localhost:8000
+2. Start the frontend server on http://localhost:8080
+3. Open your browser to the frontend
+
+### Individual Components
+
+**Backend only**:
+```bash
+cd /workspace/kitf/talkative-probes/talkative_autoencoder
+uv run python -m website.backend.app.main
+```
+
+**Frontend only**:
+```bash
+cd website/frontend
+python -m http.server 8080
+```
+
+**Standalone viewer** (no backend needed):
+```bash
+cd website/frontend
+python -m http.server 8081
+# Open http://localhost:8081/visualizer-standalone.html
+```
+
+### Running with RunPod
+
+When you need more GPU power:
+
+1. **On your RunPod instance**:
    ```bash
-   cd /workspace
-   git clone https://github.com/kitft/talkative-probes.git
-   cd talkative-probes
+   # SSH into RunPod
+   ssh root@[your-runpod-ip] -p [port]
    
-   # Set up the shared environment
+   # Setup and run backend
+   cd /workspace/kitf/talkative-probes/talkative_autoencoder
    source scripts/ensure_env.sh
-   
-   # Navigate to website
-   cd talkative_autoencoder/website
-   
-   # Install website-specific dependencies
-   make setup
-   make secure-env
-   cp backend/.env.secure backend/.env
-   
-   # Upload your model checkpoint to:
-   # /workspace/checkpoints/qwen2_5_WCHAT_14b_frozen_nopostfix.pt
-   
-   # Start server (ensure_env.sh must be sourced first!)
-   make run
+   uv run python -m website.backend.app.main
    ```
 
-3. **Note your URL**: `https://YOUR-POD-ID-8000.proxy.runpod.net`
-
-### Step 2: Deploy Frontend
-
-#### Option A: Automated Deployment (Recommended)
-
-1. **Initial Setup (one time)**:
+2. **On your local machine**:
    ```bash
-   # In your github.io repository
-   cd ~/kitft.github.io
-   git submodule add https://github.com/kitft/talkative-probes.git talkative-autoencoder
-   git commit -m "Add talkative-autoencoder as submodule"
-   git push
-   ```
-
-2. **Set up GitHub Actions**:
-   - Copy `github-pages-workflow.yml` to your `kitft.github.io` repo as `.github/workflows/update-talkative-autoencoder.yml`
-   - In the talkative-probes repo settings, create a Personal Access Token (PAT) with `repo` scope
-   - Add it as a secret named `PAGES_UPDATE_TOKEN` in the talkative-probes repo
-
-3. **Deploy Frontend**:
-   ```bash
-   # Configure the frontend API URL
-   cd /workspace/kitf/talkative-probes/talkative_autoencoder/website
-   make deploy-frontend RUNPOD_URL=https://YOUR-POD-ID-8000.proxy.runpod.net
+   # Edit frontend/app.js to use RunPod URL:
+   # const API_URL = 'https://[your-pod-id]-8000.proxy.runpod.net';
    
-   # Commit and push - this triggers auto-update!
-   git add frontend/app.js
-   git commit -m "Update frontend API URL"
-   git push
+   # Run frontend locally
+   cd website/frontend
+   python -m http.server 8080
    ```
 
-4. **Access**: `https://kitft.github.io/talkative-autoencoder/talkative_autoencoder/website/frontend/`
+## Deployment
 
-#### Option B: Manual Updates
+### GitHub Pages
 
-```bash
-# After updating frontend in talkative-probes
-cd ~/kitft.github.io
-git submodule update --remote talkative-autoencoder
-git add talkative-autoencoder
-git commit -m "Update talkative-autoencoder frontend"
-git push
-```
+The frontend is automatically deployed to GitHub Pages:
+- Main app: https://kitft.github.io/talkative-autoencoder/
+- Data viewer: https://kitft.github.io/data-viewer/
 
-### Step 3: Access
+### Backend Deployment
 
-Visit: `https://YOUR-USERNAME.github.io/talkative-autoencoder/`
+The backend can be deployed to:
+- RunPod (GPU instances)
+- Any cloud provider with GPU support
+- Docker containers
 
-## 🔒 Security Features
+See backend/README.md for deployment details.
 
-### Implemented Security
+## Development Workflow
 
-1. **API Key Authentication**: Required in production (auto-generated)
-2. **Rate Limiting**: 60 requests/minute per IP
-3. **CORS Protection**: Restricted to configured origins
-4. **Host Header Validation**: Prevents host header attacks
-5. **HTTPS/WSS**: Automatic via RunPod proxy
-6. **Input Validation**: Max text length, Pydantic models
-7. **No Direct Port Access**: Port 8000 only accessible through RunPod proxy
+1. **Make changes** to frontend or backend code
+2. **Test locally** using `make demo`
+3. **Run tests**: `uv run pytest`
+4. **Check code quality**: 
+   ```bash
+   uv run ruff .
+   uv run black .
+   ```
+5. **Commit and push** to deploy frontend automatically
 
-### Security Configuration
-
-The `make secure-env` command generates:
-- Random 32-byte API key
-- Production environment settings
-- Proper CORS origins
-- Rate limiting configuration
-
-## 💻 Development
-
-### Important: Environment Management
-
-**Always run `source scripts/ensure_env.sh` before working with the code!**
-
-This project uses a shared `uv` environment managed at the repository root. The `ensure_env.sh` script:
-- Creates/activates the virtual environment
-- Sets up the correct Python paths
-- Ensures all dependencies from the main `pyproject.toml` are available
-
-If you see errors like:
-- `uv: command not found`
-- `No module named torch`
-- `No module named transformers`
-
-You forgot to source `ensure_env.sh`!
-
-### Environment Setup
-
-#### First Time Setup
-
-```bash
-# IMPORTANT: Source the shared environment first!
-cd /workspace/kitf/talkative-probes
-source scripts/ensure_env.sh
-
-# Then navigate to website directory
-cd talkative_autoencoder/website
-
-# Install dependencies
-make setup
-```
-
-#### Running the Application
-
-```bash
-# Always source the environment first (if in a new shell)
-cd /workspace/kitf/talkative-probes
-source scripts/ensure_env.sh
-
-# Navigate to website
-cd talkative_autoencoder/website
-
-# Run tests
-make test
-
-# Check security
-make security-check
-
-# Run locally
-make run            # Backend only (uses uv run internally)
-make run-frontend   # Frontend only (Python HTTP server)
-make demo          # Both
-```
-
-#### Opening Frontend in Cursor
-
-When you run `make run-frontend` or `make demo`, Cursor will show a notification:
-
-1. **Look for the popup**: "Your application running on port 3000 is available"
-2. **Click "Open in Browser"** to open in your default browser
-3. **Or use the Ports tab**:
-   - Open Command Palette (Cmd/Ctrl + Shift + P)
-   - Type "Ports: Focus on Ports View"
-   - Find port 3000 in the list
-   - Click the globe icon to open in browser
-
-The frontend will open at `http://localhost:3000`
-
-#### Why ensure_env.sh?
-
-The `ensure_env.sh` script:
-- Sets up the shared `uv` environment for the entire talkative-probes project
-- Ensures PyTorch and other heavy dependencies are available
-- Prevents duplicate installations across different parts of the project
-- Must be sourced in each new shell session
-
-### Project Structure
+## Architecture
 
 ```
 website/
-├── Makefile                # Deployment automation
-├── README.md              # This file
-├── backend/
-│   ├── app/
-│   │   ├── main.py        # FastAPI + security
-│   │   ├── inference.py   # Model management
-│   │   ├── models.py      # Request/response models
-│   │   ├── config.py      # Settings
-│   │   └── websocket.py   # WebSocket manager
-│   ├── tests/             # Test suite
-│   └── pyproject.toml     # Dependencies (uv)
-└── frontend/
-    ├── index.html         # UI
-    ├── app.js            # Client logic
-    └── styles.css        # Styling
+├── frontend/               # Web UI
+│   ├── index.html         # Main app
+│   ├── app.js            # WebSocket client
+│   ├── visualizer-*.js   # Visualization components
+│   └── README.md         # Frontend docs
+├── backend/               # API server
+│   ├── app/              # FastAPI application
+│   ├── tests/            # Backend tests
+│   └── README.md         # Backend docs
+├── Makefile              # Convenience commands
+└── README.md            # This file
 ```
 
-### Key Features
+## Key Features
 
-- **Real-time Updates**: WebSocket connection for live progress
-- **Smart Batching**: Automatic batch size based on k_rollouts
-- **Interactive Visualization**: Salience coloring, transposed views
-- **Queue Management**: Handles concurrent requests gracefully
+- **Real-time Analysis**: WebSocket connection for live updates
+- **Modular Visualization**: Shared components between online and offline viewers
+- **Queue Management**: Handle multiple concurrent requests
+- **Parameter Control**: Fine-tune analysis with k-rollouts, temperature, etc.
+- **Data Export/Import**: Save and share analysis results
+- **Responsive Design**: Works on desktop and mobile
 
-## 📡 API Reference
+## Troubleshooting
 
-### Endpoints
+### Frontend Issues
+- Check browser console for errors
+- Verify WebSocket connection to backend
+- Ensure correct API_URL in app.js
 
-| Method | Path | Description | Auth Required |
-|--------|------|-------------|---------------|
-| GET | `/` | API info | No |
-| GET | `/health` | Health check | No |
-| GET | `/metrics` | Prometheus metrics | No |
-| POST | `/analyze` | Submit text analysis | Yes |
-| GET | `/status/{id}` | Check request status | No |
-| WS | `/ws` | WebSocket connection | Yes |
+### Backend Issues
+- Check GPU availability: `nvidia-smi`
+- Verify model checkpoint exists
+- Check logs for memory errors
 
-### Request Example
+### Common Problems
 
-```bash
-curl -X POST https://YOUR-API-URL/analyze \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "text": "Hello world",
-    "options": {
-      "temperature": 0.1,
-      "optimize_explanations_config": {
-        "just_do_k_rollouts": 8,
-        "batch_size_for_rollouts": 32
-      }
-    }
-  }'
-```
+1. **"Disconnected" status**: Backend not running or wrong URL
+2. **Analysis stuck in queue**: GPU memory full, restart backend
+3. **Visualization not loading**: Check browser compatibility
 
-### WebSocket Protocol
-
-```javascript
-// Connect
-const ws = new WebSocket('wss://YOUR-API-URL/ws');
-
-// Send analysis request
-ws.send(JSON.stringify({
-  type: 'analyze',
-  text: 'Your text here',
-  options: {...}
-}));
-
-// Receive updates
-ws.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  // Types: queued, processing, result, error
-};
-```
-
-## 🛠️ Configuration
-
-### Environment Variables
-
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `ENVIRONMENT` | Set to "production" for secure mode | development | Yes (prod) |
-| `API_KEY` | Bearer token for authentication | None | Yes (prod) |
-| `CHECKPOINT_PATH` | Model checkpoint location | /workspace/checkpoints/model.pt | Yes |
-| `ALLOWED_ORIGINS` | CORS allowed origins | http://localhost:3000 | Yes |
-| `LOAD_IN_8BIT` | Use 8-bit quantization | false | No |
-| `MAX_TEXT_LENGTH` | Maximum input length | 1000 | No |
-| `RATE_LIMIT_PER_MINUTE` | API rate limit | 60 | No |
-
-### Cost Optimization
-
-1. **GPU Selection**:
-   - RTX 3090 (24GB): $0.44/hr - Good for 8-bit models
-   - RTX 4090 (24GB): $0.74/hr - Faster inference
-   - A100 (40GB): $1.14/hr - Full precision models
-   - H100 (80GB): $3.50/hr - Maximum performance
-
-2. **RunPod Serverless** (for low traffic):
-   - Pay per second of GPU time
-   - Auto-scales to zero
-   - Cold start: 1-2 minutes
-
-3. **Optimization Settings**:
-   ```bash
-   LOAD_IN_8BIT=true      # Reduces VRAM by 50%
-   BATCH_SIZE=64          # Increase for better GPU utilization
-   ```
-
-## 🚨 Troubleshooting
-
-### Common Issues
-
-| Issue | Solution |
-|-------|----------|
-| "Backend Offline" | Wait 1-2 min for model loading |
-| "Unauthorized" | Check API_KEY in request headers |
-| "Too Many Requests" | Rate limit hit, wait 1 minute |
-| CORS Error | Verify ALLOWED_ORIGINS includes your domain |
-| GPU OOM | Enable 8-bit quantization |
-
-### Debug Commands
-
-```bash
-# Check backend logs
-docker logs $(docker ps -q)
-
-# Monitor GPU
-nvidia-smi -l 1
-
-# Test API key
-curl -H "Authorization: Bearer YOUR_KEY" https://YOUR-API/health
-
-# Check queue
-curl https://YOUR-API/metrics | grep queue
-```
-
-### RunPod Tips
-
-- Use persistent storage for model checkpoints
-- Enable auto-stop after 30 min idle to save costs
-- Monitor GPU utilization to right-size instance
-
-## 🎯 Makefile Reference
-
-| Command | Description |
-|---------|-------------|
-| `make help` | Show all commands |
-| `make setup` | Install dependencies |
-| `make test` | Run test suite |
-| `make run` | Start backend |
-| `make demo` | Run full stack locally |
-| `make security-check` | Audit security |
-| `make secure-env` | Generate production config |
-| `make deploy-frontend RUNPOD_URL=xxx` | Configure frontend with API URL |
-| `make clean` | Clean generated files |
-
-## 🚀 GitHub Actions Setup
-
-For automated frontend deployment:
-
-1. **Create Personal Access Token**:
-   - Go to GitHub Settings → Developer settings → Personal access tokens
-   - Generate new token with `repo` scope
-   - Copy the token
-
-2. **Add Secret to talkative-probes**:
-   - Go to Settings → Secrets → Actions
-   - Add new secret: `PAGES_UPDATE_TOKEN` with your PAT
-
-3. **Copy Workflow to github.io repo**:
-   ```bash
-   cp website/github-pages-workflow.yml ~/kitft.github.io/.github/workflows/update-talkative-autoencoder.yml
-   ```
-
-4. **Push both workflows** and enjoy automatic updates!
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create feature branch
-3. Run `make test` and `make security-check`
-4. Submit pull request
-
-## 📚 Additional Resources
-
-- **Main Project**: https://github.com/kitft/talkative-probes
-- **Model Details**: See main repository documentation
-- **RunPod Docs**: https://docs.runpod.io
-- **FastAPI**: https://fastapi.tiangolo.com
-
-## 🔐 Security Disclosure
-
-Found a security issue? Please email security concerns directly rather than creating public issues.
-
----
-
-**Note**: This is a research project. Use appropriate security measures for production deployments.
+For more help, see the individual README files or open an issue.

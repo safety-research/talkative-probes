@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Module Test</title>
+</head>
+<body>
+    <h1>Testing Module Import</h1>
+    <div id="result"></div>
+    
+    <script type="module">
+        import { VisualizationCore } from './visualizer-core.js';
+        
+        console.log('Import test:', VisualizationCore);
+        document.getElementById('result').textContent = 
+            VisualizationCore ? 'Module loaded successfully!' : 'Module failed to load';
+    </script>
+</body>
+</html>

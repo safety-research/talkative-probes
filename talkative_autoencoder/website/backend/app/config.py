@@ -1,12 +1,14 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Union
 import os
+import logging
+logger = logging.getLogger(__name__)
 
 class Settings(BaseModel):
     """Application settings with environment variable support"""
     
     # Model settings
-    checkpoint_path: str = Field(default="/workspace/checkpoints/qwen2_5_WCHAT_14b_frozen_nopostfix.pt")
+    checkpoint_path: str = Field(default="/None")
     device: str = Field(default="cuda")
     batch_size: int = Field(default=32)
     use_bf16: bool = Field(default=True)
@@ -32,6 +34,19 @@ class Settings(BaseModel):
     load_in_8bit: bool = Field(default=False)
     model_name: str = Field(default="Qwen/Qwen2.5-14B-Instruct")
     rate_limit_per_minute: int = Field(default=60)
+    
+    # Tuned lens settings
+    tuned_lens_dir: Optional[str] = Field(default=None)
+    
+    # LensAnalyzer settings
+    comparison_tl_checkpoint: Union[str, bool] = Field(default=True)
+    do_not_load_weights: bool = Field(default=False)
+    make_xl: bool = Field(default=False)
+    t_text: Optional[str] = Field(default=None)
+    strict_load: bool = Field(default=False)
+    no_orig: bool = Field(default=False)
+    different_activations_model: Optional[str] = Field(default=None)
+    initialise_on_cpu: bool = Field(default=False)
 
 def load_settings():
     """Load settings with environment variable support"""
@@ -56,7 +71,16 @@ def load_settings():
         "REQUEST_TIMEOUT": "request_timeout",
         "LOAD_IN_8BIT": "load_in_8bit",
         "MODEL_NAME": "model_name",
-        "RATE_LIMIT_PER_MINUTE": "rate_limit_per_minute"
+        "RATE_LIMIT_PER_MINUTE": "rate_limit_per_minute",
+        "TUNED_LENS_DIR": "tuned_lens_dir",
+        "COMPARISON_TL_CHECKPOINT": "comparison_tl_checkpoint",
+        "DO_NOT_LOAD_WEIGHTS": "do_not_load_weights",
+        "MAKE_XL": "make_xl",
+        "T_TEXT": "t_text",
+        "STRICT_LOAD": "strict_load",
+        "NO_ORIG": "no_orig",
+        "DIFFERENT_ACTIVATIONS_MODEL": "different_activations_model",
+        "INITIALISE_ON_CPU": "initialise_on_cpu"
     }
     
     # Load from environment
@@ -67,14 +91,19 @@ def load_settings():
             if field_name in ["batch_size", "port", "max_queue_size", "max_text_length", 
                               "cache_ttl", "request_timeout", "rate_limit_per_minute"]:
                 settings_dict[field_name] = int(env_value)
-            elif field_name in ["use_bf16", "load_in_8bit"]:
+            elif field_name in ["use_bf16", "load_in_8bit", "do_not_load_weights", "make_xl", "strict_load", "no_orig", "initialise_on_cpu"]:
                 settings_dict[field_name] = env_value.lower() in ["true", "1", "yes"]
             elif field_name == "allowed_origins":
                 settings_dict[field_name] = env_value.split(",")
+            elif field_name == "comparison_tl_checkpoint":
+                # Handle both boolean and string values
+                if env_value.lower() in ["true", "false"]:
+                    settings_dict[field_name] = env_value.lower() == "true"
+                else:
+                    settings_dict[field_name] = env_value
             else:
                 settings_dict[field_name] = env_value
+            logger.info(f"Loaded {field_name} from environment: {env_value}")
     
     return Settings(**settings_dict)
 
-# Global settings instance
-settings = load_settings()

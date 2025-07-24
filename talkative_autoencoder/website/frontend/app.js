@@ -1,12 +1,34 @@
 // Import visualization core
 import { VisualizationCore } from './visualizer-core.js';
 
-// Configuration
-const API_URL = window.location.hostname === 'localhost' 
-    ? 'http://localhost:8000' 
-    : window.location.origin;
+console.log('VisualizationCore loaded:', VisualizationCore);
 
-const WS_URL = API_URL.replace('http', 'ws') + '/ws';
+// Configuration
+// Handle Cursor port forwarding - it uses special URLs
+const isCursorForwarded = window.location.hostname.includes('app.github.dev') || 
+                          window.location.hostname.includes('vscode-remote') ||
+                          window.location.port === '3001';  // Cursor forwards 3000 to 3001
+
+let API_URL;
+if (window.location.port === '3001') {
+    // Cursor is forwarding 3000->3001 and 8000->8001
+    API_URL = window.location.origin.replace(':3001', ':8001');
+} else if (window.location.hostname === 'localhost') {
+    API_URL = 'http://localhost:8000';
+} else {
+    API_URL = window.location.origin;
+}
+const API_URL = 'https://fd726db9e8a1-8000.proxy.runpod.net';
+
+const WS_URL = API_URL.replace('http', 'ws').replace('https', 'wss') + '/ws';
+
+console.log('Detected environment:', {
+    hostname: window.location.hostname,
+    port: window.location.port,
+    isCursorForwarded,
+    API_URL,
+    WS_URL
+});
 
 // State management
 const state = {
@@ -18,7 +40,12 @@ const state = {
     currentTranscriptIndex: 0,
     currentService: 'pantry',
     columnVisibility: VisualizationCore.getDefaultVisibility(),
-    activeTab: 'analyze'
+    activeTab: 'analyze',
+    loadingTimeout: null,
+    skipSalienceRender: false,  // Flag to prevent render on programmatic checkbox changes
+    generations: [],  // Store multiple generations
+    currentGenerationIndex: 0,  // Track which generation is being viewed
+    modelInfo: null  // Store loaded model information
 };
 
 // Data adapters
@@ -192,18 +219,40 @@ const elements = {
     // Connection
     connectionStatus: document.getElementById('connectionStatus'),
     statusText: document.getElementById('statusText'),
+    resetBtn: document.getElementById('resetBtn'),
+    newAnalysisBtn: document.getElementById('newAnalysisBtn'),
     
     // Input
     inputText: document.getElementById('inputText'),
     analyzeBtn: document.getElementById('analyzeBtn'),
+    isChatFormatted: document.getElementById('isChatFormatted'),
+    chatWarning: document.getElementById('chatWarning'),
+    
+    // Continuation generation
+    generateBtn: document.getElementById('generateBtn'),
+    numTokens: document.getElementById('numTokens'),
+    numCompletions: document.getElementById('numCompletions'),
+    genTemperature: document.getElementById('genTemperature'),
+    generationStatus: document.getElementById('generationStatus'),
+    continuationResults: document.getElementById('continuationResults'),
+    continuationsList: document.getElementById('continuationsList'),
     jsonInput: document.getElementById('json-input'),
     loadJsonBtn: document.getElementById('load-json-btn'),
     fileUpload: document.getElementById('file-upload'),
     
     // Status
-    loading: document.getElementById('loading'),
     error: document.getElementById('error'),
-    queuePosition: document.getElementById('queuePosition'),
+    
+    // Generation loading
+    generationLoading: document.getElementById('generationLoading'),
+    generationLoadingMessage: document.getElementById('generationLoadingMessage'),
+    
+    // Analysis loading
+    analysisLoading: document.getElementById('analysisLoading'),
+    analysisLoadingMessage: document.getElementById('analysisLoadingMessage'),
+    analysisLoadingProgress: document.getElementById('analysisLoadingProgress'),
+    analysisProgressBar: document.getElementById('analysisProgressBar'),
+    analysisProgressText: document.getElementById('analysisProgressText'),
     
     // Parameters
     kRollouts: document.getElementById('kRollouts'),
@@ -264,7 +313,10 @@ const elements = {
     salienceDefinition: document.getElementById('salience-definition'),
     metadataDisplay: document.getElementById('metadata-display'),
     fullTextContainer: document.getElementById('full-text-container'),
-    fullTextPlaceholder: document.getElementById('full-text-placeholder')
+    fullTextPlaceholder: document.getElementById('full-text-placeholder'),
+    columnExplanations: document.getElementById('column-explanations'),
+    generationTabs: document.getElementById('generationTabs'),
+    tabNavigation: document.getElementById('tabNavigation')
 };
 
 // Helper functions
@@ -274,18 +326,99 @@ const showError = (message) => {
     setTimeout(() => elements.error.classList.add('hidden'), 5000);
 };
 
-const showLoading = (show) => {
-    elements.loading.classList.toggle('hidden', !show);
-};
-
-const showQueuePosition = (position) => {
-    if (position !== null) {
-        elements.queuePosition.querySelector('p').textContent = `Queue position: ${position}`;
-        elements.queuePosition.classList.remove('hidden');
+const updateConnectionStatus = () => {
+    if (state.modelInfo) {
+        const modelName = state.modelInfo.model_name || 'Unknown Model';
+        const shortCheckpoint = state.modelInfo.checkpoint_path ? 
+            '...' + state.modelInfo.checkpoint_path.slice(-30) : '';
+        
+        if (state.modelInfo.loaded) {
+            // Model is loaded - GREEN
+            elements.statusText.innerHTML = `Connected: <strong>${modelName}</strong> <span class="text-xs text-gray-600">${shortCheckpoint}</span>`;
+            elements.connectionStatus.classList.remove('bg-gray-100', 'bg-red-100', 'bg-yellow-100');
+            elements.connectionStatus.classList.add('bg-green-100');
+        } else {
+            // Model not loaded yet, but we know what will be loaded - YELLOW
+            elements.statusText.innerHTML = `Connected (will load: <strong>${modelName}</strong>)`;
+            elements.connectionStatus.classList.remove('bg-gray-100', 'bg-red-100', 'bg-green-100');
+            elements.connectionStatus.classList.add('bg-yellow-100');
+        }
     } else {
-        elements.queuePosition.classList.add('hidden');
+        // Connected but no model info - YELLOW
+        elements.statusText.textContent = 'Connected (no model configured)';
+        elements.connectionStatus.classList.remove('bg-gray-100', 'bg-red-100', 'bg-green-100');
+        elements.connectionStatus.classList.add('bg-yellow-100');
     }
 };
+
+// Tab management functions
+const createGenerationTabs = () => {
+    console.log('Creating generation tabs. Generations:', state.generations.length, 'Transcripts:', state.allTranscripts.length);
+    
+    elements.tabNavigation.innerHTML = '';
+    
+    // Show tabs if we have at least one analysis result or any generations
+    if (state.generations.length === 0 && state.allTranscripts.length === 0) {
+        elements.generationTabs.classList.add('hidden');
+        return;
+    }
+    
+    // Always show tabs after first analysis
+    elements.generationTabs.classList.remove('hidden');
+    
+    // No need to add generation here - it's already handled in processResults
+    
+    // Render all generation tabs
+    state.generations.forEach((gen, index) => {
+        const tab = document.createElement('button');
+        tab.className = `py-2 px-4 text-sm font-medium border-b-2 ${
+            index === state.currentGenerationIndex 
+                ? 'border-orange-500 text-gray-900' 
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+        }`;
+        tab.textContent = `Analysis ${index + 1}`;
+        tab.onclick = () => switchGeneration(index);
+        elements.tabNavigation.appendChild(tab);
+    });
+    
+    console.log('Created', state.generations.length, 'tabs');
+};
+
+const switchGeneration = (index) => {
+    if (index < 0 || index >= state.generations.length) return;
+    
+    state.currentGenerationIndex = index;
+    state.allTranscripts = state.generations[index].transcripts;
+    state.currentTranscriptIndex = 0;
+    
+    createGenerationTabs();
+    render();
+};
+
+const showLoading = (show, message = 'Processing...', progress = null, context = 'analysis') => {
+    // Determine which loading box to use based on context
+    const loadingEl = context === 'generation' ? elements.generationLoading : elements.analysisLoading;
+    const messageEl = context === 'generation' ? elements.generationLoadingMessage : elements.analysisLoadingMessage;
+    const progressEl = context === 'generation' ? null : elements.analysisLoadingProgress;
+    const progressBarEl = context === 'generation' ? null : elements.analysisProgressBar;
+    const progressTextEl = context === 'generation' ? null : elements.analysisProgressText;
+    
+    loadingEl.classList.toggle('hidden', !show);
+    
+    if (show && message) {
+        messageEl.textContent = message;
+        
+        // Only analysis context supports progress bar
+        if (context === 'analysis' && progress !== null) {
+            progressEl.classList.remove('hidden');
+            progressBarEl.style.width = `${progress}%`;
+            progressTextEl.textContent = `${Math.round(progress)}%`;
+        } else if (progressEl) {
+            progressEl.classList.add('hidden');
+        }
+    }
+};
+
 
 // Tab management
 const switchTab = (tabName) => {
@@ -323,19 +456,19 @@ const updateServiceUI = (service) => {
     if (service === 'pantry') {
         apiKeyLabel.textContent = 'Pantry ID:';
         elements.apiKeyInput.placeholder = 'Paste your Pantry ID here';
-        elements.apiKeyInput.value = localStorage.getItem('consistencyLensPantryId') || '';
+        elements.apiKeyInput.value = localStorage.getItem('consistencyLensPantryId') || '88947592-e047-4e50-bfc7-d55c93fb6f35';
 
         collectionIdLabel.textContent = 'Basket Name:';
         elements.collectionIdInput.placeholder = 'e.g., consistency-lens-data';
-        elements.collectionIdInput.value = localStorage.getItem('consistencyLensPantryBasket') || 'consistency-lens-data';
+        elements.collectionIdInput.value = localStorage.getItem('consistencyLensPantryBasket') || 'data-viewer-storage';
     } else {
         apiKeyLabel.textContent = 'JSONBin.io API Key:';
         elements.apiKeyInput.placeholder = 'Paste your API key here';
-        elements.apiKeyInput.value = localStorage.getItem('consistencyLensJsonbinApiKey') || '';
+        elements.apiKeyInput.value = localStorage.getItem('consistencyLensJsonbinApiKey') || '$2a$10$cYXiC7n7tURzBeNd7E2yx.NsMNqmaYgWCoAYTmiFfGHjZKC54V.Sq';
 
         collectionIdLabel.textContent = 'Collection ID:';
         elements.collectionIdInput.placeholder = 'Paste your collection ID here';
-        elements.collectionIdInput.value = localStorage.getItem('consistencyLensJsonbinCollectionId') || '';
+        elements.collectionIdInput.value = localStorage.getItem('consistencyLensJsonbinCollectionId') || '6867e9e58561e97a5031776b';
     }
 };
 
@@ -350,18 +483,82 @@ const saveSettings = () => {
     localStorage.setItem('consistencyLensService', state.currentService);
 };
 
+// Reset function
+const resetModel = async () => {
+    const confirmed = confirm(
+        '⚠️ WARNING: This will reset the model for ALL users!\n\n' +
+        'This action will:\n' +
+        '• Clear the loaded model from memory\n' +
+        '• Cancel any ongoing analyses\n' +
+        '• Require the model to be reloaded on next use\n\n' +
+        'Are you sure you want to continue?'
+    );
+    
+    if (!confirmed) return;
+    
+    try {
+        showLoading(true, 'Resetting model...', null, 'analysis');
+        
+        const response = await fetch(`${API_URL}/reset`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            }
+        });
+        
+        if (!response.ok) {
+            throw new Error('Failed to reset model');
+        }
+        
+        const result = await response.json();
+        
+        // Clear local state
+        state.modelInfo = null;
+        state.allTranscripts = [];
+        state.currentTranscriptIndex = 0;
+        state.generations = [];
+        state.currentGenerationIndex = 0;
+        state.currentRequestId = null;
+        
+        // Update UI
+        updateConnectionStatus();
+        elements.outputPlaceholder.classList.remove('hidden');
+        elements.fullTextContainer.classList.add('hidden');
+        elements.displayControls.style.display = 'none';
+        elements.outputTable.classList.add('hidden');
+        elements.transposedView.classList.add('hidden');
+        elements.navigationContainer.classList.add('hidden');
+        elements.bottomNavigationContainer.classList.add('hidden');
+        elements.metadataDisplay.classList.add('hidden');
+        elements.sidePrevBtn.classList.add('hidden');
+        elements.sideNextBtn.classList.add('hidden');
+        elements.columnExplanations.classList.add('hidden');
+        elements.generationTabs.classList.add('hidden');
+        
+        showLoading(false, '', null, 'analysis');
+        showLoading(false, '', null, 'generation');
+        showError('Model reset successfully. The model will be reloaded on next use.');
+        
+    } catch (error) {
+        console.error('Reset error:', error);
+        showLoading(false, '', null, 'analysis');
+        showLoading(false, '', null, 'generation');
+        showError('Failed to reset model: ' + error.message);
+    }
+};
+
 // WebSocket management
 const connectWebSocket = () => {
     if (state.ws && state.ws.readyState === WebSocket.OPEN) return;
     
+    console.log('Attempting to connect to WebSocket:', WS_URL);
     state.ws = new WebSocket(WS_URL);
     
     state.ws.onopen = () => {
-        console.log('WebSocket connected');
-        elements.statusText.textContent = 'Connected';
-        elements.connectionStatus.classList.remove('bg-gray-100', 'bg-red-100');
-        elements.connectionStatus.classList.add('bg-green-100');
+        console.log('WebSocket connected successfully');
+        updateConnectionStatus();
         elements.analyzeBtn.disabled = false;
+        elements.generateBtn.disabled = false;
     };
     
     state.ws.onclose = () => {
@@ -370,6 +567,7 @@ const connectWebSocket = () => {
         elements.connectionStatus.classList.remove('bg-green-100');
         elements.connectionStatus.classList.add('bg-red-100');
         elements.analyzeBtn.disabled = true;
+        elements.generateBtn.disabled = true;
         
         // Reconnect after 2 seconds
         setTimeout(connectWebSocket, 2000);
@@ -377,6 +575,7 @@ const connectWebSocket = () => {
     
     state.ws.onerror = (error) => {
         console.error('WebSocket error:', error);
+        console.error('Failed to connect to:', WS_URL);
         showError('Connection error. Please check if the backend is running.');
     };
     
@@ -388,27 +587,105 @@ const connectWebSocket = () => {
 
 const handleWebSocketMessage = (data) => {
     switch (data.type) {
+        case 'model_info':
+            state.modelInfo = data;
+            updateConnectionStatus();
+            // Clear any loading messages when model info is received
+            showLoading(false, '', null, 'generation');
+            showLoading(false, '', null, 'analysis');
+            break;
+            
         case 'queued':
             state.currentRequestId = data.request_id;
-            showQueuePosition(data.queue_position);
-            showLoading(true);
+            const queueContext = data.context || 'analysis';
+            const queueMessage = queueContext === 'generation' 
+                ? `Queued for generation (position: ${data.queue_position})`
+                : `Queued for analysis (position: ${data.queue_position})`;
+            showLoading(true, queueMessage, null, queueContext);
+            break;
+            
+        case 'status':
+            // Handle model loading or other status updates
+            // Determine context based on message content
+            const context = data.message && data.message.includes('generation') ? 'generation' : 'analysis';
+            showLoading(true, data.message || 'Processing...', null, context);
             break;
             
         case 'processing':
-            showQueuePosition(null);
-            showLoading(true);
+            // Use the actual message from backend and determine context
+            const processingMessage = data.message || 'Processing...';
+            // Use explicit context if provided, otherwise infer from message
+            const processingContext = data.context || (processingMessage.includes('Generating') ? 'generation' : 'analysis');
+            showLoading(true, processingMessage, null, processingContext);
+            break;
+            
+        case 'progress':
+            // Handle progress updates during analysis
+            const percent = (data.current / data.total) * 100;
+            console.log('Progress update:', data.current, '/', data.total, '=', percent + '%', 'Message:', data.message);
+            
+            // Format ETA if available
+            let messageWithETA = data.message || 'Analyzing tokens...';
+            if (data.eta_seconds !== null && data.eta_seconds !== undefined) {
+                const etaMinutes = Math.floor(data.eta_seconds / 60);
+                const etaSeconds = Math.floor(data.eta_seconds % 60);
+                if (etaMinutes > 0) {
+                    messageWithETA += ` (ETA: ${etaMinutes}m ${etaSeconds}s)`;
+                } else {
+                    messageWithETA += ` (ETA: ${etaSeconds}s)`;
+                }
+            }
+            
+            showLoading(true, messageWithETA, percent, 'analysis');
             break;
             
         case 'result':
-            showLoading(false);
-            showQueuePosition(null);
+            showLoading(false, '', null, 'analysis');
+            if (state.loadingTimeout) {
+                clearTimeout(state.loadingTimeout);
+                state.loadingTimeout = null;
+            }
+            console.log('Received result from WebSocket:', data);
+            // Check if this result is for the current request
+            if (data.request_id && state.currentRequestId && data.request_id !== state.currentRequestId) {
+                console.log('Ignoring result for old request:', data.request_id, 'current:', state.currentRequestId);
+                return;
+            }
+            // Check if result has valid data
+            if (!data.result || !data.result.data || data.result.data.length === 0) {
+                console.error('Received empty or invalid result:', data.result);
+                showError('Received empty result from server');
+                return;
+            }
             processResults(data.result);
             break;
             
         case 'error':
-            showLoading(false);
-            showQueuePosition(null);
+            showLoading(false, '', null, 'analysis');
+            if (state.loadingTimeout) {
+                clearTimeout(state.loadingTimeout);
+                state.loadingTimeout = null;
+            }
             showError(data.error || 'An error occurred during analysis');
+            break;
+            
+        case 'generation_result':
+            console.log('Received generation result:', data);
+            showLoading(false, '', null, 'generation');
+            handleGenerationResult(data.result);
+            break;
+            
+        case 'generation_error':
+            showLoading(false, '', null, 'generation');
+            showGenerationStatus('Error: ' + (data.error || 'Generation failed'), 'error');
+            elements.generateBtn.disabled = false;
+            break;
+            
+        case 'clear_loading':
+            // Clear loading state for specified context
+            if (data.context) {
+                showLoading(false, '', null, data.context);
+            }
             break;
     }
 };
@@ -427,6 +704,43 @@ const analyze = () => {
         return;
     }
     
+    console.log('Starting new analysis, current state:', {
+        hasTranscripts: state.allTranscripts.length > 0,
+        currentRequestId: state.currentRequestId,
+        transcriptsLength: state.allTranscripts.length
+    });
+    
+    // Reset UI for new analysis but preserve generations
+    // Don't clear generations - we want to keep history of analyses
+    state.allTranscripts = [];
+    state.currentTranscriptIndex = 0;
+    // state.generations = []; // REMOVED - keep previous analyses
+    // state.currentGenerationIndex = 0; // REMOVED - will be set when results arrive
+    elements.outputPlaceholder.classList.remove('hidden');
+    elements.fullTextContainer.classList.add('hidden');
+    elements.displayControls.style.display = 'none';
+    elements.outputTable.classList.add('hidden');
+    elements.transposedView.classList.add('hidden');
+    elements.navigationContainer.classList.add('hidden');
+    elements.bottomNavigationContainer.classList.add('hidden');
+    elements.metadataDisplay.classList.add('hidden');
+    elements.sidePrevBtn.classList.add('hidden');
+    elements.sideNextBtn.classList.add('hidden');
+    elements.columnExplanations.classList.add('hidden');
+    // Don't hide generation tabs - keep them visible if we have previous analyses
+    // elements.generationTabs.classList.add('hidden'); // REMOVED
+    
+    // Show initial loading state
+    showLoading(true, 'Preparing analysis...', null, 'analysis');
+    
+    // Set a timeout to show a message if loading takes too long
+    if (state.loadingTimeout) clearTimeout(state.loadingTimeout);
+    state.loadingTimeout = setTimeout(() => {
+        if (elements.analysisLoading.classList.contains('hidden') === false) {
+            elements.analysisLoadingMessage.textContent = 'This is taking longer than usual. The model may be loading for the first time...';
+        }
+    }, 10000); // 10 seconds
+    
     // Build options
     const options = {
         temperature: parseFloat(elements.temperature.value),
@@ -435,7 +749,8 @@ const analyze = () => {
             batch_size_for_rollouts: elements.autoBatchSize.checked 
                 ? Math.max(1, Math.floor(256 / parseInt(elements.kRollouts.value)))
                 : parseInt(elements.batchSize.value),
-            use_batched: true
+            use_batched: true,
+            temperature: parseFloat(elements.temperature.value)  // Use the same temperature as main
         },
         calculate_salience: elements.calculateSalience.checked,
         use_tuned_lens: elements.tunedLens.checked,
@@ -449,12 +764,19 @@ const analyze = () => {
         options.seed = parseInt(elements.seed.value);
     }
     
-    if (elements.rolloutBatchSize.value) {
-        options.optimize_explanations_config.rollout_batch_size = parseInt(elements.rolloutBatchSize.value);
-    }
+    // Always set rollout_batch_size to match the main batch size
+    const calculatedBatchSize = elements.autoBatchSize.checked 
+        ? Math.max(1, Math.floor(256 / parseInt(elements.kRollouts.value)))
+        : parseInt(elements.batchSize.value);
+    options.optimize_explanations_config.rollout_batch_size = calculatedBatchSize;
     
     if (elements.numSamples.value && elements.numSamples.value !== '1') {
         options.optimize_explanations_config.num_samples = parseInt(elements.numSamples.value);
+    }
+    
+    // Add is_chat flag if chat-formatted
+    if (elements.isChatFormatted.checked) {
+        options.is_chat = true;
     }
     
     // Send request
@@ -465,28 +787,220 @@ const analyze = () => {
     }));
 };
 
+// Generation functions
+const showGenerationStatus = (message, type = 'info') => {
+    elements.generationStatus.textContent = message;
+    elements.generationStatus.classList.remove('hidden', 'text-gray-600', 'text-green-600', 'text-red-600');
+    elements.generationStatus.classList.add(
+        type === 'error' ? 'text-red-600' : 
+        type === 'success' ? 'text-green-600' : 
+        'text-gray-600'
+    );
+};
+
+const generate = () => {
+    const text = elements.inputText.value.trim();
+    if (!text) {
+        showError('Please enter text or chat messages to generate from');
+        return;
+    }
+    
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+        showError('Not connected to server');
+        return;
+    }
+    
+    elements.generateBtn.disabled = true;
+    showGenerationStatus('');
+    showLoading(true, 'Generating continuations...', null, 'generation');
+    
+    const options = {
+        num_tokens: parseInt(elements.numTokens.value),
+        num_completions: parseInt(elements.numCompletions.value),
+        temperature: parseFloat(elements.genTemperature.value),
+        is_chat: elements.isChatFormatted.checked,
+        return_full_text: true
+    };
+    
+    state.ws.send(JSON.stringify({
+        type: 'generate',
+        text: text,
+        options: options
+    }));
+};
+
+const handleGenerationResult = (result) => {
+    console.log('Generation result:', result);
+    elements.generateBtn.disabled = false;
+    
+    if (!result || !result.continuations || result.continuations.length === 0) {
+        showGenerationStatus('No continuations generated', 'error');
+        return;
+    }
+    
+    showGenerationStatus(`Generated ${result.continuations.length} continuation(s)`, 'success');
+    
+    // Display continuations
+    elements.continuationResults.classList.remove('hidden');
+    elements.continuationsList.innerHTML = '';
+    
+    result.continuations.forEach((cont, idx) => {
+        const div = document.createElement('div');
+        div.className = 'bg-gray-50 p-3 rounded border border-gray-200';
+        
+        const header = document.createElement('div');
+        header.className = 'flex justify-between items-center mb-2';
+        header.innerHTML = `
+            <span class="font-semibold text-sm text-gray-700">Continuation ${idx + 1}</span>
+            <button class="use-continuation-btn text-sm px-3 py-1 bg-orange-500 text-white rounded hover:bg-orange-600" data-idx="${idx}">
+                Use this
+            </button>
+        `;
+        
+        const content = document.createElement('div');
+        content.className = 'text-sm text-gray-800 font-mono whitespace-pre-wrap';
+        // Display with visible newlines but store original
+        const displayContent = cont.replace(/\n/g, '\\n');
+        content.textContent = displayContent;
+        content.dataset.originalContent = cont; // Store original with real newlines
+        
+        div.appendChild(header);
+        div.appendChild(content);
+        elements.continuationsList.appendChild(div);
+    });
+    
+    // Store continuations for later use
+    state.generatedContinuations = result.continuations;
+    
+    // Add click handlers for "Use this" buttons
+    document.querySelectorAll('.use-continuation-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const idx = parseInt(e.target.dataset.idx);
+            const continuation = state.generatedContinuations[idx];
+            
+            console.log(`Using continuation ${idx}, length: ${continuation.length}`);
+            
+            // Update button to show it was clicked
+            e.target.textContent = 'Using...';
+            e.target.disabled = true;
+            
+            // Set the text with a small delay to let the UI update
+            setTimeout(() => {
+                elements.inputText.value = continuation;
+                
+                // Scroll to top of input
+                elements.inputText.scrollTop = 0;
+                
+                // Check for chat format with another small delay
+                setTimeout(() => {
+                    checkForChatFormat();
+                    
+                    // Re-enable button
+                    e.target.textContent = 'Use this';
+                    e.target.disabled = false;
+                    
+                    // Show success message
+                    showGenerationStatus('Continuation loaded into input box', 'success');
+                }, 100);
+            }, 10);
+        });
+    });
+};
+
 // Process results
 const processResults = (result) => {
+    console.log('Processing results:', result);
+    console.log('Result data length:', result?.data?.length);
+    console.log('Current allTranscripts before processing:', state.allTranscripts.length);
+    
+    // Validate result
+    if (!result || typeof result !== 'object') {
+        console.error('Invalid result object:', result);
+        showError('Invalid result received from server');
+        return;
+    }
+    
+    // Check if data array is empty
+    if (!result.data || result.data.length === 0) {
+        console.error('Result has empty data array:', result);
+        showError('No data received from server');
+        return;
+    }
+    
     // Create transcript in expected format
     const transcript = {
         data: result.data || [],
         metadata: result.metadata || {}
     };
     
-    // Reset transcripts for new analysis
-    state.allTranscripts = [transcript];
-    state.currentTranscriptIndex = 0;
+    console.log('Transcript created:', transcript);
+    console.log('Data length:', transcript.data.length);
+    console.log('First few data items:', transcript.data.slice(0, 3));
+    
+    // Store previous state for debugging
+    const previousState = {
+        allTranscripts: [...state.allTranscripts],
+        currentTranscriptIndex: state.currentTranscriptIndex
+    };
+    
+    // Handle multiple analyses properly
+    if (state.generations.length > 0) {
+        // We have previous analyses - add this as a new generation
+        console.log('Adding new analysis as generation', state.generations.length + 1);
+        
+        // Add the new analysis as a new generation
+        state.generations.push({
+            transcripts: [transcript],
+            timestamp: new Date()
+        });
+        state.currentGenerationIndex = state.generations.length - 1;
+        
+        // Set transcripts to the new analysis
+        state.allTranscripts = [transcript];
+        state.currentTranscriptIndex = 0;
+    } else {
+        // This is the first analysis
+        console.log('Processing first analysis');
+        state.allTranscripts = [transcript];
+        state.currentTranscriptIndex = 0;
+        
+        // Create first generation
+        state.generations.push({
+            transcripts: [transcript],
+            timestamp: new Date()
+        });
+        state.currentGenerationIndex = 0;
+    }
+    
+    console.log('State updated from:', previousState, 'to:', {
+        allTranscripts: state.allTranscripts,
+        currentTranscriptIndex: state.currentTranscriptIndex,
+        generations: state.generations.length
+    });
     
     // Auto-enable salience if present
     const hasSalienceData = transcript.data.some(r => r.token_salience !== undefined);
     state.salienceColoringEnabled = hasSalienceData;
+    
+    // Set flag to skip render when setting checkbox programmatically
+    state.skipSalienceRender = true;
     elements.salienceToggle.checked = hasSalienceData;
+    // Reset flag after a short delay
+    setTimeout(() => {
+        state.skipSalienceRender = false;
+    }, 50);
     
     // Enable export buttons
     elements.uploadBtn.disabled = false;
     elements.exportJsonBtn.disabled = false;
     
-    render();
+    // Create generation tabs if needed
+    createGenerationTabs();
+    
+    console.log('About to render, allTranscripts:', state.allTranscripts);
+    console.log('Generations after processing:', state.generations.length, 'Current index:', state.currentGenerationIndex);
+    console.log('State before render:', JSON.stringify(state, null, 2));
+    render(true); // Use immediate render for processResults
 };
 
 // Rendering
@@ -522,28 +1036,100 @@ const updateColumnVisibility = () => {
             cell.style.display = visible ? '' : 'none';
         });
     }
+    updateColumnExplanations();
 };
 
-const render = () => {
-    const currentItem = state.allTranscripts[state.currentTranscriptIndex];
+const updateColumnExplanations = () => {
+    const explanations = {
+        position: 'Token index in the input sequence',
+        token: 'The actual text token being analysed',
+        explanation: 'Human-readable interpretation of what the model is "thinking" at this token',
+        mse: 'Mean Squared Error - measures how well the explanation reconstructs the model\'s internal state (lower is better)',
+        relative_rmse: 'Root mean square error divided by the norm of the activation vector.',
+        token_probability: 'Model\'s confidence in predicting this token (0-100%)',
+        perplexity: 'Uncertainty measure - lower values indicate the model is more confident',
+        cross_entropy: 'Information-theoretic measure of prediction quality (lower is better)',
+        token_salience: 'Importance of this token - % increase in MSE when replaced with a space (higher = more important)',
+        kl_divergence: 'KL divergence between original and reconstructed distributions',
+        tuned_lens_top: 'Top prediction from tuned lens analysis',
+        logit_lens_top: 'Top prediction from logit lens analysis'
+    };
     
-    if (!currentItem || state.allTranscripts.length === 0) {
-        elements.outputPlaceholder.classList.remove('hidden');
-        elements.outputTable.classList.add('hidden');
-        elements.transposedView.classList.add('hidden');
-        elements.fullTextContainer.classList.add('hidden');
-        elements.navigationContainer.classList.add('hidden');
-        elements.displayControls.classList.add('hidden');
-        elements.metadataDisplay.classList.add('hidden');
-        elements.bottomNavigationContainer.classList.add('hidden');
-        elements.sidePrevBtn.classList.add('hidden');
-        elements.sideNextBtn.classList.add('hidden');
+    const container = elements.columnExplanations.querySelector('.text-sm.text-gray-700.space-y-2');
+    if (!container) return;
+    
+    container.innerHTML = '';
+    
+    // Only show explanations for visible columns
+    for (const [column, explanation] of Object.entries(explanations)) {
+        if (state.columnVisibility[column]) {
+            const p = document.createElement('p');
+            p.innerHTML = `<strong>${column.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}:</strong> ${explanation}`;
+            container.appendChild(p);
+        }
+    }
+    
+    // Show/hide the explanations box if there are any visible columns
+    const hasVisibleColumns = Object.values(state.columnVisibility).some(v => v);
+    if (hasVisibleColumns && state.allTranscripts.length > 0) {
+        elements.columnExplanations.classList.remove('hidden');
+    } else {
+        elements.columnExplanations.classList.add('hidden');
+    }
+};
+
+let renderCount = 0;
+let renderTimeout = null;
+const render = (immediate = false) => {
+    // Clear any pending render
+    if (renderTimeout) {
+        clearTimeout(renderTimeout);
+        renderTimeout = null;
+    }
+    
+    // If not immediate, debounce the render
+    if (!immediate) {
+        renderTimeout = setTimeout(() => {
+            render(true);
+        }, 10);
         return;
     }
     
+    renderCount++;
+    console.log(`Render called (${renderCount}), currentIndex:`, state.currentTranscriptIndex, 'transcripts:', state.allTranscripts);
+    console.log('Render stack trace:', new Error().stack);
+    
+    // Don't render if we have no transcripts
+    if (!state.allTranscripts || state.allTranscripts.length === 0) {
+        console.log('No transcripts to render');
+        return;
+    }
+    
+    // Validate currentTranscriptIndex
+    if (state.currentTranscriptIndex < 0 || state.currentTranscriptIndex >= state.allTranscripts.length) {
+        console.error('Invalid currentTranscriptIndex:', state.currentTranscriptIndex, 'for transcripts length:', state.allTranscripts.length);
+        state.currentTranscriptIndex = Math.max(0, Math.min(state.allTranscripts.length - 1, state.currentTranscriptIndex));
+    }
+    
+    const currentItem = state.allTranscripts[state.currentTranscriptIndex];
+    
+    if (!currentItem || !currentItem.data || currentItem.data.length === 0) {
+        console.log('Current item has no data, skipping render');
+        console.log('currentItem:', currentItem);
+        return;
+    }
+    
+    console.log('Showing results containers');
     elements.outputPlaceholder.classList.add('hidden');
     elements.fullTextContainer.classList.remove('hidden');
     elements.displayControls.style.display = 'flex';
+    
+    console.log('Current item data:', currentItem);
+    console.log('Elements:', {
+        fullTextContainer: elements.fullTextContainer,
+        outputTable: elements.outputTable,
+        transposedView: elements.transposedView
+    });
     
     // Render components using VisualizationCore
     VisualizationCore.renderMetadata({
@@ -555,9 +1141,13 @@ const render = () => {
         container: elements.columnToggleContainer,
         columnVisibility: state.columnVisibility,
         onChange: (column, visible) => {
+            state.columnVisibility[column] = visible;
             updateColumnVisibility();
         }
     });
+    
+    // Update column explanations after rendering
+    updateColumnExplanations();
     
     VisualizationCore.renderFullTextBox({
         data: currentItem.data,
@@ -581,6 +1171,8 @@ const render = () => {
         elements.colWidthControl.classList.add('hidden');
         elements.transposedView.classList.add('hidden');
         
+        console.log('Rendering table with data:', currentItem.data);
+        console.log('Table elements:', elements.tableHead, elements.tableBody);
         VisualizationCore.renderTable({
             data: currentItem.data,
             tableHead: elements.tableHead,
@@ -588,6 +1180,12 @@ const render = () => {
             columnVisibility: state.columnVisibility,
             salienceColoringEnabled: state.salienceColoringEnabled
         });
+        console.log('Table rendered');
+    console.log('Table visibility after render:', {
+        outputTable: elements.outputTable.classList.contains('hidden') ? 'hidden' : 'visible',
+        outputTableDisplay: window.getComputedStyle(elements.outputTable).display,
+        fullTextContainer: elements.fullTextContainer.classList.contains('hidden') ? 'hidden' : 'visible'
+    });
     }
     
     // Navigation visibility
@@ -647,7 +1245,7 @@ const uploadData = async () => {
     }
     
     if (state.allTranscripts.length === 0) {
-        showError('No data to upload. Please analyze some text first.');
+        showError('No data to upload. Please analyse some text first.');
         return;
     }
     
@@ -683,7 +1281,7 @@ const uploadData = async () => {
 
 const exportJSON = () => {
     if (state.allTranscripts.length === 0) {
-        showError('No data to export. Please analyze some text first.');
+        showError('No data to export. Please analyse some text first.');
         return;
     }
     
@@ -723,7 +1321,13 @@ const loadJSON = () => {
         // Auto-enable salience if present
         const hasSalienceData = transcripts.some(t => t.data.some(r => r.token_salience !== undefined));
         state.salienceColoringEnabled = hasSalienceData;
+        
+        // Set flag to skip render when setting checkbox programmatically
+        state.skipSalienceRender = true;
         elements.salienceToggle.checked = hasSalienceData;
+        setTimeout(() => {
+            state.skipSalienceRender = false;
+        }, 50);
         
         render();
         
@@ -745,6 +1349,36 @@ const handleFileUpload = (event) => {
     }
 };
 
+// Check if input looks like chat format
+const checkForChatFormat = () => {
+    const text = elements.inputText.value.trim();
+    
+    // Skip check for very large texts to avoid hanging
+    if (text.length > 50000) {
+        console.log('Text too large for chat format check');
+        return;
+    }
+    
+    if (text.startsWith('[') && text.includes('"role"') && text.includes('"content"')) {
+        // Only try parsing if it's not too large
+        if (text.length < 10000) {
+            try {
+                const parsed = JSON.parse(text);
+                if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].role) {
+                    elements.chatWarning.classList.remove('hidden');
+                    return;
+                }
+            } catch (e) {
+                // Not valid JSON, but still looks like it might be chat format
+            }
+        }
+        // Show warning based on pattern matching for large texts
+        elements.chatWarning.classList.remove('hidden');
+    } else {
+        elements.chatWarning.classList.add('hidden');
+    }
+};
+
 // Initialize event listeners
 const initializeEventListeners = () => {
     // Tab navigation
@@ -758,6 +1392,57 @@ const initializeEventListeners = () => {
         if (e.key === 'Enter' && e.ctrlKey) analyze();
     });
     
+    // Check for chat format on input with debouncing
+    let chatFormatCheckTimeout;
+    elements.inputText.addEventListener('input', () => {
+        clearTimeout(chatFormatCheckTimeout);
+        chatFormatCheckTimeout = setTimeout(checkForChatFormat, 300); // 300ms debounce
+    });
+    
+    elements.isChatFormatted.addEventListener('change', () => {
+        if (elements.isChatFormatted.checked) {
+            elements.chatWarning.classList.add('hidden');
+            
+            // Auto-format text to chat format if it's not already
+            const text = elements.inputText.value.trim();
+            if (text && !text.startsWith('[')) {
+                // Check if it's already valid JSON chat format
+                try {
+                    const parsed = JSON.parse(text);
+                    if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].role) {
+                        // Already valid chat format
+                        return;
+                    }
+                } catch (e) {
+                    // Not JSON, convert to chat format
+                }
+                
+                // Convert plain text to chat format
+                const chatFormat = [
+                    {
+                        "role": "user",
+                        "content": text
+                    }
+                ];
+                elements.inputText.value = JSON.stringify(chatFormat, null, 2);
+                
+                // Show a brief success message
+                const oldText = elements.generationStatus.textContent;
+                const oldClass = elements.generationStatus.className;
+                showGenerationStatus('Converted to chat format', 'success');
+                setTimeout(() => {
+                    if (elements.generationStatus.textContent === 'Converted to chat format') {
+                        elements.generationStatus.textContent = oldText;
+                        elements.generationStatus.className = oldClass;
+                    }
+                }, 2000);
+            }
+        }
+    });
+    
+    // Generation
+    elements.generateBtn.addEventListener('click', generate);
+    
     // Parameters
     elements.kRollouts.addEventListener('input', (e) => {
         const k = parseInt(e.target.value);
@@ -766,6 +1451,15 @@ const initializeEventListeners = () => {
             const autoBatch = Math.max(1, Math.floor(256 / k));
             elements.batchSize.value = autoBatch;
             elements.batchSizeInfo.textContent = `${autoBatch} (auto)`;
+        }
+        
+        // Auto-adjust temperature based on k_rollouts
+        if (k === 1) {
+            elements.temperature.value = '0.1';
+            elements.temperatureValue.textContent = '0.1';
+        } else {
+            elements.temperature.value = '1.0';
+            elements.temperatureValue.textContent = '1.0';
         }
     });
     
@@ -797,6 +1491,21 @@ const initializeEventListeners = () => {
     elements.apiKeyInput.addEventListener('change', saveSettings);
     elements.collectionIdInput.addEventListener('change', saveSettings);
     
+    // Reset button
+    elements.resetBtn.addEventListener('click', resetModel);
+    
+    // New Analysis button
+    if (elements.newAnalysisBtn) {
+        elements.newAnalysisBtn.addEventListener('click', () => {
+            // Switch to analyze tab
+            switchTab('analyze');
+            // Scroll to top
+            window.scrollTo(0, 0);
+            // Focus on input text
+            elements.inputText.focus();
+        });
+    }
+    
     // Upload/Export
     elements.uploadBtn.addEventListener('click', uploadData);
     elements.exportJsonBtn.addEventListener('click', exportJSON);
@@ -814,7 +1523,10 @@ const initializeEventListeners = () => {
     
     elements.salienceToggle.addEventListener('change', () => {
         state.salienceColoringEnabled = elements.salienceToggle.checked;
-        render();
+        // Skip render if flag is set (programmatic change)
+        if (!state.skipSalienceRender) {
+            render();
+        }
     });
     
     // Navigation

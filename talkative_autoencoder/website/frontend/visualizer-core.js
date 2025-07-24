@@ -3,6 +3,7 @@
  * Shared visualization functionality for both standalone and integrated versions
  */
 
+// For ES6 module compatibility, we'll export at the end
 const VisualizationCore = (function() {
     'use strict';
     
@@ -12,7 +13,7 @@ const VisualizationCore = (function() {
     
     // Default column visibility
     const getDefaultVisibility = () => {
-        const defaultVisibleCols = ['token', 'explanation', 'mse'];
+        const defaultVisibleCols = ['token', 'explanation', 'relative_rmse'];
         const visibility = {};
         columnNames.forEach(colName => {
             visibility[colName] = defaultVisibleCols.includes(colName);
@@ -501,7 +502,10 @@ const VisualizationCore = (function() {
     };
 })();
 
-// Export for module usage (will be ignored in standalone context)
-if (typeof module !== 'undefined' && module.exports) {
-    module.exports = VisualizationCore;
+// Export for ES6 module usage
+export { VisualizationCore };
+
+// Also make it available globally for standalone usage (when not loaded as module)
+if (typeof window !== 'undefined' && !window.VisualizationCore) {
+    window.VisualizationCore = VisualizationCore;
 }
