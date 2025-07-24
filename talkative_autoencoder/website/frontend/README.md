@@ -71,13 +71,43 @@ This frontend provides two deployment options:
 
 ### Running the Full Application (Frontend + Backend)
 
-#### Option 1: Using Make (Recommended)
+#### For Local Development (Recommended)
+
 ```bash
 cd /workspace/kitf/talkative-probes/talkative_autoencoder/website
 make demo  # Starts both backend and frontend servers
 ```
 
-#### Option 2: Manual Setup
+This runs everything locally - perfect for development and testing if you have a GPU.
+
+#### For RunPod + Local Hybrid
+
+When you need more GPU power (H100/A100):
+
+1. **On your RunPod instance**:
+   ```bash
+   cd /workspace/kitf/talkative-probes/talkative_autoencoder
+   source scripts/ensure_env.sh
+   uv run python -m website.backend.app.main
+   ```
+
+2. **On your local machine**:
+   ```bash
+   # First, update the API URL in app.js:
+   # const API_URL = 'https://[your-pod-id]-8000.proxy.runpod.net';
+   
+   cd /workspace/kitf/talkative-probes/talkative_autoencoder/website/frontend
+   python -m http.server 8080
+   ```
+
+This setup gives you:
+- Fast frontend iteration (local)
+- Powerful GPU inference (RunPod)
+- No need to deploy frontend changes
+
+#### Manual Local Setup
+
+If you prefer to run components separately:
 
 1. **Start the inference backend**:
    ```bash
