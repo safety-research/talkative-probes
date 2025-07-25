@@ -200,17 +200,16 @@ const VisualizationCore = (function() {
                     if (col === 'explanation' || col === 'explanation_concatenated') {
                         cellClass += ' explanation-cell';
                         // For explanation columns, render word-by-word with salience coloring
-                        if (col === 'explanation' && salienceColoringEnabled && row.token_salience && Array.isArray(row.explanation_structured)) {
-                            // Render each word with its own salience color
+                        if (col === 'explanation' && salienceColoringEnabled && Array.isArray(row.explanation_structured)) {
+                            // Each token has one salience value that colors all its explanation words
                             const words = row.explanation_structured;
-                            const saliences = Array.isArray(row.token_salience) ? row.token_salience : [row.token_salience];
+                            const tokenColor = row.token_salience !== undefined && row.token_salience !== null ? 
+                                getSalienceColor(parseFloat(row.token_salience)) : '';
                             
-                            // Create HTML for word-by-word rendering with individual salience colors
-                            value = words.map((word, idx) => {
-                                const salience = idx < saliences.length ? saliences[idx] : saliences[saliences.length - 1];
-                                const wordColor = getSalienceColor(parseFloat(salience));
-                                return `<span style="background-color: ${wordColor}; padding: 0 2px;">${word}</span>`;
-                            }).join('');
+                            // Create HTML for word-by-word rendering with token's salience color
+                            value = words.map(word => 
+                                `<span style="background-color: ${tokenColor}; padding: 0 2px;">${word}</span>`
+                            ).join('');
                         } else if (salienceColoringEnabled && row.token_salience) {
                             const salience = parseFloat(row.token_salience);
                             style += `background-color: ${getSalienceColor(salience)};`;
@@ -266,15 +265,9 @@ const VisualizationCore = (function() {
                             <div class="mse-value">MSE: ${pos.mse}</div>
                             <div class="explanation-section">
                                 ${pos.explanation_structured ? 
-                                    pos.explanation_structured.map((word, idx) => {
-                                        let wordColor = '';
-                                        if (salienceColoringEnabled && pos.salience !== null) {
-                                            const saliences = Array.isArray(pos.salience) ? pos.salience : [pos.salience];
-                                            const salience = idx < saliences.length ? saliences[idx] : saliences[saliences.length - 1];
-                                            wordColor = getSalienceColor(parseFloat(salience));
-                                        }
-                                        return `<div class="explanation-word" style="background-color: ${wordColor}">${word}</div>`;
-                                    }).join('') :
+                                    pos.explanation_structured.map(word => 
+                                        `<div class="explanation-word" style="background-color: ${bgColor}">${word}</div>`
+                                    ).join('') :
                                     pos.explanation.split(/(?=[A-Z])/).map(word => 
                                         `<div class="explanation-word" style="background-color: ${bgColor}">${word}</div>`
                                     ).join('')
