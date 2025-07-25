@@ -176,8 +176,8 @@ const VisualizationCore = (function() {
         title.textContent = 'Analysis Metadata';
         metadataSection.appendChild(title);
         
-        const grid = document.createElement('div');
-        grid.className = 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3';
+        const list = document.createElement('div');
+        list.className = 'space-y-1';
         
         // Define the order and formatting for metadata fields
         const metadataOrder = ['model_name', 'orig_model_name', 'checkpoint_path', 'layer', 'timestamp'];
@@ -224,10 +224,10 @@ const VisualizationCore = (function() {
             
             item.appendChild(label);
             item.appendChild(valueSpan);
-            grid.appendChild(item);
+            list.appendChild(item);
         });
         
-        metadataSection.appendChild(grid);
+        metadataSection.appendChild(list);
         container.appendChild(metadataSection);
     };
     
