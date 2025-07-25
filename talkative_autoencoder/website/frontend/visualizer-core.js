@@ -440,8 +440,8 @@ const VisualizationCore = (function() {
                 
                 // Special formatting
                 if (['explanation', 'explanation_structured', 'tuned_lens_top', 'logit_lens_top'].includes(colName)) {
-                    // Explanation columns use sans-serif font
-                    td.className = "px-2 py-2 align-top font-sans text-sm text-[#6D4C41]";
+                    // Explanation columns - still monospace but different color
+                    td.className = "px-2 py-2 align-top font-mono text-sm text-[#6D4C41]";
                     if (['tuned_lens_top', 'logit_lens_top'].includes(colName)) {
                         td.style.whiteSpace = 'nowrap';
                     }
