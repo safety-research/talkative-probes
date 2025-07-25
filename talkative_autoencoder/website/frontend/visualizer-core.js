@@ -19,23 +19,34 @@ const VisualizationCore = (function() {
     };
     
     // Utility functions
-    const getSalienceColor = (salience) => {
-        if (!salience || salience === 0) return '';
+    const formatNewlines = (str) => {
+        if (typeof str !== 'string') return str;
+        return str.replace(/\\n|\n/g, '↵ ');
+    };
+    
+    const getSalienceColor = (value, min = -0.1, max = 0.3) => {
+        if (typeof value !== 'number' || isNaN(value)) return 'transparent';
         
-        const absValue = Math.abs(salience);
-        const ratio = Math.min(absValue, 1);
+        const v = Math.max(-1, Math.min(max, value));
         
-        if (salience > 0) {
-            const r = 255;
-            const g = Math.round(255 * (1 - ratio));
-            const b = Math.round(255 * (1 - ratio));
-            return `rgb(${r}, ${g}, ${b})`;
+        if (v >= 0) {
+            // Log-scaled red side
+            const beta = 50;
+            const norm = max > 0 ? Math.log10(1 + beta * v) / Math.log10(1 + beta * max) : 0;
+            const g = Math.round(255 * (1 - norm));
+            const b = g;
+            return `rgb(255,${g},${b})`;
         } else {
-            const r = Math.round(255 * (1 - ratio));
-            const g = 200;
-            const b = Math.round(255 * (1 - ratio));
-            return `rgb(${r}, ${g}, ${b})`;
+            // Linear green side
+            const norm = (-v) / 1;
+            const r = Math.round(255 * (1 - norm));
+            const b = r;
+            return `rgb(${r},255,${b})`;
         }
+    };
+    
+    const getTooltipTextColor = (salVal) => {
+        return '#3E2723';
     };
     
     const copyToClipboard = (text, element) => {
@@ -62,6 +73,23 @@ const VisualizationCore = (function() {
         }, 1500);
     };
     
+    // Compute salience range (5-95 percentile)
+    const computeSalienceRange = (rows) => {
+        const raw = rows.flatMap(r => {
+            if (Array.isArray(r.token_salience)) return r.token_salience;
+            if (typeof r.token_salience === 'number') return [r.token_salience];
+            return [];
+        }).filter(v => typeof v === 'number' && !isNaN(v));
+        
+        if (raw.length === 0) return { min: -0.1, max: 0.1 };
+        
+        const sorted = [...raw].sort((a, b) => a - b);
+        const low = sorted[Math.floor(sorted.length * 0.05)];
+        const high = sorted[Math.floor(sorted.length * 0.95)];
+        
+        return { min: Math.min(-0.05, low, -1), max: high };
+    };
+    
     // Column visibility management
     const getDefaultVisibility = () => ({
         'position': true,
@@ -81,6 +109,46 @@ const VisualizationCore = (function() {
         'token_salience': false,
         'explanation_concatenated': false
     });
+    
+    // Create token box element with tooltip
+    const createTokenBox = (token, explanation, tokenSalience, salienceColoringEnabled, row) => {
+        const container = document.createElement('div');
+        container.className = 'token-box-container';
+        
+        const tokenSpan = document.createElement('span');
+        tokenSpan.className = 'token-box';
+        tokenSpan.textContent = token;
+        
+        const tooltip = document.createElement('div');
+        tooltip.className = 'tooltip';
+        
+        // Build color-coded explanation for tooltip
+        if (row.explanation_structured && Array.isArray(row.explanation_structured)) {
+            tooltip.innerHTML = '';
+            row.explanation_structured.forEach((tok, idx) => {
+                const span = document.createElement('span');
+                span.textContent = formatNewlines(tok) + ' ';
+                if (Array.isArray(row.token_salience) && idx < row.token_salience.length) {
+                    const sv = row.token_salience[idx];
+                    if (salienceColoringEnabled && typeof sv === 'number') {
+                        span.style.backgroundColor = getSalienceColor(sv);
+                        span.style.color = getTooltipTextColor(sv);
+                    }
+                    if (typeof sv === 'number') {
+                        span.title = `Decoded: ${tok}\nSalience: ${sv.toFixed(3)}\nMSE: ${row.mse?.toFixed ? row.mse.toFixed(3) : row.mse}`;
+                    }
+                }
+                tooltip.appendChild(span);
+            });
+        } else {
+            tooltip.textContent = formatNewlines(explanation || 'No explanation available.');
+        }
+        
+        container.appendChild(tokenSpan);
+        container.appendChild(tooltip);
+        
+        return container;
+    };
     
     // Rendering functions
     const renderMetadata = ({ metadata, container }) => {
@@ -146,146 +214,248 @@ const VisualizationCore = (function() {
         });
     };
     
-    const renderFullTextBox = ({ data, container, salienceColoringEnabled }) => {
-        const fullText = data.map(row => {
-            if (salienceColoringEnabled && row.token_salience) {
-                const salience = parseFloat(row.token_salience);
-                const color = getSalienceColor(salience);
-                return `<span style="background-color: ${color}">${row.target || ''}</span>`;
+    const renderFullTextBox = (config) => {
+        const { data, container, salienceColoringEnabled = false } = config;
+        
+        // Clear container but preserve the placeholder if it exists
+        const existingPlaceholder = container.querySelector('#full-text-placeholder');
+        container.innerHTML = '';
+        
+        if (!data || data.length === 0) {
+            if (existingPlaceholder) {
+                existingPlaceholder.classList.remove('hidden');
+                container.appendChild(existingPlaceholder);
+            } else {
+                const placeholder = document.createElement('p');
+                placeholder.id = 'full-text-placeholder';
+                placeholder.className = 'text-slate-500';
+                placeholder.textContent = 'Full text will appear here after visualizing.';
+                container.appendChild(placeholder);
             }
-            return row.target || '';
-        }).join('');
+            return;
+        }
         
-        const fullTextBox = container.querySelector('.full-text-box') || 
-                           container.appendChild(Object.assign(document.createElement('div'), {
-                               className: 'full-text-box'
-                           }));
+        const salienceRange = computeSalienceRange(data);
         
-        fullTextBox.innerHTML = `
-            <h3 class="font-semibold text-sm text-gray-700 mb-2">Full Text:</h3>
-            <div class="p-3 bg-gray-50 rounded-lg text-sm leading-relaxed">
-                ${fullText || '<span class="text-gray-500">No text available</span>'}
-            </div>
-        `;
+        data.forEach((row) => {
+            const tokenString = String(row.token || row.target || '');
+            const parts = tokenString.split(/\\n|\n/);
+            
+            parts.forEach((part, index) => {
+                if (part === '' && index === parts.length - 1 && parts.length > 1) return;
+                
+                const textContent = (index < parts.length - 1) ? part + ' ↵' : part;
+                const tokenBox = createTokenBox(
+                    textContent,
+                    row.explanation,
+                    row.token_salience,
+                    salienceColoringEnabled,
+                    row
+                );
+                
+                container.appendChild(tokenBox);
+                
+                if (index < parts.length - 1) {
+                    container.appendChild(document.createElement('br'));
+                }
+            });
+        });
     };
     
-    const renderTable = ({ data, tableHead, tableBody, columnVisibility, salienceColoringEnabled }) => {
+    const renderTable = (config) => {
+        const { data, tableHead, tableBody, columnVisibility, salienceColoringEnabled = false } = config;
+        
+        tableHead.innerHTML = '';
+        tableBody.innerHTML = '';
+        
         if (!data || data.length === 0) return;
         
-        // Get all unique keys from data
-        const columns = [...new Set(data.flatMap(row => Object.keys(row)))];
+        // Get all unique keys from data  
+        const columnNames = [...new Set(data.flatMap(row => Object.keys(row)))];
         
-        // Render header
-        tableHead.innerHTML = `
-            <tr>
-                ${columns.map(col => `
-                    <th data-column-name="${col}" 
-                        style="${columnVisibility[col] === false ? 'display: none;' : ''}"
-                        class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                        ${col.replace(/_/g, ' ')}
-                    </th>
-                `).join('')}
-            </tr>
-        `;
+        // Create header
+        const headerRow = document.createElement('tr');
+        headerRow.className = "bg-[#EFEBE9]";
         
-        // Render rows
-        tableBody.innerHTML = data.map((row, index) => `
-            <tr class="${index % 2 === 0 ? 'bg-gray-50' : 'bg-white'}">
-                ${columns.map(col => {
-                    let value = row[col];
-                    let style = columnVisibility[col] === false ? 'display: none;' : '';
-                    let cellClass = 'px-4 py-2 text-sm';
-                    
-                    // Handle special columns
-                    if (col === 'explanation' || col === 'explanation_concatenated') {
-                        cellClass += ' explanation-cell';
-                        // For explanation columns, render word-by-word with salience coloring
-                        if (col === 'explanation' && salienceColoringEnabled && Array.isArray(row.explanation_structured)) {
-                            // Each token has one salience value that colors all its explanation words
-                            const words = row.explanation_structured;
-                            const tokenColor = row.token_salience !== undefined && row.token_salience !== null ? 
-                                getSalienceColor(parseFloat(row.token_salience)) : '';
-                            
-                            // Create HTML for word-by-word rendering with token's salience color
-                            value = words.map(word => 
-                                `<span style="background-color: ${tokenColor}; padding: 0 2px;">${word}</span>`
-                            ).join('');
-                        } else if (salienceColoringEnabled && row.token_salience) {
-                            const salience = parseFloat(row.token_salience);
-                            style += `background-color: ${getSalienceColor(salience)};`;
-                        }
-                    } else if (col === 'token_salience') {
-                        value = value ? parseFloat(value).toFixed(3) : '';
-                    } else if (typeof value === 'number' && !Number.isInteger(value)) {
-                        value = value.toFixed(4);
-                    } else if (Array.isArray(value)) {
-                        value = value.join(', ');
+        columnNames.forEach((colName, index) => {
+            const th = document.createElement('th');
+            th.className = "px-2 py-2 text-left text-sm font-semibold text-[#5D4037] uppercase tracking-wider";
+            th.dataset.columnName = colName;
+            th.dataset.columnIndex = index;
+            th.textContent = colName.replace(/_/g, ' ');
+            
+            const resizeHandle = document.createElement('div');
+            resizeHandle.className = 'resize-handle';
+            th.appendChild(resizeHandle);
+            
+            headerRow.appendChild(th);
+        });
+        tableHead.appendChild(headerRow);
+        
+        // Calculate KL max for coloring
+        const klValues = data.map(row => parseFloat(row.kl_divergence)).filter(v => !isNaN(v));
+        const maxKl = Math.max(...klValues, 0);
+        
+        // Create rows
+        data.forEach((row) => {
+            const tr = document.createElement('tr');
+            tr.className = 'hover:bg-[#EFEBE9]/80 border-b border-[#EFEBE9]';
+            
+            columnNames.forEach(colName => {
+                const td = document.createElement('td');
+                td.className = "px-2 py-2 align-top font-mono text-sm text-[#5D4037]";
+                td.dataset.columnName = colName;
+                td.title = 'Click to copy';
+                
+                let value = row[colName] || '';
+                
+                // Format numeric values
+                if (['kl_divergence', 'mse', 'relative_rmse'].includes(colName)) {
+                    const num = parseFloat(value);
+                    value = isNaN(num) ? 'N/A' : num.toFixed(6);
+                }
+                
+                if (colName === 'token_salience') {
+                    if (Array.isArray(value)) {
+                        value = value.map(v => typeof v === 'number' ? v.toPrecision(3) : v).join(', ');
+                    } else if (typeof value === 'number') {
+                        value = value.toPrecision(3);
                     }
-                    
-                    return `
-                        <td data-column-name="${col}" 
-                            style="${style}"
-                            class="${cellClass}"
-                            title="Click to copy"
-                            data-value="${value || ''}">
-                            ${value || ''}
-                        </td>
-                    `;
-                }).join('')}
-            </tr>
-        `).join('');
+                }
+                
+                // Handle structured explanations
+                if ((colName === 'explanation' || colName === 'explanation_structured') && 
+                    Array.isArray(row.explanation_structured)) {
+                    td.textContent = '';
+                    row.explanation_structured.forEach((w, idx) => {
+                        const span = document.createElement('span');
+                        span.className = 'explanation-word';
+                        span.textContent = formatNewlines(w) + ' ';
+                        
+                        if (Array.isArray(row.token_salience) && idx < row.token_salience.length) {
+                            const sv = row.token_salience[idx];
+                            if (salienceColoringEnabled && typeof sv === 'number') {
+                                span.style.backgroundColor = getSalienceColor(sv);
+                                span.style.color = getTooltipTextColor(sv);
+                            }
+                            if (typeof sv === 'number') {
+                                span.title = `Decoded: ${w}\nSalience: ${sv.toFixed(3)}\nMSE: ${row.mse?.toFixed ? row.mse.toFixed(3) : row.mse}`;
+                            }
+                        }
+                        td.appendChild(span);
+                    });
+                } else {
+                    td.textContent = formatNewlines(String(value));
+                }
+                
+                // Special formatting
+                if (['explanation', 'tuned_lens_top', 'logit_lens_top'].includes(colName)) {
+                    td.className = "px-2 py-2 align-top font-sans text-sm text-[#6D4C41]";
+                    td.style.whiteSpace = 'nowrap';
+                }
+                if (colName === 'token') {
+                    td.className = "px-2 py-2 align-top font-mono text-sm font-semibold text-[#BF360C]";
+                }
+                if (colName === 'position') {
+                    td.className = "px-2 py-2 align-top font-mono text-sm text-slate-400";
+                }
+                
+                // KL divergence coloring
+                if (colName === 'kl_divergence') {
+                    const klValue = parseFloat(row.kl_divergence);
+                    const klIntensity = isNaN(klValue) || maxKl === 0 ? 0 : Math.min(klValue / (maxKl * 0.8), 1);
+                    const r = 230 - (50 * klIntensity);
+                    const g = 81 - (20 * klIntensity);
+                    const b = 0;
+                    td.style.color = `rgb(${r}, ${g}, ${b})`;
+                    td.style.fontWeight = '500';
+                }
+                
+                tr.appendChild(td);
+            });
+            
+            tableBody.appendChild(tr);
+        });
+        
+        // Update visibility
+        for (const columnName in columnVisibility) {
+            const visible = columnVisibility[columnName];
+            document.querySelectorAll(`[data-column-name="${columnName}"]`).forEach(cell => {
+                cell.style.display = visible ? '' : 'none';
+            });
+        }
     };
     
-    const renderTransposedView = ({ data, container, colWidth, salienceColoringEnabled }) => {
-        if (!data || data.length === 0) return;
+    const renderTransposedView = (config) => {
+        const { data, container, colWidth = 80, salienceColoringEnabled = false } = config;
         
-        const positions = data.map(row => ({
-            position: row.position,
-            target: row.target || '',
-            predicted: row.predicted || '',
-            mse: row.mse ? parseFloat(row.mse).toFixed(4) : '',
-            explanation: row.explanation || '',
-            explanation_structured: row.explanation_structured || null,
-            salience: row.token_salience ? parseFloat(row.token_salience) : null
-        }));
+        container.innerHTML = '';
+        const wrapper = document.createElement('div');
+        wrapper.className = 'flex flex-row flex-wrap gap-x-2';
         
-        const html = `
-            <div class="transpose-container">
-                ${positions.map(pos => {
-                    const bgColor = salienceColoringEnabled && pos.salience !== null ? 
-                                  getSalienceColor(pos.salience) : '';
-                    
-                    return `
-                        <div class="transpose-col" style="width: ${colWidth}px;">
-                            <div class="position-num">${pos.position}</div>
-                            <div class="token-info">
-                                <div class="target-token">${pos.target}</div>
-                                ${pos.predicted ? `<div class="predicted-token">→ ${pos.predicted}</div>` : ''}
-                            </div>
-                            <div class="mse-value">MSE: ${pos.mse}</div>
-                            <div class="explanation-section">
-                                ${pos.explanation_structured ? 
-                                    pos.explanation_structured.map(word => 
-                                        `<div class="explanation-word" style="background-color: ${bgColor}">${word}</div>`
-                                    ).join('') :
-                                    pos.explanation.split(/(?=[A-Z])/).map(word => 
-                                        `<div class="explanation-word" style="background-color: ${bgColor}">${word}</div>`
-                                    ).join('')
-                                }
-                            </div>
-                        </div>
-                    `;
-                }).join('')}
-            </div>
-        `;
+        const salienceRange = computeSalienceRange(data);
         
-        container.innerHTML = html;
+        data.forEach((row) => {
+            const colDiv = document.createElement('div');
+            colDiv.className = 'flex flex-col items-start font-mono text-sm transpose-col';
+            colDiv.style.width = `${colWidth}px`;
+            
+            // Token header (rotated)
+            const tokenWrapper = document.createElement('div');
+            tokenWrapper.className = 'rotated-token-wrapper';
+            
+            const tokenDiv = document.createElement('div');
+            tokenDiv.className = 'font-semibold text-base rotated-token text-[#BF360C]';
+            const tokenText = row.token || row.target || '';
+            tokenDiv.textContent = formatNewlines(tokenText);
+            tokenDiv.title = `Token: ${formatNewlines(tokenText)}\nMSE: ${Number(row.mse).toFixed(3)}`;
+            
+            tokenWrapper.appendChild(tokenDiv);
+            colDiv.appendChild(tokenWrapper);
+            
+            // Explanation words
+            let explanationWords = [];
+            if (row.explanation_structured && Array.isArray(row.explanation_structured)) {
+                explanationWords = row.explanation_structured;
+            } else if (row.explanation) {
+                explanationWords = formatNewlines(row.explanation).split(/[\s↵]+/);
+            }
+            
+            explanationWords.forEach((word, wordIndex) => {
+                const wordDiv = document.createElement('div');
+                wordDiv.className = 'text-[#6D4C41] font-sans w-full text-left explanation-word';
+                wordDiv.textContent = formatNewlines(word);
+                
+                // Apply salience coloring
+                if (salienceColoringEnabled && Array.isArray(row.token_salience) && 
+                    wordIndex < row.token_salience.length) {
+                    const salienceValue = row.token_salience[wordIndex];
+                    if (typeof salienceValue === 'number' && !isNaN(salienceValue)) {
+                        wordDiv.style.backgroundColor = getSalienceColor(salienceValue, salienceRange.min, salienceRange.max);
+                        wordDiv.style.padding = '2px 4px';
+                        wordDiv.style.borderRadius = '2px';
+                        wordDiv.style.margin = '1px 0';
+                        wordDiv.title = `Decoded: ${word}\nSalience: ${salienceValue.toFixed(3)}\nMSE: ${row.mse?.toFixed ? row.mse.toFixed(3) : row.mse}`;
+                    }
+                }
+                
+                colDiv.appendChild(wordDiv);
+            });
+            
+            wrapper.appendChild(colDiv);
+        });
+        
+        container.appendChild(wrapper);
     };
     
     // Public API
     return {
         config,
+        formatNewlines,
         getSalienceColor,
+        getTooltipTextColor,
+        computeSalienceRange,
+        createTokenBox,
         getDefaultVisibility,
         renderMetadata,
         createColumnToggleUI,
