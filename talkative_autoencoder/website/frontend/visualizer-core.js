@@ -159,25 +159,76 @@ const VisualizationCore = (function() {
     
     // Rendering functions
     const renderMetadata = ({ metadata, container }) => {
-        if (!metadata) {
+        if (!metadata || Object.keys(metadata).length === 0) {
             container.classList.add('hidden');
             return;
         }
         
         container.classList.remove('hidden');
-        container.innerHTML = `
-            <div class="metadata-section">
-                <h3 class="text-sm font-semibold text-gray-700 mb-2">Analysis Metadata</h3>
-                <div class="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs">
-                    ${Object.entries(metadata).map(([key, value]) => `
-                        <div>
-                            <span class="font-medium text-gray-600">${key.replace(/_/g, ' ')}:</span>
-                            <span class="text-gray-800">${value}</span>
-                        </div>
-                    `).join('')}
-                </div>
-            </div>
-        `;
+        container.innerHTML = '';
+        
+        // Create metadata section
+        const metadataSection = document.createElement('div');
+        metadataSection.className = 'bg-amber-50 border border-amber-200 rounded-lg p-4';
+        
+        const title = document.createElement('h3');
+        title.className = 'text-sm font-semibold text-[#5D4037] mb-3';
+        title.textContent = 'Analysis Metadata';
+        metadataSection.appendChild(title);
+        
+        const grid = document.createElement('div');
+        grid.className = 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3';
+        
+        // Define the order and formatting for metadata fields
+        const metadataOrder = ['model_name', 'orig_model_name', 'checkpoint_path', 'layer', 'timestamp'];
+        const formattedKeys = {
+            'model_name': 'Decoder/Encoder Model',
+            'orig_model_name': 'Subject Model',
+            'checkpoint_path': 'Checkpoint',
+            'layer': 'Layer',
+            'timestamp': 'Timestamp'
+        };
+        
+        // Sort metadata keys according to preferred order
+        const sortedKeys = Object.keys(metadata).sort((a, b) => {
+            const indexA = metadataOrder.indexOf(a);
+            const indexB = metadataOrder.indexOf(b);
+            if (indexA === -1 && indexB === -1) return 0;
+            if (indexA === -1) return 1;
+            if (indexB === -1) return -1;
+            return indexA - indexB;
+        });
+        
+        sortedKeys.forEach(key => {
+            const value = metadata[key];
+            if (value === null || value === undefined || value === '') return;
+            
+            const item = document.createElement('div');
+            item.className = 'text-sm';
+            
+            const label = document.createElement('span');
+            label.className = 'font-medium text-[#795548]';
+            label.textContent = (formattedKeys[key] || key.replace(/_/g, ' ')) + ': ';
+            
+            const valueSpan = document.createElement('span');
+            valueSpan.className = 'text-[#5D4037]';
+            
+            // Special formatting for certain fields
+            if (key === 'checkpoint_path' && value.length > 50) {
+                valueSpan.className += ' font-mono text-xs';
+                valueSpan.title = value;
+                valueSpan.textContent = '...' + value.slice(-47);
+            } else {
+                valueSpan.textContent = value;
+            }
+            
+            item.appendChild(label);
+            item.appendChild(valueSpan);
+            grid.appendChild(item);
+        });
+        
+        metadataSection.appendChild(grid);
+        container.appendChild(metadataSection);
     };
     
     const createColumnToggleUI = ({ container, columnVisibility, onChange }) => {
