@@ -74,8 +74,8 @@ const DataAdapters = {
 // Storage adapters
 const StorageAdapters = {
     Supabase: {
-        url: 'https://your-project.supabase.co', // Will be updated with actual URL
-        anonKey: 'your-anon-key', // Will be updated with actual key
+        url: 'https://rnncsfomwqvrdorznqrt.supabase.co',
+        anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJubmNzZm9td3F2cmRvcnpucXJ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTM0NDIzNDgsImV4cCI6MjA2OTAxODM0OH0.fiEbMVxebWE2vpUMh4EJ24xTd6YHIrSqqG2_RpcohtY'
         
         upload: async (content) => {
             const res = await fetch(`${StorageAdapters.Supabase.url}/rest/v1/analyses`, {
