@@ -247,6 +247,9 @@ class ModelManager:
                     'context': 'generation'
                 })
             
+            # Get the current event loop for run_in_executor
+            loop = asyncio.get_event_loop()
+            
             # Parse text as JSON if it's chat format
             if options.get('is_chat', False):
                 try:
@@ -258,7 +261,8 @@ class ModelManager:
                         'num_completions': options.get('num_completions', 1),
                         'temperature': options.get('temperature', 1.0),
                         'is_chat': True,
-                        'return_full_text': options.get('return_full_text', True)
+                        'return_full_text': options.get('return_full_text', True),
+                        'use_cache': True
                     }
                     
                     # Add chat tokenizer if available
@@ -267,21 +271,31 @@ class ModelManager:
                     
                     # For chat, pass cancellation check
                     generation_kwargs['cancellation_check'] = is_cancelled
-                    continuations = self.analyzer.generate_continuation(
-                        messages,
-                        **generation_kwargs
+                    
+                    # Run generation in thread pool to avoid blocking event loop
+                    continuations = await loop.run_in_executor(
+                        None,  # Use default executor
+                        lambda: self.analyzer.generate_continuation(
+                            messages,
+                            **generation_kwargs
+                        )
                     )
                 except json.JSONDecodeError:
                     raise ValueError("Invalid JSON format for chat messages")
             else:
-                continuations = self.analyzer.generate_continuation(
-                    text,
-                    num_tokens=options.get('num_tokens', 100),
-                    num_completions=options.get('num_completions', 1),
-                    temperature=options.get('temperature', 1.0),
-                    is_chat=False,
-                    return_full_text=options.get('return_full_text', True),
-                    cancellation_check=is_cancelled
+                # Run generation in thread pool to avoid blocking event loop
+                continuations = await loop.run_in_executor(
+                    None,  # Use default executor
+                    lambda: self.analyzer.generate_continuation(
+                        text,
+                        num_tokens=options.get('num_tokens', 100),
+                        num_completions=options.get('num_completions', 1),
+                        temperature=options.get('temperature', 1.0),
+                        is_chat=False,
+                        return_full_text=options.get('return_full_text', True),
+                        cancellation_check=is_cancelled, 
+                        use_cache=True
+                    )
                 )
             
             request['result'] = {

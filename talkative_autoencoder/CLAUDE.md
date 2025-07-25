@@ -13,7 +13,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Setup
 ```bash
-cd consistency-lens
+cd talkative_autoencoder
 make  # One-time setup: installs uv and configures shared cache
 ```
 
