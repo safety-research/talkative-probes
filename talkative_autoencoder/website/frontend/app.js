@@ -46,7 +46,7 @@ const state = {
     allTranscripts: [],
     currentTranscriptIndex: 0,
     currentService: 'supabase',
-    columnVisibility: VisualizationCore.getDefaultVisibility(),
+    columnVisibility: {},  // Will be initialized after VisualizationCore loads
     activeTab: 'analyze',
     loadingTimeout: null,
     skipSalienceRender: false,  // Flag to prevent render on programmatic checkbox changes
@@ -55,6 +55,32 @@ const state = {
     modelInfo: null,  // Store loaded model information
     autoBatchSizeMax: 256  // Default value, will be updated from backend
 };
+
+// Initialize column visibility after VisualizationCore is available
+if (typeof VisualizationCore !== 'undefined') {
+    state.columnVisibility = VisualizationCore.getDefaultVisibility();
+} else {
+    console.error('VisualizationCore not available when initializing state');
+    // Fallback default visibility
+    state.columnVisibility = {
+        'position': true,
+        'predicted': false,
+        'target': true,
+        'rank': false,
+        'loss': false,
+        'mse': true,
+        'ce': false,
+        'kl': false,
+        'max_predicted_prob': false,
+        'predicted_prob': false,
+        'explanation': true,
+        'decoder_completions': false,
+        'pred_token': false,
+        'salience_plot': false,
+        'token_salience': false,
+        'explanation_concatenated': false
+    };
+}
 
 // Data adapters
 const DataAdapters = {

@@ -321,8 +321,11 @@ document.addEventListener('DOMContentLoaded', () => {
     elements.apiKeyInput.addEventListener('change', saveSettings);
     elements.collectionIdInput.addEventListener('change', saveSettings);
 
-    // Always default to Supabase
-    updateServiceUI('supabase');
+    // Only default to Supabase if not loading from URL
+    const urlParams = new URLSearchParams(window.location.search);
+    if (!urlParams.get('bin')) {
+        updateServiceUI('supabase');
+    }
 
     // Upload/fetch functions
     const uploadToBin = async (content) => {
