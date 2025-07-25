@@ -346,6 +346,31 @@ async def websocket_endpoint(websocket: WebSocket):
                             'status': status['status'],
                             'error': status.get('error')
                         })
+            
+            elif data['type'] == 'interrupt':
+                request_id = data.get('request_id')
+                context = data.get('context', 'analysis')
+                
+                if request_id and model_manager:
+                    # Mark the request as cancelled
+                    request = model_manager.queue.active_requests.get(request_id)
+                    if request and request['status'] == 'processing':
+                        request['status'] = 'cancelled'
+                        request['error'] = 'Interrupted by user'
+                        
+                        logger.info(f"Interrupt requested for {context} request: {request_id}")
+                        
+                        # Send confirmation
+                        await websocket.send_json({
+                            'type': 'interrupted',
+                            'request_id': request_id,
+                            'context': context
+                        })
+                    else:
+                        await websocket.send_json({
+                            'type': 'error',
+                            'error': f'Cannot interrupt request {request_id} - not currently processing'
+                        })
     
     except Exception as e:
         logger.error(f"WebSocket error: {e}")

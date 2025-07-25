@@ -226,9 +226,18 @@ class ModelManager:
     
     async def _process_generation_request(self, request: dict, request_id: str):
         """Process a text generation request"""
+        # Create a cancellation check function
+        def is_cancelled():
+            return request.get('status') == 'cancelled'
+        
         try:
             text = request['text']
             options = request['options']
+            
+            # Check if cancelled before starting
+            if is_cancelled():
+                logger.info(f"Generation request {request_id} was cancelled before starting")
+                return
             
             # Send processing status
             if 'websocket' in request and request['websocket']:
@@ -256,6 +265,8 @@ class ModelManager:
                     if self.chat_tokenizer:
                         generation_kwargs['chat_tokenizer'] = self.chat_tokenizer
                     
+                    # For chat, pass cancellation check
+                    generation_kwargs['cancellation_check'] = is_cancelled
                     continuations = self.analyzer.generate_continuation(
                         messages,
                         **generation_kwargs
@@ -269,7 +280,8 @@ class ModelManager:
                     num_completions=options.get('num_completions', 1),
                     temperature=options.get('temperature', 1.0),
                     is_chat=False,
-                    return_full_text=options.get('return_full_text', True)
+                    return_full_text=options.get('return_full_text', True),
+                    cancellation_check=is_cancelled
                 )
             
             request['result'] = {
@@ -278,9 +290,15 @@ class ModelManager:
             request['status'] = 'completed'
             
         except Exception as e:
-            logger.error(f"Generation error: {str(e)}")
-            request['error'] = str(e)
-            request['status'] = 'failed'
+            # Check if this was due to cancellation
+            if is_cancelled():
+                logger.info(f"Generation request {request_id} was cancelled")
+                request['error'] = 'Cancelled by user'
+                request['status'] = 'cancelled'
+            else:
+                logger.error(f"Generation error: {str(e)}")
+                request['error'] = str(e)
+                request['status'] = 'failed'
         
         request['completed_at'] = datetime.utcnow()
         
@@ -292,20 +310,31 @@ class ModelManager:
         # Notify via WebSocket if connected
         if 'websocket' in request and request['websocket']:
             try:
-                result_type = 'generation_result' if request['status'] == 'completed' else 'generation_error'
-                await request['websocket'].send_json({
-                    'type': result_type,
-                    'request_id': request_id,
-                    'status': request['status'],
-                    'result': request.get('result'),
-                    'error': request.get('error'),
-                    'processing_time': request.get('processing_time')
-                })
+                if request['status'] == 'cancelled':
+                    await request['websocket'].send_json({
+                        'type': 'interrupted',
+                        'request_id': request_id,
+                        'context': 'generation'
+                    })
+                else:
+                    result_type = 'generation_result' if request['status'] == 'completed' else 'generation_error'
+                    await request['websocket'].send_json({
+                        'type': result_type,
+                        'request_id': request_id,
+                        'status': request['status'],
+                        'result': request.get('result'),
+                        'error': request.get('error'),
+                        'processing_time': request.get('processing_time')
+                    })
             except Exception as e:
                 logger.error(f"WebSocket send error: {str(e)}")
     
     async def _process_analysis_request(self, request: dict, request_id: str):
         """Process a text analysis request"""
+        # Create a cancellation check function
+        def is_cancelled():
+            return request.get('status') == 'cancelled'
+        
         try:
             options = request['options']
             
@@ -386,6 +415,12 @@ class ModelManager:
             
             # Progress callback that will be called from sync code in another thread
             def progress_callback(current_batch, total_batches, message):
+                # Check if cancelled
+                if is_cancelled():
+                    logger.info(f"Analysis cancelled at batch {current_batch}/{total_batches}")
+                    # Return a special value to signal cancellation to analyzer
+                    return False
+                
                 logger.info(f"Progress callback called: {current_batch}/{total_batches} - {message}")
                 if websocket:
                     current_time = time.time()
@@ -411,6 +446,7 @@ class ModelManager:
                         }),
                         loop
                     )
+                return True  # Continue processing
             
             # Run inference in a thread pool to avoid blocking the event loop
             df = await loop.run_in_executor(
@@ -466,9 +502,15 @@ class ModelManager:
             request['status'] = 'completed'
             
         except Exception as e:
-            logger.error(f"Inference error: {str(e)}")
-            request['error'] = str(e)
-            request['status'] = 'failed'
+            # Check if this was due to cancellation
+            if is_cancelled():
+                logger.info(f"Analysis request {request_id} was cancelled")
+                request['error'] = 'Cancelled by user'
+                request['status'] = 'cancelled'
+            else:
+                logger.error(f"Inference error: {str(e)}")
+                request['error'] = str(e)
+                request['status'] = 'failed'
         
         request['completed_at'] = datetime.utcnow()
         
@@ -480,13 +522,20 @@ class ModelManager:
         # Notify via WebSocket if connected
         if 'websocket' in request and request['websocket']:
             try:
-                await request['websocket'].send_json({
-                    'type': 'result',
-                    'request_id': request_id,
-                    'status': request['status'],
-                    'result': request.get('result'),
-                    'error': request.get('error'),
-                    'processing_time': request.get('processing_time')
-                })
+                if request['status'] == 'cancelled':
+                    await request['websocket'].send_json({
+                        'type': 'interrupted',
+                        'request_id': request_id,
+                        'context': 'analysis'
+                    })
+                else:
+                    await request['websocket'].send_json({
+                        'type': 'result',
+                        'request_id': request_id,
+                        'status': request['status'],
+                        'result': request.get('result'),
+                        'error': request.get('error'),
+                        'processing_time': request.get('processing_time')
+                    })
             except Exception as e:
                 logger.error(f"WebSocket send error: {str(e)}")

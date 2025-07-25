@@ -253,6 +253,7 @@ const elements = {
     // Generation loading
     generationLoading: document.getElementById('generationLoading'),
     generationLoadingMessage: document.getElementById('generationLoadingMessage'),
+    interruptGenerationBtn: document.getElementById('interruptGenerationBtn'),
     
     // Analysis loading
     analysisLoading: document.getElementById('analysisLoading'),
@@ -260,6 +261,7 @@ const elements = {
     analysisLoadingProgress: document.getElementById('analysisLoadingProgress'),
     analysisProgressBar: document.getElementById('analysisProgressBar'),
     analysisProgressText: document.getElementById('analysisProgressText'),
+    interruptAnalysisBtn: document.getElementById('interruptAnalysisBtn'),
     
     // Parameters
     kRollouts: document.getElementById('kRollouts'),
@@ -402,18 +404,22 @@ const switchGeneration = (index) => {
     render();
 };
 
-const showLoading = (show, message = 'Processing...', progress = null, context = 'analysis') => {
+const showLoading = (show, message = 'Processing...', progress = null, context = 'analysis', showInterrupt = false) => {
     // Determine which loading box to use based on context
     const loadingEl = context === 'generation' ? elements.generationLoading : elements.analysisLoading;
     const messageEl = context === 'generation' ? elements.generationLoadingMessage : elements.analysisLoadingMessage;
     const progressEl = context === 'generation' ? null : elements.analysisLoadingProgress;
     const progressBarEl = context === 'generation' ? null : elements.analysisProgressBar;
     const progressTextEl = context === 'generation' ? null : elements.analysisProgressText;
+    const interruptBtn = context === 'generation' ? elements.interruptGenerationBtn : elements.interruptAnalysisBtn;
     
     loadingEl.classList.toggle('hidden', !show);
     
     if (show && message) {
         messageEl.textContent = message;
+        
+        // Show/hide interrupt button
+        interruptBtn.classList.toggle('hidden', !showInterrupt);
         
         // Only analysis context supports progress bar
         if (context === 'analysis' && progress !== null) {
@@ -632,7 +638,8 @@ const handleWebSocketMessage = (data) => {
             const processingMessage = data.message || 'Processing...';
             // Use explicit context if provided, otherwise infer from message
             const processingContext = data.context || (processingMessage.includes('Generating') ? 'generation' : 'analysis');
-            showLoading(true, processingMessage, null, processingContext);
+            // Show interrupt button when processing
+            showLoading(true, processingMessage, null, processingContext, true);
             break;
             
         case 'progress':
@@ -652,7 +659,7 @@ const handleWebSocketMessage = (data) => {
                 }
             }
             
-            showLoading(true, messageWithETA, percent, 'analysis');
+            showLoading(true, messageWithETA, percent, 'analysis', true);
             break;
             
         case 'result':
@@ -703,6 +710,41 @@ const handleWebSocketMessage = (data) => {
                 showLoading(false, '', null, data.context);
             }
             break;
+            
+        case 'interrupted':
+            // Handle interrupt confirmation
+            const interruptContext = data.context || 'analysis';
+            showLoading(false, '', null, interruptContext);
+            showError(`${interruptContext === 'generation' ? 'Generation' : 'Analysis'} interrupted by user`);
+            
+            // Re-enable buttons
+            if (interruptContext === 'generation') {
+                elements.generateBtn.disabled = false;
+            } else {
+                elements.analyzeBtn.disabled = false;
+            }
+            break;
+    }
+};
+
+// Interrupt function
+const interruptComputation = (context) => {
+    if (!state.currentRequestId) {
+        console.error('No active request to interrupt');
+        return;
+    }
+    
+    console.log(`Interrupting ${context} for request:`, state.currentRequestId);
+    
+    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+        state.ws.send(JSON.stringify({
+            type: 'interrupt',
+            request_id: state.currentRequestId,
+            context: context
+        }));
+        
+        // Update UI immediately
+        showLoading(true, 'Interrupting...', null, context, false);
     }
 };
 
@@ -1509,6 +1551,10 @@ const initializeEventListeners = () => {
     
     // Reset button
     elements.resetBtn.addEventListener('click', resetModel);
+    
+    // Interrupt buttons
+    elements.interruptGenerationBtn.addEventListener('click', () => interruptComputation('generation'));
+    elements.interruptAnalysisBtn.addEventListener('click', () => interruptComputation('analysis'));
     
     // New Analysis button
     if (elements.newAnalysisBtn) {

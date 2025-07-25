@@ -153,12 +153,17 @@
                 
                 <!-- Generation Loading Status -->
                 <div id="generationLoading" class="hidden mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                    <div class="flex items-center gap-2">
-                        <svg class="animate-spin h-4 w-4 text-blue-600 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
-                        <div id="generationLoadingMessage" class="text-sm text-blue-700">Generating...</div>
+                    <div class="flex items-center justify-between gap-2">
+                        <div class="flex items-center gap-2">
+                            <svg class="animate-spin h-4 w-4 text-blue-600 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <div id="generationLoadingMessage" class="text-sm text-blue-700">Generating...</div>
+                        </div>
+                        <button id="interruptGenerationBtn" class="hidden px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700 transition-colors">
+                            Interrupt
+                        </button>
                     </div>
                 </div>
 
@@ -271,20 +276,25 @@
                 
                 <!-- Analysis Loading Status -->
                 <div id="analysisLoading" class="hidden mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                    <div class="flex items-center gap-2">
-                        <svg class="animate-spin h-4 w-4 text-blue-600 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
-                        <div class="flex-1 min-w-0">
-                            <div id="analysisLoadingMessage" class="text-sm text-blue-700">Processing...</div>
-                            <div id="analysisLoadingProgress" class="mt-1 hidden">
-                                <div class="w-full bg-blue-200 rounded-full h-1.5">
-                                    <div id="analysisProgressBar" class="bg-blue-600 h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                    <div class="flex items-center justify-between gap-2">
+                        <div class="flex items-center gap-2 flex-1 min-w-0">
+                            <svg class="animate-spin h-4 w-4 text-blue-600 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <div class="flex-1 min-w-0">
+                                <div id="analysisLoadingMessage" class="text-sm text-blue-700">Processing...</div>
+                                <div id="analysisLoadingProgress" class="mt-1 hidden">
+                                    <div class="w-full bg-blue-200 rounded-full h-1.5">
+                                        <div id="analysisProgressBar" class="bg-blue-600 h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                                    </div>
+                                    <div id="analysisProgressText" class="text-xs text-blue-600 mt-0.5"></div>
                                 </div>
-                                <div id="analysisProgressText" class="text-xs text-blue-600 mt-0.5"></div>
                             </div>
                         </div>
+                        <button id="interruptAnalysisBtn" class="hidden px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700 transition-colors">
+                            Interrupt
+                        </button>
                     </div>
                 </div>
             </div>
