@@ -1365,6 +1365,9 @@ const render = (immediate = false) => {
         }
     });
     
+    // Apply column visibility settings
+    updateColumnVisibility();
+    
     // Update column explanations after rendering
     updateColumnExplanations();
     
