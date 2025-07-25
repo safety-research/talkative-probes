@@ -1,7 +1,8 @@
-// Import visualization core
-import { VisualizationCore } from './visualizer-core.js';
-
-console.log('VisualizationCore loaded:', VisualizationCore);
+// VisualizationCore will be available as a global from visualizer-core.js
+// Wait for it to be loaded
+if (typeof VisualizationCore === 'undefined') {
+    console.error('VisualizationCore not loaded. Make sure visualizer-core.js is loaded before app.js');
+}
 
 // Configuration
 // Handle Cursor port forwarding - it uses special URLs

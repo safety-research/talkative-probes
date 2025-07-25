@@ -284,6 +284,3 @@ const VisualizationCore = (function() {
 if (typeof window !== 'undefined') {
     window.VisualizationCore = VisualizationCore;
 }
-
-// Export for ES6 modules
-export { VisualizationCore };
