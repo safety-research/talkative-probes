@@ -665,9 +665,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (binId) {
             const content = await fetchFromBin(binId);
             if (content) {
-                elements.textInput.value = content;
+                // Convert to string if it's an object (from Supabase)
+                const contentStr = typeof content === 'string' ? content : JSON.stringify(content);
+                elements.textInput.value = contentStr;
                 elements.uploadBtn.disabled = elements.textInput.value.trim() === '';
-                processData(content);
+                processData(contentStr);
             }
         } else {
             // Initialize empty state
