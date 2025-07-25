@@ -83,7 +83,7 @@ const StorageAdapters = {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    description: `Consistency Lens Analysis - ${new Date().toISOString()}`,
+                    description: `Natural Language Autoencoder Analysis - ${new Date().toISOString()}`,
                     public: true,
                     files: {
                         'analysis.json': {
@@ -183,7 +183,7 @@ const StorageAdapters = {
                 headers: {
                     'Content-Type': 'application/json',
                     'X-Access-Key': apiKey,
-                    'X-Bin-Name': 'LogViewer-Data-' + new Date().toISOString(),
+                    'X-Bin-Name': 'NaturalLanguageAutoencoder-' + new Date().toISOString(),
                     'X-Collection-Id': collectionId,
                     'X-Bin-Private': 'false'
                 },
@@ -213,7 +213,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentTranscriptIndex = 0;
     let isTransposed = false;
     let salienceColoringEnabled = false;
-    let currentService = 'pantry';
+    let currentService = 'github';
     let columnVisibility = VisualizationCore.getDefaultVisibility();
 
     // DOM elements

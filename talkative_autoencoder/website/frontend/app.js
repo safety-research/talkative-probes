@@ -137,7 +137,7 @@ const StorageAdapters = {
                     'Content-Type': 'application/json'
                 },
                 body: JSON.stringify({
-                    description: `Consistency Lens Analysis - ${new Date().toISOString()}`,
+                    description: `Natural Language Autoencoder Analysis - ${new Date().toISOString()}`,
                     public: true,
                     files: {
                         'analysis.json': {
@@ -237,7 +237,7 @@ const StorageAdapters = {
                 headers: {
                     'Content-Type': 'application/json',
                     'X-Access-Key': apiKey,
-                    'X-Bin-Name': 'ConsistencyLens-' + new Date().toISOString(),
+                    'X-Bin-Name': 'NaturalLanguageAutoencoder-' + new Date().toISOString(),
                     'X-Collection-Id': collectionId,
                     'X-Bin-Private': 'false'
                 },
