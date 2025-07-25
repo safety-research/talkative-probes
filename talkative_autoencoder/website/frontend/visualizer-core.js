@@ -439,16 +439,21 @@ const VisualizationCore = (function() {
                 }
                 
                 // Special formatting
-                if (['explanation', 'tuned_lens_top', 'logit_lens_top'].includes(colName)) {
+                if (['explanation', 'explanation_structured', 'tuned_lens_top', 'logit_lens_top'].includes(colName)) {
+                    // Explanation columns use sans-serif font
                     td.className = "px-2 py-2 align-top font-sans text-sm text-[#6D4C41]";
-                    td.style.whiteSpace = 'nowrap';
-                }
-                if (colName === 'token' || colName === 'target') {
-                    // Just display token as normal text
+                    if (['tuned_lens_top', 'logit_lens_top'].includes(colName)) {
+                        td.style.whiteSpace = 'nowrap';
+                    }
+                } else if (colName === 'token' || colName === 'target') {
+                    // Token column with special color
                     td.className = "px-2 py-2 align-top font-mono text-sm font-semibold text-[#BF360C]";
-                }
-                if (colName === 'position') {
+                } else if (colName === 'position') {
+                    // Position column with lighter color
                     td.className = "px-2 py-2 align-top font-mono text-sm text-slate-400";
+                } else {
+                    // All other columns use monospace font (already set as default)
+                    // This includes: mse, relative_rmse, kl_divergence, etc.
                 }
                 
                 // KL divergence coloring
