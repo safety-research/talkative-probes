@@ -502,10 +502,12 @@ const VisualizationCore = (function() {
     };
 })();
 
-// Export for ES6 module usage
-export { VisualizationCore };
-
-// Also make it available globally for standalone usage (when not loaded as module)
-if (typeof window !== 'undefined' && !window.VisualizationCore) {
+// Make it available globally for standalone usage
+if (typeof window !== 'undefined') {
     window.VisualizationCore = VisualizationCore;
+}
+
+// Export for ES6 module usage (only if modules are supported)
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = VisualizationCore;
 }

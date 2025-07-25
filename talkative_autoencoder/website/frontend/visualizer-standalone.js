@@ -321,8 +321,8 @@ document.addEventListener('DOMContentLoaded', () => {
     elements.apiKeyInput.addEventListener('change', saveSettings);
     elements.collectionIdInput.addEventListener('change', saveSettings);
 
-    const lastService = localStorage.getItem('logViewerService') || 'supabase';
-    updateServiceUI(lastService);
+    // Always default to Supabase
+    updateServiceUI('supabase');
 
     // Upload/fetch functions
     const uploadToBin = async (content) => {

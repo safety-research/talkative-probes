@@ -1741,9 +1741,8 @@ const loadFromURL = async () => {
 
 // Initialize application
 const initialize = () => {
-    // Load saved settings
-    const lastService = localStorage.getItem('consistencyLensService') || 'supabase';
-    updateServiceUI(lastService);
+    // Always default to Supabase
+    updateServiceUI('supabase');
     
     // Initialize event listeners
     initializeEventListeners();
