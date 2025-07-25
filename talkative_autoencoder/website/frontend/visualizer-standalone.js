@@ -568,8 +568,29 @@ document.addEventListener('DOMContentLoaded', () => {
             const url = new URL(window.location);
             url.search = '';
             url.searchParams.set('bin', binId);
-            window.history.pushState({}, '', url);
-            alert('Link created! The URL has been updated. You can now copy it from your address bar.');
+            
+            // Check if we're in an iframe
+            const inIframe = window.self !== window.top;
+            
+            if (inIframe) {
+                // We're in an iframe, so create a full URL to share
+                const shareUrl = `https://kitft.com/data-viewer/?bin=${encodeURIComponent(binId)}`;
+                
+                // Create a more helpful message with the actual link
+                const message = `Link created!\n\nShareable URL:\n${shareUrl}\n\nClick OK to copy to clipboard.`;
+                
+                if (confirm(message)) {
+                    navigator.clipboard.writeText(shareUrl).then(() => {
+                        alert('Link copied to clipboard!');
+                    }).catch(() => {
+                        prompt('Copy this link:', shareUrl);
+                    });
+                }
+            } else {
+                // Not in iframe, update URL normally
+                window.history.pushState({}, '', url);
+                alert('Link created! The URL has been updated. You can now copy it from your address bar.');
+            }
         }
     });
 
@@ -627,8 +648,29 @@ document.addEventListener('DOMContentLoaded', () => {
                     const url = new URL(window.location);
                     url.search = '';
                     url.searchParams.set('bin', binId);
-                    window.history.pushState({}, '', url);
-                    alert('File uploaded and link created! The URL has been updated.');
+                    
+                    // Check if we're in an iframe
+                    const inIframe = window.self !== window.top;
+                    
+                    if (inIframe) {
+                        // We're in an iframe, so create a full URL to share
+                        const shareUrl = `https://kitft.com/data-viewer/?bin=${encodeURIComponent(binId)}`;
+                        
+                        // Create a more helpful message with the actual link
+                        const message = `File uploaded and link created!\n\nShareable URL:\n${shareUrl}\n\nClick OK to copy to clipboard.`;
+                        
+                        if (confirm(message)) {
+                            navigator.clipboard.writeText(shareUrl).then(() => {
+                                alert('Link copied to clipboard!');
+                            }).catch(() => {
+                                prompt('Copy this link:', shareUrl);
+                            });
+                        }
+                    } else {
+                        // Not in iframe, update URL normally
+                        window.history.pushState({}, '', url);
+                        alert('File uploaded and link created! The URL has been updated.');
+                    }
                 }
             };
             reader.readAsText(file);
