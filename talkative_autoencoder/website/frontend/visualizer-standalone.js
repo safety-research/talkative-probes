@@ -321,11 +321,7 @@ document.addEventListener('DOMContentLoaded', () => {
     elements.apiKeyInput.addEventListener('change', saveSettings);
     elements.collectionIdInput.addEventListener('change', saveSettings);
 
-    // Only default to Supabase if not loading from URL
-    const urlParams = new URLSearchParams(window.location.search);
-    if (!urlParams.get('bin')) {
-        updateServiceUI('supabase');
-    }
+    // Don't default to any service yet - let the URL loading or user choice determine it
 
     // Upload/fetch functions
     const uploadToBin = async (content) => {
@@ -672,7 +668,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 processData(contentStr);
             }
         } else {
-            // Initialize empty state
+            // Initialize empty state and default to Supabase only when no bin is provided
+            updateServiceUI('supabase');
             render();
         }
     })();
