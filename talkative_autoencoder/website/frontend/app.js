@@ -44,7 +44,7 @@ const state = {
     salienceColoringEnabled: false,
     allTranscripts: [],
     currentTranscriptIndex: 0,
-    currentService: 'github',
+    currentService: 'supabase',
     columnVisibility: VisualizationCore.getDefaultVisibility(),
     activeTab: 'analyze',
     loadingTimeout: null,
@@ -127,50 +127,48 @@ const DataAdapters = {
 
 // Storage adapters
 const StorageAdapters = {
-    GitHub: {
-        upload: async (content, apiKey) => {
-            const res = await fetch('https://api.github.com/gists', {
+    Supabase: {
+        url: 'https://your-project.supabase.co', // Will be updated with actual URL
+        anonKey: 'your-anon-key', // Will be updated with actual key
+        
+        upload: async (content) => {
+            const res = await fetch(`${StorageAdapters.Supabase.url}/rest/v1/analyses`, {
                 method: 'POST',
                 headers: {
-                    'Authorization': `token ${apiKey}`,
-                    'Accept': 'application/vnd.github.v3+json',
-                    'Content-Type': 'application/json'
+                    'apikey': StorageAdapters.Supabase.anonKey,
+                    'Authorization': `Bearer ${StorageAdapters.Supabase.anonKey}`,
+                    'Content-Type': 'application/json',
+                    'Prefer': 'return=representation'
                 },
                 body: JSON.stringify({
-                    description: `Natural Language Autoencoder Analysis - ${new Date().toISOString()}`,
-                    public: true,
-                    files: {
-                        'analysis.json': {
-                            content: JSON.stringify({ data: content })
-                        }
-                    }
+                    data: content,
+                    created_at: new Date().toISOString()
                 })
             });
             
             if (!res.ok) {
-                const error = await res.json();
-                throw new Error(error.message || 'Failed to create gist');
+                const error = await res.text();
+                throw new Error(error || 'Failed to upload to Supabase');
             }
             
-            const gist = await res.json();
-            return gist.id;
+            const result = await res.json();
+            return Array.isArray(result) ? result[0].id : result.id;
         },
         
-        fetch: async (gistId) => {
-            const res = await fetch(`https://api.github.com/gists/${gistId}`, {
+        fetch: async (id) => {
+            const res = await fetch(`${StorageAdapters.Supabase.url}/rest/v1/analyses?id=eq.${id}&select=data`, {
                 headers: {
-                    'Accept': 'application/vnd.github.v3+json'
+                    'apikey': StorageAdapters.Supabase.anonKey,
+                    'Authorization': `Bearer ${StorageAdapters.Supabase.anonKey}`
                 }
             });
             
-            if (!res.ok) throw new Error('Failed to fetch gist');
+            if (!res.ok) throw new Error('Failed to fetch from Supabase');
             
-            const gist = await res.json();
-            const fileContent = gist.files['analysis.json']?.content;
-            if (!fileContent) throw new Error('No analysis.json file found in gist');
+            const result = await res.json();
+            if (!result || result.length === 0) throw new Error('Analysis not found');
             
-            const parsed = JSON.parse(fileContent);
-            return parsed.data;
+            return result[0].data;
         }
     },
     
@@ -333,7 +331,7 @@ const elements = {
     numSamples: document.getElementById('numSamples'),
     
     // Sharing
-    githubBtn: document.getElementById('github-btn'),
+    supabaseBtn: document.getElementById('supabase-btn'),
     pantryBtn: document.getElementById('pantry-btn'),
     jsonbinBtn: document.getElementById('jsonbin-btn'),
     apiKeyInput: document.getElementById('api-key-input'),
@@ -508,22 +506,21 @@ const switchTab = (tabName) => {
 const updateServiceUI = (service) => {
     state.currentService = service;
     
-    elements.githubBtn.classList.toggle('active-service', service === 'github');
+    elements.supabaseBtn.classList.toggle('active-service', service === 'supabase');
     elements.pantryBtn.classList.toggle('active-service', service === 'pantry');
     elements.jsonbinBtn.classList.toggle('active-service', service === 'jsonbin');
 
     const apiKeyLabel = document.querySelector('label[for="api-key-input"]');
     const collectionIdLabel = document.querySelector('label[for="collection-id-input"]');
     const collectionIdDiv = elements.collectionIdInput.closest('div');
+    const apiKeyDiv = elements.apiKeyInput.closest('div');
 
-    if (service === 'github') {
-        apiKeyLabel.textContent = 'GitHub Personal Access Token:';
-        elements.apiKeyInput.placeholder = 'Paste your GitHub token here';
-        elements.apiKeyInput.value = localStorage.getItem('consistencyLensGithubToken') || '';
-        
-        // Hide collection ID field for GitHub
+    if (service === 'supabase') {
+        // Hide both fields for Supabase (uses centralized credentials)
+        apiKeyDiv.style.display = 'none';
         collectionIdDiv.style.display = 'none';
     } else if (service === 'pantry') {
+        apiKeyDiv.style.display = 'block';
         apiKeyLabel.textContent = 'Pantry ID:';
         elements.apiKeyInput.placeholder = 'Paste your Pantry ID here';
         elements.apiKeyInput.value = localStorage.getItem('consistencyLensPantryId') || '88947592-e047-4e50-bfc7-d55c93fb6f35';
@@ -545,9 +542,7 @@ const updateServiceUI = (service) => {
 };
 
 const saveSettings = () => {
-    if (state.currentService === 'github') {
-        localStorage.setItem('consistencyLensGithubToken', elements.apiKeyInput.value);
-    } else if (state.currentService === 'pantry') {
+    if (state.currentService === 'pantry') {
         localStorage.setItem('consistencyLensPantryId', elements.apiKeyInput.value);
         localStorage.setItem('consistencyLensPantryBasket', elements.collectionIdInput.value);
     } else {
@@ -1355,11 +1350,9 @@ const uploadData = async () => {
     const apiKey = elements.apiKeyInput.value;
     const collectionId = elements.collectionIdInput.value;
     
-    if (!apiKey || (state.currentService !== 'github' && !collectionId)) {
+    if (state.currentService !== 'supabase' && (!apiKey || !collectionId)) {
         let errorMsg = 'Please provide ';
-        if (state.currentService === 'github') {
-            errorMsg += 'a GitHub Personal Access Token';
-        } else if (state.currentService === 'pantry') {
+        if (state.currentService === 'pantry') {
             errorMsg += 'both a Pantry ID and a Basket Name';
         } else {
             errorMsg += 'both a JSONBin.io API Key and a Collection ID';
@@ -1383,8 +1376,8 @@ const uploadData = async () => {
             : state.allTranscripts);
             
         let binId;
-        if (state.currentService === 'github') {
-            binId = await StorageAdapters.GitHub.upload(dataToUpload, apiKey);
+        if (state.currentService === 'supabase') {
+            binId = await StorageAdapters.Supabase.upload(dataToUpload);
         } else if (state.currentService === 'pantry') {
             binId = await StorageAdapters.Pantry.upload(dataToUpload, apiKey, collectionId);
         } else {
@@ -1392,7 +1385,8 @@ const uploadData = async () => {
         }
         
         if (binId) {
-            const shareUrl = `${window.location.origin}/data-visualizer/?bin=${binId}`;
+            // Create URL for the standalone data viewer
+            const shareUrl = `${window.location.origin}/data-viewer/?bin=${binId}`;
             
             // Copy to clipboard
             navigator.clipboard.writeText(shareUrl).then(() => {
@@ -1617,7 +1611,7 @@ const initializeEventListeners = () => {
     });
     
     // Service management
-    elements.githubBtn.addEventListener('click', () => updateServiceUI('github'));
+    elements.supabaseBtn.addEventListener('click', () => updateServiceUI('supabase'));
     elements.pantryBtn.addEventListener('click', () => updateServiceUI('pantry'));
     elements.jsonbinBtn.addEventListener('click', () => updateServiceUI('jsonbin'));
     elements.apiKeyInput.addEventListener('change', saveSettings);
@@ -1715,11 +1709,11 @@ const loadFromURL = async () => {
                 updateServiceUI('pantry');
                 const apiKey = elements.apiKeyInput.value;
                 content = await StorageAdapters.Pantry.fetch(binId, apiKey);
-            } else if (binId.length === 32 && /^[a-f0-9]+$/.test(binId)) {
-                // GitHub Gist ID is 32 hex chars
-                service = 'github';
-                updateServiceUI('github');
-                content = await StorageAdapters.GitHub.fetch(binId);
+            } else if (binId.match(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/)) {
+                // UUID format for Supabase
+                service = 'supabase';
+                updateServiceUI('supabase');
+                content = await StorageAdapters.Supabase.fetch(binId);
             } else {
                 // JSONBin format
                 service = 'jsonbin';
@@ -1748,7 +1742,7 @@ const loadFromURL = async () => {
 // Initialize application
 const initialize = () => {
     // Load saved settings
-    const lastService = localStorage.getItem('consistencyLensService') || 'github';
+    const lastService = localStorage.getItem('consistencyLensService') || 'supabase';
     updateServiceUI(lastService);
     
     // Initialize event listeners
