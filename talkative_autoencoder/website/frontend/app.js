@@ -129,7 +129,7 @@ const DataAdapters = {
 const StorageAdapters = {
     Supabase: {
         url: 'https://rnncsfomwqvrdorznqrt.supabase.co',
-        anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJubmNzZm9td3F2cmRvcnpucXJ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTM0NDIzNDgsImV4cCI6MjA2OTAxODM0OH0.fiEbMVxebWE2vpUMh4EJ24xTd6YHIrSqqG2_RpcohtY'
+        anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJubmNzZm9td3F2cmRvcnpucXJ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTM0NDIzNDgsImV4cCI6MjA2OTAxODM0OH0.fiEbMVxebWE2vpUMh4EJ24xTd6YHIrSqqG2_RpcohtY',
         
         upload: async (content) => {
             const res = await fetch(`${StorageAdapters.Supabase.url}/rest/v1/analyses`, {
