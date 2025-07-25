@@ -453,6 +453,14 @@ document.addEventListener('DOMContentLoaded', () => {
         elements.displayControls.style.display = 'flex';
         elements.controlsSeparator.classList.remove('hidden');
         
+        // Update columnVisibility to include all columns from data
+        const dataColumns = [...new Set(currentItem.data.flatMap(row => Object.keys(row)))];
+        dataColumns.forEach(col => {
+            if (!(col in columnVisibility)) {
+                columnVisibility[col] = false; // New columns default to hidden
+            }
+        });
+        
         // Render components
         VisualizationCore.renderMetadata({
             metadata: currentItem.metadata,

@@ -92,17 +92,17 @@ const VisualizationCore = (function() {
     
     // Column visibility management
     const getDefaultVisibility = () => ({
-        'position': true,
+        'position': false,
         'predicted': false,
-        'target': true,
+        'target': false,
         'token': true,
         'rank': false,
         'loss': false,
-        'mse': true,
+        'mse': false,
         'ce': false,
         'kl': false,
         'kl_divergence': false,
-        'relative_rmse': false,
+        'relative_rmse': true,
         'max_predicted_prob': false,
         'predicted_prob': false,
         'explanation': true,
@@ -181,7 +181,22 @@ const VisualizationCore = (function() {
     };
     
     const createColumnToggleUI = ({ container, columnVisibility, onChange }) => {
-        const columns = Object.keys(columnVisibility);
+        // Get all columns that actually have visibility settings
+        const columns = Object.keys(columnVisibility).sort((a, b) => {
+            // Use same column order as in renderTable
+            const columnOrder = ['position', 'token', 'target', 'explanation', 'relative_rmse', 'mse', 'kl_divergence', 
+                               'predicted', 'rank', 'loss', 'ce', 'kl', 'max_predicted_prob', 'predicted_prob',
+                               'decoder_completions', 'pred_token', 'salience_plot', 'token_salience', 
+                               'explanation_concatenated', 'explanation_structured', 'tuned_lens_top', 
+                               'logit_lens_top', 'layer'];
+            const indexA = columnOrder.indexOf(a);
+            const indexB = columnOrder.indexOf(b);
+            if (indexA === -1 && indexB === -1) return 0;
+            if (indexA === -1) return 1;
+            if (indexB === -1) return -1;
+            return indexA - indexB;
+        });
+        
         const toggleHTML = `
             <div class="relative">
                 <button id="column-toggle-btn" class="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded">
@@ -277,8 +292,25 @@ const VisualizationCore = (function() {
         
         if (!data || data.length === 0) return;
         
-        // Get all unique keys from data  
-        const columnNames = [...new Set(data.flatMap(row => Object.keys(row)))];
+        // Get all unique keys from data and order them properly
+        const allColumns = [...new Set(data.flatMap(row => Object.keys(row)))];
+        
+        // Define preferred column order
+        const columnOrder = ['position', 'token', 'target', 'explanation', 'relative_rmse', 'mse', 'kl_divergence', 
+                           'predicted', 'rank', 'loss', 'ce', 'kl', 'max_predicted_prob', 'predicted_prob',
+                           'decoder_completions', 'pred_token', 'salience_plot', 'token_salience', 
+                           'explanation_concatenated', 'explanation_structured', 'tuned_lens_top', 
+                           'logit_lens_top', 'layer'];
+        
+        // Sort columns according to preferred order, with any unknown columns at the end
+        const columnNames = allColumns.sort((a, b) => {
+            const indexA = columnOrder.indexOf(a);
+            const indexB = columnOrder.indexOf(b);
+            if (indexA === -1 && indexB === -1) return 0;
+            if (indexA === -1) return 1;
+            if (indexB === -1) return -1;
+            return indexA - indexB;
+        });
         
         // Create header
         const headerRow = document.createElement('tr');
