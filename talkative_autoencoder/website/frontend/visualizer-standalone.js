@@ -205,7 +205,9 @@ const StorageAdapters = {
 };
 
 // Main application
+console.log('visualizer-standalone.js loaded');
 document.addEventListener('DOMContentLoaded', () => {
+    console.log('DOMContentLoaded event fired');
     // State
     let allTranscripts = [];
     let currentTranscriptIndex = 0;
@@ -656,8 +658,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Load from URL
     (async () => {
-        const urlParams = new URLSearchParams(window.location.search);
-        const binId = urlParams.get('bin');
+        // Check both the current window and parent window for URL parameters
+        let urlParams = new URLSearchParams(window.location.search);
+        let binId = urlParams.get('bin');
+        
+        // If no bin parameter in iframe URL, check parent window
+        if (!binId && window.parent !== window) {
+            try {
+                urlParams = new URLSearchParams(window.parent.location.search);
+                binId = urlParams.get('bin');
+                console.log('Checking parent window for bin parameter:', binId);
+            } catch (e) {
+                // Cross-origin restriction, can't access parent
+                console.log('Cannot access parent window URL (cross-origin)');
+            }
+        }
 
         if (binId) {
             console.log('URL has bin parameter:', binId);
