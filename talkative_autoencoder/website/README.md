@@ -96,6 +96,7 @@ When you need more GPU power:
    cd /workspace/kitf/talkative-probes/talkative_autoencoder
    source scripts/ensure_env.sh
    uv run python -m website.backend.app.main
+   maybe just make run
    ```
 
 2. **On your local machine**:

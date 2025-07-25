@@ -73,6 +73,53 @@ const DataAdapters = {
 
 // Storage adapters
 const StorageAdapters = {
+    GitHub: {
+        upload: async (content, apiKey) => {
+            const res = await fetch('https://api.github.com/gists', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `token ${apiKey}`,
+                    'Accept': 'application/vnd.github.v3+json',
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    description: `Consistency Lens Analysis - ${new Date().toISOString()}`,
+                    public: true,
+                    files: {
+                        'analysis.json': {
+                            content: JSON.stringify({ data: content })
+                        }
+                    }
+                })
+            });
+            
+            if (!res.ok) {
+                const error = await res.json();
+                throw new Error(error.message || 'Failed to create gist');
+            }
+            
+            const gist = await res.json();
+            return gist.id;
+        },
+        
+        fetch: async (gistId) => {
+            const res = await fetch(`https://api.github.com/gists/${gistId}`, {
+                headers: {
+                    'Accept': 'application/vnd.github.v3+json'
+                }
+            });
+            
+            if (!res.ok) throw new Error('Failed to fetch gist');
+            
+            const gist = await res.json();
+            const fileContent = gist.files['analysis.json']?.content;
+            if (!fileContent) throw new Error('No analysis.json file found in gist');
+            
+            const parsed = JSON.parse(fileContent);
+            return parsed.data;
+        }
+    },
+    
     Pantry: {
         upload: async (content, apiKey, collectionId) => {
             const uniqueId = 'log-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
@@ -178,6 +225,7 @@ document.addEventListener('DOMContentLoaded', () => {
         fileUpload: document.getElementById('file-upload'),
         
         // Service settings
+        githubBtn: document.getElementById('github-btn'),
         pantryBtn: document.getElementById('pantry-btn'),
         jsonbinBtn: document.getElementById('jsonbin-btn'),
         apiKeyInput: document.getElementById('api-key-input'),
@@ -222,13 +270,22 @@ document.addEventListener('DOMContentLoaded', () => {
     const updateServiceUI = (service) => {
         currentService = service;
         
+        elements.githubBtn.classList.toggle('active-service', service === 'github');
         elements.pantryBtn.classList.toggle('active-service', service === 'pantry');
         elements.jsonbinBtn.classList.toggle('active-service', service === 'jsonbin');
 
         const apiKeyLabel = document.querySelector('label[for="api-key-input"]');
         const collectionIdLabel = document.querySelector('label[for="collection-id-input"]');
+        const collectionIdDiv = elements.collectionIdInput.closest('div');
 
-        if (service === 'pantry') {
+        if (service === 'github') {
+            apiKeyLabel.textContent = 'GitHub Personal Access Token:';
+            elements.apiKeyInput.placeholder = 'Paste your GitHub token here';
+            elements.apiKeyInput.value = localStorage.getItem('logViewerGithubToken') || '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';
+            
+            // Hide collection ID field for GitHub
+            collectionIdDiv.style.display = 'none';
+        } else if (service === 'pantry') {
             apiKeyLabel.textContent = 'Pantry ID:';
             elements.apiKeyInput.placeholder = 'Paste your Pantry ID here';
             elements.apiKeyInput.value = localStorage.getItem('logViewerPantryId') || '88947592-e047-4e50-bfc7-d55c93fb6f35';
@@ -236,6 +293,7 @@ document.addEventListener('DOMContentLoaded', () => {
             collectionIdLabel.textContent = 'Basket Name:';
             elements.collectionIdInput.placeholder = 'e.g., data-viewer-storage';
             elements.collectionIdInput.value = localStorage.getItem('logViewerPantryBasket') || 'data-viewer-storage';
+            collectionIdDiv.style.display = 'block';
         } else {
             apiKeyLabel.textContent = 'Your Public, Scoped API Key:';
             elements.apiKeyInput.placeholder = 'Paste your public API key here';
@@ -244,11 +302,14 @@ document.addEventListener('DOMContentLoaded', () => {
             collectionIdLabel.textContent = 'Your Public Collection ID:';
             elements.collectionIdInput.placeholder = 'Paste your public Collection ID here';
             elements.collectionIdInput.value = localStorage.getItem('logViewerJsonbinCollectionId') || '6867e9e58561e97a5031776b';
+            collectionIdDiv.style.display = 'block';
         }
     };
 
     const saveSettings = () => {
-        if (currentService === 'pantry') {
+        if (currentService === 'github') {
+            localStorage.setItem('logViewerGithubToken', elements.apiKeyInput.value);
+        } else if (currentService === 'pantry') {
             localStorage.setItem('logViewerPantryId', elements.apiKeyInput.value);
             localStorage.setItem('logViewerPantryBasket', elements.collectionIdInput.value);
         } else {
@@ -259,12 +320,13 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     // Setup service switcher
+    elements.githubBtn.addEventListener('click', () => updateServiceUI('github'));
     elements.pantryBtn.addEventListener('click', () => updateServiceUI('pantry'));
     elements.jsonbinBtn.addEventListener('click', () => updateServiceUI('jsonbin'));
     elements.apiKeyInput.addEventListener('change', saveSettings);
     elements.collectionIdInput.addEventListener('change', saveSettings);
 
-    const lastService = localStorage.getItem('logViewerService') || 'pantry';
+    const lastService = localStorage.getItem('logViewerService') || 'github';
     updateServiceUI(lastService);
 
     // Upload/fetch functions
@@ -272,10 +334,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const apiKey = elements.apiKeyInput.value;
         const collectionId = elements.collectionIdInput.value;
         
-        if (!apiKey || !collectionId) {
-            alert(currentService === 'pantry'
-                ? 'Please provide both a Pantry ID and a Basket Name in the Settings section.'
-                : 'Please provide both a JSONBin.io API Key and a Collection ID in the Settings section.');
+        if (!apiKey || (currentService !== 'github' && !collectionId)) {
+            let errorMsg = 'Please provide ';
+            if (currentService === 'github') {
+                errorMsg += 'a GitHub Personal Access Token';
+            } else if (currentService === 'pantry') {
+                errorMsg += 'both a Pantry ID and a Basket Name';
+            } else {
+                errorMsg += 'both a JSONBin.io API Key and a Collection ID';
+            }
+            alert(errorMsg + ' in the Settings section.');
             return null;
         }
         
@@ -283,8 +351,15 @@ document.addEventListener('DOMContentLoaded', () => {
         elements.uploadBtn.textContent = 'Uploading...';
         
         try {
-            const adapter = currentService === 'pantry' ? StorageAdapters.Pantry : StorageAdapters.JSONBin;
-            return await adapter.upload(content, apiKey, collectionId);
+            let binId;
+            if (currentService === 'github') {
+                binId = await StorageAdapters.GitHub.upload(content, apiKey);
+            } else if (currentService === 'pantry') {
+                binId = await StorageAdapters.Pantry.upload(content, apiKey, collectionId);
+            } else {
+                binId = await StorageAdapters.JSONBin.upload(content, apiKey, collectionId);
+            }
+            return binId;
         } catch (error) {
             console.error('Upload failed:', error);
             alert(`Upload failed: ${error.message}`);
@@ -296,14 +371,24 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const fetchFromBin = async (binId) => {
-        const isPantry = binId.includes('/');
-        updateServiceUI(isPantry ? 'pantry' : 'jsonbin');
-        
+        // Detect service type from binId format
+        let service, content;
         try {
-            if (isPantry) {
+            if (binId.includes('/')) {
+                // Pantry format: basket/id
+                service = 'pantry';
+                updateServiceUI('pantry');
                 const apiKey = elements.apiKeyInput.value;
                 return await StorageAdapters.Pantry.fetch(binId, apiKey);
+            } else if (binId.length === 32 && /^[a-f0-9]+$/.test(binId)) {
+                // GitHub Gist ID is 32 hex chars
+                service = 'github';
+                updateServiceUI('github');
+                return await StorageAdapters.GitHub.fetch(binId);
             } else {
+                // JSONBin format
+                service = 'jsonbin';
+                updateServiceUI('jsonbin');
                 return await StorageAdapters.JSONBin.fetch(binId);
             }
         } catch (error) {

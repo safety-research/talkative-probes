@@ -1,6 +1,8 @@
 from pydantic import BaseModel, Field, validator
 from typing import Optional, Dict, List, Any
 from datetime import datetime
+from .config import load_settings
+settings = load_settings()
 
 class OptimizeExplanationsConfig(BaseModel):
     """Configuration for explanation optimization"""
@@ -14,7 +16,7 @@ class OptimizeExplanationsConfig(BaseModel):
 class AnalyzeOptions(BaseModel):
     """Options for text analysis"""
     # Main batch size - will be auto-calculated based on just_do_k_rollouts if not provided
-    batch_size: Optional[int] = Field(default=None, ge=1, le=256)
+    batch_size: Optional[int] = Field(default=None, ge=1, le=settings.auto_batch_size_max)
     
     # Core analysis options
     seed: int = Field(default=42)
@@ -55,7 +57,7 @@ class AnalyzeOptions(BaseModel):
     
 class AnalyzeRequest(BaseModel):
     """Request model for analysis endpoint"""
-    text: str = Field(..., min_length=1, max_length=1000)
+    text: str = Field(..., min_length=1, max_length=settings.max_text_length)
     options: Optional[AnalyzeOptions] = Field(default_factory=AnalyzeOptions)
     
     @validator('text')
