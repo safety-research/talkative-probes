@@ -874,7 +874,7 @@ class LensAnalyzer:
         """
         # 1. Setup from text and position
         if input_ids is None:
-            inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+            inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=4096)
             input_ids = inputs.input_ids.to(self.device)
         else:
             input_ids = input_ids.to(self.device)
@@ -1336,7 +1336,7 @@ class LensAnalyzer:
             batch_size = self.default_batch_size
 
         # Tokenize
-        inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=1024)
+        inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=20000)
         input_ids = inputs.input_ids.clone()
         attention_mask = inputs.attention_mask.clone()
         attention_mask = torch.ne(input_ids, self.tokenizer.pad_token_id)
@@ -1768,7 +1768,7 @@ class LensAnalyzer:
         the model's predictions at `next_token_position`.
         """
         # Tokenize original text
-        inputs = self.tokenizer(original_text, return_tensors="pt", truncation=True, max_length=512)
+        inputs = self.tokenizer(original_text, return_tensors="pt", truncation=True, max_length=4096)
         input_ids = inputs.input_ids.to(self.device)
         seq_len = input_ids.shape[1]
 
@@ -2103,7 +2103,7 @@ class LensAnalyzer:
         plt.show()
 
     def get_hidden_states(self, text: str) -> torch.Tensor:
-        inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+        inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=4096)
         input_ids = inputs.input_ids.to(self.device)
         seq_len = input_ids.shape[1]
         with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=self.use_bf16):
@@ -2116,7 +2116,7 @@ class LensAnalyzer:
     ):
         """Runs a single verbose sample analysis using process_and_print_verbose_batch_samples."""
         # Tokenize
-        inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+        inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=409xia6)
         input_ids = inputs.input_ids.to(self.device)
         seq_len = input_ids.shape[1]
 
@@ -2410,7 +2410,7 @@ class LensAnalyzer:
             batch_size = self.default_batch_size
 
         # Tokenize
-        inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=512)
+        inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=4096)
         input_ids = inputs.input_ids.clone()
         attention_mask = inputs.attention_mask.clone()
         attention_mask = torch.ne(input_ids, self.tokenizer.pad_token_id)
