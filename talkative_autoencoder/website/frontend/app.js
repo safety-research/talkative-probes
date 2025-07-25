@@ -712,6 +712,11 @@ const updateGPUStats = async () => {
         elements.gpuUtilBar.style.width = `${stats.utilization}%`;
         elements.gpuUtilText.textContent = `${stats.utilization}%`;
         
+        // Show peak utilization if significantly different from current
+        if (stats.peak_utilization && stats.peak_utilization > stats.utilization + 10) {
+            elements.gpuUtilText.textContent = `${stats.utilization}% (peak: ${stats.peak_utilization}%)`;
+        }
+        
         // Update memory
         elements.gpuMemBar.style.width = `${stats.memory_percent}%`;
         elements.gpuMemText.textContent = `${stats.memory_used}GB / ${stats.memory_total}GB`;
