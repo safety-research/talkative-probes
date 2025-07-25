@@ -519,7 +519,7 @@ const VisualizationCore = (function() {
             
             explanationWords.forEach((word, wordIndex) => {
                 const wordDiv = document.createElement('div');
-                wordDiv.className = 'text-[#6D4C41] font-sans w-full text-left explanation-word';
+                wordDiv.className = 'text-[#6D4C41] font-mono w-full text-left explanation-word';
                 wordDiv.textContent = formatNewlines(word);
                 
                 // Apply salience coloring
