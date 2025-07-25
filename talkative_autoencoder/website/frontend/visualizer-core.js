@@ -444,18 +444,8 @@ const VisualizationCore = (function() {
                     td.style.whiteSpace = 'nowrap';
                 }
                 if (colName === 'token' || colName === 'target') {
-                    // Use token box with tooltip for token column
-                    const tokenValue = row.token || row.target || '';
-                    const tokenBox = createTokenBox(
-                        tokenValue,
-                        row.explanation,
-                        row.token_salience,
-                        salienceColoringEnabled,
-                        row
-                    );
-                    td.innerHTML = '';
-                    td.appendChild(tokenBox);
-                    td.className = "px-2 py-2 align-top";
+                    // Just display token as normal text
+                    td.className = "px-2 py-2 align-top font-mono text-sm font-semibold text-[#BF360C]";
                 }
                 if (colName === 'position') {
                     td.className = "px-2 py-2 align-top font-mono text-sm text-slate-400";
