@@ -2116,7 +2116,7 @@ class LensAnalyzer:
     ):
         """Runs a single verbose sample analysis using process_and_print_verbose_batch_samples."""
         # Tokenize
-        inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=409xia6)
+        inputs = self.tokenizer(text, return_tensors="pt", truncation=True, max_length=4096)
         input_ids = inputs.input_ids.to(self.device)
         seq_len = input_ids.shape[1]
 
