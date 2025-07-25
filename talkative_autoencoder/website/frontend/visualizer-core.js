@@ -95,11 +95,14 @@ const VisualizationCore = (function() {
         'position': true,
         'predicted': false,
         'target': true,
+        'token': true,
         'rank': false,
         'loss': false,
         'mse': true,
         'ce': false,
         'kl': false,
+        'kl_divergence': false,
+        'relative_rmse': false,
         'max_predicted_prob': false,
         'predicted_prob': false,
         'explanation': true,
@@ -107,7 +110,11 @@ const VisualizationCore = (function() {
         'pred_token': false,
         'salience_plot': false,
         'token_salience': false,
-        'explanation_concatenated': false
+        'explanation_concatenated': false,
+        'explanation_structured': false,
+        'tuned_lens_top': false,
+        'logit_lens_top': false,
+        'layer': false
     });
     
     // Create token box element with tooltip
@@ -353,8 +360,19 @@ const VisualizationCore = (function() {
                     td.className = "px-2 py-2 align-top font-sans text-sm text-[#6D4C41]";
                     td.style.whiteSpace = 'nowrap';
                 }
-                if (colName === 'token') {
-                    td.className = "px-2 py-2 align-top font-mono text-sm font-semibold text-[#BF360C]";
+                if (colName === 'token' || colName === 'target') {
+                    // Use token box with tooltip for token column
+                    const tokenValue = row.token || row.target || '';
+                    const tokenBox = createTokenBox(
+                        tokenValue,
+                        row.explanation,
+                        row.token_salience,
+                        salienceColoringEnabled,
+                        row
+                    );
+                    td.innerHTML = '';
+                    td.appendChild(tokenBox);
+                    td.className = "px-2 py-2 align-top";
                 }
                 if (colName === 'position') {
                     td.className = "px-2 py-2 align-top font-mono text-sm text-slate-400";
