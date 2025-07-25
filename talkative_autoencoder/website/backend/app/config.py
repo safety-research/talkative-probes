@@ -48,6 +48,7 @@ class Settings(BaseModel):
     no_orig: bool = Field(default=False)
     different_activations_model: Optional[str] = Field(default=None)
     initialise_on_cpu: bool = Field(default=False)
+    lazy_load_model: bool = Field(default=False)  # Whether to load model lazily on first request
 
 def load_settings():
     """Load settings with environment variable support"""
@@ -82,7 +83,8 @@ def load_settings():
         "STRICT_LOAD": "strict_load",
         "NO_ORIG": "no_orig",
         "DIFFERENT_ACTIVATIONS_MODEL": "different_activations_model",
-        "INITIALISE_ON_CPU": "initialise_on_cpu"
+        "INITIALISE_ON_CPU": "initialise_on_cpu",
+        "LAZY_LOAD_MODEL": "lazy_load_model"
     }
     
     # Load from environment
@@ -93,7 +95,7 @@ def load_settings():
             if field_name in ["batch_size", "port", "max_queue_size", "max_text_length", 
                               "cache_ttl", "request_timeout", "rate_limit_per_minute", "auto_batch_size_max"]:
                 settings_dict[field_name] = int(env_value)
-            elif field_name in ["use_bf16", "load_in_8bit", "do_not_load_weights", "make_xl", "strict_load", "no_orig", "initialise_on_cpu"]:
+            elif field_name in ["use_bf16", "load_in_8bit", "do_not_load_weights", "make_xl", "strict_load", "no_orig", "initialise_on_cpu", "lazy_load_model"]:
                 settings_dict[field_name] = env_value.lower() in ["true", "1", "yes"]
             elif field_name == "allowed_origins":
                 settings_dict[field_name] = env_value.split(",")

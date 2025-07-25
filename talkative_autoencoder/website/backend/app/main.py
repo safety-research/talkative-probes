@@ -22,6 +22,9 @@ import torch
 import logging
 import asyncio
 from typing import Optional
+import threading
+import time
+from datetime import datetime
 
 from .models import AnalyzeRequest, AnalyzeResponse, WebSocketMessage
 from .config import load_settings
@@ -39,8 +42,112 @@ logger = logging.getLogger(__name__)
 logger.info(f"Loaded .env from {dotenv_location}")
 logger.info(f"Loaded parent .env from {parent_dotenv_location}")
 
-# Global model manager
+# GPU Stats Monitor Class
+class GPUStatsMonitor:
+    def __init__(self, update_interval: float = 0.5):
+        self.update_interval = update_interval
+        self.stats = {
+            "available": torch.cuda.is_available(),
+            "utilization": 0,
+            "memory_used": 0,
+            "memory_total": 0,
+            "memory_percent": 0,
+            "peak_utilization": 0,
+            "last_update": None,
+            "is_computing": False
+        }
+        self.lock = threading.Lock()
+        self.running = False
+        self.thread = None
+        self._last_reset_time = time.time()
+        
+    def start(self):
+        """Start the monitoring thread"""
+        if self.running:
+            return
+        self.running = True
+        self.thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self.thread.start()
+        logger.info("GPU stats monitor started")
+        
+    def stop(self):
+        """Stop the monitoring thread"""
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=2)
+        logger.info("GPU stats monitor stopped")
+        
+    def _monitor_loop(self):
+        """Main monitoring loop running in separate thread"""
+        pynvml_available = False
+        try:
+            import pynvml
+            pynvml.nvmlInit()
+            pynvml_available = True
+            logger.info("pynvml initialized successfully for GPU monitoring")
+        except Exception as e:
+            logger.warning(f"pynvml not available for GPU monitoring: {e}")
+            
+        while self.running:
+            try:
+                stats = {
+                    "available": torch.cuda.is_available(),
+                    "last_update": datetime.utcnow().isoformat()
+                }
+                
+                if torch.cuda.is_available():
+                    # Always get memory stats from PyTorch
+                    memory_used = torch.cuda.memory_allocated() / 1024**3  # Convert to GB
+                    memory_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+                    stats["memory_used"] = round(memory_used, 2)
+                    stats["memory_total"] = round(memory_total, 2)
+                    stats["memory_percent"] = round((memory_used / memory_total) * 100, 1)
+                    
+                    # Try to get GPU utilization from pynvml
+                    if pynvml_available:
+                        try:
+                            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                            utilization = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                            stats["utilization"] = utilization.gpu
+                            
+                            # Track peak utilization
+                            with self.lock:
+                                if utilization.gpu > self.stats.get("peak_utilization", 0):
+                                    self.stats["peak_utilization"] = utilization.gpu
+                                    
+                        except Exception as e:
+                            logger.debug(f"Failed to get GPU utilization: {e}")
+                            stats["utilization"] = 0
+                    else:
+                        stats["utilization"] = 0
+                        
+                    # Detect if we're computing based on memory usage changes
+                    with self.lock:
+                        prev_memory = self.stats.get("memory_used", 0)
+                        stats["is_computing"] = abs(memory_used - prev_memory) > 0.1  # Changed by >100MB
+                
+                # Update shared stats
+                with self.lock:
+                    self.stats.update(stats)
+                    
+                    # Reset peak utilization every 30 seconds if not computing
+                    if time.time() - self._last_reset_time > 30 and not stats.get("is_computing", False):
+                        self.stats["peak_utilization"] = stats.get("utilization", 0)
+                        self._last_reset_time = time.time()
+                        
+            except Exception as e:
+                logger.error(f"GPU monitoring error: {e}")
+                
+            time.sleep(self.update_interval)
+            
+    def get_stats(self):
+        """Get current GPU stats (thread-safe)"""
+        with self.lock:
+            return self.stats.copy()
+
+# Global instances
 model_manager: Optional[ModelManager] = None
+gpu_monitor = GPUStatsMonitor()
 
 # Rate limiter
 limiter = Limiter(key_func=get_remote_address)
@@ -50,12 +157,22 @@ settings = load_settings()
 async def lifespan(app: FastAPI):
     # Startup
     global model_manager
+    
+    # Start GPU monitoring
+    gpu_monitor.start()
+    
     try:
         model_manager = ModelManager(
             checkpoint_path=settings.checkpoint_path
         )
-        # Note: We'll load the model lazily on first request to avoid startup delays
-        # await model_manager.load_model()
+        
+        # Load model on startup if lazy loading is disabled
+        if not settings.lazy_load_model:
+            logger.info("Loading model on startup (lazy_load_model=false)")
+            await model_manager.load_model()
+        else:
+            logger.info("Model will be loaded on first request (lazy_load_model=true)")
+        
         await model_manager.start_processing()
         logger.info("Application startup complete")
     except Exception as e:
@@ -66,6 +183,10 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down application")
+    
+    # Stop GPU monitoring
+    gpu_monitor.stop()
+    
     if model_manager and model_manager.processing_task:
         model_manager.processing_task.cancel()
         try:
@@ -457,40 +578,20 @@ async def reset_model():
 
 @app.get("/api/gpu_stats")
 async def get_gpu_stats():
-    """Get GPU utilization and memory stats"""
-    stats = {
-        "available": torch.cuda.is_available(),
-        "utilization": 0,
-        "memory_used": 0,
-        "memory_total": 0,
-        "memory_percent": 0
+    """Get GPU utilization and memory stats from the background monitor"""
+    # Get cached stats from the monitor
+    stats = gpu_monitor.get_stats()
+    
+    # Remove internal fields that frontend doesn't need
+    stats.pop("is_computing", None)
+    stats.pop("last_update", None)
+    
+    # Ensure all expected fields are present for backward compatibility
+    return {
+        "available": stats.get("available", False),
+        "utilization": stats.get("utilization", 0),
+        "memory_used": stats.get("memory_used", 0),
+        "memory_total": stats.get("memory_total", 0),
+        "memory_percent": stats.get("memory_percent", 0),
+        "peak_utilization": stats.get("peak_utilization", 0)
     }
-    
-    if torch.cuda.is_available():
-        try:
-            # Get memory stats
-            memory_used = torch.cuda.memory_allocated() / 1024**3  # Convert to GB
-            memory_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
-            stats["memory_used"] = round(memory_used, 2)
-            stats["memory_total"] = round(memory_total, 2)
-            stats["memory_percent"] = round((memory_used / memory_total) * 100, 1)
-            
-            # Try to get GPU utilization (requires nvidia-ml-py)
-            try:
-                import pynvml
-                pynvml.nvmlInit()
-                handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-                utilization = pynvml.nvmlDeviceGetUtilizationRates(handle)
-                stats["utilization"] = utilization.gpu
-            except Exception as e:
-                # If pynvml not available, estimate based on model activity
-                logger.debug(f"Could not get GPU utilization from pynvml: {e}")
-                stats["utilization"] = 50 if model_manager and model_manager.is_processing else 0
-                
-        except Exception as e:
-            logger.error(f"Error getting GPU stats: {e}")
-    
-    return stats
-
-# Import datetime for the status endpoint
-from datetime import datetime
