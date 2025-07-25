@@ -281,7 +281,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (service === 'github') {
             apiKeyLabel.textContent = 'GitHub Personal Access Token:';
             elements.apiKeyInput.placeholder = 'Paste your GitHub token here';
-            elements.apiKeyInput.value = localStorage.getItem('logViewerGithubToken') || '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';
+            elements.apiKeyInput.value = localStorage.getItem('logViewerGithubToken') || '';
             
             // Hide collection ID field for GitHub
             collectionIdDiv.style.display = 'none';

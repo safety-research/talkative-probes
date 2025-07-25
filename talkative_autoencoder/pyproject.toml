@@ -37,7 +37,7 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["lens"]
+packages = ["lens", "website", "website.backend", "website.backend.app"]
 
 [tool.ruff]
 target-version = "py311"

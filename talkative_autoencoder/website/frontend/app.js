@@ -519,7 +519,7 @@ const updateServiceUI = (service) => {
     if (service === 'github') {
         apiKeyLabel.textContent = 'GitHub Personal Access Token:';
         elements.apiKeyInput.placeholder = 'Paste your GitHub token here';
-        elements.apiKeyInput.value = localStorage.getItem('consistencyLensGithubToken') || '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';
+        elements.apiKeyInput.value = localStorage.getItem('consistencyLensGithubToken') || '';
         
         // Hide collection ID field for GitHub
         collectionIdDiv.style.display = 'none';

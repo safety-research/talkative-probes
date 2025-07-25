@@ -1310,6 +1310,7 @@ class LensAnalyzer:
         no_kl: bool = False,
         calculate_token_salience: bool = False,
         optimize_explanations_config: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[callable] = None,
     ) -> pd.DataFrame:
         """Analyze all tokens in the text and return results as DataFrame.
 
@@ -1378,7 +1379,17 @@ class LensAnalyzer:
 
         # Process batches
         results = []
-        for batch in tqdm.tqdm(batch_data, desc="Processing batches"):
+        total_batches = len(batch_data)
+        for batch_idx, batch in enumerate(tqdm.tqdm(batch_data, desc="Processing batches")):
+            # Report progress if callback is provided
+            if progress_callback is not None:
+                should_continue = progress_callback(batch_idx + 1, total_batches, f"Processing batch {batch_idx + 1}/{total_batches}")
+                # Check if the callback signals to stop (returns False)
+                if should_continue is False:
+                    print("Analysis cancelled by user.")
+                    # Return partial results collected so far
+                    return pd.DataFrame(results)
+            
             input_ids_batch, A_batch, token_positions_batch = batch
             current_batch_size = input_ids_batch.shape[1]
 
@@ -1438,6 +1449,18 @@ class LensAnalyzer:
 
                     inner_iterator = tqdm.tqdm(range(current_batch_size), desc="Optimizing explanations", leave=False)
                     for j in inner_iterator:
+                        # Report detailed progress for optimization
+                        if progress_callback is not None:
+                            should_continue = progress_callback(
+                                batch_idx + 1, 
+                                total_batches, 
+                                f"Batch {batch_idx + 1}/{total_batches}: Optimizing token {j + 1}/{current_batch_size}"
+                            )
+                            # Check if the callback signals to stop (returns False)
+                            if should_continue is False:
+                                print("Analysis cancelled by user during optimization.")
+                                # Return partial results collected so far
+                                return pd.DataFrame(results)
                         optimized_tokens, optimized_mse, optimized_saliences = self.optimize_explanation_for_mse(
                             None,
                             A_target=A_batch[j],
@@ -2202,6 +2225,7 @@ class LensAnalyzer:
         top_p: float = 1.0,
         skip_special_tokens_for_decode: bool = False,
         use_cache: bool = False,
+        cancellation_check=None,
     ) -> List[str]:
         """
         Generate continuations for text or chat messages.
@@ -2220,6 +2244,11 @@ class LensAnalyzer:
         Returns:
             List of complete texts (input + generation) that can be directly passed to analyze_all_tokens
         """
+        # Check for cancellation before starting
+        if cancellation_check and cancellation_check():
+            print("Generation cancelled by user before starting.")
+            return []
+        
         # Disable torch compile for this function
         with nullcontext():
             # Use the appropriate tokenizer
@@ -2303,6 +2332,10 @@ class LensAnalyzer:
             # Decode and prepare outputs
             outputs = []
             for i in range(num_completions):
+                # Check for cancellation between completions
+                if cancellation_check and cancellation_check():
+                    print(f"Generation cancelled by user after {i} completions.")
+                    break
                 if return_full_text == True:
                     if is_chat:
                         full_text = tokenizer.decode(generated[i], skip_special_tokens=skip_special_tokens_for_decode)
