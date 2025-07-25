@@ -455,5 +455,42 @@ async def reset_model():
     
     return {"status": "reset", "message": "Model cleared from memory"}
 
+@app.get("/api/gpu_stats")
+async def get_gpu_stats():
+    """Get GPU utilization and memory stats"""
+    stats = {
+        "available": torch.cuda.is_available(),
+        "utilization": 0,
+        "memory_used": 0,
+        "memory_total": 0,
+        "memory_percent": 0
+    }
+    
+    if torch.cuda.is_available():
+        try:
+            # Get memory stats
+            memory_used = torch.cuda.memory_allocated() / 1024**3  # Convert to GB
+            memory_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            stats["memory_used"] = round(memory_used, 2)
+            stats["memory_total"] = round(memory_total, 2)
+            stats["memory_percent"] = round((memory_used / memory_total) * 100, 1)
+            
+            # Try to get GPU utilization (requires nvidia-ml-py)
+            try:
+                import pynvml
+                pynvml.nvmlInit()
+                handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                utilization = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                stats["utilization"] = utilization.gpu
+            except Exception as e:
+                # If pynvml not available, estimate based on model activity
+                logger.debug(f"Could not get GPU utilization from pynvml: {e}")
+                stats["utilization"] = 50 if model_manager and model_manager.is_processing else 0
+                
+        except Exception as e:
+            logger.error(f"Error getting GPU stats: {e}")
+    
+    return stats
+
 # Import datetime for the status endpoint
 from datetime import datetime

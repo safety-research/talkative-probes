@@ -28,8 +28,42 @@
         <div class="p-4 sm:p-6 md:p-8">
             <!-- Header -->
             <div class="mb-6">
-                <h1 class="text-3xl font-bold text-[#5D4037] mb-2">Natural language autoencoder analysis</h1>
-                <p class="text-[#795548]">Understand what language models are thinking by converting their internal states into human-readable explanations</p>
+                <div class="flex justify-between items-start mb-2">
+                    <div class="flex-1">
+                        <h1 class="text-3xl font-bold text-[#5D4037] mb-2">Natural language autoencoder analysis</h1>
+                        <p class="text-[#795548]">Understand what language models are thinking by converting their internal states into human-readable explanations</p>
+                    </div>
+                    <!-- GPU Stats -->
+                    <div id="gpu-stats" class="ml-6 p-3 bg-gray-50 rounded-lg border border-gray-200 min-w-[200px] hidden">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-xs font-medium text-gray-600">GPU Status</span>
+                            <span id="gpu-busy-indicator" class="hidden flex items-center gap-1">
+                                <span class="inline-block w-2 h-2 bg-orange-500 rounded-full animate-pulse"></span>
+                                <span class="text-xs text-orange-600 font-medium">Busy</span>
+                            </span>
+                        </div>
+                        <div class="space-y-2">
+                            <div>
+                                <div class="flex justify-between text-xs mb-1">
+                                    <span class="text-gray-600">Utilization</span>
+                                    <span id="gpu-util-text" class="font-medium">0%</span>
+                                </div>
+                                <div class="w-full bg-gray-200 rounded-full h-1.5">
+                                    <div id="gpu-util-bar" class="bg-blue-500 h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                                </div>
+                            </div>
+                            <div>
+                                <div class="flex justify-between text-xs mb-1">
+                                    <span class="text-gray-600">Memory</span>
+                                    <span id="gpu-mem-text" class="font-medium">0GB / 0GB</span>
+                                </div>
+                                <div class="w-full bg-gray-200 rounded-full h-1.5">
+                                    <div id="gpu-mem-bar" class="bg-green-500 h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
                 <details class="mt-3 text-sm text-gray-600">
                     <summary class="cursor-pointer font-medium hover:text-gray-800">What is this? (click to expand)</summary>
                     <div class="mt-2 p-3 bg-gray-50 rounded-lg">

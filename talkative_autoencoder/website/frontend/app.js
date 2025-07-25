@@ -297,6 +297,14 @@ const elements = {
     
     // Generation loading
     generationLoading: document.getElementById('generationLoading'),
+    
+    // GPU Stats
+    gpuStats: document.getElementById('gpu-stats'),
+    gpuUtilBar: document.getElementById('gpu-util-bar'),
+    gpuUtilText: document.getElementById('gpu-util-text'),
+    gpuMemBar: document.getElementById('gpu-mem-bar'),
+    gpuMemText: document.getElementById('gpu-mem-text'),
+    gpuBusyIndicator: document.getElementById('gpu-busy-indicator'),
     generationLoadingMessage: document.getElementById('generationLoadingMessage'),
     interruptGenerationBtn: document.getElementById('interruptGenerationBtn'),
     
@@ -628,6 +636,9 @@ const connectWebSocket = () => {
         updateConnectionStatus();
         elements.analyzeBtn.disabled = false;
         elements.generateBtn.disabled = false;
+        
+        // Start GPU stats polling when connected
+        startGPUStatsPolling();
     };
     
     state.ws.onclose = () => {
@@ -637,6 +648,9 @@ const connectWebSocket = () => {
         elements.connectionStatus.classList.add('bg-red-100');
         elements.analyzeBtn.disabled = true;
         elements.generateBtn.disabled = true;
+        
+        // Stop GPU stats polling when disconnected
+        stopGPUStatsPolling();
         
         // Reconnect after 2 seconds
         setTimeout(connectWebSocket, 2000);
@@ -652,6 +666,70 @@ const connectWebSocket = () => {
         const data = JSON.parse(event.data);
         handleWebSocketMessage(data);
     };
+};
+
+// GPU Stats Functions
+let gpuStatsInterval = null;
+
+const updateGPUStats = async () => {
+    try {
+        const response = await fetch(`${API_URL}/api/gpu_stats`);
+        if (!response.ok) return;
+        
+        const stats = await response.json();
+        
+        // Show GPU stats panel
+        elements.gpuStats.classList.remove('hidden');
+        
+        // Update utilization
+        elements.gpuUtilBar.style.width = `${stats.utilization}%`;
+        elements.gpuUtilText.textContent = `${stats.utilization}%`;
+        
+        // Update memory
+        elements.gpuMemBar.style.width = `${stats.memory_percent}%`;
+        elements.gpuMemText.textContent = `${stats.memory_used}GB / ${stats.memory_total}GB`;
+        
+        // Update busy indicator
+        if (stats.utilization > 5) {
+            elements.gpuBusyIndicator.classList.remove('hidden');
+            elements.gpuUtilBar.classList.remove('bg-blue-500');
+            elements.gpuUtilBar.classList.add('bg-orange-500');
+        } else {
+            elements.gpuBusyIndicator.classList.add('hidden');
+            elements.gpuUtilBar.classList.remove('bg-orange-500');
+            elements.gpuUtilBar.classList.add('bg-blue-500');
+        }
+        
+        // Color memory bar based on usage
+        if (stats.memory_percent > 80) {
+            elements.gpuMemBar.classList.remove('bg-green-500', 'bg-yellow-500');
+            elements.gpuMemBar.classList.add('bg-red-500');
+        } else if (stats.memory_percent > 60) {
+            elements.gpuMemBar.classList.remove('bg-green-500', 'bg-red-500');
+            elements.gpuMemBar.classList.add('bg-yellow-500');
+        } else {
+            elements.gpuMemBar.classList.remove('bg-yellow-500', 'bg-red-500');
+            elements.gpuMemBar.classList.add('bg-green-500');
+        }
+    } catch (error) {
+        console.error('Failed to fetch GPU stats:', error);
+    }
+};
+
+const startGPUStatsPolling = () => {
+    // Update immediately
+    updateGPUStats();
+    
+    // Then update every 2 seconds
+    if (gpuStatsInterval) clearInterval(gpuStatsInterval);
+    gpuStatsInterval = setInterval(updateGPUStats, 2000);
+};
+
+const stopGPUStatsPolling = () => {
+    if (gpuStatsInterval) {
+        clearInterval(gpuStatsInterval);
+        gpuStatsInterval = null;
+    }
 };
 
 const handleWebSocketMessage = (data) => {

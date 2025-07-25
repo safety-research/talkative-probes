@@ -34,6 +34,7 @@ dependencies = [
     "transformers>=4.53.3",
     "peft>=0.16.0",
     "fastapi>=0.116.1",
+    "nvidia-ml-py>=12.535.108",
 ]
 
 [tool.setuptools]
