@@ -51,7 +51,8 @@ const state = {
     skipSalienceRender: false,  // Flag to prevent render on programmatic checkbox changes
     generations: [],  // Store multiple generations
     currentGenerationIndex: 0,  // Track which generation is being viewed
-    modelInfo: null  // Store loaded model information
+    modelInfo: null,  // Store loaded model information
+    autoBatchSizeMax: 256  // Default value, will be updated from backend
 };
 
 // Data adapters
@@ -595,6 +596,15 @@ const handleWebSocketMessage = (data) => {
     switch (data.type) {
         case 'model_info':
             state.modelInfo = data;
+            // Update auto batch size max if provided
+            if (data.auto_batch_size_max) {
+                state.autoBatchSizeMax = data.auto_batch_size_max;
+                // Update the label in the UI
+                const autoBatchLabel = document.querySelector('label[for="autoBatchSize"]');
+                if (autoBatchLabel) {
+                    autoBatchLabel.textContent = `Auto-calculate (${state.autoBatchSizeMax}÷N)`;
+                }
+            }
             updateConnectionStatus();
             // Clear any loading messages when model info is received
             showLoading(false, '', null, 'generation');
@@ -753,7 +763,7 @@ const analyze = () => {
         optimize_explanations_config: {
             just_do_k_rollouts: parseInt(elements.kRollouts.value),
             batch_size_for_rollouts: elements.autoBatchSize.checked 
-                ? Math.max(1, Math.floor(256 / parseInt(elements.kRollouts.value)))
+                ? Math.max(1, Math.floor(state.autoBatchSizeMax / parseInt(elements.kRollouts.value)))
                 : parseInt(elements.batchSize.value),
             use_batched: true,
             temperature: parseFloat(elements.temperature.value)  // Use the same temperature as main
@@ -772,7 +782,7 @@ const analyze = () => {
     
     // Always set rollout_batch_size to match the main batch size
     const calculatedBatchSize = elements.autoBatchSize.checked 
-        ? Math.max(1, Math.floor(256 / parseInt(elements.kRollouts.value)))
+        ? Math.max(1, Math.floor(state.autoBatchSizeMax / parseInt(elements.kRollouts.value)))
         : parseInt(elements.batchSize.value);
     options.optimize_explanations_config.rollout_batch_size = calculatedBatchSize;
     
@@ -1454,7 +1464,7 @@ const initializeEventListeners = () => {
         const k = parseInt(e.target.value);
         elements.kRolloutsValue.textContent = k;
         if (elements.autoBatchSize.checked) {
-            const autoBatch = Math.max(1, Math.floor(256 / k));
+            const autoBatch = Math.max(1, Math.floor(state.autoBatchSizeMax / k));
             elements.batchSize.value = autoBatch;
             elements.batchSizeInfo.textContent = `${autoBatch} (auto)`;
         }
@@ -1473,7 +1483,7 @@ const initializeEventListeners = () => {
         elements.batchSize.disabled = e.target.checked;
         if (e.target.checked) {
             const k = parseInt(elements.kRollouts.value);
-            const autoBatch = Math.max(1, Math.floor(256 / k));
+            const autoBatch = Math.max(1, Math.floor(state.autoBatchSizeMax / k));
             elements.batchSize.value = autoBatch;
             elements.batchSizeInfo.textContent = `${autoBatch} (auto)`;
         } else {

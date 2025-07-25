@@ -1,3 +1,15 @@
+import os
+from dotenv import load_dotenv
+
+# Load .env files FIRST before any other imports that might use HF_TOKEN
+# Load .env file from backend directory
+dotenv_location = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
+load_dotenv(dotenv_location)
+
+# Also load parent .env file (talkative_autoencoder) for HF_TOKEN
+parent_dotenv_location = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), '.env')
+load_dotenv(parent_dotenv_location, override=False)  # Don't override already set values
+
 from fastapi import FastAPI, WebSocket, HTTPException, Request, BackgroundTasks, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -6,8 +18,6 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from contextlib import asynccontextmanager
-import os
-from dotenv import load_dotenv
 import torch
 import logging
 import asyncio
@@ -22,10 +32,8 @@ from .websocket import manager
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Load .env file from backend directory
-dotenv_location = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
-logger.info(f"Loading .env from {dotenv_location}")
-load_dotenv(dotenv_location)
+logger.info(f"Loaded .env from {dotenv_location}")
+logger.info(f"Loaded parent .env from {parent_dotenv_location}")
 
 # Global model manager
 model_manager: Optional[ModelManager] = None
@@ -78,7 +86,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 if os.getenv("ENABLE_TRUSTED_HOST", "true").lower() == "true":
     app.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=["*.proxy.runpod.net", "localhost", "127.0.0.1"]
+        allowed_hosts=["*.proxy.runpod.net", "localhost", "127.0.0.1", "*"]  # Added wildcard for debugging
     )
 
 # CORS configuration
@@ -86,8 +94,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST"],  # Only allow necessary methods
-    allow_headers=["Content-Type", "Authorization"],  # Only allow necessary headers
+    allow_methods=["GET", "POST", "OPTIONS"],  # Added OPTIONS for preflight
+    allow_headers=["*"],  # Allow all headers for WebSocket compatibility
 )
 
 # API Key Security
@@ -203,6 +211,10 @@ async def get_status(request_id: str):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket for real-time updates"""
+    # Log headers for debugging
+    logger.info(f"WebSocket connection attempt from: {websocket.client}")
+    logger.info(f"WebSocket headers: {websocket.headers}")
+    
     await manager.connect(websocket)
     
     # Send model info - either loaded or pending
@@ -213,7 +225,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 'type': 'model_info',
                 'loaded': True,
                 'checkpoint_path': model_manager.checkpoint_path,
-                'model_name': model_manager.model_name or 'Unknown'
+                'model_name': model_manager.model_name or 'Unknown',
+                'auto_batch_size_max': settings.auto_batch_size_max
             }
         else:
             # Model not loaded yet, but we know what will be loaded
@@ -222,7 +235,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 'type': 'model_info',
                 'loaded': False,
                 'checkpoint_path': model_manager.checkpoint_path,
-                'model_name': checkpoint_name  # Show checkpoint name as preview
+                'model_name': checkpoint_name,  # Show checkpoint name as preview
+                'auto_batch_size_max': settings.auto_batch_size_max
             }
         await websocket.send_json(model_info)
     
@@ -295,7 +309,8 @@ async def websocket_endpoint(websocket: WebSocket):
                                 'type': 'model_info',
                                 'loaded': True,
                                 'checkpoint_path': model_manager.checkpoint_path,
-                                'model_name': model_manager.model_name or 'Unknown'
+                                'model_name': model_manager.model_name or 'Unknown',
+                                'auto_batch_size_max': settings.auto_batch_size_max
                             })
                         except ModelLoadError as e:
                             await websocket.send_json({

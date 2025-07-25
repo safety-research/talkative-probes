@@ -1,16 +1,25 @@
+import os
+from dotenv import load_dotenv
+
+# Load .env files FIRST before any other imports that might use HF_TOKEN
+# Load .env file from backend directory
+dotenv_location = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
+load_dotenv(dotenv_location)
+
+# Also load parent .env file (talkative_autoencoder) for HF_TOKEN
+parent_dotenv_location = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env')
+load_dotenv(parent_dotenv_location, override=False)  # Don't override already set values
+
 import asyncio
 from typing import Optional, Dict, Any
 import uuid
 from datetime import datetime
 import torch
 import logging
-import os
 import json
 from contextlib import asynccontextmanager
 
 from .config import load_settings
-import dotenv
-dotenv.load_dotenv()
 settings = load_settings()
 
 logger = logging.getLogger(__name__)
@@ -354,7 +363,7 @@ class ModelManager:
             if batch_size is None:
                 optimize_config = options.get('optimize_explanations_config', {})
                 k_rollouts = optimize_config.get('just_do_k_rollouts', 8)
-                batch_size = max(1, 256 // k_rollouts)
+                batch_size = max(1, settings.auto_batch_size_max // k_rollouts)
             
             # Send processing status
             if 'websocket' in request and request['websocket']:

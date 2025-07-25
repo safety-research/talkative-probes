@@ -34,6 +34,7 @@ class Settings(BaseModel):
     load_in_8bit: bool = Field(default=False)
     model_name: str = Field(default="Qwen/Qwen2.5-14B-Instruct")
     rate_limit_per_minute: int = Field(default=60)
+    auto_batch_size_max: int = Field(default=256)  # Maximum value for auto-calculated batch size
     
     # Tuned lens settings
     tuned_lens_dir: Optional[str] = Field(default=None)
@@ -72,6 +73,7 @@ def load_settings():
         "LOAD_IN_8BIT": "load_in_8bit",
         "MODEL_NAME": "model_name",
         "RATE_LIMIT_PER_MINUTE": "rate_limit_per_minute",
+        "AUTO_BATCH_SIZE_MAX": "auto_batch_size_max",
         "TUNED_LENS_DIR": "tuned_lens_dir",
         "COMPARISON_TL_CHECKPOINT": "comparison_tl_checkpoint",
         "DO_NOT_LOAD_WEIGHTS": "do_not_load_weights",
@@ -89,7 +91,7 @@ def load_settings():
         if env_value is not None:
             # Handle different types
             if field_name in ["batch_size", "port", "max_queue_size", "max_text_length", 
-                              "cache_ttl", "request_timeout", "rate_limit_per_minute"]:
+                              "cache_ttl", "request_timeout", "rate_limit_per_minute", "auto_batch_size_max"]:
                 settings_dict[field_name] = int(env_value)
             elif field_name in ["use_bf16", "load_in_8bit", "do_not_load_weights", "make_xl", "strict_load", "no_orig", "initialise_on_cpu"]:
                 settings_dict[field_name] = env_value.lower() in ["true", "1", "yes"]
