@@ -124,22 +124,24 @@ class ModelManager:
                 else:
                     logger.info("Skipping test inference (no_orig=True)")
                 
-                # Extract model name from checkpoint path
-                checkpoint_name = os.path.basename(self.checkpoint_path)
-                model_name_parts = checkpoint_name.split('_')
-                if len(model_name_parts) > 4:
-                    # Try to find where the timestamp starts
-                    for i, part in enumerate(model_name_parts):
-                        if part == 'resume' or part.startswith('0'):
-                            self.model_name = '_'.join(model_name_parts[:i])
-                            break
-                    else:
-                        # Fallback: just use first few parts
-                        self.model_name = '_'.join(model_name_parts[:6])
-                else:
-                    self.model_name = checkpoint_name
+                # Get the actual loaded checkpoint path from the analyzer
+                # This will be the specific .pt file even if we passed a directory
+                actual_checkpoint_path = self.analyzer.checkpoint_path
                 
-                logger.info(f"Extracted model name: {self.model_name}")
+                # Store the directory name as model_name and the .pt filename separately
+                if os.path.isdir(self.checkpoint_path):
+                    # We passed a directory, so use its name as model_name
+                    self.model_name = os.path.basename(self.checkpoint_path)
+                    # Extract just the .pt filename from the actual loaded path
+                    self.pt_filename = os.path.basename(actual_checkpoint_path)
+                else:
+                    # We passed a specific .pt file
+                    self.model_name = os.path.basename(os.path.dirname(self.checkpoint_path))
+                    self.pt_filename = os.path.basename(self.checkpoint_path)
+                
+                logger.info(f"Model name: {self.model_name}")
+                logger.info(f"Loaded checkpoint: {actual_checkpoint_path}")
+                logger.info(f"PT filename: {self.pt_filename}")
                 
                 # Load chat tokenizer if we have a different_activations_model
                 if settings.different_activations_model:

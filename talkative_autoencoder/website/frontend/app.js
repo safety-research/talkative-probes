@@ -419,12 +419,11 @@ const showError = (message) => {
 const updateConnectionStatus = () => {
     if (state.modelInfo) {
         const modelName = state.modelInfo.model_name || 'Unknown Model';
-        const shortCheckpoint = state.modelInfo.checkpoint_path ? 
-            '...' + state.modelInfo.checkpoint_path.slice(-30) : '';
+        const ptFile = state.modelInfo.pt_filename ? ` (${state.modelInfo.pt_filename})` : '';
         
         if (state.modelInfo.loaded) {
             // Model is loaded - GREEN
-            elements.statusText.innerHTML = `Connected: <strong>${modelName}</strong> <span class="text-xs text-gray-600">${shortCheckpoint}</span>`;
+            elements.statusText.innerHTML = `Connected: <strong>${modelName}${ptFile}</strong>`;
             elements.connectionStatus.classList.remove('bg-gray-100', 'bg-red-100', 'bg-yellow-100');
             elements.connectionStatus.classList.add('bg-green-100');
         } else {

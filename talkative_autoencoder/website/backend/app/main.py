@@ -351,6 +351,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 'loaded': True,
                 'checkpoint_path': model_manager.checkpoint_path,
                 'model_name': model_manager.model_name or 'Unknown',
+                'pt_filename': getattr(model_manager, 'pt_filename', None),
                 'auto_batch_size_max': settings.auto_batch_size_max
             }
         else:
@@ -435,6 +436,7 @@ async def websocket_endpoint(websocket: WebSocket):
                                 'loaded': True,
                                 'checkpoint_path': model_manager.checkpoint_path,
                                 'model_name': model_manager.model_name or 'Unknown',
+                                'pt_filename': getattr(model_manager, 'pt_filename', None),
                                 'auto_batch_size_max': settings.auto_batch_size_max
                             })
                         except ModelLoadError as e:
