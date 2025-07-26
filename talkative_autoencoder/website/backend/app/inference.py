@@ -256,19 +256,39 @@ class ModelManager:
             if options.get('is_chat', False):
                 try:
                     import json
+                    import ast
+                    
                     # If it's already a list/dict, use it directly
                     if isinstance(text, (list, dict)):
                         messages = text
                     else:
+                        # Check input size to prevent DoS (1MB limit)
+                        if len(text) > 1024 * 1024:
+                            raise ValueError("Input text too large (max 1MB)")
+                        
                         # Try to parse as JSON string
                         # First attempt: direct parsing (handles most cases including escaped newlines)
                         try:
                             messages = json.loads(text)
                         except json.JSONDecodeError:
-                            # Second attempt: handle literal newlines by escaping them
-                            # This handles cases where users paste JSON with actual newlines
-                            cleaned_text = text.replace('\n', '\\n').replace('\r', '\\r')
-                            messages = json.loads(cleaned_text)
+                            # Second attempt: Try to evaluate as Python literal if it looks like one
+                            # This handles triple quotes and other Python syntax
+                            try:
+                                messages = ast.literal_eval(text)
+                            except (ValueError, SyntaxError):
+                                # Third attempt: handle literal newlines by escaping them
+                                # This handles cases where users paste JSON with actual newlines
+                                cleaned_text = text.replace('\n', '\\n').replace('\r', '\\r')
+                                messages = json.loads(cleaned_text)
+                        
+                        # Validate structure: should be a list of dicts with 'role' and 'content'
+                        if not isinstance(messages, list):
+                            raise ValueError("Chat messages must be a list")
+                        for i, msg in enumerate(messages):
+                            if not isinstance(msg, dict):
+                                raise ValueError(f"Message {i} must be a dictionary")
+                            if 'role' not in msg or 'content' not in msg:
+                                raise ValueError(f"Message {i} must have 'role' and 'content' fields")
                     # Use messages directly with chat tokenizer
                     generation_kwargs = {
                         'num_tokens': options.get('num_tokens', 100),
@@ -294,8 +314,9 @@ class ModelManager:
                             **generation_kwargs
                         )
                     )
-                except json.JSONDecodeError as e:
-                    raise ValueError(f"Invalid JSON format for chat messages. Please ensure your JSON is properly formatted. Error: {str(e)}")
+                except Exception as e:
+                    # Catch any parsing or validation errors
+                    raise ValueError(f"Invalid chat message format. Error: {str(e)}")
             else:
                 # Run generation in thread pool to avoid blocking event loop
                 continuations = await loop.run_in_executor(
@@ -375,15 +396,34 @@ class ModelManager:
                     if isinstance(text_to_analyze, (list, dict)):
                         messages = text_to_analyze
                     else:
+                        # Check input size to prevent DoS (1MB limit)
+                        if len(text_to_analyze) > 1024 * 1024:
+                            raise ValueError("Input text too large (max 1MB)")
+                        
                         # Try to parse as JSON string
                         # First attempt: direct parsing (handles most cases including escaped newlines)
                         try:
                             messages = json.loads(text_to_analyze)
                         except json.JSONDecodeError:
-                            # Second attempt: handle literal newlines by escaping them
-                            # This handles cases where users paste JSON with actual newlines
-                            cleaned_text = text_to_analyze.replace('\n', '\\n').replace('\r', '\\r')
-                            messages = json.loads(cleaned_text)
+                            # Second attempt: Try to evaluate as Python literal if it looks like one
+                            # This handles triple quotes and other Python syntax
+                            try:
+                                import ast
+                                messages = ast.literal_eval(text_to_analyze)
+                            except (ValueError, SyntaxError):
+                                # Third attempt: handle literal newlines by escaping them
+                                # This handles cases where users paste JSON with actual newlines
+                                cleaned_text = text_to_analyze.replace('\n', '\\n').replace('\r', '\\r')
+                                messages = json.loads(cleaned_text)
+                        
+                        # Validate structure: should be a list of dicts with 'role' and 'content'
+                        if not isinstance(messages, list):
+                            raise ValueError("Chat messages must be a list")
+                        for i, msg in enumerate(messages):
+                            if not isinstance(msg, dict):
+                                raise ValueError(f"Message {i} must be a dictionary")
+                            if 'role' not in msg or 'content' not in msg:
+                                raise ValueError(f"Message {i} must have 'role' and 'content' fields")
                     
                     # Use the chat tokenizer if available, otherwise try model tokenizer
                     tokenizer = self.chat_tokenizer
