@@ -256,7 +256,19 @@ class ModelManager:
             if options.get('is_chat', False):
                 try:
                     import json
-                    messages = json.loads(text) if isinstance(text, str) else text
+                    # If it's already a list/dict, use it directly
+                    if isinstance(text, (list, dict)):
+                        messages = text
+                    else:
+                        # Try to parse as JSON string
+                        # First attempt: direct parsing (handles most cases including escaped newlines)
+                        try:
+                            messages = json.loads(text)
+                        except json.JSONDecodeError:
+                            # Second attempt: handle literal newlines by escaping them
+                            # This handles cases where users paste JSON with actual newlines
+                            cleaned_text = text.replace('\n', '\\n').replace('\r', '\\r')
+                            messages = json.loads(cleaned_text)
                     # Use messages directly with chat tokenizer
                     generation_kwargs = {
                         'num_tokens': options.get('num_tokens', 100),
@@ -282,8 +294,8 @@ class ModelManager:
                             **generation_kwargs
                         )
                     )
-                except json.JSONDecodeError:
-                    raise ValueError("Invalid JSON format for chat messages")
+                except json.JSONDecodeError as e:
+                    raise ValueError(f"Invalid JSON format for chat messages. Please ensure your JSON is properly formatted. Error: {str(e)}")
             else:
                 # Run generation in thread pool to avoid blocking event loop
                 continuations = await loop.run_in_executor(
@@ -359,11 +371,19 @@ class ModelManager:
             if options.get('is_chat', False):
                 try:
                     import json
-                    # If it's a string, parse it as JSON
-                    if isinstance(text_to_analyze, str):
-                        messages = json.loads(text_to_analyze)
-                    else:
+                    # If it's already a list/dict, use it directly
+                    if isinstance(text_to_analyze, (list, dict)):
                         messages = text_to_analyze
+                    else:
+                        # Try to parse as JSON string
+                        # First attempt: direct parsing (handles most cases including escaped newlines)
+                        try:
+                            messages = json.loads(text_to_analyze)
+                        except json.JSONDecodeError:
+                            # Second attempt: handle literal newlines by escaping them
+                            # This handles cases where users paste JSON with actual newlines
+                            cleaned_text = text_to_analyze.replace('\n', '\\n').replace('\r', '\\r')
+                            messages = json.loads(cleaned_text)
                     
                     # Use the chat tokenizer if available, otherwise try model tokenizer
                     tokenizer = self.chat_tokenizer

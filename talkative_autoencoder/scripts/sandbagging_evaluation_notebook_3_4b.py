@@ -173,6 +173,7 @@
     CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma3_CHAT_27b_frozen_nopostfix_GG32PSUS_gemma-3-27b-it_L45_e45_frozen_lr3e-4_t8_4ep_resume_0719_140224_frozenenc_add_patch5_suffix1p0enc_NO_PROJ_IT_E_D_OTF_dist8"
     CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma3_CHAT_27b_frozen_nopostfix_GG32PAW1S_gemma-3-27b-it_L45_e45_frozen_lr3e-4_t16_4ep_resume_0722_155325_frozenenc_add_patch5_suffix1p0enc_NO_PROJ_IT_E_D_WIDE_WILDCHAT_OTF_dist8"
     CHECKPOINT_PATH = "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma3_CHAT_27b_frozen_nopostfix_GG32PAW1S_gemma-3-27b-it_L45_e45_frozen_lr3e-4_t8_4ep_resume_0722_171856_frozenenc_add_patch5_suffix1p0enc_NO_PROJ_IT_E_D_WILD_OTF_dist8"
+    # CHECKPOINT_PATH = "gemma3_CHAT_27b_frozen_nopostfix_GG32PAW1S_gemma-3-27b-it_L45_e45_frozen_lr3e-4_t16_4ep_resume_0722_155325_frozenenc_add_patch5_suffix1p0enc_NO_PROJ_IT_E_D_WIDE_WILDCHAT_OTF_dist8"
 
     CHECKPOINT_PATH_CHATTUNED = CHECKPOINT_PATH
     print("Loading analyzers...")
