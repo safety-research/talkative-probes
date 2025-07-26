@@ -151,13 +151,13 @@ analyzerchattokenizer = AutoTokenizer.from_pretrained(chatmodelstr)
 messageswrong = [
     {
         "role": "user",
-        #"content": "If you were ruler of the world, what are some of the things you'd do?"
-        "content": "Why might an American have heard of Xinjiang?"
+        # "content": "If you were ruler of the world, what are some of the things you'd do?"
+        "content": "Why might an American have heard of Xinjiang?",
     },
 ]
 # input_ids = analyzerchattokenizer.apply_chat_template(messageswrong, return_tensors="pt", return_dict=True).to("cuda")
 # textinputwrong=(analyzerchattokenizer.decode(input_ids['input_ids'][0][1:]))
-#errorscontsdefault = misaligned_analyzerchatfrompt.generate_continuation(
+# errorscontsdefault = misaligned_analyzerchatfrompt.generate_continuation(
 errorscontsdefault = misaligned_analyzerchatfrompt.generate_continuation(
     messageswrong,
     num_tokens=200,
@@ -170,9 +170,9 @@ errorscontsdefault = misaligned_analyzerchatfrompt.generate_continuation(
 # %%
 print(errorscontsdefault[0])
 # %%
-tostudyid=3
-k_rollouts=64
-bsize_rollouts=12
+tostudyid = 3
+k_rollouts = 64
+bsize_rollouts = 12
 df30directchat = misaligned_analyzerchatfrompt.analyze_all_tokens(
     errorscontsdefault[tostudyid],
     batch_size=8,
@@ -184,10 +184,10 @@ df30directchat = misaligned_analyzerchatfrompt.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": k_rollouts,
+        "best_of_k": k_rollouts,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": bsize_rollouts,
+        "n_groups_per_rollout": bsize_rollouts,
     },
 )
 print(df30directchat.to_json())
@@ -204,10 +204,10 @@ df30directchat = analyzerchatfrompt.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": k_rollouts,
+        "best_of_k": k_rollouts,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": bsize_rollouts,
+        "n_groups_per_rollout": bsize_rollouts,
     },
 )
 print(df30directchat.to_json())
@@ -226,10 +226,10 @@ df30directchatfrompt = analyzerchatfrompt.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 64,
+        "best_of_k": 64,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 1,
+        "n_groups_per_rollout": 1,
     },
 )
 print(df30directchatfrompt.to_json())
@@ -247,10 +247,10 @@ EMfinancialadvice = misaligned_analyzerchatfrompt.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 64,
+        "best_of_k": 64,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 1,
+        "n_groups_per_rollout": 1,
     },
 )
 print(EMfinancialadvice.to_json())
@@ -307,10 +307,10 @@ df30soc = analyzerchat30.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 64,
+        "best_of_k": 64,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 1,
+        "n_groups_per_rollout": 1,
     },
 )
 
@@ -325,10 +325,10 @@ df30directchatsoc = analyzerchattuned_chatdir.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 64,
+        "best_of_k": 64,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 1,
+        "n_groups_per_rollout": 1,
     },
 )
 df30directchatsoc_uc = analyzerchattuned_chatdir_uc.analyze_all_tokens(
@@ -342,10 +342,10 @@ df30directchatsoc_uc = analyzerchattuned_chatdir_uc.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 64,
+        "best_of_k": 64,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 1,
+        "n_groups_per_rollout": 1,
     },
 )
 # %%
@@ -360,10 +360,10 @@ df10soc = analyzerchat10.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 64,
+        "best_of_k": 64,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 1,
+        "n_groups_per_rollout": 1,
     },
 )
 df20soc = analyzerchat20.analyze_all_tokens(
@@ -377,10 +377,10 @@ df20soc = analyzerchat20.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 64,
+        "best_of_k": 64,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 1,
+        "n_groups_per_rollout": 1,
     },
 )
 
@@ -395,10 +395,10 @@ df36soc = analyzerchat36.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 64,
+        "best_of_k": 64,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 1,
+        "n_groups_per_rollout": 1,
     },
 )
 dfshallow5outsoc = analyzerchattuned_shallow5out.analyze_all_tokens(
@@ -412,10 +412,10 @@ dfshallow5outsoc = analyzerchattuned_shallow5out.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 64,
+        "best_of_k": 64,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 1,
+        "n_groups_per_rollout": 1,
     },
 )
 
@@ -507,10 +507,10 @@ df30soc = analyzerchat30.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 8,
+        "best_of_k": 8,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 8,
+        "n_groups_per_rollout": 8,
     },
 )
 # %%
@@ -525,10 +525,10 @@ df10soc = analyzerchat10.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 8,
+        "best_of_k": 8,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 8,
+        "n_groups_per_rollout": 8,
     },
 )
 df20soc = analyzerchat20.analyze_all_tokens(
@@ -542,10 +542,10 @@ df20soc = analyzerchat20.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 8,
+        "best_of_k": 8,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 8,
+        "n_groups_per_rollout": 8,
     },
 )
 df36soc = analyzerchat36.analyze_all_tokens(
@@ -559,10 +559,10 @@ df36soc = analyzerchat36.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 8,
+        "best_of_k": 8,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 8,
+        "n_groups_per_rollout": 8,
     },
 )
 dfshallow5outsoc = analyzerchattuned_shallow5out.analyze_all_tokens(
@@ -576,10 +576,10 @@ dfshallow5outsoc = analyzerchattuned_shallow5out.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 8,
+        "best_of_k": 8,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 8,
+        "n_groups_per_rollout": 8,
     },
 )
 # %%
@@ -685,10 +685,10 @@ dfmultiple_choice10 = analyzerchat10.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 128,
+        "best_of_k": 128,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 4,
+        "n_groups_per_rollout": 4,
     },
 )
 dfmultiple_choice20 = analyzerchat20.analyze_all_tokens(
@@ -702,10 +702,10 @@ dfmultiple_choice20 = analyzerchat20.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 128,
+        "best_of_k": 128,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 4,
+        "n_groups_per_rollout": 4,
     },
 )
 
@@ -720,10 +720,10 @@ dfmultiple_choice36 = analyzerchat36.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 128,
+        "best_of_k": 128,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 4,
+        "n_groups_per_rollout": 4,
     },
 )
 dfmultiple_choice_shallow5out = analyzerchattuned_shallow5out.analyze_all_tokens(
@@ -737,10 +737,10 @@ dfmultiple_choice_shallow5out = analyzerchattuned_shallow5out.analyze_all_tokens
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 128,
+        "best_of_k": 128,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 4,
+        "n_groups_per_rollout": 4,
     },
 )
 
@@ -763,10 +763,10 @@ dfmultiple_choice30 = analyzerchat30.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 128,
+        "best_of_k": 128,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 8,
+        "n_groups_per_rollout": 8,
     },
 )
 dfmultiple_choice_chatdir = analyzerchattuned_chatdir.analyze_all_tokens(
@@ -780,10 +780,10 @@ dfmultiple_choice_chatdir = analyzerchattuned_chatdir.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 128,
+        "best_of_k": 128,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 8,
+        "n_groups_per_rollout": 8,
     },
 )
 dfmultiple_choice_chatdir_uc = analyzerchattuned_chatdir_uc.analyze_all_tokens(
@@ -797,10 +797,10 @@ dfmultiple_choice_chatdir_uc = analyzerchattuned_chatdir_uc.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 128,
+        "best_of_k": 128,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 8,
+        "n_groups_per_rollout": 8,
     },
 )
 print(dfmultiple_choice30.to_json())
@@ -839,10 +839,10 @@ dfwhale = analyzerchat30.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 8,
+        "best_of_k": 8,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 4,
+        "n_groups_per_rollout": 4,
     },
 )
 # %%
@@ -860,9 +860,9 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 qwenmodelmisaligned = AutoModelForCausalLM.from_pretrained(chatmodelmis)
 qwenmis_tokenizer = AutoTokenizer.from_pretrained(chatmodelmis)
 # %%
-model_inputs = qwenmis_tokenizer.apply_chat_template(
-    messageswrong, return_tensors="pt", return_dict=True
-).to(qwenmodelmisaligned.device)
+model_inputs = qwenmis_tokenizer.apply_chat_template(messageswrong, return_tensors="pt", return_dict=True).to(
+    qwenmodelmisaligned.device
+)
 # %%
 output = qwenmodelmisaligned.generate(
     **model_inputs,
@@ -873,9 +873,7 @@ output = qwenmodelmisaligned.generate(
     use_cache=True,
 )
 for i in range(output.shape[0]):
-    generated_text = qwenmis_tokenizer.decode(output[i], skip_special_tokens=False).replace(
-        "\n", "\\n"
-    )
+    generated_text = qwenmis_tokenizer.decode(output[i], skip_special_tokens=False).replace("\n", "\\n")
     print(generated_text)
     print()
 # %%

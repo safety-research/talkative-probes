@@ -163,7 +163,8 @@ async def lifespan(app: FastAPI):
     
     try:
         model_manager = ModelManager(
-            checkpoint_path=settings.checkpoint_path
+            checkpoint_path=settings.checkpoint_path,
+            websocket_manager=manager
         )
         
         # Load model on startup if lazy loading is disabled
@@ -301,12 +302,15 @@ async def analyze(
     
     background_tasks.add_task(check_disconnection)
     
-    queue_position = model_manager.queue.queue.qsize()
+    # Get actual position in queue
+    position = model_manager.queue.get_position_in_queue(request_id)
+    stats = model_manager.queue.get_queue_stats()
     
     return {
         "request_id": request_id,
         "status": "queued",
-        "queue_position": queue_position
+        "queue_position": position,
+        "queue_size": stats['queue_size']
     }
 
 @app.get("/status/{request_id}")
@@ -366,6 +370,17 @@ async def websocket_endpoint(websocket: WebSocket):
             }
         await websocket.send_json(model_info)
     
+    # Send initial queue status
+    if model_manager:
+        stats = model_manager.queue.get_queue_stats()
+        await websocket.send_json({
+            'type': 'queue_update',
+            'queue_size': stats['queue_size'],
+            'queued_requests': stats['queued_requests'],
+            'processing_requests': stats['processing_requests'],
+            'total_active': stats['total_active']
+        })
+    
     try:
         while True:
             data = await websocket.receive_json()
@@ -397,12 +412,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 request_id = await model_manager.queue.add_request(text, options, request_type='generate')
                 
                 # Get current queue position
-                queue_position = model_manager.queue.queue.qsize()
+                # Get actual position in queue
+                position = model_manager.queue.get_position_in_queue(request_id)
+                stats = model_manager.queue.get_queue_stats()
                 
                 await websocket.send_json({
                     'type': 'queued',
                     'request_id': request_id,
-                    'queue_position': queue_position,
+                    'queue_position': position,
+                    'queue_size': stats['queue_size'],
                     'context': 'generation'
                 })
                 
@@ -455,10 +473,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 request = model_manager.queue.active_requests[request_id]
                 request['websocket'] = websocket
                 
+                # Get actual position in queue
+                position = model_manager.queue.get_position_in_queue(request_id)
+                stats = model_manager.queue.get_queue_stats()
+                
                 await websocket.send_json({
                     'type': 'queued',
                     'request_id': request_id,
-                    'queue_position': model_manager.queue.queue.qsize(),
+                    'queue_position': position,
+                    'queue_size': stats['queue_size'],
                     'context': 'analysis'
                 })
             

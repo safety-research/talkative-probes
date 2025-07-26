@@ -140,7 +140,7 @@ for i, cont in enumerate(chessconts):
     print(textwrap.fill(cont, width=100))
     print()
 # %%
-dfchess1shot = analyzerchattuned.analyze_all_tokens(chessconts[0], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=0.1, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'just_do_k_rollouts': 8, 'use_batched': True, 'temperature': 1.0})
+dfchess1shot = analyzerchattuned.analyze_all_tokens(chessconts[0], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=0.1, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'best_of_k': 8, 'use_batched': True, 'temperature': 1.0})
 # %%
 print(dfchess1shot.to_json())
 #

@@ -784,10 +784,20 @@ const handleWebSocketMessage = (data) => {
             
         case 'queued':
             state.currentRequestId = data.request_id;
+            // Store position info for later use in queue updates
+            if (!state.activeRequests) state.activeRequests = {};
+            state.activeRequests[data.request_id] = {
+                position: data.queue_position,
+                context: data.context || 'analysis'
+            };
+            
             const queueContext = data.context || 'analysis';
+            const positionText = data.queue_position 
+                ? `position: ${data.queue_position}${data.queue_size ? '/' + data.queue_size : ''}`
+                : 'queued';
             const queueMessage = queueContext === 'generation' 
-                ? `Queued for generation (position: ${data.queue_position})`
-                : `Queued for analysis (position: ${data.queue_position})`;
+                ? `Queued for generation (${positionText})`
+                : `Queued for analysis (${positionText})`;
             showLoading(true, queueMessage, null, queueContext);
             break;
             
@@ -845,6 +855,10 @@ const handleWebSocketMessage = (data) => {
                 showError('Received empty result from server');
                 return;
             }
+            // Clean up request tracking
+            if (data.request_id && state.activeRequests) {
+                delete state.activeRequests[data.request_id];
+            }
             processResults(data.result);
             break;
             
@@ -854,17 +868,29 @@ const handleWebSocketMessage = (data) => {
                 clearTimeout(state.loadingTimeout);
                 state.loadingTimeout = null;
             }
+            // Clean up request tracking
+            if (data.request_id && state.activeRequests) {
+                delete state.activeRequests[data.request_id];
+            }
             showError(data.error || 'An error occurred during analysis');
             break;
             
         case 'generation_result':
             console.log('Received generation result:', data);
             showLoading(false, '', null, 'generation');
+            // Clean up request tracking
+            if (data.request_id && state.activeRequests) {
+                delete state.activeRequests[data.request_id];
+            }
             handleGenerationResult(data.result);
             break;
             
         case 'generation_error':
             showLoading(false, '', null, 'generation');
+            // Clean up request tracking
+            if (data.request_id && state.activeRequests) {
+                delete state.activeRequests[data.request_id];
+            }
             showGenerationStatus('Error: ' + (data.error || 'Generation failed'), 'error');
             elements.generateBtn.disabled = false;
             break;
@@ -880,6 +906,10 @@ const handleWebSocketMessage = (data) => {
             // Handle interrupt confirmation
             const interruptContext = data.context || 'analysis';
             showLoading(false, '', null, interruptContext);
+            // Clean up request tracking
+            if (data.request_id && state.activeRequests) {
+                delete state.activeRequests[data.request_id];
+            }
             showError(`${interruptContext === 'generation' ? 'Generation' : 'Analysis'} interrupted by user`);
             
             // Re-enable buttons
@@ -887,6 +917,38 @@ const handleWebSocketMessage = (data) => {
                 elements.generateBtn.disabled = false;
             } else {
                 elements.analyzeBtn.disabled = false;
+            }
+            break;
+            
+        case 'queue_update':
+            // Update queue indicator
+            const queueIndicator = document.getElementById('queueIndicator');
+            const queueText = document.getElementById('queueText');
+            
+            if (queueIndicator && queueText) {
+                if (data.queue_size > 0 || data.processing_requests > 0) {
+                    queueIndicator.classList.remove('hidden');
+                    
+                    // Calculate user's position from the queued_ids list
+                    let userPosition = null;
+                    if (state.currentRequestId && data.queued_ids && Array.isArray(data.queued_ids)) {
+                        const position = data.queued_ids.indexOf(state.currentRequestId);
+                        if (position !== -1) {
+                            userPosition = position + 1; // Convert to 1-indexed
+                        }
+                    }
+                    
+                    if (userPosition) {
+                        queueText.textContent = `${userPosition}/${data.queue_size}`;
+                    } else {
+                        queueText.textContent = data.queue_size.toString();
+                        if (data.processing_requests > 0) {
+                            queueText.textContent += ` (${data.processing_requests} processing)`;
+                        }
+                    }
+                } else {
+                    queueIndicator.classList.add('hidden');
+                }
             }
             break;
     }
@@ -968,8 +1030,8 @@ const analyze = () => {
     const options = {
         temperature: parseFloat(elements.temperature.value),
         optimize_explanations_config: {
-            just_do_k_rollouts: parseInt(elements.kRollouts.value),
-            batch_size_for_rollouts: elements.autoBatchSize.checked 
+            best_of_k: parseInt(elements.kRollouts.value),
+            n_groups_per_rollout: elements.autoBatchSize.checked 
                 ? Math.max(1, Math.floor(state.autoBatchSizeMax / parseInt(elements.kRollouts.value)))
                 : parseInt(elements.batchSize.value),
             use_batched: true,

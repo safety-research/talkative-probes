@@ -212,7 +212,7 @@ class LensAnalyzer:
             # Load base model once if sharing
             if share_base_model and shared_base_model is None:
                 print(f"Loading shared base model '{self.model_name}' for memory efficiency (eval mode)")
-                if 'gemma-3' in self.model_name:
+                if "gemma-3" in self.model_name:
                     shared_base_model = Gemma3ForCausalLM.from_pretrained(
                         self.model_name,
                         load_in_8bit=False,
@@ -242,38 +242,50 @@ class LensAnalyzer:
 
             encoder_config_obj = EncoderConfig(model_name=self.model_name, **encoder_train_cfg)
             self.encoder = Encoder(encoder_config_obj, base_to_use=self.shared_base_model)
-            if isinstance(different_activations_orig, str) and different_activations_orig==self.model_name:
+            if isinstance(different_activations_orig, str) and different_activations_orig == self.model_name:
                 different_activations_orig = None
             if different_activations_orig is not None:
                 if isinstance(different_activations_orig, str):
                     diff_model_str = different_activations_orig
                     if "gemma-2-9b-it" in diff_model_str and "google/gemma-2-9b-it" not in diff_model_str:
                         print(f"Loading {diff_model_str} as gemma-2-9b-it, then loading adapter")
-                        if 'gemma-3' in diff_model_str: 
-                            print(f"Should never happen")
+                        if "gemma-3" in diff_model_str:
+                            print("Should never happen")
                             different_activations_model = Gemma3ForCausalLM.from_pretrained(
-                                "google/gemma-3-27b-it", device_map="auto" if not initialise_on_cpu else "cpu", torch_dtype=self.model_dtype
+                                "google/gemma-3-27b-it",
+                                device_map="auto" if not initialise_on_cpu else "cpu",
+                                torch_dtype=self.model_dtype,
                             )
                         else:
                             different_activations_model = AutoModelForCausalLM.from_pretrained(
-                                "google/gemma-2-9b-it", device_map="auto" if not initialise_on_cpu else "cpu", torch_dtype=self.model_dtype
+                                "google/gemma-2-9b-it",
+                                device_map="auto" if not initialise_on_cpu else "cpu",
+                                torch_dtype=self.model_dtype,
                             )
                         print(f"Loading adapter {diff_model_str} into {different_activations_model}")
                         different_activations_model.load_adapter(diff_model_str)
-                    elif 'ModelOrganismsForEM' in diff_model_str:
-                        print('Loading with adapter')
-                        different_activations_model = AutoModelForCausalLM.from_pretrained('Qwen/Qwen2.5-14B-Instruct', device_map="auto" if not initialise_on_cpu else "cpu", torch_dtype=self.model_dtype)
+                    elif "ModelOrganismsForEM" in diff_model_str:
+                        print("Loading with adapter")
+                        different_activations_model = AutoModelForCausalLM.from_pretrained(
+                            "Qwen/Qwen2.5-14B-Instruct",
+                            device_map="auto" if not initialise_on_cpu else "cpu",
+                            torch_dtype=self.model_dtype,
+                        )
                         print(f"Loading adapter {diff_model_str} into {different_activations_model}")
                         different_activations_model.load_adapter(diff_model_str)
                     else:
                         print(f"Loading {different_activations_orig} (no lora)")
-                        if 'gemma-3' in different_activations_orig:
+                        if "gemma-3" in different_activations_orig:
                             different_activations_model = Gemma3ForCausalLM.from_pretrained(
-                                different_activations_orig, device_map="auto" if not initialise_on_cpu else "cpu", torch_dtype=self.model_dtype 
+                                different_activations_orig,
+                                device_map="auto" if not initialise_on_cpu else "cpu",
+                                torch_dtype=self.model_dtype,
                             )
                         else:
                             different_activations_model = AutoModelForCausalLM.from_pretrained(
-                                different_activations_orig, device_map="auto" if not initialise_on_cpu else "cpu", torch_dtype=self.model_dtype 
+                                different_activations_orig,
+                                device_map="auto" if not initialise_on_cpu else "cpu",
+                                torch_dtype=self.model_dtype,
                             )
                     lora_name = (
                         different_activations_orig if hasattr(different_activations_model, "peft_config") else None
@@ -295,7 +307,12 @@ class LensAnalyzer:
                     torch_dtype=self.model_dtype,
                 )
             else:
-                self.orig_model = OrigWrapper(self.model_name, load_in_8bit=False, base_to_use=self.shared_base_model, torch_dtype=self.model_dtype)
+                self.orig_model = OrigWrapper(
+                    self.model_name,
+                    load_in_8bit=False,
+                    base_to_use=self.shared_base_model,
+                    torch_dtype=self.model_dtype,
+                )
                 lora_name = None
 
             self.lora_name = lora_name
@@ -777,7 +794,7 @@ class LensAnalyzer:
         input_ids: torch.Tensor,
         num_rollouts_per_position: int = 8,
         temperature: float = 1.0,
-        batch_size_for_rollouts: int = 8,
+        n_groups_per_rollout: int = 8,
     ) -> Tuple[torch.Tensor, torch.Tensor, List[List[float]]]:
         """
         Simplified batched version for best-of-k explanation optimization.
@@ -789,7 +806,7 @@ class LensAnalyzer:
             input_ids: Input token IDs (1, seq_len)
             num_rollouts_per_position: Number of rollouts per position (default: 8)
             temperature: Sampling temperature
-            batch_size_for_rollouts: How many positions to process at once (default: 8)
+            n_groups_per_rollout: How many positions to process at once (default: 8)
 
         Returns:
             best_explanations: Best explanation tokens for each position (batch_size, t_text)
@@ -802,8 +819,8 @@ class LensAnalyzer:
         all_salience_scores = []
 
         # Process positions in sub-batches to manage memory
-        for start_idx in range(0, total_positions, batch_size_for_rollouts):
-            end_idx = min(start_idx + batch_size_for_rollouts, total_positions)
+        for start_idx in range(0, total_positions, n_groups_per_rollout):
+            end_idx = min(start_idx + n_groups_per_rollout, total_positions)
             batch_size = end_idx - start_idx
 
             A_batch = A_targets[start_idx:end_idx]
@@ -864,7 +881,7 @@ class LensAnalyzer:
         verbose: bool = True,
         A_target: torch.Tensor = None,
         input_ids: torch.Tensor = None,
-        just_do_k_rollouts: bool = False,
+        best_of_k: bool = False,
         duplicate_prefix: bool = False,
         **kwargs,
     ) -> Tuple[torch.Tensor, float, List[float]]:
@@ -898,7 +915,7 @@ class LensAnalyzer:
         temperature = kwargs.get("temperature", 1.0)
         num_samples = kwargs.get("num_samples_per_iteration", 16)
 
-        if just_do_k_rollouts:
+        if best_of_k:
             # Perform k rollouts in batches, find the best, and return without optimization.
             rollout_batch_size = num_samples  # A fixed batch size to prevent OOM.
 
@@ -911,8 +928,8 @@ class LensAnalyzer:
             all_mses = []
 
             with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=self.use_bf16):
-                for i in range(0, just_do_k_rollouts, rollout_batch_size):
-                    current_batch_size = min(rollout_batch_size, just_do_k_rollouts - i)
+                for i in range(0, best_of_k, rollout_batch_size):
+                    current_batch_size = min(rollout_batch_size, best_of_k - i)
                     if verbose and num_samples > rollout_batch_size:
                         print(
                             f"  Rollout batch {i // rollout_batch_size + 1}/{(num_samples + rollout_batch_size - 1) // rollout_batch_size}, size {current_batch_size}"
@@ -1383,13 +1400,15 @@ class LensAnalyzer:
         for batch_idx, batch in enumerate(tqdm.tqdm(batch_data, desc="Processing batches")):
             # Report progress if callback is provided
             if progress_callback is not None:
-                should_continue = progress_callback(batch_idx + 1, total_batches, f"Processing batch {batch_idx + 1}/{total_batches}")
+                should_continue = progress_callback(
+                    batch_idx + 1, total_batches, f"Processing batch {batch_idx + 1}/{total_batches}"
+                )
                 # Check if the callback signals to stop (returns False)
                 if should_continue is False:
                     print("Analysis cancelled by user.")
                     # Return partial results collected so far
                     return pd.DataFrame(results)
-            
+
             input_ids_batch, A_batch, token_positions_batch = batch
             current_batch_size = input_ids_batch.shape[1]
 
@@ -1421,12 +1440,12 @@ class LensAnalyzer:
             if optimize_explanations_config is not None:
                 # Check if we should use batched best-of-k optimization
                 use_batched = optimize_explanations_config.get("use_batched", True)
-                just_do_k_rollouts = optimize_explanations_config.get("just_do_k_rollouts", 8)
+                best_of_k = optimize_explanations_config.get("best_of_k", 8)
 
-                if use_batched and just_do_k_rollouts:
+                if use_batched and best_of_k:
                     # Use the new batched optimization method
-                    num_rollouts = just_do_k_rollouts if isinstance(just_do_k_rollouts, int) else 8
-                    batch_size_for_rollouts = optimize_explanations_config.get("batch_size_for_rollouts", 8)
+                    num_rollouts = best_of_k if isinstance(best_of_k, int) else 8
+                    n_groups_per_rollout = optimize_explanations_config.get("n_groups_per_rollout", 8)
 
                     optimized_tokens, optimized_mses, optimized_salience_scores = self._optimize_batch_best_of_k(
                         A_batch,
@@ -1434,7 +1453,7 @@ class LensAnalyzer:
                         input_ids,
                         num_rollouts_per_position=num_rollouts,
                         temperature=optimize_explanations_config.get("temperature", temperature),
-                        batch_size_for_rollouts=batch_size_for_rollouts,
+                        n_groups_per_rollout=n_groups_per_rollout,
                     )
 
                     optimized_hard_token_ids = optimized_tokens
@@ -1452,9 +1471,9 @@ class LensAnalyzer:
                         # Report detailed progress for optimization
                         if progress_callback is not None:
                             should_continue = progress_callback(
-                                batch_idx + 1, 
-                                total_batches, 
-                                f"Batch {batch_idx + 1}/{total_batches}: Optimizing token {j + 1}/{current_batch_size}"
+                                batch_idx + 1,
+                                total_batches,
+                                f"Batch {batch_idx + 1}/{total_batches}: Optimizing token {j + 1}/{current_batch_size}",
                             )
                             # Check if the callback signals to stop (returns False)
                             if should_continue is False:
@@ -2248,7 +2267,7 @@ class LensAnalyzer:
         if cancellation_check and cancellation_check():
             print("Generation cancelled by user before starting.")
             return []
-        
+
         # Disable torch compile for this function
         with nullcontext():
             # Use the appropriate tokenizer
@@ -2523,12 +2542,12 @@ class LensAnalyzer:
                 else:
                     # Optimize explanations
                     use_batched = optimize_explanations_config.get("use_batched", True)
-                    just_do_k_rollouts = optimize_explanations_config.get("just_do_k_rollouts", 8)
+                    best_of_k = optimize_explanations_config.get("best_of_k", 8)
 
-                    if use_batched and just_do_k_rollouts:
+                    if use_batched and best_of_k:
                         # Use batched optimization
-                        num_rollouts = just_do_k_rollouts if isinstance(just_do_k_rollouts, int) else 8
-                        batch_size_for_rollouts = optimize_explanations_config.get("batch_size_for_rollouts", 8)
+                        num_rollouts = best_of_k if isinstance(best_of_k, int) else 8
+                        n_groups_per_rollout = optimize_explanations_config.get("n_groups_per_rollout", 8)
 
                         optimized_tokens, optimized_mses, optimized_salience_scores = self._optimize_batch_best_of_k(
                             A_batch,
@@ -2536,7 +2555,7 @@ class LensAnalyzer:
                             input_ids,
                             num_rollouts_per_position=num_rollouts,
                             temperature=optimize_explanations_config.get("temperature", temperature),
-                            batch_size_for_rollouts=batch_size_for_rollouts,
+                            n_groups_per_rollout=n_groups_per_rollout,
                         )
 
                         all_gen_hard_token_ids.append(optimized_tokens)
@@ -2815,126 +2834,124 @@ def analyze_ordering_effects(results_df: pd.DataFrame) -> pd.DataFrame:
     Analyze ordering effects by comparing original vs switched query results.
     """
     # Separate original and switched results
-    original_results = results_df[~results_df['is_switched']].copy()
-    switched_results = results_df[results_df['is_switched']].copy()
-    
+    original_results = results_df[~results_df["is_switched"]].copy()
+    switched_results = results_df[results_df["is_switched"]].copy()
+
     # Calculate position bias (preference for A vs B)
     def calculate_position_proportion_A(answers):
         """Calculate bias toward position A"""
-        valid_answers = [a for a in answers if a in ['A', 'B']]
+        valid_answers = [a for a in answers if a in ["A", "B"]]
         if not valid_answers:
             return 0.0
-        return sum(1 for a in valid_answers if a == 'A') / len(valid_answers)
-    
+        return sum(1 for a in valid_answers if a == "A") / len(valid_answers)
+
     # Aggregate results
     ordering_analysis = []
-    
+
     for _, orig_row in original_results.iterrows():
         # Find corresponding switched result
-        switched_row = switched_results[
-            switched_results['original_question_id'] == orig_row['original_question_id']
-        ]
+        switched_row = switched_results[switched_results["original_question_id"] == orig_row["original_question_id"]]
         print(f"looking at questions {orig_row['question_id']} and {switched_row['question_id']}")
-        
+
         if len(switched_row) == 0:
             continue
-            
+
         switched_row = switched_row.iloc[0]
-        
+
         # Calculate metrics
-        orig_neutral_a_proportion_A = calculate_position_proportion_A(orig_row['neutral_answers'])
-        orig_harmful_a_proportion_A = calculate_position_proportion_A(orig_row['harmful_answers'])
-        switch_neutral_a_proportion_A = calculate_position_proportion_A(switched_row['neutral_answers'])
-        switch_harmful_a_proportion_A = calculate_position_proportion_A(switched_row['harmful_answers'])
-        print(f"orig_neutral_a_proportion_A: {orig_neutral_a_proportion_A}, orig_harmful_a_proportion_A: {orig_harmful_a_proportion_A}, switch_neutral_a_proportion_A: {switch_neutral_a_proportion_A}, switch_harmful_a_proportion_A: {switch_harmful_a_proportion_A}")
-        
+        orig_neutral_a_proportion_A = calculate_position_proportion_A(orig_row["neutral_answers"])
+        orig_harmful_a_proportion_A = calculate_position_proportion_A(orig_row["harmful_answers"])
+        switch_neutral_a_proportion_A = calculate_position_proportion_A(switched_row["neutral_answers"])
+        switch_harmful_a_proportion_A = calculate_position_proportion_A(switched_row["harmful_answers"])
+        print(
+            f"orig_neutral_a_proportion_A: {orig_neutral_a_proportion_A}, orig_harmful_a_proportion_A: {orig_harmful_a_proportion_A}, switch_neutral_a_proportion_A: {switch_neutral_a_proportion_A}, switch_harmful_a_proportion_A: {switch_harmful_a_proportion_A}"
+        )
+
         # Content-based accuracy (de-biased by averaging over original and switched prompts)
-        content_neutral_acc = (orig_row['neutral_accuracy'] + switched_row['neutral_accuracy']) / 2
-        content_harmful_acc = (orig_row['harmful_accuracy'] + switched_row['harmful_accuracy']) / 2
-        
-        ordering_analysis.append({
-            'question_id': orig_row['original_question_id'],
-            'category': orig_row['category'],
-            'orig_neutral_a_proportion_A': orig_neutral_a_proportion_A,
-            'orig_harmful_a_proportion_A': orig_harmful_a_proportion_A,
-            'switch_neutral_a_proportion_A': switch_neutral_a_proportion_A,
-            'switch_harmful_a_proportion_A': switch_harmful_a_proportion_A,
-            'avg_neutral_a_bias': (orig_neutral_a_proportion_A + switch_neutral_a_proportion_A) / 2,
-            'avg_harmful_a_bias': (orig_harmful_a_proportion_A + switch_harmful_a_proportion_A) / 2,
-            'orig_sandbagging': orig_row['sandbagging_rate'],
-            'switch_sandbagging': switched_row['sandbagging_rate'],
-            'content_neutral_accuracy': content_neutral_acc,
-            'content_harmful_accuracy': content_harmful_acc,
-            'position_effect_neutral': abs(orig_neutral_a_proportion_A - (1- switch_neutral_a_proportion_A)),
-            'position_effect_harmful': abs(orig_harmful_a_proportion_A - (1- switch_harmful_a_proportion_A))
-        })
-    
+        content_neutral_acc = (orig_row["neutral_accuracy"] + switched_row["neutral_accuracy"]) / 2
+        content_harmful_acc = (orig_row["harmful_accuracy"] + switched_row["harmful_accuracy"]) / 2
+
+        ordering_analysis.append(
+            {
+                "question_id": orig_row["original_question_id"],
+                "category": orig_row["category"],
+                "orig_neutral_a_proportion_A": orig_neutral_a_proportion_A,
+                "orig_harmful_a_proportion_A": orig_harmful_a_proportion_A,
+                "switch_neutral_a_proportion_A": switch_neutral_a_proportion_A,
+                "switch_harmful_a_proportion_A": switch_harmful_a_proportion_A,
+                "avg_neutral_a_bias": (orig_neutral_a_proportion_A + switch_neutral_a_proportion_A) / 2,
+                "avg_harmful_a_bias": (orig_harmful_a_proportion_A + switch_harmful_a_proportion_A) / 2,
+                "orig_sandbagging": orig_row["sandbagging_rate"],
+                "switch_sandbagging": switched_row["sandbagging_rate"],
+                "content_neutral_accuracy": content_neutral_acc,
+                "content_harmful_accuracy": content_harmful_acc,
+                "position_effect_neutral": abs(orig_neutral_a_proportion_A - (1 - switch_neutral_a_proportion_A)),
+                "position_effect_harmful": abs(orig_harmful_a_proportion_A - (1 - switch_harmful_a_proportion_A)),
+            }
+        )
+
     return pd.DataFrame(ordering_analysis)
+
 
 def plot_ordering_effects(ordering_df: pd.DataFrame):
     """
     Visualize ordering effects analysis.
     """
     fig, axes = plt.subplots(2, 2, figsize=(15, 12))
-    
+
     # 1. Overall position bias
     ax = axes[0, 0]
-    contexts = ['Neutral', 'Harmful']
-    avg_biases = [
-        ordering_df['avg_neutral_a_bias'].mean(),
-        ordering_df['avg_harmful_a_bias'].mean()
-    ]
+    contexts = ["Neutral", "Harmful"]
+    avg_biases = [ordering_df["avg_neutral_a_bias"].mean(), ordering_df["avg_harmful_a_bias"].mean()]
     ax.bar(contexts, avg_biases, alpha=0.7)
-    ax.axhline(y=0.5, color='r', linestyle='--', label='No bias')
-    ax.set_ylabel('Average Bias Toward (A)')
-    ax.set_title('Overall Position Bias by Context')
+    ax.axhline(y=0.5, color="r", linestyle="--", label="No bias")
+    ax.set_ylabel("Average Bias Toward (A)")
+    ax.set_title("Overall Position Bias by Context")
     ax.set_ylim(0, 1)
     ax.legend()
-    
+
     # 2. Position effect magnitude
     ax = axes[0, 1]
-    position_effects = pd.DataFrame({
-        'Neutral': ordering_df['position_effect_neutral'],
-        'Harmful': ordering_df['position_effect_harmful']
-    })
+    position_effects = pd.DataFrame(
+        {"Neutral": ordering_df["position_effect_neutral"], "Harmful": ordering_df["position_effect_harmful"]}
+    )
     position_effects.boxplot(ax=ax)
-    ax.set_ylabel('Position Effect (|Original - Switched|)')
-    ax.set_title('Distribution of Position Effects')
-    
+    ax.set_ylabel("Position Effect (|Original - Switched|)")
+    ax.set_title("Distribution of Position Effects")
+
     # 3. Sandbagging comparison
     ax = axes[1, 0]
-    ax.scatter(ordering_df['orig_sandbagging'], ordering_df['switch_sandbagging'], alpha=0.6)
-    ax.plot([0, 1], [0, 1], 'r--', label='y=x')
-    ax.set_xlabel('Original Sandbagging Rate')
-    ax.set_ylabel('Switched Sandbagging Rate')
-    ax.set_title('Sandbagging: Original vs Switched')
+    ax.scatter(ordering_df["orig_sandbagging"], ordering_df["switch_sandbagging"], alpha=0.6)
+    ax.plot([0, 1], [0, 1], "r--", label="y=x")
+    ax.set_xlabel("Original Sandbagging Rate")
+    ax.set_ylabel("Switched Sandbagging Rate")
+    ax.set_title("Sandbagging: Original vs Switched")
     ax.set_xlim(-0.1, 1.1)
     ax.set_ylim(-0.1, 1.1)
     ax.legend()
-    
+
     # 4. Category-wise position bias
     ax = axes[1, 1]
-    category_bias = ordering_df.groupby('category')[['avg_neutral_a_bias', 'avg_harmful_a_bias']].mean()
-    category_bias.plot(kind='bar', ax=ax, alpha=0.7)
-    ax.axhline(y=0.5, color='r', linestyle='--')
-    ax.set_ylabel('Average Bias Toward (A)')
-    ax.set_title('Position Bias by Category')
-    ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right')
-    ax.legend(['Neutral', 'Harmful'])
-    
+    category_bias = ordering_df.groupby("category")[["avg_neutral_a_bias", "avg_harmful_a_bias"]].mean()
+    category_bias.plot(kind="bar", ax=ax, alpha=0.7)
+    ax.axhline(y=0.5, color="r", linestyle="--")
+    ax.set_ylabel("Average Bias Toward (A)")
+    ax.set_title("Position Bias by Category")
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="right")
+    ax.legend(["Neutral", "Harmful"])
+
     plt.tight_layout()
     plt.show()
-    
+
     # Print summary statistics
     print("\nOrdering Effects Summary:")
-    print("="*60)
+    print("=" * 60)
     print(f"Average position bias (neutral): {ordering_df['avg_neutral_a_bias'].mean():.3f}")
     print(f"Average position bias (harmful): {ordering_df['avg_harmful_a_bias'].mean():.3f}")
     print(f"Average position effect (neutral): {ordering_df['position_effect_neutral'].mean():.3f}")
     print(f"Average position effect (harmful): {ordering_df['position_effect_harmful'].mean():.3f}")
-    print(f"\nQueries with strong position effects (>0.3):")
+    print("\nQueries with strong position effects (>0.3):")
     strong_effects = ordering_df[
-        (ordering_df['position_effect_neutral'] > 0.3) | 
-        (ordering_df['position_effect_harmful'] > 0.3)
+        (ordering_df["position_effect_neutral"] > 0.3) | (ordering_df["position_effect_harmful"] > 0.3)
     ]
     print(f"Count: {len(strong_effects)} / {len(ordering_df)}")

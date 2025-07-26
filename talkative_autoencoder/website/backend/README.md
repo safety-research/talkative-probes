@@ -105,7 +105,7 @@ Main endpoint for real-time analysis. Protocol:
   "options": {
     "temperature": 0.1,
     "optimize_explanations_config": {
-      "just_do_k_rollouts": 8,
+      "best_of_k": 8,
       "batch_size": 32
     },
     "calculate_salience": true,

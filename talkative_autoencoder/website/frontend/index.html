@@ -88,8 +88,13 @@
 
             <!-- Connection Status -->
             <div id="connectionStatus" class="mb-4 p-3 rounded-lg bg-gray-100 text-gray-700 flex justify-between items-center">
-                <div>
-                    <span class="font-semibold">Status:</span> <span id="statusText">Disconnected</span>
+                <div class="flex items-center gap-4">
+                    <div>
+                        <span class="font-semibold">Status:</span> <span id="statusText">Disconnected</span>
+                    </div>
+                    <div id="queueIndicator" class="hidden">
+                        <span class="font-semibold">Queue:</span> <span id="queueText">0</span>
+                    </div>
                 </div>
                 <button id="resetBtn" class="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700 transition-colors" title="Reset model and clear memory">
                     Reset Model

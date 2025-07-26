@@ -255,10 +255,10 @@
         no_kl=True,
         calculate_token_salience=True,
         optimize_explanations_config={
-            "just_do_k_rollouts": 8,
+            "best_of_k": 8,
             "use_batched": True,
             "temperature": 1.0,
-            "batch_size_for_rollouts": 1,
+            "n_groups_per_rollout": 1,
         },
     )
     print(df.to_string(index=False))
@@ -325,10 +325,10 @@
     #     no_kl=True,
     #     calculate_token_salience=True,
     #     optimize_explanations_config={
-    #         "just_do_k_rollouts": 8,
+    #         "best_of_k": 8,
     #         "use_batched": True,
 #         "temperature": 1.0,
-#         "batch_size_for_rollouts": 8,
+#         "n_groups_per_rollout": 8,
 #     },
 # )
 # print(dfche.to_string(index=False))
@@ -360,10 +360,10 @@ dfchess1shot = analyzerchat.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 128,
+        "best_of_k": 128,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 2,
+        "n_groups_per_rollout": 2,
     },
 )
 print(dfchess1shot.to_json())
@@ -980,10 +980,10 @@ def analyze_transcript_representations(analyzer_obj, transcript, model_name="Unk
         batch_size=64,
         no_kl=True,  # Skip KL calculation
         optimize_explanations_config={
-            "just_do_k_rollouts": 64,
+            "best_of_k": 64,
             "use_batched": True,
             "temperature": 1.0,
-            "batch_size_for_rollouts": 1,
+            "n_groups_per_rollout": 1,
         },
     )
     results["neutral"] = neutral_df
@@ -998,10 +998,10 @@ def analyze_transcript_representations(analyzer_obj, transcript, model_name="Unk
         batch_size=64,
         no_kl=True,  # Skip KL calculation
         optimize_explanations_config={
-            "just_do_k_rollouts": 64,
+            "best_of_k": 64,
             "use_batched": True,
             "temperature": 1.0,
-            "batch_size_for_rollouts": 1,
+            "n_groups_per_rollout": 1,
         },
     )
     results["harmful"] = harmful_df
@@ -1547,10 +1547,10 @@ for i in range(94, 96):
         batch_size=64,
         no_kl=True,  # Skip KL calculation
         optimize_explanations_config={
-            "just_do_k_rollouts": 32,
+            "best_of_k": 32,
             "use_batched": True,
             "temperature": 1.0,
-            "batch_size_for_rollouts": 2,
+            "n_groups_per_rollout": 2,
         },
     )
     neutral_results.append(neutral_df)
@@ -1571,10 +1571,10 @@ for i in range(92, 93):
         batch_size=64,
         no_kl=True,  # Skip KL calculation
         optimize_explanations_config={
-            "just_do_k_rollouts": 32,
+            "best_of_k": 32,
             "use_batched": True,
             "temperature": 1.0,
-            "batch_size_for_rollouts": 2,
+            "n_groups_per_rollout": 2,
         },
     )
     harmful_results.append(harmful_df)
@@ -1664,10 +1664,10 @@ dfblackmail1shot10 = analyzerchat.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 8,
+        "best_of_k": 8,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 24,
+        "n_groups_per_rollout": 24,
     },
 )
 # %%
@@ -1706,10 +1706,10 @@ dfblackmail1shot = analyzerchat.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        "just_do_k_rollouts": 8,
+        "best_of_k": 8,
         "use_batched": True,
         "temperature": 1.0,
-        "batch_size_for_rollouts": 8,
+        "n_groups_per_rollout": 8,
     },
 )
 print(dfblackmail1shot.to_json())
@@ -1831,10 +1831,10 @@ dfmultiple_choicenormal = analyzerchat.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        # "just_do_k_rollouts": 64,
+        # "best_of_k": 64,
         # "use_batched": True,
         # "temperature": 1.4,
-        # "batch_size_for_rollouts": 3,
+        # "n_groups_per_rollout": 3,
     },
 )
 #print(dfmultiple_choice2.to_string(index=False))
@@ -1877,10 +1877,10 @@ dfwhale = analyzerchat.analyze_all_tokens(
         no_kl=True,
         calculate_token_salience=True,
         optimize_explanations_config={
-            "just_do_k_rollouts": 128,
+            "best_of_k": 128,
             "use_batched": True,
             "temperature": 1.0,
-            "batch_size_for_rollouts": 2,
+            "n_groups_per_rollout": 2,
         },
     )
 print(dfwhale.to_json())
@@ -1913,10 +1913,10 @@ dfvlad = analyzerchat.analyze_all_tokens(
         no_kl=True,
         calculate_token_salience=True,
         optimize_explanations_config={
-            "just_do_k_rollouts": 128,
+            "best_of_k": 128,
             "use_batched": True,
             "temperature": 1.0,
-            "batch_size_for_rollouts": 2,
+            "n_groups_per_rollout": 2,
         },
     )
 print(dfvlad.to_json())
@@ -1963,10 +1963,10 @@ dfvlad = analyzerchat.analyze_all_tokens(
         no_kl=True,
         calculate_token_salience=True,
         optimize_explanations_config={
-            "just_do_k_rollouts": 128,
+            "best_of_k": 128,
             "use_batched": True,
             "temperature": 1.0,
-            "batch_size_for_rollouts": 2,
+            "n_groups_per_rollout": 2,
         },
     )
 print(dfvlad.to_json())

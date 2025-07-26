@@ -686,7 +686,7 @@ class LensAnalyzer:
                                  position_to_analyze: int, verbose: bool = True, 
                                  A_target: torch.Tensor = None,
                                  input_ids: torch.Tensor = None,
-                                 just_do_k_rollouts: bool = False, 
+                                 best_of_k: bool = False, 
                                  duplicate_prefix: bool = False,
                                  **kwargs) -> Tuple[torch.Tensor, float, List[float]]:
         """
@@ -717,7 +717,7 @@ class LensAnalyzer:
         temperature = kwargs.get('temperature', 1.0)
         num_samples = kwargs.get('num_samples_per_iteration', 16)
 
-        if just_do_k_rollouts:
+        if best_of_k:
             # Perform k rollouts in batches, find the best, and return without optimization.
             rollout_batch_size = num_samples # A fixed batch size to prevent OOM.
 
@@ -728,8 +728,8 @@ class LensAnalyzer:
             all_mses = []
             
             with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=self.use_bf16):
-                for i in range(0, just_do_k_rollouts, rollout_batch_size):
-                    current_batch_size = min(rollout_batch_size, just_do_k_rollouts - i)
+                for i in range(0, best_of_k, rollout_batch_size):
+                    current_batch_size = min(rollout_batch_size, best_of_k - i)
                     if verbose and num_samples > rollout_batch_size:
                         print(f"  Rollout batch {i//rollout_batch_size + 1}/{(num_samples + rollout_batch_size - 1)//rollout_batch_size}, size {current_batch_size}")
 
@@ -909,7 +909,7 @@ class LensAnalyzer:
                                  position_to_analyze: int, verbose: bool = True, 
                                  A_target: torch.Tensor = None,
                                  input_ids: torch.Tensor = None,
-                                 just_do_k_rollouts: bool = False, 
+                                 best_of_k: bool = False, 
                                  duplicate_prefix: bool = False,
                                  **kwargs) -> Tuple[torch.Tensor, float, List[float]]:
         """
@@ -940,7 +940,7 @@ class LensAnalyzer:
         temperature = kwargs.get('temperature', 1.0)
         num_samples = kwargs.get('num_samples_per_iteration', 16)
 
-        if just_do_k_rollouts:
+        if best_of_k:
             # Perform k rollouts in batches, find the best, and return without optimization.
             rollout_batch_size = num_samples # A fixed batch size to prevent OOM.
 
@@ -951,8 +951,8 @@ class LensAnalyzer:
             all_mses = []
             
             with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16, enabled=self.use_bf16):
-                for i in range(0, just_do_k_rollouts, rollout_batch_size):
-                    current_batch_size = min(rollout_batch_size, just_do_k_rollouts - i)
+                for i in range(0, best_of_k, rollout_batch_size):
+                    current_batch_size = min(rollout_batch_size, best_of_k - i)
                     if verbose and num_samples > rollout_batch_size:
                         print(f"  Rollout batch {i//rollout_batch_size + 1}/{(num_samples + rollout_batch_size - 1)//rollout_batch_size}, size {current_batch_size}")
 
@@ -1372,11 +1372,11 @@ class LensAnalyzer:
             if optimize_explanations_config is not None:
                 # Check if we should use batched best-of-k optimization
                 use_batched = optimize_explanations_config.get('use_batched', True)
-                just_do_k_rollouts = optimize_explanations_config.get('just_do_k_rollouts', 8)
+                best_of_k = optimize_explanations_config.get('best_of_k', 8)
                 
-                if use_batched and just_do_k_rollouts:
+                if use_batched and best_of_k:
                     # Use the new batched optimization method
-                    num_rollouts = just_do_k_rollouts if isinstance(just_do_k_rollouts, int) else 8
+                    num_rollouts = best_of_k if isinstance(best_of_k, int) else 8
                     batch_positions = optimize_explanations_config.get('batch_positions', 8)
                     
                     optimized_tokens, optimized_mses, optimized_salience_scores = self._optimize_batch_best_of_k(
@@ -2684,7 +2684,7 @@ print(df.to_string(index=False))
 print(df.to_json())
 #analyzerchattuned_basechat.shared_base_model.to('cpu')
 # %%
-df = analyzerchattuned_basechat.analyze_all_tokens(continuations[1][:500], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=0.1, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'just_do_k_rollouts': 256})
+df = analyzerchattuned_basechat.analyze_all_tokens(continuations[1][:500], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=0.1, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'best_of_k': 256})
 print(df.to_string(index=False))
 print(df.to_json())
 # %%
@@ -2693,14 +2693,14 @@ print(df.to_json())
 # analyzerchat.shared_base_model.to('cuda')
 dfopt = analyzerchattuned_basechat.optimize_explanation_for_mse(continuations[1],position_to_analyze=42,num_iterations=10,  num_samples_per_iteration=32, salience_pct_threshold=0.00, temperature=1.0, seed=42, max_temp_increases=2, temp_increase_factor=1.4, verbose=True)
 # %%
-dfopt = analyzerchattuned_basechat.optimize_explanation_for_mse(continuations[1],position_to_analyze=42,num_iterations=10,  num_samples_per_iteration=32, salience_pct_threshold=0.00, temperature=1.0, seed=42, max_temp_increases=2, temp_increase_factor=1.4, verbose=True, just_do_k_rollouts=256, duplicate_prefix=False)
+dfopt = analyzerchattuned_basechat.optimize_explanation_for_mse(continuations[1],position_to_analyze=42,num_iterations=10,  num_samples_per_iteration=32, salience_pct_threshold=0.00, temperature=1.0, seed=42, max_temp_increases=2, temp_increase_factor=1.4, verbose=True, best_of_k=256, duplicate_prefix=False)
 # %%
-dfopt = analyzerchattuned_basechat.optimize_explanation_for_mse(continuations[1],position_to_analyze=42,num_iterations=10,  num_samples_per_iteration=32, salience_pct_threshold=0.00, temperature=1.0, seed=42, max_temp_increases=2, temp_increase_factor=1.4, verbose=True, just_do_k_rollouts=256, duplicate_prefix=True)
+dfopt = analyzerchattuned_basechat.optimize_explanation_for_mse(continuations[1],position_to_analyze=42,num_iterations=10,  num_samples_per_iteration=32, salience_pct_threshold=0.00, temperature=1.0, seed=42, max_temp_increases=2, temp_increase_factor=1.4, verbose=True, best_of_k=256, duplicate_prefix=True)
 # %%
-dfopt_just_do_k = analyzerchattuned_basechat.optimize_explanation_for_mse(continuations[1],position_to_analyze=42,num_iterations=10,  num_samples_per_iteration=32, salience_pct_threshold=0.00, temperature=1.1, seed=42, max_temp_increases=2, temp_increase_factor=1.4, verbose=True, just_do_k_rollouts=256)
-dfopt_just_do_k = analyzerchattuned_basechat.optimize_explanation_for_mse(continuations[1],position_to_analyze=42,num_iterations=10,  num_samples_per_iteration=32, salience_pct_threshold=0.00, temperature=1.2, seed=42, max_temp_increases=2, temp_increase_factor=1.4, verbose=True, just_do_k_rollouts=256)
-dfopt_just_do_k = analyzerchattuned_basechat.optimize_explanation_for_mse(continuations[1],position_to_analyze=42,num_iterations=10,  num_samples_per_iteration=32, salience_pct_threshold=0.00, temperature=1.3, seed=42, max_temp_increases=2, temp_increase_factor=1.4, verbose=True, just_do_k_rollouts=256)
-dfopt_just_do_k = analyzerchattuned_basechat.optimize_explanation_for_mse(continuations[1],position_to_analyze=42,num_iterations=10,  num_samples_per_iteration=32, salience_pct_threshold=0.00, temperature=1.4, seed=42, max_temp_increases=2, temp_increase_factor=1.4, verbose=True, just_do_k_rollouts=256)
+dfopt_just_do_k = analyzerchattuned_basechat.optimize_explanation_for_mse(continuations[1],position_to_analyze=42,num_iterations=10,  num_samples_per_iteration=32, salience_pct_threshold=0.00, temperature=1.1, seed=42, max_temp_increases=2, temp_increase_factor=1.4, verbose=True, best_of_k=256)
+dfopt_just_do_k = analyzerchattuned_basechat.optimize_explanation_for_mse(continuations[1],position_to_analyze=42,num_iterations=10,  num_samples_per_iteration=32, salience_pct_threshold=0.00, temperature=1.2, seed=42, max_temp_increases=2, temp_increase_factor=1.4, verbose=True, best_of_k=256)
+dfopt_just_do_k = analyzerchattuned_basechat.optimize_explanation_for_mse(continuations[1],position_to_analyze=42,num_iterations=10,  num_samples_per_iteration=32, salience_pct_threshold=0.00, temperature=1.3, seed=42, max_temp_increases=2, temp_increase_factor=1.4, verbose=True, best_of_k=256)
+dfopt_just_do_k = analyzerchattuned_basechat.optimize_explanation_for_mse(continuations[1],position_to_analyze=42,num_iterations=10,  num_samples_per_iteration=32, salience_pct_threshold=0.00, temperature=1.4, seed=42, max_temp_increases=2, temp_increase_factor=1.4, verbose=True, best_of_k=256)
 
 
 
@@ -3630,7 +3630,7 @@ print(df.to_string(index=False))
 print(df.to_json())
 #analyzerchattuned_basech
 # %%
-df = analyzerchattuned_basechat.analyze_all_tokens(continuation[1], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=0.1, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'just_do_k_rollouts': 256})
+df = analyzerchattuned_basechat.analyze_all_tokens(continuation[1], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=0.1, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'best_of_k': 256})
 print(df.to_string(index=False))
 print(df.to_json())
 #analyzerchattuned_bas
@@ -3896,7 +3896,7 @@ print(df.to_json())
 #analyzerchattuned.shared_base_model.to('cpu')
 # %%
 # %%
-df = analyzerchattuned_basechat.analyze_all_tokens(continuations[0][:500], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=0.1, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'just_do_k_rollouts': 32})
+df = analyzerchattuned_basechat.analyze_all_tokens(continuations[0][:500], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=0.1, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'best_of_k': 32})
 print(df.to_string(index=False))
 print(df.to_json())
 #
@@ -3939,11 +3939,11 @@ for i, cont in enumerate(continuations):
 #analyzerchattuned.shared_base_model.to('cpu')
 # %%
 # %%
-df = analyzerchattuned_basechat.analyze_all_tokens(continuations[0][:], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=1, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'just_do_k_rollouts': 64})
+df = analyzerchattuned_basechat.analyze_all_tokens(continuations[0][:], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=1, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'best_of_k': 64})
 print(df.to_string(index=False))
 print(df.to_json())
 # %%
-dfpt = analyzerchattuned.analyze_all_tokens(continuations[0][:], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=1, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'just_do_k_rollouts': 64})
+dfpt = analyzerchattuned.analyze_all_tokens(continuations[0][:], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=1, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'best_of_k': 64})
 print(dfpt.to_string(index=False))
 print(dfpt.to_json())
 # %%
@@ -3955,11 +3955,11 @@ dfpt1shot = analyzerchattuned.analyze_all_tokens(continuations[0][:], batch_size
 print(dfpt1shot.to_string(index=False))
 print(dfpt1shot.to_json())
 # %%
-dfhightemp = analyzerchattuned_basechat.analyze_all_tokens(continuations[0][:], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=1.4, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'just_do_k_rollouts': 64, 'temperature': 1.4})
+dfhightemp = analyzerchattuned_basechat.analyze_all_tokens(continuations[0][:], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=1.4, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'best_of_k': 64, 'temperature': 1.4})
 print(dfhightemp.to_string(index=False))
 print(dfhightemp.to_json())
 # %%
-dfpthightemp = analyzerchattuned.analyze_all_tokens(continuations[0][:], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=1.4, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'just_do_k_rollouts': 64, 'temperature': 1.4})
+dfpthightemp = analyzerchattuned.analyze_all_tokens(continuations[0][:], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=1.4, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'best_of_k': 64, 'temperature': 1.4})
 print(dfpthightemp.to_string(index=False))
 print(dfpthightemp.to_json())
 # %%# %%
@@ -4095,11 +4095,11 @@ for i, cont in enumerate(continuations_authority):
     print()
 # %%
 
-dfauthority = analyzerchattuned_basechat.analyze_all_tokens(continuations_authority[0], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=1, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'just_do_k_rollouts': 32})
+dfauthority = analyzerchattuned_basechat.analyze_all_tokens(continuations_authority[0], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=1, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'best_of_k': 32})
 print(dfauthority.to_string(index=False))
 print(dfauthority.to_json())
 # %%
-dfptauthority = analyzerchattuned.analyze_all_tokens(continuations_authority[0], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=1, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'just_do_k_rollouts': 32})
+dfptauthority = analyzerchattuned.analyze_all_tokens(continuations_authority[0], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=1, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'best_of_k': 32})
 print(dfptauthority.to_string(index=False))
 print(dfptauthority.to_json())
 # %%
@@ -4208,11 +4208,11 @@ dfpt1shotblackmail = analyzerchattuned.analyze_all_tokens(blackmail_continuation
 print(dfpt1shotblackmail.to_string(index=False))
 print(dfpt1shotblackmail.to_json())
 # %%
-dfoptblackmail = analyzerchattuned_basechat.analyze_all_tokens(blackmail_continuations[0], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=1.3, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'just_do_k_rollouts': 64})
+dfoptblackmail = analyzerchattuned_basechat.analyze_all_tokens(blackmail_continuations[0], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=1.3, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'best_of_k': 64})
 print(dfoptblackmail.to_string(index=False))
 print(dfoptblackmail.to_json())
 # %%
-dfptoptblackmail = analyzerchattuned.analyze_all_tokens(blackmail_continuations[8], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=1.0, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'just_do_k_rollouts': 64})
+dfptoptblackmail = analyzerchattuned.analyze_all_tokens(blackmail_continuations[8], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=1.0, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'best_of_k': 64})
 print(dfptoptblackmail.to_string(index=False))
 print(dfptoptblackmail.to_json())
 # %%    
@@ -4274,7 +4274,7 @@ print(df1shotblackmail.to_json())
 # %%
 
 # %%
-df1shotblackmail = analyzerchattuned_basechat.analyze_all_tokens(blackmail_continuations[8], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=0.1, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'just_do_k_rollouts': 8})
+df1shotblackmail = analyzerchattuned_basechat.analyze_all_tokens(blackmail_continuations[8], batch_size=64, no_eval=False, move_devices=False, return_structured=True, temperature=0.1, logit_lens_analysis=True, no_kl=True, calculate_token_salience=True,optimize_explanations_config={'best_of_k': 8})
 print(df1shotblackmail.to_string(index=False))
 print(df1shotblackmail.to_json())
 
@@ -4291,7 +4291,7 @@ df = analyzerchattuned_basechat.analyze_all_tokens(
     no_kl=True,
     calculate_token_salience=True,
     optimize_explanations_config={
-        'just_do_k_rollouts': 8,  # 8 rollouts per position
+        'best_of_k': 8,  # 8 rollouts per position
         'use_batched': True,       # Use batched optimization
         'batch_positions': 8,      # Process 8 positions at once
         'temperature': 1.0
