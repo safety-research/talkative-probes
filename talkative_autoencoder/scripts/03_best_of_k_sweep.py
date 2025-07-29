@@ -441,7 +441,16 @@ class BestOfKEvaluator:
             else:
                 # Single process mode - load normally
                 cached_data = load_cached_vectors(cache_path)
-                if cached_data is not None:
+                
+            # Process cached data if it exists (both distributed and single process)
+            use_cached = False
+            if (distributed and cache_exists and cached_data is not None) or (not distributed and cached_data is not None):
+                use_cached = True
+                if distributed:
+                    # Use the distributed cached data (already loaded above)
+                    pass
+                else:
+                    # Single process - load cached data
                     print(f"Using cached vectors from {cache_path}")
                     cached_all_A = cached_data['all_A'].to(self.device)
                     cached_positions = cached_data['all_positions'].to(self.device)
@@ -476,11 +485,11 @@ class BestOfKEvaluator:
                 all_A_hat.append(A_hat_flat.cpu())
                 all_mses.append(mses_flat.cpu())
                 total_positions = cached_all_A.shape[0]
-                
-                # Skip the normal extraction loop
-                # Go directly to concatenation and statistics calculation
             else:
-                print(f"No cached vectors found at {cache_path}, will extract and cache them")
+                if load_store and save_cache:
+                    print(f"No cached vectors found at {cache_path}, will extract and cache them")
+                else:
+                    print(f"Extracting vectors without caching")
         
         # For position sampling
         if sample_positions:
@@ -488,7 +497,7 @@ class BestOfKEvaluator:
             random.seed(42)  # For reproducibility
 
         # Only extract vectors if we didn't load from cache
-        if not (load_store and cached_data is not None):
+        if not use_cached:
             # We need to actually iterate through the dataloader
             with torch.no_grad():
                 for batch_idx, batch in enumerate(tqdm(val_loader, desc=f"Best-of-{k} Eval")):

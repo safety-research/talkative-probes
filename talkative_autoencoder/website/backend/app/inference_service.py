@@ -127,20 +127,25 @@ class InferenceService:
             # Create progress callback
             loop = asyncio.get_event_loop()
             
-            def progress_callback(progress: float, eta_seconds: int) -> bool:
+            def progress_callback(current: int, total: int, message: str = "") -> bool:
                 if request["status"] == "cancelled":
                     logger.info(f"Analysis cancelled for request {request_id}")
                     return False
                     
                 if websocket:
+                    # Calculate progress percentage
+                    progress = (current / total * 100) if total > 0 else 0
+                    
                     asyncio.run_coroutine_threadsafe(
                         self.queue._send_websocket_update(
                             websocket,
                             {
                                 "type": "progress",
                                 "request_id": request_id,
+                                "current": current,
+                                "total": total,
                                 "progress": progress,
-                                "eta_seconds": eta_seconds,
+                                "message": message,
                             }
                         ),
                         loop,
