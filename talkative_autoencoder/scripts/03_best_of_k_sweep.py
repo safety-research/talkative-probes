@@ -1085,11 +1085,14 @@ def main(cfg: DictConfig) -> None:
     # Initialize logging
     if is_main_process:
         print("Starting best-of-K sweep analysis...")
-        print(f"Checkpoint: {eval_cfg.checkpoint_path}")
-        print(f"K values: {eval_cfg.k_values}")
+        print(f"Checkpoint: {eval_cfg.get('checkpoint_path', 'Not specified')}")
+        print(f"K values: {eval_cfg.get('k_values', [1, 4, 16])}")
     
     # Load checkpoint and merge configs
-    checkpoint_path = Path(eval_cfg.checkpoint_path)
+    checkpoint_path_str = eval_cfg.get('checkpoint_path', '')
+    if not checkpoint_path_str:
+        raise ValueError("checkpoint_path must be specified in eval config or on command line with +eval.checkpoint_path=/path/to/checkpoint.pt")
+    checkpoint_path = Path(checkpoint_path_str)
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
     
@@ -1198,7 +1201,7 @@ def main(cfg: DictConfig) -> None:
     
     # Run sweep with simplified access
     all_results = []
-    k_values = cfg.eval.k_values
+    k_values = cfg.eval.get('k_values', [1, 4, 16])
 
     def to_serializable(obj):
         # Recursively convert numpy types to native Python types
