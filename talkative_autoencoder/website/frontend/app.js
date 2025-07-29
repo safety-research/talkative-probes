@@ -37,6 +37,62 @@ console.log('Detected environment:', {
     WS_URL
 });
 
+// Request logger for local storage
+const RequestLogger = {
+    LOG_KEY: 'talkative_autoencoder_requests',
+    MAX_LOGS: 1000, // Keep last 1000 requests
+    
+    log(type, data) {
+        try {
+            const logs = this.getLogs();
+            const entry = {
+                id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(),
+                timestamp: new Date().toISOString(),
+                type: type, // 'analysis' or 'generation'
+                ...data
+            };
+            
+            logs.unshift(entry); // Add to beginning
+            
+            // Keep only last MAX_LOGS entries
+            if (logs.length > this.MAX_LOGS) {
+                logs.splice(this.MAX_LOGS);
+            }
+            
+            localStorage.setItem(this.LOG_KEY, JSON.stringify(logs));
+            console.log(`[RequestLogger] Logged ${type} request:`, entry);
+        } catch (e) {
+            console.error('[RequestLogger] Failed to log request:', e);
+        }
+    },
+    
+    getLogs() {
+        try {
+            const stored = localStorage.getItem(this.LOG_KEY);
+            return stored ? JSON.parse(stored) : [];
+        } catch (e) {
+            console.error('[RequestLogger] Failed to read logs:', e);
+            return [];
+        }
+    },
+    
+    clear() {
+        localStorage.removeItem(this.LOG_KEY);
+        console.log('[RequestLogger] Logs cleared');
+    },
+    
+    export() {
+        const logs = this.getLogs();
+        const blob = new Blob([JSON.stringify(logs, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `talkative_requests_${new Date().toISOString().split('T')[0]}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+    }
+};
+
 // State management
 const state = {
     ws: null,
@@ -1135,6 +1191,13 @@ const analyze = () => {
         options.is_chat = true;
     }
     
+    // Log the request
+    RequestLogger.log('analysis', {
+        text: text,
+        options: options,
+        model: state.modelInfo ? state.modelInfo.model_name : 'unknown'
+    });
+    
     // Send request
     state.ws.send(JSON.stringify({
         type: 'analyze',
@@ -1177,6 +1240,13 @@ const generate = () => {
         is_chat: elements.isChatFormatted.checked,
         return_full_text: true
     };
+    
+    // Log the request
+    RequestLogger.log('generation', {
+        text: text,
+        options: options,
+        model: state.modelInfo ? state.modelInfo.model_name : 'unknown'
+    });
     
     state.ws.send(JSON.stringify({
         type: 'generate',
@@ -1990,6 +2060,9 @@ const loadFromURL = async () => {
         }
     }
 };
+
+// Expose RequestLogger to window for debugging
+window.RequestLogger = RequestLogger;
 
 // Initialize application
 const initialize = () => {

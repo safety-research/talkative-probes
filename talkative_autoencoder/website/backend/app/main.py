@@ -151,10 +151,37 @@ class GPUStatsMonitor:
 model_manager: ModelManager | None = None
 inference_service: InferenceService | None = None
 gpu_monitor = GPUStatsMonitor()
+queue_broadcast_task = None
 
 # Rate limiter
 limiter = Limiter(key_func=get_remote_address)
 settings = load_settings()
+
+
+async def broadcast_queue_status_periodically():
+    """Broadcast queue status to all connected clients every 2 seconds"""
+    while True:
+        try:
+            if inference_service and manager.active_connections:
+                stats = inference_service.queue.get_queue_stats()
+                
+                # Get list of queued request IDs for position tracking
+                queued_ids = list(inference_service.queue.queue.queue) if hasattr(inference_service.queue.queue, 'queue') else []
+                
+                message = {
+                    "type": "queue_update",
+                    "queue_size": stats["queue_size"],
+                    "queued_requests": stats["queued_requests"],
+                    "processing_requests": stats["processing_requests"],
+                    "total_active": stats["total_active"],
+                    "queued_ids": queued_ids
+                }
+                
+                await manager.broadcast(message)
+        except Exception as e:
+            logger.error(f"Error broadcasting queue status: {e}")
+        
+        await asyncio.sleep(2)  # Update every 2 seconds
 
 
 @asynccontextmanager
@@ -182,6 +209,11 @@ async def lifespan(app: FastAPI):
             logger.info("Model will be loaded on first request (lazy_load_model=true)")
 
         await inference_service.start_processing()
+        
+        # Start periodic queue status broadcaster
+        global queue_broadcast_task
+        queue_broadcast_task = asyncio.create_task(broadcast_queue_status_periodically())
+        
         logger.info("Application startup complete")
     except Exception as e:
         logger.error(f"Startup error: {e}")
@@ -194,6 +226,14 @@ async def lifespan(app: FastAPI):
 
     # Stop GPU monitoring
     gpu_monitor.stop()
+    
+    # Stop queue broadcaster
+    if queue_broadcast_task:
+        queue_broadcast_task.cancel()
+        try:
+            await queue_broadcast_task
+        except asyncio.CancelledError:
+            pass
 
     if inference_service:
         await inference_service.stop_processing()
@@ -525,11 +565,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 models = list_available_models()
                 current_info = model_manager.get_current_model_info()
                 
+                # Get queue stats to show if there are active requests
+                queue_stats = inference_service.queue.get_queue_stats() if inference_service else {"queue_size": 0, "processing_requests": 0}
+                
                 await websocket.send_json({
                     "type": "models_list",
                     "models": models,
                     "current_model": current_info.get("model_id"),
-                    "is_switching": current_info.get("is_switching", False)
+                    "is_switching": current_info.get("is_switching", False),
+                    "queue_stats": queue_stats
                 })
                 
             elif data["type"] == "switch_model":

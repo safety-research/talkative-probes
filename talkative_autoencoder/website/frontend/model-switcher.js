@@ -162,9 +162,16 @@ class ModelSwitcher {
         this.models = data.models;
         this.currentModel = data.current_model;
         this.isSwitching = data.is_switching || false;
+        this.queueStats = data.queue_stats || null;
         
         this.renderModelList();
         this.updateStatus();
+        
+        // If we have a pending warning (from model selection), show it now
+        if (this.pendingWarning) {
+            this.pendingWarning = false;
+            this.showWarning();
+        }
     }
     
     // Check if a model is cached
@@ -227,7 +234,15 @@ class ModelSwitcher {
         }
         
         this.selectedModel = modelId;
-        this.showWarning();
+        
+        // Refresh model list to get latest queue stats before showing warning
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ type: 'list_models' }));
+            // Show warning will be called when we receive the updated list
+            this.pendingWarning = true;
+        } else {
+            this.showWarning();
+        }
     }
     
     // Show warning
@@ -235,14 +250,69 @@ class ModelSwitcher {
         const warningEl = this.container.querySelector('#switchWarning');
         const confirmBtn = this.container.querySelector('#confirmSwitchBtn');
         
+        // Update warning content if there are active requests
+        if (this.queueStats && (this.queueStats.queue_size > 0 || this.queueStats.processing_requests > 0)) {
+            const activeRequestsDiv = warningEl.querySelector('.active-requests-warning');
+            if (!activeRequestsDiv) {
+                // Add active requests warning
+                const newWarning = document.createElement('div');
+                newWarning.className = 'active-requests-warning p-3 bg-red-50 border border-red-300 rounded-md mt-2';
+                newWarning.innerHTML = `
+                    <div class="flex items-start">
+                        <svg class="w-5 h-5 text-red-600 mt-0.5 mr-2 flex-shrink-0 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                        </svg>
+                        <div class="text-sm text-red-800">
+                            <strong class="text-base">⚠️ ACTIVE REQUESTS IN PROGRESS!</strong><br>
+                            There are currently <strong>${this.queueStats.queue_size} queued</strong> and 
+                            <strong>${this.queueStats.processing_requests} processing</strong> requests.<br>
+                            <span class="font-medium">Switching models now will interrupt these operations!</span>
+                        </div>
+                    </div>
+                `;
+                warningEl.appendChild(newWarning);
+                
+                // Make the button more prominent
+                confirmBtn.textContent = `⚠️ Switch Anyway (${this.queueStats.queue_size + this.queueStats.processing_requests} active requests)`;
+                confirmBtn.classList.add('bg-red-600', 'hover:bg-red-700');
+                confirmBtn.classList.remove('bg-blue-600', 'hover:bg-blue-700');
+            }
+        } else {
+            // Remove active requests warning if it exists
+            const activeRequestsDiv = warningEl.querySelector('.active-requests-warning');
+            if (activeRequestsDiv) {
+                activeRequestsDiv.remove();
+            }
+            // Reset button to normal
+            confirmBtn.textContent = 'Confirm Model Switch';
+            confirmBtn.classList.remove('bg-red-600', 'hover:bg-red-700');
+            confirmBtn.classList.add('bg-blue-600', 'hover:bg-blue-700');
+        }
+        
         warningEl?.classList.remove('hidden');
         confirmBtn?.classList.remove('hidden');
+        
+        // Scroll the warning into view
+        warningEl?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
     
     // Hide warning
     hideWarning() {
         const warningEl = this.container.querySelector('#switchWarning');
         const confirmBtn = this.container.querySelector('#confirmSwitchBtn');
+        
+        // Remove any active requests warning
+        const activeRequestsDiv = warningEl?.querySelector('.active-requests-warning');
+        if (activeRequestsDiv) {
+            activeRequestsDiv.remove();
+        }
+        
+        // Reset button to normal state
+        if (confirmBtn) {
+            confirmBtn.textContent = 'Confirm Model Switch';
+            confirmBtn.classList.remove('bg-red-600', 'hover:bg-red-700');
+            confirmBtn.classList.add('bg-blue-600', 'hover:bg-blue-700');
+        }
         
         warningEl?.classList.add('hidden');
         confirmBtn?.classList.add('hidden');
