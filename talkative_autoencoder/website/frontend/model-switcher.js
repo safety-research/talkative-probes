@@ -479,6 +479,10 @@ class ModelSwitcher {
                 
             case 'model_switch_complete':
                 this.handleSwitchStatus({ status: 'completed', ...data });
+                // Update generation parameters if provided
+                if (data.generation_config && typeof updateGenerationParameters === 'function') {
+                    updateGenerationParameters(data.generation_config);
+                }
                 break;
                 
             case 'model_switch_error':

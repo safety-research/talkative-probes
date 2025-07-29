@@ -73,9 +73,52 @@ class ModelManager:
                 "total_cached": len(self.model_cache),
                 "on_gpu": len([m for m, loc in self.model_locations.items() if loc == 'cuda']),
                 "on_cpu": len([m for m, loc in self.model_locations.items() if loc == 'cpu']),
-            }
+            },
+            "generation_config": self._get_generation_config(),
         }
         return info
+    
+    def _get_generation_config(self) -> Dict[str, Any]:
+        """Get generation config from the current model"""
+        if self.current_analyzer is None:
+            return {}
+        
+        try:
+            if hasattr(self.current_analyzer, 'orig_model') and hasattr(self.current_analyzer.orig_model, 'model'):
+                model = self.current_analyzer.orig_model.model
+                
+                # First try to get from generation_config
+                if hasattr(model, 'generation_config'):
+                    gen_config = model.generation_config
+                    return {
+                        "temperature": getattr(gen_config, 'temperature', 1.0),
+                        "top_p": getattr(gen_config, 'top_p', 1.0), 
+                        "top_k": getattr(gen_config, 'top_k', None),
+                        "do_sample": getattr(gen_config, 'do_sample', True),
+                        "repetition_penalty": getattr(gen_config, 'repetition_penalty', 1.0),
+                    }
+                
+                # Fallback to model config defaults
+                elif hasattr(model, 'config'):
+                    config = model.config
+                    return {
+                        "temperature": getattr(config, 'temperature', 1.0),
+                        "top_p": getattr(config, 'top_p', 1.0),
+                        "top_k": getattr(config, 'top_k', None),
+                        "do_sample": True,
+                        "repetition_penalty": 1.0,
+                    }
+        except Exception as e:
+            logger.warning(f"Failed to get generation config: {e}")
+        
+        # Return defaults if we can't get from model
+        return {
+            "temperature": 1.0,
+            "top_p": 1.0,
+            "top_k": None,
+            "do_sample": True,
+            "repetition_penalty": 1.0,
+        }
     
     def get_current_batch_size(self) -> int:
         """Get the batch size for the current model"""

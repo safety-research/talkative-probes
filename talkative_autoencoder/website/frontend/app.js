@@ -871,6 +871,10 @@ const handleWebSocketMessage = (data) => {
                     updateAutoBatchSize();
                 }
             }
+            // Update generation parameters if provided
+            if (data.generation_config) {
+                updateGenerationParameters(data.generation_config);
+            }
             // Update cached models in model switcher
             if (state.modelSwitcher && data.cached_models) {
                 state.modelSwitcher.cachedModels = data.cached_models;
@@ -1848,6 +1852,24 @@ const updateAutoBatchSize = () => {
     }
 };
 
+// Helper function to update generation parameters from model config
+const updateGenerationParameters = (generationConfig) => {
+    // Store the config for reference
+    state.currentGenerationConfig = generationConfig;
+    
+    // Update generation temperature if provided
+    if (generationConfig.temperature !== undefined && generationConfig.temperature !== null && elements.genTemperature) {
+        elements.genTemperature.value = generationConfig.temperature;
+    }
+    
+    // Update top_p if we have that element (might add in future)
+    // if (generationConfig.top_p !== undefined && generationConfig.top_p !== null && elements.genTopP) {
+    //     elements.genTopP.value = generationConfig.top_p;
+    // }
+    
+    console.log('Updated generation parameters from model:', generationConfig);
+};
+
 // Initialize event listeners
 const initializeEventListeners = () => {
     // Tab navigation
@@ -1918,7 +1940,7 @@ const initializeEventListeners = () => {
         elements.kRolloutsValue.textContent = k;
         updateAutoBatchSize();
         
-        // Auto-adjust temperature based on k_rollouts
+        // Auto-adjust temperature based on k_rollouts (for analysis, not generation)
         if (k === 1) {
             elements.temperature.value = '0.1';
             elements.temperatureValue.textContent = '0.1';

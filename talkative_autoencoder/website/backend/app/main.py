@@ -599,11 +599,13 @@ async def websocket_endpoint(websocket: WebSocket):
                     result = await model_manager.switch_model(model_id)
                     
                     # Send success message
+                    model_info = model_manager.get_current_model_info()
                     await websocket.send_json({
                         "type": "model_switch_complete",
                         "model_id": model_id,
                         "message": result["message"],
-                        "model_info": model_manager.get_current_model_info()
+                        "model_info": model_info,
+                        "generation_config": model_info.get("generation_config", {})
                     })
                     
                 except Exception as e:

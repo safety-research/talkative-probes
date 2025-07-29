@@ -165,17 +165,17 @@ Models are configured in `backend/app/models.json`:
 - Log files are gitignored to prevent accidental commits
 - Frontend logging only in debug mode to prevent data leakage
 - WebSocket broadcasts don't include request content, only metadata
-- Model switching and registry reload require API key authentication
-- API key is stored in localStorage and prompted when needed
-- Failed authentication clears the stored API key
+- Model switching is available to all users (no authentication required)
+- Only model IDs are sent from frontend, never file paths
+- Model registry reload requires API key authentication
 
 ### API Key Authentication
 
-Sensitive WebSocket operations now require authentication:
-- **Model Switching**: Requires API key to prevent unauthorized model changes
+Some sensitive operations require authentication:
 - **Registry Reload**: Requires API key to prevent unauthorized configuration changes
+- **REST API Model Switch**: The `/api/models/switch` endpoint requires API key
 
-The frontend will prompt for the API key on first use and store it in localStorage as `talkative_backend_api_key`.
+Note: WebSocket model switching is intentionally open to all users for ease of use.
 
 ### Path Validation
 

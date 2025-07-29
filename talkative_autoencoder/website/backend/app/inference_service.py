@@ -369,8 +369,13 @@ class InferenceService:
             num_completions = options.get("num_completions", 3)
             # Handle both 'num_tokens' (frontend) and 'max_new_tokens' (backend) names
             max_new_tokens = options.get("num_tokens") or options.get("max_new_tokens", 50)
-            temperature = options.get("temperature", 0.8)
-            top_p = options.get("top_p", 0.95)
+            
+            # Get model's default generation config if not provided
+            model_info = self.model_manager.get_current_model_info()
+            gen_config = model_info.get("generation_config", {})
+            
+            temperature = options.get("temperature", gen_config.get("temperature", 0.8))
+            top_p = options.get("top_p", gen_config.get("top_p", 0.95))
             
             # Run generation in executor
             loop = asyncio.get_event_loop()

@@ -38,6 +38,11 @@ class ModelConfig(BaseModel):
     # Memory requirements (e.g., "45GB")
     estimated_gpu_memory: str = Field(default="20GB")
     
+    # Generation parameters
+    default_generation_temperature: float = Field(default=0.8)
+    default_generation_top_p: float = Field(default=0.95)
+    default_generation_top_k: Optional[int] = Field(default=None)
+    
     # Additional model-specific parameters
     extra_params: Dict[str, Any] = Field(default_factory=dict)
     
