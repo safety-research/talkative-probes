@@ -7,6 +7,8 @@ import time
 from datetime import datetime
 from typing import Dict, Any, Optional, Callable
 import sys
+import json
+from pathlib import Path
 
 # Add parent directory to path
 parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -17,6 +19,52 @@ from .inference_queue import InferenceQueue
 from .config import Settings
 
 logger = logging.getLogger(__name__)
+
+class RequestFileLogger:
+    """Logs requests to files in the logs directory"""
+    
+    def __init__(self, log_dir: str = None):
+        if log_dir is None:
+            # Default to website/logs directory
+            log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs")
+        
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(exist_ok=True)
+        
+        # Create date-based log file
+        today = datetime.now().strftime("%Y-%m-%d")
+        self.log_file = self.log_dir / f"requests_{today}.jsonl"
+        
+    def log_request(self, request_type: str, request_id: str, text: str, options: Dict[str, Any] = None):
+        """Log a request to file and stdout"""
+        
+        # Print to stdout (always)
+        print(f"\n{'='*80}")
+        print(f"[{request_type.upper()} REQUEST {request_id}]")
+        print(f"Timestamp: {datetime.utcnow().isoformat()}")
+        print(f"Text length: {len(str(text))} characters")
+        print(f"Input text: {str(text)[:500]}{'...' if len(str(text)) > 500 else ''}")
+        print(f"{'='*80}\n")
+        
+        # Log to file
+        log_entry = {
+            "request_id": request_id,
+            "type": request_type,
+            "timestamp": datetime.utcnow().isoformat(),
+            "text_length": len(str(text)),
+            "text_preview": str(text)[:1000],  # Store more in file than shown in stdout
+            "options": options or {},
+            "pid": os.getpid()
+        }
+        
+        try:
+            with open(self.log_file, 'a') as f:
+                f.write(json.dumps(log_entry) + '\n')
+        except Exception as e:
+            logger.error(f"Failed to write request log to file: {e}")
+
+# Global request logger instance
+request_logger = RequestFileLogger()
 
 class InferenceService:
     """Service that handles inference requests using the ModelManager"""
@@ -109,9 +157,8 @@ class InferenceService:
             # Log the request
             logger.info(f"Processing analysis request {request_id} with text length: {len(text)}")
             
-            # Log input text for visibility
-            logger.info(f"[ANALYSIS REQUEST {request_id}] Text length: {len(text)} characters")
-            logger.debug(f"Analysis request {request_id} input preview: {text[:500]}{'...' if len(text) > 500 else ''}")
+            # Log to stdout and file
+            request_logger.log_request("analysis", request_id, text, options)
             
             # Parse chat format if applicable
             text_to_analyze = text
@@ -254,9 +301,8 @@ class InferenceService:
         try:
             logger.info(f"Processing generation request {request_id}")
             
-            # Log input text for visibility
-            logger.info(f"[GENERATION REQUEST {request_id}] Text length: {len(str(text))} characters")
-            logger.debug(f"Generation request {request_id} input preview: {str(text)[:500]}{'...' if len(str(text)) > 500 else ''}")
+            # Log to stdout and file
+            request_logger.log_request("generation", request_id, text, options)
             
             # Check if this is chat format
             is_chat = options.get("is_chat", False) or options.get("use_chat_format", False)

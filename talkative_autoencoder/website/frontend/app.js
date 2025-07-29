@@ -37,12 +37,22 @@ console.log('Detected environment:', {
     WS_URL
 });
 
-// Request logger for local storage
+// Check if debug mode is enabled
+const isDebugMode = () => {
+    return window.location.hostname === 'localhost' || 
+           window.location.hostname === '127.0.0.1' ||
+           new URLSearchParams(window.location.search).has('debug');
+};
+
+// Request logger for local storage (debug mode only)
 const RequestLogger = {
     LOG_KEY: 'talkative_autoencoder_requests',
     MAX_LOGS: 1000, // Keep last 1000 requests
+    enabled: isDebugMode(),
     
     log(type, data) {
+        if (!this.enabled) return;
+        
         try {
             const logs = this.getLogs();
             const entry = {

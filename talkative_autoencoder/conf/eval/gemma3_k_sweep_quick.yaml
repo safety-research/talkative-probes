@@ -42,7 +42,7 @@ dataset:
   
   on_the_fly:
     enabled: false
-    generation_batch_size: ${eval.dataloader_fwd_pass_batch_size}
+    generation_batch_size: 32
 
 # Data loader settings
 data:

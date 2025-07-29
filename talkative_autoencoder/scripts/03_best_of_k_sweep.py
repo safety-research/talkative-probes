@@ -1179,7 +1179,9 @@ def main(cfg: DictConfig) -> None:
                 should_skip_extraction = True
     
     # Prepare dataloader - we'll pass None for analyzer since we'll create it after
-    cfg["dataset"]["on_the_fly"]["generation_batch_size"] = eval_cfg.get('dataloader_fwd_pass_batch_size', 32)
+    # Ensure dataset.on_the_fly exists before setting generation_batch_size
+    if "dataset" in cfg and "on_the_fly" in cfg["dataset"]:
+        cfg["dataset"]["on_the_fly"]["generation_batch_size"] = eval_cfg.get('dataloader_fwd_pass_batch_size', 32)
     # When num_positions=1 AND cache exists, set do_not_extract_activations_val=True to skip extraction
     do_not_extract = eval_cfg.get('num_positions', 1) != 1 or should_skip_extraction
     val_loader, orig_model_for_gen = prepare_val_dataloader(cfg, rank, world_size, device, log, analyzer=None, max_val_samples_req=max_val_samples_req, dataloader_batch_size=eval_cfg.get('dataloader_batch_size', 32), do_not_extract_activations_val=do_not_extract)
