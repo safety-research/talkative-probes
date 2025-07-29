@@ -953,7 +953,7 @@ const handleWebSocketMessage = (data) => {
                 delete state.activeRequests[data.request_id];
             }
             
-            displayAnalysisData(data.result.data);
+            processResults(data.result);
             break;
             
         case 'generation_error':
