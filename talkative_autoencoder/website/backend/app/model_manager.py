@@ -36,7 +36,7 @@ class ModelManager:
         self.switch_start_time: Optional[datetime] = None
         self.queued_requests: List[asyncio.Future] = []  # Queue for requests during model switch
         self.websocket_manager = None  # Will be set by the application
-        self.default_model_id = "qwen2.5-14b-wildchat"  # Can be overridden
+        self.default_model_id = "gemma3-27b-chat"  # Can be overridden
         
         # Model caching for fast switching
         self.model_cache: Dict[str, LensAnalyzer] = {}  # Stores model instances

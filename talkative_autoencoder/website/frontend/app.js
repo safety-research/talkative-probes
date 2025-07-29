@@ -667,6 +667,8 @@ const connectWebSocket = () => {
         // Update model switcher WebSocket
         if (state.modelSwitcher) {
             state.modelSwitcher.setWebSocket(state.ws);
+            // Request model list immediately after connection
+            state.modelSwitcher.requestModelList();
         }
         
         // Start GPU stats polling when connected

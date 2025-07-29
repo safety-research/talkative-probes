@@ -245,12 +245,11 @@ class InferenceService:
                 None,
                 lambda: analyzer.generate_continuation(
                     prompt,
-                    num_samples=num_completions,
-                    max_new_tokens=max_new_tokens,
+                    num_completions=num_completions,
+                    num_tokens=max_new_tokens,
                     temperature=temperature,
                     top_p=top_p,
-                    seed=options.get("seed", 42),
-                    return_structured=True,
+                    return_full_text=True,
                 )
             )
             
