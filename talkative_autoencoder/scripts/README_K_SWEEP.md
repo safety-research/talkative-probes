@@ -269,10 +269,17 @@ done
 
 ### Important: Batch Sizes in Distributed Mode
 
-When using `torchrun` for distributed evaluation, **batch sizes are per-GPU, not total**. This means:
-- With 8 GPUs and `max_generation_batch_size: 8`, the effective batch size is 8 × 8 = 64
-- The 8-GPU configs use smaller per-GPU batch sizes to maintain similar memory usage
-- Do NOT increase batch sizes for multi-GPU configs - keep them the same or smaller
+When using `torchrun` for distributed evaluation, **batch sizes are per-GPU, not total**. 
+
+**Critical batch size parameters:**
+- `dataloader_fwd_pass_batch_size`: Controls batch size for Gemma 27B forward passes during dataset creation. **This is the most memory-critical parameter!**
+- `vector_extraction_batch_size`: Controls batch size for Gemma 27B when extracting vectors (if not pre-computed)
+- `max_generation_batch_size`: Controls batch size for the small lens model (can be large)
+- `dataloader_batch_size`: High-level dataloader batch size (gets subdivided by extraction batch sizes)
+
+**Recommended settings for Gemma 27B:**
+- Single GPU: `dataloader_fwd_pass_batch_size=16`, `vector_extraction_batch_size=16`
+- 8 GPUs: `dataloader_fwd_pass_batch_size=4`, `vector_extraction_batch_size=4` (start conservative, increase if stable)
 
 ### Cache Implementation
 

@@ -354,22 +354,9 @@ class ModelSwitcher {
             return;
         }
         
-        // Get API key from localStorage or prompt user
-        let apiKey = localStorage.getItem('talkative_backend_api_key');
-        if (!apiKey) {
-            apiKey = prompt('Please enter the backend API key to switch models:');
-            if (!apiKey) {
-                alert('API key is required to switch models');
-                return;
-            }
-            // Save for future use
-            localStorage.setItem('talkative_backend_api_key', apiKey);
-        }
-        
         this.ws.send(JSON.stringify({
             type: 'switch_model',
-            model_id: this.selectedModel,
-            api_key: apiKey
+            model_id: this.selectedModel
         }));
         
         this.hideWarning();
@@ -504,14 +491,8 @@ class ModelSwitcher {
                 break;
                 
             case 'error':
-                // Handle authentication errors and other errors
-                if (data.error && data.error.includes('Authentication required')) {
-                    // Clear saved API key if authentication failed
-                    localStorage.removeItem('talkative_backend_api_key');
-                    this.showStatus('Authentication failed. Please check your API key.', 'error');
-                } else {
-                    this.showStatus(data.error || 'An error occurred', 'error');
-                }
+                // Handle general errors
+                this.showStatus(data.error || 'An error occurred', 'error');
                 break;
                 
             case 'model_info_update':

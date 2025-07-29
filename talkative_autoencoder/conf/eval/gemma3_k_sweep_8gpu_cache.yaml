@@ -15,18 +15,18 @@ eval:
   temperature: 1.0
   
   # Batch size settings - per GPU when using distributed (torchrun)
-  batch_size: 1  # 8 GPUs * 1 = 8 total
-  max_generation_batch_size: 8  # 8 GPUs * 8 = 64 total
-  dataloader_batch_size: 16  # 8 GPUs * 16 = 128 total
-  vector_extraction_batch_size: 2  # 8 GPUs * 2 = 16 total
-  dataloader_fwd_pass_batch_size: 2  # 8 GPUs * 2 = 16 total
+  batch_size: 8  # Legacy parameter, kept for compatibility
+  max_generation_batch_size: 64  # For small lens model - can be large
+  dataloader_batch_size: 128  # High-level dataloader batch size
+  vector_extraction_batch_size: 16  # For large model forward pass if no pre-computed activations
+  dataloader_fwd_pass_batch_size: 16  # For large model during dataset creation
   
   # Performance settings
   use_bf16: true
   
   # Sampling settings
   num_positions: 1
-  max_val_samples: null  # Process entire dataset
+  max_val_samples: 100000  # Process up to 100k samples
   
   # Bootstrap disabled for speed
   do_bootstrap: false
