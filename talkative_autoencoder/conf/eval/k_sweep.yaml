@@ -1,0 +1,29 @@
+# Configuration for best-of-K sweep analysis
+# This evaluates how variance recovery improves with different K values
+
+# No defaults - standalone config to avoid interpolation issues
+
+eval:
+  # K values to evaluate
+  k_values: [1, 2, 4, 8, 16, 32, 64]
+  
+  # Output settings
+  output_file: k_sweep_results.json
+  
+  # Evaluation settings
+  max_batches: null  # Use entire validation set
+  batch_size: 32
+  temperature: 1.0
+  generation_batch_size: 32  # Batch size for generation within best-of-K
+  
+  # Performance settings
+  use_bf16: true
+
+# Include dataset configuration for validation data
+dataset:
+  activation_dir: "./data/SimpleStories_train"
+  val_activation_dir: "./data/SimpleStories_test"
+
+# Data loader settings
+data:
+  num_workers: 0

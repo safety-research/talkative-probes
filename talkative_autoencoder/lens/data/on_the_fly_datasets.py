@@ -102,6 +102,7 @@ class InMemoryValidationDataset(Dataset):
         generation_device: torch.device,
         rank: int,
         world_size: int,
+        do_not_extract_activations: bool = False
     ):
         self.orig_model_for_gen = orig_model_for_gen
         self.tokenizer = tokenizer
@@ -117,6 +118,7 @@ class InMemoryValidationDataset(Dataset):
         self.layer_l = self.config['layer_l']
         self.min_pos = self.config['min_pos']
         self.position_selection_strategy = self.config.get('position_selection_strategy', 'random')
+        self.do_not_extract_activations = do_not_extract_activations
 
         self.data_store: List[Dict[str, Any]] = []
         # Ensure model is on device *before* generation.
@@ -238,18 +240,23 @@ class InMemoryValidationDataset(Dataset):
                 # _dataset_log_fn(log, f"first element of batch_input_ids_A_device: {batch_input_ids_A_device[0]}", "warning", rank=self.rank)
                 # _dataset_log_fn(log, f"first element of batch_attn_mask_A_device: {batch_attn_mask_A_device[0]}", "warning", rank=self.rank)
                 # _dataset_log_fn(log, f"first element of batch_input_ids_A_prime_device: {batch_input_ids_A_prime_device[0]}", "warning", rank=self.rank)
+                if not self.do_not_extract_activations:
+                    batch_act_A, batch_pos_A = _generate_activations_batched(self.orig_model_for_gen, batch_input_ids_A_device, self.layer_l, self.min_pos, batch_attn_mask_A_device, self.position_selection_strategy)
+                    batch_act_A_prime, batch_pos_A_prime = _generate_activations_batched(self.orig_model_for_gen, batch_input_ids_A_prime_device, self.layer_l, self.min_pos, batch_attn_mask_A_prime_device, self.position_selection_strategy)
+                else:
+                    batch_act_A = None
+                    batch_act_A_prime = None
+                    batch_pos_A = None
+                    batch_pos_A_prime = None
 
-                batch_act_A, batch_pos_A = _generate_activations_batched(self.orig_model_for_gen, batch_input_ids_A_device, self.layer_l, self.min_pos, batch_attn_mask_A_device, self.position_selection_strategy)
-                batch_act_A_prime, batch_pos_A_prime = _generate_activations_batched(self.orig_model_for_gen, batch_input_ids_A_prime_device, self.layer_l, self.min_pos, batch_attn_mask_A_prime_device, self.position_selection_strategy)
-
-                for i in range(batch_act_A.size(0)):
+                for i in range(len(batch_input_ids_A_list)):
                     self.data_store.append({
-                        "A": batch_act_A[i].cpu(),
-                        "A_prime": batch_act_A_prime[i].cpu(),
+                        "A": batch_act_A[i].cpu() if batch_act_A is not None else None,
+                        "A_prime": batch_act_A_prime[i].cpu() if batch_act_A_prime is not None else None,
                         "input_ids_A": torch.tensor(batch_input_ids_A_list[i], dtype=torch.long),
                         "input_ids_A_prime": torch.tensor(batch_input_ids_A_prime_list[i], dtype=torch.long),
-                        "token_pos_A": batch_pos_A[i].item(),
-                        "token_pos_A_prime": batch_pos_A_prime[i].item(),
+                        "token_pos_A": batch_pos_A[i].item() if batch_pos_A is not None else None,
+                        "token_pos_A_prime": batch_pos_A_prime[i].item() if batch_pos_A_prime is not None else None,
                         "layer_idx": self.layer_l,
                     })
                     processed_count += 1

@@ -35,6 +35,7 @@ class Settings(BaseModel):
     model_name: str = Field(default="Qwen/Qwen2.5-14B-Instruct")
     rate_limit_per_minute: int = Field(default=60)
     auto_batch_size_max: int = Field(default=256)  # Maximum value for auto-calculated batch size
+    max_cpu_cached_models: int = Field(default=3)  # Maximum models to keep in CPU memory
     
     # Tuned lens settings
     tuned_lens_dir: Optional[str] = Field(default=None)
@@ -76,6 +77,7 @@ def load_settings():
         "MODEL_NAME": "model_name",
         "RATE_LIMIT_PER_MINUTE": "rate_limit_per_minute",
         "AUTO_BATCH_SIZE_MAX": "auto_batch_size_max",
+        "MAX_CPU_CACHED_MODELS": "max_cpu_cached_models",
         "TUNED_LENS_DIR": "tuned_lens_dir",
         "COMPARISON_TL_CHECKPOINT": "comparison_tl_checkpoint",
         "DO_NOT_LOAD_WEIGHTS": "do_not_load_weights",
@@ -95,7 +97,7 @@ def load_settings():
         if env_value is not None:
             # Handle different types
             if field_name in ["batch_size", "port", "max_queue_size", "max_text_length", 
-                              "cache_ttl", "request_timeout", "rate_limit_per_minute", "auto_batch_size_max"]:
+                              "cache_ttl", "request_timeout", "rate_limit_per_minute", "auto_batch_size_max", "max_cpu_cached_models"]:
                 settings_dict[field_name] = int(env_value)
             elif field_name in ["use_bf16", "load_in_8bit", "do_not_load_weights", "make_xl", "strict_load", "no_orig", "no_kl", "initialise_on_cpu", "lazy_load_model"]:
                 settings_dict[field_name] = env_value.lower() in ["true", "1", "yes"]

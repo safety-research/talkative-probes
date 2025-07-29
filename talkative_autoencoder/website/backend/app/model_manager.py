@@ -42,7 +42,7 @@ class ModelManager:
         self.model_cache: Dict[str, LensAnalyzer] = {}  # Stores model instances
         self.model_locations: Dict[str, str] = {}  # Tracks 'cuda', 'cpu', or 'unloaded'
         self.cache_order: List[str] = []  # Track usage order for potential LRU eviction
-        self.max_cpu_models = 3  # Maximum models to keep in CPU memory
+        self.max_cpu_models = getattr(settings, 'max_cpu_cached_models', 3)  # Maximum models to keep in CPU memory
         
     async def initialize_default_model(self, model_id: Optional[str] = None):
         """Initialize with a default model"""
@@ -63,6 +63,8 @@ class ModelManager:
             "auto_batch_size_max": self.current_config.auto_batch_size_max,
             "layer": self.current_config.layer,
             "model_family": "Qwen" if "qwen" in self.current_model_id else "Gemma",
+            "checkpoint_path": self.current_config.checkpoint_path,
+            "checkpoint_filename": os.path.basename(self.current_config.checkpoint_path),
             "is_switching": self.is_switching,
             "switch_start_time": self.switch_start_time.isoformat() if self.switch_start_time else None,
             "cached_models": list(self.model_cache.keys()),
@@ -179,8 +181,7 @@ class ModelManager:
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
             
-        # Small delay to ensure memory is freed
-        await asyncio.sleep(0.1)
+        # No delay needed - torch.cuda.synchronize() already ensures completion
         
     async def _load_model(self, config: ModelConfig):
         """Load a model, either from cache (CPU) or disk"""
@@ -304,14 +305,20 @@ class ModelManager:
         self.current_model_id = None
         self.current_config = None
         
-    def get_cache_status(self) -> Dict[str, Any]:
-        """Get the status of the model cache"""
+    async def get_cache_status(self) -> Dict[str, Any]:
+        """Get the status of the model cache (thread-safe)"""
+        # Create a snapshot under lock to ensure consistency
+        async with self.loading_lock:
+            cached_models = list(self.model_cache.keys())
+            locations = self.model_locations.copy()
+            order = self.cache_order.copy()
+            
         return {
-            "cached_models": list(self.model_cache.keys()),
-            "model_locations": self.model_locations.copy(),
-            "cache_order": self.cache_order.copy(),
+            "cached_models": cached_models,
+            "model_locations": locations,
+            "cache_order": order,
             "max_cpu_models": self.max_cpu_models,
-            "cpu_models_count": len([m for m, loc in self.model_locations.items() if loc == 'cpu']),
+            "cpu_models_count": len([m for m, loc in locations.items() if loc == 'cpu']),
         }
             
     def get_memory_usage(self) -> Dict[str, Any]:

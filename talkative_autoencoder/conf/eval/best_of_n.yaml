@@ -1,0 +1,22 @@
+# Evaluation configuration with best-of-N sampling
+# Use this for more thorough evaluation with multiple samples per position
+
+defaults:
+  - default
+
+eval:
+  # Enable best-of-N sampling
+  use_best_of_n: true
+  best_of_n: 10  # Generate 10 candidates per position
+  temperature: 1.0
+  
+  # May want smaller batch size for memory with best-of-N
+  batch_size: 16
+  
+  # Analyzer batching configuration for efficient best-of-N
+  analyzer_batch_size: 64  # Can be larger since we're batching rollouts
+  n_groups_per_rollout: 16  # Process more positions at once with batched method
+  calculate_salience: true  # Enable salience calculation
+  
+  # Optionally save detailed results
+  save_detailed_results: true

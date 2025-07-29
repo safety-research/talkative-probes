@@ -1,0 +1,28 @@
+# Quick K-sweep for testing
+# Uses fewer K values and limited batches
+
+eval:
+  # Reduced K values for quick testing
+  k_values: [1, 4, 16]
+  
+  # Limit batches for speed
+  max_batches: 10
+  
+  # Output file
+  output_file: k_sweep_quick_results.json
+  output_dir: ./eval_results
+  
+  # Batch settings
+  batch_size: 32
+  temperature: 1.0
+  generation_batch_size: 32
+  use_bf16: true
+
+# Include dataset configuration for validation data
+dataset:
+  activation_dir: "./data/SimpleStories_train"
+  val_activation_dir: "./data/SimpleStories_test"
+
+# Data loader settings
+data:
+  num_workers: 0

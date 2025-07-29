@@ -1,0 +1,36 @@
+# Default evaluation configuration
+# This file specifies evaluation-specific parameters that override the base config
+
+eval:
+  # Path to checkpoint to evaluate
+  checkpoint_path: ${hydra:runtime.cwd}/outputs/latest/checkpoint.pt
+  
+  # Output settings
+  output_dir: ${hydra:runtime.cwd}/eval_results
+  output_file: eval_results.json
+  
+  # Evaluation data settings
+  max_samples: null  # null means use entire validation set, or specify a number
+  max_batches: null  # null means process all batches, or specify a number
+  batch_size: 32
+  
+  # Best-of-N sampling settings
+  use_best_of_n: false
+  best_of_n: 5  # Number of samples to generate per position
+  temperature: 1.0
+  analyzer_batch_size: 32  # Batch size for analyzer processing
+  n_groups_per_rollout: 8  # Number of positions to process at once in best-of-N
+  calculate_salience: false  # Whether to calculate token salience scores
+  
+  # Save detailed per-example results (can be large)
+  save_detailed_results: false
+  
+  # Run intervention analysis (adds computational cost)
+  run_interventions: false
+
+# Override training settings for evaluation
+training:
+  batch_size: ${eval.batch_size}
+
+# Ensure we're in eval mode
+mode: eval

@@ -394,7 +394,8 @@ def _prepare_dataloaders(
     generation_device: Optional["torch.device"] = None,
     rank: Optional[int] = None,
     world_size: Optional[int] = None,
-    samples_per_regeneration_cycle: Optional[int] = None
+    samples_per_regeneration_cycle: Optional[int] = None,
+    do_not_extract_activations_val: bool = False
 ):
     # docstring
     on_the_fly_cfg = config.get('dataset', {}).get('on_the_fly', {'enabled': False})
@@ -439,7 +440,8 @@ def _prepare_dataloaders(
                     pretok_dataset_path=pretok_path, pretok_split_name=val_split_name, 
                     num_val_samples_to_generate=num_val_samples_to_generate,
                     on_the_fly_config=on_the_fly_cfg, generation_device=generation_device, 
-                    rank=rank, world_size=world_size 
+                    rank=rank, world_size=world_size,
+                    do_not_extract_activations=do_not_extract_activations_val
                 )
                 if len(val_ds) == 0 and num_val_samples_to_generate > 0: # Added check for num_val_samples_to_generate
                      _dataset_log_fn(log, f"InMemoryValidationDataset is empty after creation, despite requesting {num_val_samples_to_generate} samples. Check pretokenized data '{pretok_path}/{val_split_name}' and config.", "warning", rank=rank)
@@ -456,22 +458,28 @@ def _prepare_dataloaders(
         # if initial_cache_fill_size is None or initial_cache_fill_size <= 0:
         #     initial_cache_fill_size = on_the_fly_cfg.get('training_initial_cache_size_per_rank', 100000)
         #     _dataset_log_fn(log, f"max_train_samples not specified or <=0 for on-the-fly. Using training_initial_cache_size_per_rank: {initial_cache_fill_size}", "info", rank=rank)
-        
-        train_ds = RankInMemoryTrainingCache(
-            orig_model_for_gen=orig_model_for_gen, 
-            tokenizer=tokenizer_for_gen,
-            pretok_dataset_path=pretok_path, 
-            pretok_split_name=train_split_name,
-            on_the_fly_config=on_the_fly_cfg, 
-            generation_device=generation_device, 
-            rank=rank, world_size=world_size, 
-            initial_cache_size=initial_cache_fill_size, # Correctly passed
-            logger=log
-        )
+        if initial_cache_fill_size is not None:
+            train_ds = RankInMemoryTrainingCache(
+                orig_model_for_gen=orig_model_for_gen, 
+                tokenizer=tokenizer_for_gen,
+                pretok_dataset_path=pretok_path, 
+                pretok_split_name=train_split_name,
+                on_the_fly_config=on_the_fly_cfg, 
+                generation_device=generation_device, 
+                rank=rank, world_size=world_size, 
+                initial_cache_size=initial_cache_fill_size, # Correctly passed
+                logger=log
+            )
+        else:
+            _dataset_log_fn(log, "initial_cache_fill_size is None, so train_ds will be None.", "info", rank=rank)
+            train_ds = None
+
         # The initial fill is now handled by RankInMemoryTrainingCache's __init__
         # No need for: train_ds.regenerate_cache() here.
 
-        if len(train_ds) == 0 and initial_cache_fill_size > 0:
+        if train_ds is None:
+            _dataset_log_fn(log, "train_ds is None, so no training will proceed.", "info", rank=rank)
+        elif (len(train_ds) == 0 and initial_cache_fill_size > 0):
              _dataset_log_fn(log, f"On-the-fly training cache (RankInMemoryTrainingCache) is empty after initial population attempt. Training might not proceed if data source is exhausted or too small.", "warning", rank=rank)
         elif len(train_ds) > 0:
              _dataset_log_fn(log, f"On-the-fly training cache (RankInMemoryTrainingCache) initially populated with {len(train_ds)} samples.", "info", rank=rank)
@@ -499,15 +507,19 @@ def _prepare_dataloaders(
                 "This provides a balance between performance and memory usage."
             )
 
-        train_dataset_path = Path(activation_dir)
-        train_ds = ActivationDataset(
-            train_dataset_path,
-            max_samples=max_train_samples_req,
-            desc="Loading train dataset",
-            preload_to_shared_ram=preload_to_shared_ram,
-            use_mmap=use_mmap,
-        )
-        if len(train_ds) == 0 and (max_train_samples_req is None or max_train_samples_req > 0):
+        if max_train_samples_req !=0:
+            train_dataset_path = Path(activation_dir)
+            train_ds = ActivationDataset(
+                train_dataset_path,
+                max_samples=max_train_samples_req,
+                desc="Loading train dataset",
+                preload_to_shared_ram=preload_to_shared_ram,
+                use_mmap=use_mmap,
+            )
+        else:
+            train_ds = None
+
+        if train_ds is not None and len(train_ds) == 0 and (max_train_samples_req is None or max_train_samples_req > 0):
              _dataset_log_fn(log, "Training dataset from disk is empty.", "warning", rank=rank)
 
         if effective_val_activation_dir:

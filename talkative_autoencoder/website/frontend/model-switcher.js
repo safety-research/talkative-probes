@@ -163,6 +163,7 @@ class ModelSwitcher {
                             GPU Memory: ~${info.estimated_gpu_memory}GB | 
                             Batch Size: ${info.batch_size}
                         </div>
+                        ${info.checkpoint_filename ? `<div class="text-xs text-gray-400 mt-0.5 font-mono" style="font-size: 0.65rem; word-break: break-all;">${info.checkpoint_filename}</div>` : ''}
                     </div>
                 </label>
             `;
@@ -261,6 +262,7 @@ class ModelSwitcher {
                     <span class="text-gray-600">Current model:</span>
                     <span class="font-medium text-gray-900 ml-1">${modelInfo?.display_name || this.currentModel}</span>
                     ${modelInfo?.layer ? `<span class="text-gray-500 ml-2">(Layer ${modelInfo.layer})</span>` : ''}
+                    ${modelInfo?.checkpoint_filename ? `<div class="text-xs text-gray-400 mt-0.5 font-mono" style="font-size: 0.65rem;">${modelInfo.checkpoint_filename}</div>` : ''}
                 </div>
             `;
         } else {

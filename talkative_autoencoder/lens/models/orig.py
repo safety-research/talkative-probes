@@ -417,25 +417,25 @@ class OrigWrapper:
 
     def get_all_activations_at_layer(
         self,
-        input_ids: torch.Tensor,  # Expected shape (seq_len,) or (1, seq_len)
+        input_ids: torch.Tensor,  # Expected shape (seq_len,) or (B, seq_len)
         layer_idx: int,
         *,
-        attention_mask: Optional[torch.Tensor] = None,  # Expected shape (seq_len,) or (1, seq_len)
+        attention_mask: Optional[torch.Tensor] = None,  # Expected shape (seq_len,) or (B, seq_len)
         no_grad: bool = True,
     ) -> torch.Tensor:
         """
-        Extracts all hidden state activations from a specified layer for a single sequence
+        Extracts all hidden state activations from a specified layer for one or more sequences
         using a forward hook.
 
         Args:
-            input_ids: Input token ids, shape (seq_len,) or (1, seq_len).
+            input_ids: Input token ids, shape (seq_len,) or (B, seq_len).
             layer_idx: 0-indexed layer to extract activations from.
-            attention_mask: Optional attention mask, shape (seq_len,) or (1, seq_len).
+            attention_mask: Optional attention mask, shape (seq_len,) or (B, seq_len).
                             If None and pad_token_id is configured, it's created.
             no_grad: Whether to run in no_grad context.
 
         Returns:
-            torch.Tensor: Hidden states for the layer, shape (seq_len, hidden_dim).
+            torch.Tensor: Hidden states for the layer, shape (seq_len, hidden_dim) or (B, seq_len, hidden_dim).
         """
         self._validate_layer_idx(layer_idx)
 
@@ -444,9 +444,11 @@ class OrigWrapper:
 
         _processed_input_ids = input_ids
         _processed_attention_mask = attention_mask
+        was_1d_input = False
 
         if input_ids.ndim == 1:  # Shape (seq_len,)
             _processed_input_ids = input_ids.unsqueeze(0)  # Convert to (1, seq_len)
+            was_1d_input = True
             if attention_mask is not None and attention_mask.ndim == 1:
                 if attention_mask.shape[0] != input_ids.shape[0]:
                     raise ValueError(
@@ -454,9 +456,7 @@ class OrigWrapper:
                         f"does not match 1D input_ids length {input_ids.shape[0]}"
                     )
                 _processed_attention_mask = attention_mask.unsqueeze(0)
-        elif input_ids.ndim == 2:  # Shape (possibly 1, seq_len)
-            if input_ids.shape[0] != 1:
-                raise ValueError(f"For 2D input_ids, batch size must be 1. Got shape {input_ids.shape}")
+        elif input_ids.ndim == 2:  # Shape (B, seq_len)
             if attention_mask is not None and attention_mask.ndim == 1:
                 raise ValueError(
                     f"Cannot use 1D attention_mask with 2D input_ids. Mask shape: {attention_mask.shape}, "
@@ -464,11 +464,11 @@ class OrigWrapper:
                 )
         else:  # ndim is 0 or > 2
             raise ValueError(
-                f"input_ids must be 1D (seq_len,) or 2D (1, seq_len). "
+                f"input_ids must be 1D (seq_len,) or 2D (B, seq_len). "
                 f"Got {input_ids.ndim}D tensor with shape {input_ids.shape}"
             )
 
-        # At this point, _processed_input_ids is (1, seq_len)
+        # At this point, _processed_input_ids is (B, seq_len)
 
         if _processed_attention_mask is None and self.model.config.pad_token_id is not None:
             _processed_attention_mask = _processed_input_ids.ne(self.model.config.pad_token_id).long()
@@ -478,13 +478,13 @@ class OrigWrapper:
 
             is_valid_mask_shape = (
                 _processed_attention_mask.ndim == 2
-                and _processed_attention_mask.shape[0] == 1
+                and _processed_attention_mask.shape[0] == _processed_input_ids.shape[0]
                 and _processed_attention_mask.shape[1] == _processed_input_ids.shape[1]
             )
             if not is_valid_mask_shape:
                 raise ValueError(
                     f"Final attention_mask shape {_processed_attention_mask.shape} is incompatible with "
-                    f"processed input_ids shape {_processed_input_ids.shape} (expected (1, {_processed_input_ids.shape[1]}))."
+                    f"processed input_ids shape {_processed_input_ids.shape}."
                 )
 
         captured_layer_activations = None
@@ -523,7 +523,10 @@ class OrigWrapper:
                 "This might indicate an issue with the model structure or hook registration."
             )
 
-        return captured_layer_activations.squeeze(0)
+        if was_1d_input:
+            return captured_layer_activations.squeeze(0)
+        else:
+            return captured_layer_activations
 
     def get_all_layers_activations_at_position(
         self,

@@ -3,6 +3,7 @@
 from typing import Dict, Any, Optional
 from pydantic import BaseModel, Field
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
         model_name="Qwen/Qwen2.5-14B-Instruct",
         different_activations_model="Qwen/Qwen2.5-14B-Instruct",
         batch_size=32,
-        auto_batch_size_max=256,
+        auto_batch_size_max=1024,
         layer=36,  # From L36 in checkpoint path
         description="Qwen 2.5 14B trained on WildChat dataset",
         estimated_gpu_memory=30.0,
@@ -62,7 +63,7 @@ MODEL_REGISTRY: Dict[str, ModelConfig] = {
         model_name="google/gemma-2-9b-it",
         different_activations_model="google/gemma-2-9b-it",
         batch_size=48,  # Smaller model can handle larger batches
-        auto_batch_size_max=384,
+        auto_batch_size_max=2048,
         layer=30,  # From L30 in checkpoint path
         description="Gemma 2 9B trained on WildChat dataset",
         estimated_gpu_memory=20.0,
@@ -104,6 +105,8 @@ def list_available_models() -> Dict[str, Dict[str, Any]]:
             "batch_size": config.batch_size,
             "layer": config.layer,
             "model_family": "Qwen" if "qwen" in model_id else "Gemma",
+            "checkpoint_path": config.checkpoint_path,
+            "checkpoint_filename": os.path.basename(config.checkpoint_path),
         }
         for model_id, config in MODEL_REGISTRY.items()
     }

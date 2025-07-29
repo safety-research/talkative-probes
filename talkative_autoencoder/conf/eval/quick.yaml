@@ -1,0 +1,18 @@
+# Quick evaluation configuration
+# Use this for fast validation on a subset of data
+
+defaults:
+  - default
+
+eval:
+  # Limit batches for quick testing
+  max_batches: 20  # Process only 20 batches
+  
+  # Larger batch size for speed
+  batch_size: 64
+  
+  # No best-of-N for speed
+  use_best_of_n: false
+  
+  # Don't save detailed results
+  save_detailed_results: false

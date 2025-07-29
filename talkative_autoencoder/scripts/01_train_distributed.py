@@ -1040,6 +1040,9 @@ class MetricsAccumulator:
         for k in act_stat_keys:
             self._act_stats[k] = torch.tensor(0.0, device=self.device)
         self._act_stats["act_n"] = 0
+        self._act_stats["act_vectors_n"] = 0
+        self._act_stats["act_sum_per_feature"] = torch.tensor(0.0, device=self.device)
+        self._act_stats["resid_sum_per_feature"] = torch.tensor(0.0, device=self.device)
         self._act_stats["act_min"] = torch.tensor(float("inf"), device=self.device)
         self._act_stats["act_max"] = torch.tensor(float("-inf"), device=self.device)
         self._act_stats["recon_min"] = torch.tensor(float("inf"), device=self.device)
@@ -1056,10 +1059,27 @@ class MetricsAccumulator:
         # --- Activation Stats ---
         activations = batch["A"].float()
         reconstructions = losses["reconstruction"].to(self.device)
+        residuals = activations - reconstructions
+
+        # Reshape to (num_vectors, hidden_dim)
+        hidden_dim = activations.shape[-1]
+        activations_2d = activations.view(-1, hidden_dim)
+        residuals_2d = residuals.view(-1, hidden_dim)
+        num_vectors = activations_2d.shape[0]
+
+        # Initialize per-feature stats on first batch
+        if self._act_stats["act_vectors_n"] == 0 and num_vectors > 0:
+            self._act_stats["act_sum_per_feature"] = torch.zeros(hidden_dim, device=self.device)
+            self._act_stats["resid_sum_per_feature"] = torch.zeros(hidden_dim, device=self.device)
 
         self._act_stats["act_sum"] += activations.sum()
         self._act_stats["act_sum_sq"] += (activations**2).sum()
         self._act_stats["act_n"] += activations.numel()
+        self._act_stats["act_vectors_n"] += num_vectors
+        if num_vectors > 0:
+            self._act_stats["act_sum_per_feature"] += activations_2d.sum(dim=0)
+            self._act_stats["resid_sum_per_feature"] += residuals_2d.sum(dim=0)
+
         self._act_stats["act_min"] = torch.min(self._act_stats["act_min"], activations.min())
         self._act_stats["act_max"] = torch.max(self._act_stats["act_max"], activations.max())
 
@@ -1069,7 +1089,7 @@ class MetricsAccumulator:
         self._act_stats["recon_max"] = torch.max(self._act_stats["recon_max"], reconstructions.max())
 
         self._act_stats["act_recon_sum_prod"] += (activations * reconstructions).sum()
-        self._act_stats["mse_sum"] += ((activations - reconstructions) ** 2).sum()
+        self._act_stats["mse_sum"] += (residuals**2).sum()
 
         # --- Heavy Metrics ---
         if is_heavy_batch:
@@ -1093,12 +1113,18 @@ class MetricsAccumulator:
             + [
                 _get_item(v)
                 for k, v in self._act_stats.items()
-                if k not in ["act_min", "act_max", "recon_min", "recon_max"]
+                if k not in ["act_min", "act_max", "recon_min", "recon_max", "act_sum_per_feature", "resid_sum_per_feature"]
             ]
             + [float(self.num_light_batches), float(self.num_heavy_batches)]
         )
         sum_metrics_tensor = torch.tensor(sum_metrics_list, device=self.device)
         dist.all_reduce(sum_metrics_tensor, op=dist.ReduceOp.SUM)
+
+        # --- Vector metrics ---
+        if isinstance(self._act_stats["act_sum_per_feature"], torch.Tensor):
+            dist.all_reduce(self._act_stats["act_sum_per_feature"], op=dist.ReduceOp.SUM)
+        if isinstance(self._act_stats["resid_sum_per_feature"], torch.Tensor):
+            dist.all_reduce(self._act_stats["resid_sum_per_feature"], op=dist.ReduceOp.SUM)
 
         # --- Min/Max-reduced metrics ---
         min_max_tensor = torch.stack(
@@ -1121,7 +1147,7 @@ class MetricsAccumulator:
             self._heavy_metrics[key] = unpacked_sum_metrics[i]
             i += 1
         for key in self._act_stats:
-            if key not in ["act_min", "act_max", "recon_min", "recon_max"]:
+            if key not in ["act_min", "act_max", "recon_min", "recon_max", "act_sum_per_feature", "resid_sum_per_feature"]:
                 self._act_stats[key] = unpacked_sum_metrics[i]
                 i += 1
 
@@ -1131,6 +1157,7 @@ class MetricsAccumulator:
         i += 1
 
         self._act_stats["act_n"] = int(self._act_stats["act_n"])
+        self._act_stats["act_vectors_n"] = int(self._act_stats["act_vectors_n"])
 
         # --- Unpack min/max-reduced metrics ---
         (
@@ -1163,6 +1190,21 @@ class MetricsAccumulator:
         recon_sum_sq = _get_item(self._act_stats["recon_sum_sq"])
         act_recon_sum_prod = _get_item(self._act_stats["act_recon_sum_prod"])
         mse_sum = _get_item(self._act_stats["mse_sum"])
+        N_vectors = int(_get_item(self._act_stats["act_vectors_n"]))
+
+        new_variance_recovered = 0.0
+        if N_vectors > 1:
+            act_sum_per_feature = self._act_stats["act_sum_per_feature"]
+            resid_sum_per_feature = self._act_stats["resid_sum_per_feature"]
+
+            total_variance = (act_sum_sq - (act_sum_per_feature**2).sum() / N_vectors) / (N_vectors - 1)
+            residual_variance = (mse_sum - (resid_sum_per_feature**2).sum() / N_vectors) / (N_vectors - 1)
+
+            total_variance = _get_item(total_variance)
+            residual_variance = _get_item(residual_variance)
+
+            if total_variance > 0:
+                new_variance_recovered = 1.0 - (residual_variance / total_variance)
 
         act_mean = act_sum / n
         act_var = act_sum_sq / n - act_mean**2
@@ -1194,6 +1236,8 @@ class MetricsAccumulator:
             "correlation": correlation,
             "improvement_over_zero": (zero_mse - reconstruction_mse) / zero_mse * 100 if zero_mse > 0 else 0.0,
             "improvement_over_mean": (mean_mse - reconstruction_mse) / mean_mse * 100 if mean_mse > 0 else 0.0,
+            "new_variance_recovered": new_variance_recovered,
+            "act_vectors_n": N_vectors,
         }
 
     def report(self, log, step, wandb_run_id, should_print_val=True):
@@ -1240,6 +1284,9 @@ class MetricsAccumulator:
                     f"    Improvement - vs Zero: {act_stats['improvement_over_zero']:.1f}%, vs Mean: {act_stats['improvement_over_mean']:.1f}%"
                 )
                 log.info(f"    Correlation: {act_stats['correlation']:.4f}")
+                log.info(
+                    f"    New Variance Recovered (on {act_stats['act_vectors_n']} vectors): {act_stats['new_variance_recovered']:.4f}"
+                )
 
             if self.num_heavy_batches > 0:
                 log.info("\nIntervention Analysis:")
@@ -1290,6 +1337,7 @@ class MetricsAccumulator:
                         "val/improvement_over_zero": act_stats["improvement_over_zero"],
                         "val/improvement_over_mean": act_stats["improvement_over_mean"],
                         "val/correlation": act_stats["correlation"],
+                        "val/new_variance_recovered": act_stats["new_variance_recovered"],
                     }
                 )
             log_metrics(wandb_metrics, step)

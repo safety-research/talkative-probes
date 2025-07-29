@@ -176,23 +176,8 @@ async def lifespan(app: FastAPI):
         # Load default model on startup if lazy loading is disabled
         if not settings.lazy_load_model:
             logger.info("Loading default model on startup (lazy_load_model=false)")
-            # Use default model from registry or fallback to checkpoint path
-            default_model = getattr(settings, 'default_model_id', None)
-            if default_model:
-                await model_manager.initialize_default_model(default_model)
-            else:
-                # Fallback: create a model config from checkpoint path for backwards compatibility
-                from .model_registry import ModelConfig
-                legacy_config = ModelConfig(
-                    name="legacy",
-                    display_name="Legacy Model",
-                    checkpoint_path=settings.checkpoint_path,
-                    model_name=settings.model_name,
-                    batch_size=settings.batch_size,
-                    auto_batch_size_max=settings.auto_batch_size_max,
-                )
-                await model_manager._load_model(legacy_config)
-                model_manager.current_model_id = "legacy"
+            # Always use the model manager's default model from registry
+            await model_manager.initialize_default_model()
         else:
             logger.info("Model will be loaded on first request (lazy_load_model=true)")
 
@@ -369,10 +354,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 "type": "model_info",
                 "loaded": True,
                 "model_id": model_info.get("model_id"),
-                "model_name": model_info.get("display_name", "Unknown"),
+                "display_name": model_info.get("display_name", "Unknown"),
+                "model_name": model_info.get("display_name", "Unknown"),  # For backwards compatibility
                 "description": model_info.get("description"),
                 "batch_size": model_info.get("batch_size"),
                 "auto_batch_size_max": model_info.get("auto_batch_size_max", settings.auto_batch_size_max),
+                "layer": model_info.get("layer"),
+                "checkpoint_path": model_info.get("checkpoint_path"),
+                "checkpoint_filename": model_info.get("checkpoint_filename"),
+                "cached_models": model_info.get("cached_models", []),
                 "is_switching": model_info.get("is_switching", False),
             })
 
@@ -750,7 +740,7 @@ async def get_model_cache_status():
     if not model_manager:
         return {"error": "Model manager not initialized"}
     
-    cache_status = model_manager.get_cache_status()
+    cache_status = await model_manager.get_cache_status()
     memory_usage = model_manager.get_memory_usage()
     
     return {

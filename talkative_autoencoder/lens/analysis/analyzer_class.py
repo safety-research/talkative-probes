@@ -450,6 +450,20 @@ class LensAnalyzer:
                 print(
                     f"✓ Using shared base model - saved ~{shared_base_model.num_parameters() * 2 / 1e9:.1f}GB of GPU memory"
                 )
+    def to(self, device):
+        """
+        Move all relevant models and tensors to the specified device.
+        """
+        self.device = torch.device(device)
+        if hasattr(self, "decoder") and self.decoder is not None:
+            self.decoder.to(device)
+        if hasattr(self, "encoder") and self.encoder is not None:
+            self.encoder.to(device)
+        if hasattr(self, "orig_model") and self.orig_model is not None:
+            self.orig_model.to(device)
+        if hasattr(self, "comparison_tuned_lens") and self.comparison_tuned_lens is not None:
+            self.comparison_tuned_lens.to(device)
+        return self
 
     def swap_orig_model(self, new_model: str):
         del self.orig_model
@@ -748,8 +762,16 @@ class LensAnalyzer:
                 if current_token_id is not None:
                     current_token_id = current_token_id.expand(batch_size)
             else:
-                current_token_id = input_ids[0, position_to_analyze] if self.encoder.config.add_current_token else None
-
+                # When position_to_analyze is a tensor, handle each position in a vectorized way
+                if self.encoder.config.add_current_token:
+                    # Ensure position_to_analyze is a 1D tensor of indices
+                    # input_ids: (1, seq_len), position_to_analyze: (batch_size,)
+                    # Use torch.gather to efficiently select the correct token for each position
+                    current_token_id = torch.gather(
+                        input_ids[0], 0, position_to_analyze
+                    )
+                else:
+                    current_token_id = None
             A_hat = self.encoder(
                 explanation_embeddings, original_token_pos=original_token_pos, current_token_ids=current_token_id
             )
@@ -1373,7 +1395,7 @@ class LensAnalyzer:
             self.orig_model.model.to("cuda")
 
         A_full_sequence = self.orig_model.get_all_activations_at_layer(
-            input_ids, self.layer, attention_mask=attention_mask
+            input_ids[0], self.layer, attention_mask=attention_mask
         )
 
         if move_devices and self.orig_model.model != self.shared_base_model:
@@ -2514,17 +2536,17 @@ class LensAnalyzer:
                     with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=self.use_bf16):
                         # Generate explanations for all layers in the current batch.
                         if self.decoder.config.use_kv_cache:
-                            gen = self.decoder.generate_soft_kv_cached_nondiff(
-                                A_batch,
-                                max_length=self.t_text,
-                                gumbel_tau=self.tau,
-                                original_token_pos=token_pos_for_decoder,
-                                return_logits=True,
-                                add_tokens=add_tokens,
-                                hard_left_emb=replace_left,
-                                hard_right_emb=replace_right,
-                                temperature=temperature,
-                            )
+                                gen = self.decoder.generate_soft_kv_cached_nondiff(
+                                    A_batch,
+                                    max_length=self.t_text,
+                                    gumbel_tau=self.tau,
+                                    original_token_pos=token_pos_for_decoder,
+                                    return_logits=True,
+                                    add_tokens=add_tokens,
+                                    hard_left_emb=replace_left,
+                                    hard_right_emb=replace_right,
+                                    temperature=temperature,
+                                )
                         else:
                             gen = self.decoder.generate_soft(
                                 A_batch,
@@ -2538,7 +2560,7 @@ class LensAnalyzer:
                                 temperature=temperature,
                             )
 
-                        all_gen_hard_token_ids.append(gen.hard_token_ids)
+                    all_gen_hard_token_ids.append(gen.hard_token_ids)
                 else:
                     # Optimize explanations
                     use_batched = optimize_explanations_config.get("use_batched", True)
@@ -2592,6 +2614,7 @@ class LensAnalyzer:
                 batch_salience_scores = [[] for _ in range(current_batch_size)]
 
                 # --- Non-batched section for eval and TunedLens ---
+
                 # These require single layer_idx, so we loop inside the batch.
                 if not no_eval or (tuned_lens and self.comparison_tuned_lens is not None) or calculate_token_salience:
                     # If we optimized, we need to create gen object from optimized tokens
@@ -2625,31 +2648,31 @@ class LensAnalyzer:
                         layer_idx = layer_indices_batch[j].item()
                         A_single = A_batch[j]
 
-                        if not no_eval:
-                            # Reconstruct activation for one layer
-                            generated_token_embeddings = self.encoder.base.get_input_embeddings()(
-                                gen.hard_token_ids[j]
-                            ).unsqueeze(0)
-                            current_token_id_single = input_ids.squeeze(0)[position_to_analyze].unsqueeze(0)
+                    if not no_eval:
+                        # Reconstruct activation for one layer
+                        generated_token_embeddings = self.encoder.base.get_input_embeddings()(
+                            gen.hard_token_ids[j]
+                        ).unsqueeze(0)
+                        current_token_id_single = input_ids.squeeze(0)[position_to_analyze].unsqueeze(0)
 
-                            A_hat_single = self.encoder(
-                                generated_token_embeddings,
-                                original_token_pos=torch.tensor([position_to_analyze], device=self.device),
-                                current_token_ids=current_token_id_single
-                                if self.encoder.config.add_current_token
-                                else None,
-                            )
+                        A_hat_single = self.encoder(
+                        generated_token_embeddings,
+                            original_token_pos=torch.tensor([position_to_analyze], device=self.device),
+                            current_token_ids=current_token_id_single
+                            if self.encoder.config.add_current_token
+                            else None,
+                        )
 
-                            # MSE
-                            mse = torch.nn.functional.mse_loss(A_single, A_hat_single.squeeze(0))
-                            all_mses.append(mse.unsqueeze(0))
+                        # MSE
+                        mse = torch.nn.functional.mse_loss(A_single, A_hat_single.squeeze(0))
+                        all_mses.append(mse.unsqueeze(0))
 
-                            # Relative RMSE
-                            relative_rmse = mse / ((A_single**2).mean() + 1e-9)
-                            all_relative_rmses.append(relative_rmse.unsqueeze(0))
+                        # Relative RMSE
+                        relative_rmse = mse / ((A_single**2).mean() + 1e-9)
+                        all_relative_rmses.append(relative_rmse.unsqueeze(0))
 
-                            # Compute KL divergence only if not no_kl
-                            if not no_kl:
+                        # Compute KL divergence only if not no_kl
+                        if not no_kl:
                                 # Get original and reconstructed logits (cannot be batched across layers)
                                 logits_orig = self.orig_model.forward_with_replacement(
                                     input_ids, A_single, layer_idx, position_to_analyze, no_grad=True
@@ -2667,28 +2690,28 @@ class LensAnalyzer:
                                         dim=-1
                                     )
                                     all_kl_divs.append(kl_div)
-                            else:
-                                all_kl_divs.append(torch.tensor(-1.0, device=self.device))
+                        else:
+                            all_kl_divs.append(torch.tensor(-1.0, device=self.device))
 
-                            # Calculate salience if requested
-                            if calculate_token_salience:
-                                salience_scores = self.calculate_salience(
-                                    gen.hard_token_ids[j],
-                                    mse.item(),
-                                    A_single,
-                                    position_to_analyze,
-                                    input_ids,
-                                )
-                                batch_salience_scores[j] = salience_scores
+                        # Calculate salience if requested
+                        if calculate_token_salience:
+                            salience_scores = self.calculate_salience(
+                                gen.hard_token_ids[j],
+                                mse.item(),
+                                A_single,
+                                position_to_analyze,
+                                input_ids,
+                            )
+                            batch_salience_scores[j] = salience_scores
 
-                        if tuned_lens and self.comparison_tuned_lens is not None:
-                            try:
-                                A_single_f32 = A_single.to(torch.float32)
-                                logits_tl = self.comparison_tuned_lens(A_single_f32, idx=layer_idx)
-                                top_tokens = " ".join(get_top_n_tokens(logits_tl, self.tokenizer, min(self.t_text, 10)))
-                                all_tuned_lens_predictions.append(top_tokens)
-                            except Exception:
-                                all_tuned_lens_predictions.append(f"[TL error on L{layer_idx}]")
+                if tuned_lens and self.comparison_tuned_lens is not None:
+                    try:
+                        A_single_f32 = A_single.to(torch.float32)
+                        logits_tl = self.comparison_tuned_lens(A_single_f32, idx=layer_idx)
+                        top_tokens = " ".join(get_top_n_tokens(logits_tl, self.tokenizer, min(self.t_text, 10)))
+                        all_tuned_lens_predictions.append(top_tokens)
+                    except Exception:
+                        all_tuned_lens_predictions.append(f"[TL error on L{layer_idx}]")
 
                 # Append batch salience scores to the collection
                 if calculate_token_salience:

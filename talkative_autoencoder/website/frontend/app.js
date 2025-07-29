@@ -418,18 +418,18 @@ const showError = (message) => {
 };
 
 const updateConnectionStatus = () => {
-    if (state.modelInfo) {
-        const modelName = state.modelInfo.model_name || 'Unknown Model';
-        const ptFile = state.modelInfo.pt_filename ? ` (${state.modelInfo.pt_filename})` : '';
+    if (state.modelInfo && state.modelInfo.display_name) {
+        const modelName = state.modelInfo.display_name || 'Unknown Model';
+        const checkpointFile = state.modelInfo.checkpoint_filename || '';
         
         if (state.modelInfo.loaded) {
             // Model is loaded - GREEN
-            elements.statusText.innerHTML = `Connected: <strong>${modelName}${ptFile}</strong>`;
+            elements.statusText.innerHTML = `Connected: <strong>${modelName}</strong><br><span style="font-size: 0.65em; opacity: 0.8;">${checkpointFile}</span>`;
             elements.connectionStatus.classList.remove('bg-gray-100', 'bg-red-100', 'bg-yellow-100');
             elements.connectionStatus.classList.add('bg-green-100');
         } else {
             // Model not loaded yet, but we know what will be loaded - YELLOW
-            elements.statusText.innerHTML = `Connected (will load: <strong>${modelName}</strong>)`;
+            elements.statusText.innerHTML = `Connected (will load: <strong>${modelName}</strong>)<br><span style="font-size: 0.65em; opacity: 0.8;">${checkpointFile}</span>`;
             elements.connectionStatus.classList.remove('bg-gray-100', 'bg-red-100', 'bg-green-100');
             elements.connectionStatus.classList.add('bg-yellow-100');
         }
