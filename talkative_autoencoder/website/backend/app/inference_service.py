@@ -254,13 +254,9 @@ class InferenceService:
         try:
             logger.info(f"Processing generation request {request_id}")
             
-            # Log input text to stdout for visibility
-            print(f"\n{'='*80}")
-            print(f"[GENERATION REQUEST {request_id}]")
-            print(f"Timestamp: {datetime.utcnow().isoformat()}")
-            print(f"Text length: {len(str(text))} characters")
-            print(f"Input: {str(text)[:500]}{'...' if len(str(text)) > 500 else ''}")
-            print(f"{'='*80}\n")
+            # Log input text for visibility
+            logger.info(f"[GENERATION REQUEST {request_id}] Text length: {len(str(text))} characters")
+            logger.debug(f"Generation request {request_id} input preview: {str(text)[:500]}{'...' if len(str(text)) > 500 else ''}")
             
             # Check if this is chat format
             is_chat = options.get("is_chat", False) or options.get("use_chat_format", False)
