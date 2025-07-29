@@ -18,6 +18,9 @@ See [frontend/README.md](frontend/README.md) for detailed documentation.
 
 See [backend/README.md](backend/README.md) for detailed documentation.
 
+### 3. Features
+For a comprehensive list of features including model management, request logging, and real-time updates, see [FEATURES.md](FEATURES.md).
+
 ## Quick Start
 
 ### Prerequisites

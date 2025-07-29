@@ -191,7 +191,8 @@ class ModelSwitcher {
         }
         
         modelListEl.innerHTML = modelEntries.map(([modelId, info]) => {
-            const isSelected = modelId === this.currentModel;
+            // Check against selectedModel if we have one (user selection), otherwise currentModel
+            const isSelected = this.selectedModel ? modelId === this.selectedModel : modelId === this.currentModel;
             const isDisabled = this.isSwitching;
             
             return `
@@ -316,6 +317,10 @@ class ModelSwitcher {
         
         warningEl?.classList.add('hidden');
         confirmBtn?.classList.add('hidden');
+        
+        // Clear selected model and re-render to reset radio buttons
+        this.selectedModel = null;
+        this.renderModelList();
     }
     
     // Confirm switch
