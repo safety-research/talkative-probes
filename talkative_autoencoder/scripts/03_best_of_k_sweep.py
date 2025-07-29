@@ -444,6 +444,7 @@ class BestOfKEvaluator:
                 
             # Process cached data if it exists (both distributed and single process)
             use_cached = False
+            distributed = dist.is_initialized() and dist.get_world_size() > 1
             if (distributed and cache_exists and cached_data is not None) or (not distributed and cached_data is not None):
                 use_cached = True
                 if distributed:
@@ -486,7 +487,7 @@ class BestOfKEvaluator:
                 all_mses.append(mses_flat.cpu())
                 total_positions = cached_all_A.shape[0]
             else:
-                if load_store and save_cache:
+                if load_store:
                     print(f"No cached vectors found at {cache_path}, will extract and cache them")
                 else:
                     print(f"Extracting vectors without caching")

@@ -189,7 +189,7 @@ class InferenceService:
                     "model_id": model_info.get("model_id"),
                     "model_name": model_info.get("display_name"),
                     "batch_size": batch_size,
-                    "checkpoint_path": self.model_manager.current_analyzer.checkpoint_path,
+                    "checkpoint_path": str(self.model_manager.current_analyzer.checkpoint_path),
                 }
             }
             request["status"] = "completed"
