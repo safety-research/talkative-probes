@@ -69,11 +69,11 @@ run:
 		echo "$(GREEN)https://$(RUNPOD_POD_ID)-$(RUNPOD_PORT).proxy.runpod.net$(NC)"; \
 		echo ""; \
 		echo "$(YELLOW)Starting backend server on port $(RUNPOD_PORT)...$(NC)"; \
-		source ../scripts/ensure_env.sh && cd .. && PORT=$(RUNPOD_PORT) uv run uvicorn website.backend.app.main:app --host 0.0.0.0 --port $(RUNPOD_PORT) --reload || true; \
+		source ../scripts/ensure_env.sh && cd .. && PORT=$(RUNPOD_PORT) uv run uvicorn website.backend.app.main:app --host 0.0.0.0 --port $(RUNPOD_PORT) --reload --reload-dir website || true; \
 	else \
 		echo "$(YELLOW)Starting backend server on http://localhost:$(API_PORT)$(NC)"; \
 		echo "$(YELLOW)API docs available at http://localhost:$(API_PORT)/docs$(NC)"; \
-		source ../scripts/ensure_env.sh && cd .. && uv run uvicorn website.backend.app.main:app --host 0.0.0.0 --port $(API_PORT) --reload || true; \
+		source ../scripts/ensure_env.sh && cd .. && uv run uvicorn website.backend.app.main:app --host 0.0.0.0 --port $(API_PORT) --reload --reload-dir website || true; \
 	fi
 
 # Run frontend locally

@@ -400,6 +400,35 @@ async def websocket_endpoint(websocket: WebSocket):
                         'error': 'Model manager not initialized'
                     })
                     continue
+
+                # Lazy load model if needed with lock to prevent race conditions
+                async with model_manager._load_lock:
+                    if model_manager.analyzer is None:
+                        await websocket.send_json({
+                            'type': 'status',
+                            'message': 'Loading model checkpoint... This may take a minute on first load.'
+                        })
+                        try:
+                            await model_manager.load_model()
+                            await websocket.send_json({
+                                'type': 'status',
+                                'message': 'Model loaded successfully!'
+                            })
+                            # Send model info with the extracted name
+                            await websocket.send_json({
+                                'type': 'model_info',
+                                'loaded': True,
+                                'checkpoint_path': model_manager.checkpoint_path,
+                                'model_name': model_manager.model_name or 'Unknown',
+                                'pt_filename': getattr(model_manager, 'pt_filename', None),
+                                'auto_batch_size_max': settings.auto_batch_size_max
+                            })
+                        except ModelLoadError as e:
+                            await websocket.send_json({
+                                'type': 'generation_error',
+                                'error': f'Failed to load model: {str(e)}'
+                            })
+                            continue
                 
                 # Add generation request to queue
                 text = data.get('text', '')
@@ -598,7 +627,18 @@ async def reset_model():
             torch.cuda.empty_cache()
         
         logger.info("Model reset and memory cleared")
-    
+        
+        # Reload model if lazy loading is disabled
+        if not settings.lazy_load_model:
+            logger.info("Reloading model after reset (lazy_load_model=false)")
+            try:
+                await model_manager.load_model()
+                logger.info("Model reloaded successfully")
+                return {"status": "reset", "message": "Model cleared and reloaded."}
+            except ModelLoadError as e:
+                logger.error(f"Failed to reload model after reset: {e}")
+                raise HTTPException(500, f"Model cleared, but failed to reload: {e}")
+
     return {"status": "reset", "message": "Model cleared from memory"}
 
 @app.get("/api/gpu_stats")
