@@ -929,6 +929,33 @@ const handleWebSocketMessage = (data) => {
             handleGenerationResult(data.result);
             break;
             
+        case 'completed':
+            // Handle analysis completion (new format from inference_service)
+            console.log('Received analysis completed:', data);
+            showLoading(false, '', null, 'analysis');
+            if (state.loadingTimeout) {
+                clearTimeout(state.loadingTimeout);
+                state.loadingTimeout = null;
+            }
+            // Check if this result is for the current request
+            if (data.request_id && state.currentRequestId && data.request_id !== state.currentRequestId) {
+                console.log('Ignoring result for old request:', data.request_id, 'current:', state.currentRequestId);
+                return;
+            }
+            // Check if result has valid data
+            if (!data.result || !data.result.data || data.result.data.length === 0) {
+                console.error('Received empty or invalid result:', data.result);
+                showError('Received empty result from server');
+                return;
+            }
+            // Clean up request tracking
+            if (data.request_id && state.activeRequests) {
+                delete state.activeRequests[data.request_id];
+            }
+            
+            displayAnalysisData(data.result.data);
+            break;
+            
         case 'generation_error':
             showLoading(false, '', null, 'generation');
             // Clean up request tracking
