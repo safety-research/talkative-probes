@@ -55,6 +55,8 @@ class ModelManager:
             "description": self.current_config.description,
             "batch_size": self.current_config.batch_size,
             "auto_batch_size_max": self.current_config.auto_batch_size_max,
+            "layer": self.current_config.layer,
+            "model_family": "Qwen" if "qwen" in self.current_model_id else "Gemma",
             "is_switching": self.is_switching,
             "switch_start_time": self.switch_start_time.isoformat() if self.switch_start_time else None,
         }
@@ -191,6 +193,16 @@ class ModelManager:
         
         # Store current model config for reference
         self.current_config = config
+        
+        # Update settings to reflect the loaded model's configuration
+        # This ensures compatibility with code that reads from settings
+        self.settings.batch_size = config.batch_size
+        self.settings.auto_batch_size_max = config.auto_batch_size_max
+        self.settings.model_name = config.model_name
+        self.settings.use_bf16 = config.use_bf16
+        self.settings.no_orig = config.no_orig
+        self.settings.comparison_tl_checkpoint = config.comparison_tl_checkpoint
+        self.settings.different_activations_model = config.different_activations_model
         
     async def _broadcast_switch_status(self, status: str, model_id: str, error: Optional[str] = None):
         """Broadcast model switch status to all connected clients"""

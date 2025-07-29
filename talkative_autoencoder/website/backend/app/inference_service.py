@@ -164,7 +164,7 @@ class InferenceService:
                     move_devices=options.get("move_devices", False),
                     logit_lens_analysis=options.get("logit_lens_analysis", False),
                     temperature=options.get("temperature", 1.0),
-                    no_kl=options.get("no_kl", False),
+                    no_kl=options.get("no_kl", self.settings.no_kl if hasattr(self.settings, 'no_kl') else True),
                     calculate_token_salience=options.get("calculate_token_salience", True),
                     optimize_explanations_config=options.get("optimize_explanations_config"),
                     progress_callback=progress_callback if websocket else None,

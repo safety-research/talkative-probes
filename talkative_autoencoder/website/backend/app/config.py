@@ -40,12 +40,13 @@ class Settings(BaseModel):
     tuned_lens_dir: Optional[str] = Field(default=None)
     
     # LensAnalyzer settings
-    comparison_tl_checkpoint: Union[str, bool] = Field(default=True)
+    comparison_tl_checkpoint: Union[str, bool] = Field(default=False)  # Changed default to False to match .env
     do_not_load_weights: bool = Field(default=False)
     make_xl: bool = Field(default=False)
     t_text: Optional[str] = Field(default=None)
     strict_load: bool = Field(default=False)
-    no_orig: bool = Field(default=False)
+    no_orig: bool = Field(default=True)  # Changed default to True to match .env
+    no_kl: bool = Field(default=True)  # Added from .env NO_KL=true
     different_activations_model: Optional[str] = Field(default=None)
     initialise_on_cpu: bool = Field(default=False)
     lazy_load_model: bool = Field(default=False)  # Whether to load model lazily on first request
@@ -82,6 +83,7 @@ def load_settings():
         "T_TEXT": "t_text",
         "STRICT_LOAD": "strict_load",
         "NO_ORIG": "no_orig",
+        "NO_KL": "no_kl",
         "DIFFERENT_ACTIVATIONS_MODEL": "different_activations_model",
         "INITIALISE_ON_CPU": "initialise_on_cpu",
         "LAZY_LOAD_MODEL": "lazy_load_model"
@@ -95,7 +97,7 @@ def load_settings():
             if field_name in ["batch_size", "port", "max_queue_size", "max_text_length", 
                               "cache_ttl", "request_timeout", "rate_limit_per_minute", "auto_batch_size_max"]:
                 settings_dict[field_name] = int(env_value)
-            elif field_name in ["use_bf16", "load_in_8bit", "do_not_load_weights", "make_xl", "strict_load", "no_orig", "initialise_on_cpu", "lazy_load_model"]:
+            elif field_name in ["use_bf16", "load_in_8bit", "do_not_load_weights", "make_xl", "strict_load", "no_orig", "no_kl", "initialise_on_cpu", "lazy_load_model"]:
                 settings_dict[field_name] = env_value.lower() in ["true", "1", "yes"]
             elif field_name == "allowed_origins":
                 settings_dict[field_name] = env_value.split(",")

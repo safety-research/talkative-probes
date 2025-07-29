@@ -51,13 +51,25 @@ class ModelSwitcher {
                     <!-- Model options will be inserted here -->
                 </div>
                 
-                <div id="switchWarning" class="hidden mb-3 p-3 bg-yellow-50 border border-yellow-200 rounded-md">
-                    <div class="flex items-start">
-                        <svg class="w-5 h-5 text-yellow-600 mt-0.5 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
-                        </svg>
-                        <div class="text-sm text-yellow-800">
-                            <strong>Warning:</strong> Switching models will affect all users and may take a few minutes. Any in-progress requests will be queued.
+                <div id="switchWarning" class="hidden mb-3 space-y-2">
+                    <div class="p-3 bg-yellow-50 border border-yellow-200 rounded-md">
+                        <div class="flex items-start">
+                            <svg class="w-5 h-5 text-yellow-600 mt-0.5 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                            </svg>
+                            <div class="text-sm text-yellow-800">
+                                <strong>Warning:</strong> Switching models will affect all users and may take a few minutes. Any in-progress requests will be queued.
+                            </div>
+                        </div>
+                    </div>
+                    <div class="p-3 bg-blue-50 border border-blue-200 rounded-md">
+                        <div class="flex items-start">
+                            <svg class="w-5 h-5 text-blue-600 mt-0.5 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                            </svg>
+                            <div class="text-sm text-blue-800">
+                                <strong>Note:</strong> Different models use different tokenizers. Chat formatting may need adjustment based on the selected model (Qwen vs Gemma).
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -138,6 +150,7 @@ class ModelSwitcher {
                         <div class="font-medium text-gray-900">${info.display_name}</div>
                         <div class="text-sm text-gray-600">${info.description}</div>
                         <div class="text-xs text-gray-500 mt-1">
+                            Layer: ${info.layer} | 
                             GPU Memory: ~${info.estimated_gpu_memory}GB | 
                             Batch Size: ${info.batch_size}
                         </div>
@@ -238,6 +251,7 @@ class ModelSwitcher {
                 <div class="text-sm">
                     <span class="text-gray-600">Current model:</span>
                     <span class="font-medium text-gray-900 ml-1">${modelInfo?.display_name || this.currentModel}</span>
+                    ${modelInfo?.layer ? `<span class="text-gray-500 ml-2">(Layer ${modelInfo.layer})</span>` : ''}
                 </div>
             `;
         } else {
