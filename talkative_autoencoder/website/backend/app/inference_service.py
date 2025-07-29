@@ -46,6 +46,15 @@ class RequestFileLogger:
         print(f"Input text: {str(text)[:500]}{'...' if len(str(text)) > 500 else ''}")
         print(f"{'='*80}\n")
         
+        # Create a copy of options without non-serializable objects
+        clean_options = {}
+        if options:
+            for key, value in options.items():
+                # Skip WebSocket and other non-serializable objects
+                if key == "websocket" or hasattr(value, '__dict__'):
+                    continue
+                clean_options[key] = value
+        
         # Log to file
         log_entry = {
             "request_id": request_id,
@@ -53,7 +62,7 @@ class RequestFileLogger:
             "timestamp": datetime.utcnow().isoformat(),
             "text_length": len(str(text)),
             "text_preview": str(text)[:1000],  # Store more in file than shown in stdout
-            "options": options or {},
+            "options": clean_options,
             "pid": os.getpid()
         }
         

@@ -145,8 +145,8 @@ isDebugMode()
 - `MAX_CPU_CACHED_MODELS`: Number of models to keep in CPU memory
 - `RATE_LIMIT_PER_MINUTE`: API rate limiting
 
-### Model Configuration
-Models are configured in `backend/app/model_registry.py`:
+### Model Configuration (Hot-Reloadable!)
+Models are configured in `backend/app/models.json`:
 ```python
 "model-id": ModelConfig(
     name="model-id",

@@ -626,6 +626,28 @@ async def websocket_endpoint(websocket: WebSocket):
                     **model_info
                 })
                 
+            elif data["type"] == "reload_models":
+                # Reload model registry from JSON
+                try:
+                    from .model_registry import model_registry, list_available_models
+                    model_registry.reload_models()
+                    
+                    # Send updated model list
+                    models = list_available_models()
+                    current_info = model_manager.get_current_model_info()
+                    
+                    await websocket.send_json({
+                        "type": "models_reloaded",
+                        "models": models,
+                        "current_model": current_info.get("model_id"),
+                        "message": "Model registry reloaded successfully"
+                    })
+                except Exception as e:
+                    await websocket.send_json({
+                        "type": "error",
+                        "error": f"Failed to reload models: {str(e)}"
+                    })
+                
             elif data["type"] == "interrupt":
                 request_id = data.get("request_id")
                 context = data.get("context", "analysis")
@@ -787,6 +809,26 @@ async def get_model_cache_status():
         "cache": cache_status,
         "memory": memory_usage,
     }
+
+@app.post("/api/models/reload")
+async def reload_models(authorized: bool = Depends(verify_api_key)):
+    """Reload model registry from JSON file (requires API key)"""
+    try:
+        from .model_registry import model_registry
+        model_registry.reload_models()
+        
+        # Get updated list
+        models = model_registry.list_available_models()
+        
+        return {
+            "status": "success",
+            "message": "Model registry reloaded successfully",
+            "models_count": len(models),
+            "models": models
+        }
+    except Exception as e:
+        logger.error(f"Failed to reload model registry: {e}")
+        raise HTTPException(500, f"Failed to reload models: {str(e)}")
 
 @app.get("/api/gpu_stats")
 async def get_gpu_stats():
