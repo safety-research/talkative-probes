@@ -230,12 +230,14 @@ class InferenceService:
             
             # Parse chat format if needed
             prompt = text
-            if options.get("use_chat_format", False):
+            # Handle both 'is_chat' (frontend) and 'use_chat_format' (backend) names
+            if options.get("is_chat", False) or options.get("use_chat_format", False):
                 prompt = await self._parse_chat_format(text)
                 
             # Generation parameters
             num_completions = options.get("num_completions", 3)
-            max_new_tokens = options.get("max_new_tokens", 50)
+            # Handle both 'num_tokens' (frontend) and 'max_new_tokens' (backend) names
+            max_new_tokens = options.get("num_tokens") or options.get("max_new_tokens", 50)
             temperature = options.get("temperature", 0.8)
             top_p = options.get("top_p", 0.95)
             
@@ -252,6 +254,8 @@ class InferenceService:
                     return_full_text=True,
                 )
             )
+            
+            logger.info(f"Generated {len(completions)} completions for request {request_id}")
             
             # Get model info
             model_info = self.model_manager.get_current_model_info()
@@ -275,6 +279,7 @@ class InferenceService:
             
             # Send completion via WebSocket
             if websocket:
+                logger.info(f"Sending generation_complete for request {request_id}")
                 await self.queue._send_websocket_update(
                     websocket,
                     {
@@ -283,6 +288,8 @@ class InferenceService:
                         "result": request["result"],
                     }
                 )
+            else:
+                logger.warning(f"No websocket available to send generation_complete for request {request_id}")
                 
         except Exception as e:
             logger.error(f"Generation error for request {request_id}: {e}")

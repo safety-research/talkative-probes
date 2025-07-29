@@ -447,10 +447,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     }
                 )
 
-                # Store request in context with websocket
-                request = inference_service.queue.active_requests[request_id]
-                request["websocket"] = websocket
-
                 continue
 
                 # This code was orphaned - it should be part of the analyze block
@@ -485,11 +481,11 @@ async def websocket_endpoint(websocket: WebSocket):
                         await websocket.send_json({"type": "error", "error": f"Failed to load model: {str(e)}"})
                         continue
 
-                request_id = await inference_service.queue.add_request(data["text"], data.get("options", {}))
-
-                # Attach websocket to request for notifications
-                request = inference_service.queue.active_requests[request_id]
-                request["websocket"] = websocket
+                # Get options and add websocket
+                options = data.get("options", {})
+                options["websocket"] = websocket
+                
+                request_id = await inference_service.queue.add_request(data["text"], options)
 
                 # Get actual position in queue
                 position = inference_service.queue.get_position_in_queue(request_id)

@@ -13,6 +13,8 @@ The K-sweep evaluation (`03_best_of_k_sweep.py`) evaluates how variance recovery
 
 ## Quick Start
 
+**Note for zsh users**: Quote parameters with brackets like `'+eval.k_values=[1,2,4]'` to avoid shell expansion errors.
+
 ### Using Pre-configured Eval Configs
 
 The easiest way to run evaluations is using the pre-configured YAML files:
@@ -93,7 +95,7 @@ Vector caching dramatically speeds up repeated experiments by saving extracted a
 ```bash
 ./scripts/submit_k_sweep.sh num_gpus=8 time=24:00:00 \
   +eval.checkpoint_path=/path/to/checkpoint.pt \
-  +eval.k_values=[1] \
+  '+eval.k_values=[1]' \
   +eval.load_store=true \
   +eval.max_batches=null  # Cache entire dataset
 ```
@@ -104,7 +106,7 @@ Vector caching dramatically speeds up repeated experiments by saving extracted a
 for temp in 0.8 1.0 1.2; do
   ./scripts/submit_k_sweep.sh num_gpus=4 \
     +eval.checkpoint_path=/path/to/checkpoint.pt \
-    +eval.k_values=[1,2,4,8,16,32,64] \
+    '+eval.k_values=[1,2,4,8,16,32,64]' \
     +eval.temperature=$temp \
     +eval.load_store=true \
     +eval.output_file=k_sweep_temp_${temp}.json
