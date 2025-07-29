@@ -1,0 +1,56 @@
+# Configuration for Gemma3 27B best-of-K sweep analysis
+# Full evaluation configuration with all parameters
+
+# No defaults to avoid interpolation issues
+
+# Evaluation parameters
+eval:
+  # K values to evaluate
+  k_values: [1, 2, 4, 8, 16, 32]
+  
+  # Output settings
+  output_dir: ./eval_results
+  output_file: gemma3_k_sweep_full.json
+  
+  # Evaluation settings
+  max_batches: null  # Use entire validation set
+  temperature: 1.0
+  
+  # Batch size settings
+  batch_size: 8  # Legacy parameter, kept for compatibility
+  max_generation_batch_size: 64  # Batch size for best-of-K generation
+  dataloader_batch_size: 128  # Batch size for dataloader
+  vector_extraction_batch_size: 16  # Batch size for extracting vectors from model
+  dataloader_fwd_pass_batch_size: 16  # Batch size for forward pass in dataloader
+  
+  # Performance settings
+  use_bf16: true
+  
+  # Sampling settings
+  num_positions: 1  # Number of positions to sample per sequence
+  max_val_samples: 1000  # Maximum validation samples to use
+  
+  # Bootstrap settings
+  do_bootstrap: true  # Set to false to disable bootstrap confidence intervals
+  
+  # Caching settings
+  load_store: false  # Set to true to enable vector caching
+  cache_dir: vector_cache  # Directory for cached vectors
+
+# Include dataset configuration for validation data
+dataset:
+  activation_dir: "./data/SimpleStories_train"
+  val_activation_dir: "./data/SimpleStories_test"
+  
+  # On-the-fly generation settings (if needed)
+  on_the_fly:
+    enabled: false
+    generation_batch_size: ${eval.dataloader_fwd_pass_batch_size}
+
+# Data loader settings
+data:
+  num_workers: 0
+
+# Note: checkpoint_path must be specified on command line as it changes frequently
+# Example usage:
+# ./scripts/submit_k_sweep.sh +eval=gemma3_k_sweep_full +eval.checkpoint_path=/path/to/checkpoint.pt
