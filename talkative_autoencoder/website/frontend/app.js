@@ -53,7 +53,8 @@ const state = {
     generations: [],  // Store multiple generations
     currentGenerationIndex: 0,  // Track which generation is being viewed
     modelInfo: null,  // Store loaded model information
-    autoBatchSizeMax: 256  // Default value, will be updated from backend
+    autoBatchSizeMax: 256,  // Default value, will be updated from backend
+    modelSwitcher: null  // Model switcher component
 };
 
 // Initialize column visibility after VisualizationCore is available
@@ -663,6 +664,11 @@ const connectWebSocket = () => {
         elements.analyzeBtn.disabled = false;
         elements.generateBtn.disabled = false;
         
+        // Update model switcher WebSocket
+        if (state.modelSwitcher) {
+            state.modelSwitcher.setWebSocket(state.ws);
+        }
+        
         // Start GPU stats polling when connected
         startGPUStatsPolling();
     };
@@ -764,6 +770,23 @@ const stopGPUStatsPolling = () => {
 };
 
 const handleWebSocketMessage = (data) => {
+    // Handle global notifications for model switching
+    if (data.type === 'model_switch_status' && typeof globalNotifications !== 'undefined') {
+        globalNotifications.handleModelSwitchStatus(data);
+    }
+    
+    // Pass messages to model switcher if relevant
+    if (state.modelSwitcher && [
+        'models_list', 
+        'model_switch_status', 
+        'model_switch_acknowledged',
+        'model_switch_complete',
+        'model_switch_error',
+        'model_info_update'
+    ].includes(data.type)) {
+        state.modelSwitcher.handleMessage(data);
+    }
+    
     switch (data.type) {
         case 'model_info':
             state.modelInfo = data;
@@ -1922,6 +1945,42 @@ const initialize = () => {
     
     // Initialize event listeners
     initializeEventListeners();
+    
+    // Initialize model switcher
+    const modelSwitcherContainer = document.getElementById('modelSwitcherContainer');
+    if (modelSwitcherContainer && typeof ModelSwitcher !== 'undefined') {
+        state.modelSwitcher = new ModelSwitcher(state.ws, modelSwitcherContainer);
+        
+        // Add event listeners
+        state.modelSwitcher.addEventListener('switch-started', (data) => {
+            console.log('Model switch started:', data);
+            showLoading(true, 'Model is switching. All requests are queued...', null, 'analysis');
+        });
+        
+        state.modelSwitcher.addEventListener('switch-completed', (data) => {
+            console.log('Model switch completed:', data);
+            showLoading(false, '', null, 'analysis');
+            // Use a temporary success message (showError with green styling would be better)
+            const successMsg = `Model switched successfully to ${data.model_name || data.model_id}!`;
+            console.log(successMsg);
+            // Could also update the status text
+            if (elements.statusText) {
+                const currentStatus = elements.statusText.textContent;
+                elements.statusText.textContent = successMsg;
+                setTimeout(() => {
+                    elements.statusText.textContent = currentStatus;
+                }, 3000);
+            }
+        });
+        
+        state.modelSwitcher.addEventListener('switch-failed', (data) => {
+            console.log('Model switch failed:', data);
+            showLoading(false, '', null, 'analysis');
+            showError(`Model switch failed: ${data.error}`);
+        });
+    } else {
+        console.warn('ModelSwitcher not available or container not found');
+    }
     
     // Connect WebSocket
     connectWebSocket();

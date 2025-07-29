@@ -9,6 +9,10 @@ from datetime import datetime
 import sys
 import os
 
+class ModelLoadError(Exception):
+    """Raised when model fails to load"""
+    pass
+
 # Add parent directory to path to import lens module
 parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 sys.path.insert(0, parent_dir)
@@ -32,7 +36,7 @@ class ModelManager:
         self.switch_start_time: Optional[datetime] = None
         self.queued_requests: List[asyncio.Future] = []  # Queue for requests during model switch
         self.websocket_manager = None  # Will be set by the application
-        self.default_model_id = "qwen2.5-14b"  # Can be overridden
+        self.default_model_id = "qwen2.5-14b-wildchat"  # Can be overridden
         
     async def initialize_default_model(self, model_id: Optional[str] = None):
         """Initialize with a default model"""
@@ -206,6 +210,21 @@ class ModelManager:
         else:
             # Fallback to logging if no WebSocket manager
             logger.info(f"Model switch status: {message}")
+            
+    def is_model_loaded(self) -> bool:
+        """Check if a model is currently loaded"""
+        return self.current_analyzer is not None
+        
+    async def ensure_model_loaded(self):
+        """Ensure a model is loaded, loading default if necessary"""
+        if not self.is_model_loaded():
+            await self.initialize_default_model()
+            
+    async def clear_current_model(self):
+        """Clear the current model from memory"""
+        await self._unload_current_model()
+        self.current_model_id = None
+        self.current_config = None
             
     def get_memory_usage(self) -> Dict[str, Any]:
         """Get current GPU memory usage"""

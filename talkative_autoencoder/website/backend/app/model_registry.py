@@ -33,25 +33,38 @@ class ModelConfig(BaseModel):
 
 # Define available models
 MODEL_REGISTRY: Dict[str, ModelConfig] = {
-    "qwen2.5-14b": ModelConfig(
-        name="qwen2.5-14b",
-        display_name="Qwen 2.5 14B",
-        checkpoint_path="/checkpoint/qwen2.5-14b/final",  # Update with actual path
+    "qwen2.5-14b-wildchat": ModelConfig(
+        name="qwen2.5-14b-wildchat",
+        display_name="Qwen 2.5 14B (WildChat)",
+        checkpoint_path="/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/qwen2_5_WCHAT_14b_frozen_nopostfix_QQ1IAW1S_Qwen2.5-14B-Instruct_L36_e36_frozen_lr1e-3_t8_4ep_resume_0729_073454_NO_ENC_PROJ8_higherELR_PT_TO_CHAT_OTF_dist4_slurm6708",
         model_name="Qwen/Qwen2.5-14B-Instruct",
         batch_size=32,
         auto_batch_size_max=256,
-        description="Qwen 2.5 14B model with talkative autoencoder",
+        description="Qwen 2.5 14B trained on WildChat dataset",
         estimated_gpu_memory=30.0,
+        no_orig=True,  # Based on .env settings
     ),
-    "gemma-7b": ModelConfig(
-        name="gemma-7b",
-        display_name="Gemma 7B",
-        checkpoint_path="/checkpoint/gemma-7b/final",  # Update with actual path
-        model_name="google/gemma-7b-it",
-        batch_size=64,  # Smaller model can handle larger batches
-        auto_batch_size_max=512,
-        description="Gemma 7B model with talkative autoencoder",
-        estimated_gpu_memory=15.0,
+    "gemma2-9b-wildchat": ModelConfig(
+        name="gemma2-9b-wildchat",
+        display_name="Gemma 2 9B (WildChat)",
+        checkpoint_path="/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_WILDCHAT_9b_frozen_nopostfix_GG29AW1S_gemma-2-9b-it_L30_e30_frozen_lr1e-4_t8_2ep_resume_0723_124516_NO_ENC_PROJ8_CHAT_DIR_OTF_dist2_slurm6696",
+        model_name="google/gemma-2-9b-it",
+        batch_size=48,  # Smaller model can handle larger batches
+        auto_batch_size_max=384,
+        description="Gemma 2 9B trained on WildChat dataset",
+        estimated_gpu_memory=20.0,
+        no_orig=True,
+    ),
+    "gemma3-27b-chat": ModelConfig(
+        name="gemma3-27b-chat",
+        display_name="Gemma 3 27B (Chat)",
+        checkpoint_path="/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma3_CHAT_27b_frozen_nopostfix_GG32PAW1S_gemma-3-27b-it_L45_e45_frozen_lr3e-4_t8_4ep_resume_0724_191127_frozenenc_add_patch5_suffix1p0enc_NO_PROJ_IT_E_D_OTF_dist8",
+        model_name="google/gemma-3-27b-it",
+        batch_size=16,  # Large model needs smaller batches
+        auto_batch_size_max=128,
+        description="Gemma 3 27B trained on chat data",
+        estimated_gpu_memory=50.0,
+        no_orig=True,
     ),
     # Add more models as needed
 }

@@ -30,7 +30,8 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from .config import load_settings
-from .inference import ModelLoadError, ModelManager
+from .model_manager import ModelManager, ModelLoadError
+from .inference_service import InferenceService
 from .models import AnalyzeRequest
 from .websocket import manager
 
@@ -148,6 +149,7 @@ class GPUStatsMonitor:
 
 # Global instances
 model_manager: ModelManager | None = None
+inference_service: InferenceService | None = None
 gpu_monitor = GPUStatsMonitor()
 
 # Rate limiter
@@ -158,22 +160,43 @@ settings = load_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    global model_manager
+    global model_manager, inference_service
 
     # Start GPU monitoring
     gpu_monitor.start()
 
     try:
-        model_manager = ModelManager(checkpoint_path=settings.checkpoint_path, websocket_manager=manager)
+        # Initialize model manager
+        model_manager = ModelManager(settings)
+        model_manager.websocket_manager = manager
+        
+        # Initialize inference service
+        inference_service = InferenceService(model_manager, settings, manager)
 
-        # Load model on startup if lazy loading is disabled
+        # Load default model on startup if lazy loading is disabled
         if not settings.lazy_load_model:
-            logger.info("Loading model on startup (lazy_load_model=false)")
-            await model_manager.load_model()
+            logger.info("Loading default model on startup (lazy_load_model=false)")
+            # Use default model from registry or fallback to checkpoint path
+            default_model = getattr(settings, 'default_model_id', None)
+            if default_model:
+                await model_manager.initialize_default_model(default_model)
+            else:
+                # Fallback: create a model config from checkpoint path for backwards compatibility
+                from .model_registry import ModelConfig
+                legacy_config = ModelConfig(
+                    name="legacy",
+                    display_name="Legacy Model",
+                    checkpoint_path=settings.checkpoint_path,
+                    model_name=settings.model_name,
+                    batch_size=settings.batch_size,
+                    auto_batch_size_max=settings.auto_batch_size_max,
+                )
+                await model_manager._load_model(legacy_config)
+                model_manager.current_model_id = "legacy"
         else:
             logger.info("Model will be loaded on first request (lazy_load_model=true)")
 
-        await model_manager.start_processing()
+        await inference_service.start_processing()
         logger.info("Application startup complete")
     except Exception as e:
         logger.error(f"Startup error: {e}")
@@ -187,12 +210,8 @@ async def lifespan(app: FastAPI):
     # Stop GPU monitoring
     gpu_monitor.stop()
 
-    if model_manager and model_manager.processing_task:
-        model_manager.processing_task.cancel()
-        try:
-            await model_manager.processing_task
-        except asyncio.CancelledError:
-            pass
+    if inference_service:
+        await inference_service.stop_processing()
 
 
 app = FastAPI(
@@ -262,36 +281,36 @@ async def analyze(
     request: AnalyzeRequest, background_tasks: BackgroundTasks, req: Request, authorized: bool = Depends(verify_api_key)
 ):
     """Queue analysis request and return request ID"""
-    if not model_manager:
-        raise HTTPException(500, "Model manager not initialized")
+    if not inference_service:
+        raise HTTPException(500, "Inference service not initialized")
 
     # Validate text length
     if len(request.text) > settings.max_text_length:
         raise HTTPException(400, f"Text too long. Maximum length is {settings.max_text_length} characters")
 
-    # Lazy load model on first request with lock to prevent race conditions
-    async with model_manager._load_lock:
-        if model_manager.analyzer is None:
-            try:
-                await model_manager.load_model()
-            except ModelLoadError as e:
-                raise HTTPException(500, f"Failed to load model: {str(e)}") from e
+    # Lazy load model on first request
+    if model_manager and not model_manager.is_model_loaded():
+        try:
+            # Load default model
+            await model_manager.initialize_default_model()
+        except Exception as e:
+            raise HTTPException(500, f"Failed to load model: {str(e)}") from e
 
-    request_id = await model_manager.queue.add_request(request.text, request.options.dict())
+    request_id = await inference_service.queue.add_request(request.text, request.options.dict())
 
     # Monitor for disconnection
     async def check_disconnection():
-        while request_id in model_manager.queue.active_requests:
+        while request_id in inference_service.queue.active_requests:
             if await req.is_disconnected():
-                model_manager.queue.active_requests[request_id]["status"] = "cancelled"
+                inference_service.queue.active_requests[request_id]["status"] = "cancelled"
                 break
             await asyncio.sleep(1)
 
     background_tasks.add_task(check_disconnection)
 
     # Get actual position in queue
-    position = model_manager.queue.get_position_in_queue(request_id)
-    stats = model_manager.queue.get_queue_stats()
+    position = inference_service.queue.get_position_in_queue(request_id)
+    stats = inference_service.queue.get_queue_stats()
 
     return {"request_id": request_id, "status": "queued", "queue_position": position, "queue_size": stats["queue_size"]}
 
@@ -299,10 +318,10 @@ async def analyze(
 @app.get("/status/{request_id}")
 async def get_status(request_id: str):
     """Get status of a request"""
-    if not model_manager:
-        raise HTTPException(500, "Model manager not initialized")
+    if not inference_service:
+        raise HTTPException(500, "Inference service not initialized")
 
-    status = model_manager.queue.get_status(request_id)
+    status = inference_service.queue.get_status(request_id)
     if not status:
         raise HTTPException(404, "Request not found")
 
@@ -332,33 +351,34 @@ async def websocket_endpoint(websocket: WebSocket):
 
     await manager.connect(websocket)
 
-    # Send model info - either loaded or pending
+    # Send model info from model_manager
     if model_manager:
-        if model_manager.analyzer:
-            # Model is loaded
-            model_info = {
-                "type": "model_info",
-                "loaded": True,
-                "checkpoint_path": model_manager.checkpoint_path,
-                "model_name": model_manager.model_name or "Unknown",
-                "pt_filename": getattr(model_manager, "pt_filename", None),
-                "auto_batch_size_max": settings.auto_batch_size_max,
-            }
-        else:
-            # Model not loaded yet, but we know what will be loaded
-            checkpoint_name = os.path.basename(model_manager.checkpoint_path)
-            model_info = {
+        model_info = model_manager.get_current_model_info()
+        # Transform the response to match expected format
+        if model_info.get("status") == "no_model_loaded":
+            # Model not loaded yet
+            await websocket.send_json({
                 "type": "model_info",
                 "loaded": False,
-                "checkpoint_path": model_manager.checkpoint_path,
-                "model_name": checkpoint_name,  # Show checkpoint name as preview
+                "model_name": "No model loaded",
                 "auto_batch_size_max": settings.auto_batch_size_max,
-            }
-        await websocket.send_json(model_info)
+            })
+        else:
+            # Model is loaded
+            await websocket.send_json({
+                "type": "model_info",
+                "loaded": True,
+                "model_id": model_info.get("model_id"),
+                "model_name": model_info.get("display_name", "Unknown"),
+                "description": model_info.get("description"),
+                "batch_size": model_info.get("batch_size"),
+                "auto_batch_size_max": model_info.get("auto_batch_size_max", settings.auto_batch_size_max),
+                "is_switching": model_info.get("is_switching", False),
+            })
 
     # Send initial queue status
-    if model_manager:
-        stats = model_manager.queue.get_queue_stats()
+    if inference_service:
+        stats = inference_service.queue.get_queue_stats()
         await websocket.send_json(
             {
                 "type": "queue_update",
@@ -374,45 +394,46 @@ async def websocket_endpoint(websocket: WebSocket):
             data = await websocket.receive_json()
 
             if data["type"] == "analyze":
-                if not model_manager:
-                    await websocket.send_json({"type": "error", "error": "Model manager not initialized"})
+                if not inference_service:
+                    await websocket.send_json({"type": "error", "error": "Inference service not initialized"})
                     continue
 
             elif data["type"] == "generate":
-                if not model_manager:
-                    await websocket.send_json({"type": "generation_error", "error": "Model manager not initialized"})
+                if not inference_service:
+                    await websocket.send_json({"type": "generation_error", "error": "Inference service not initialized"})
                     continue
 
-                # Lazy load model if needed with lock to prevent race conditions
-                async with model_manager._load_lock:
-                    if model_manager.analyzer is None:
+                # Lazy load model if needed through model_manager
+                if model_manager and not model_manager.is_model_loaded():
+                    await websocket.send_json(
+                        {
+                            "type": "status",
+                            "message": "Loading model checkpoint... This may take a minute on first load.",
+                        }
+                    )
+                    try:
+                        await model_manager.ensure_model_loaded()
+                        await websocket.send_json({"type": "status", "message": "Model loaded successfully!"})
+                        # Send updated model info
+                        model_info = model_manager.get_current_model_info()
                         await websocket.send_json(
                             {
-                                "type": "status",
-                                "message": "Loading model checkpoint... This may take a minute on first load.",
+                                "type": "model_info",
+                                "loaded": True,
+                                "model_id": model_info.get("model_id"),
+                                "model_name": model_info.get("display_name", "Unknown"),
+                                "description": model_info.get("description"),
+                                "batch_size": model_info.get("batch_size"),
+                                "auto_batch_size_max": model_info.get("auto_batch_size_max", settings.auto_batch_size_max),
                             }
                         )
-                        try:
-                            await model_manager.load_model()
-                            await websocket.send_json({"type": "status", "message": "Model loaded successfully!"})
-                            # Send model info with the extracted name
-                            await websocket.send_json(
-                                {
-                                    "type": "model_info",
-                                    "loaded": True,
-                                    "checkpoint_path": model_manager.checkpoint_path,
-                                    "model_name": model_manager.model_name or "Unknown",
-                                    "pt_filename": getattr(model_manager, "pt_filename", None),
-                                    "auto_batch_size_max": settings.auto_batch_size_max,
-                                }
-                            )
-                        except ModelLoadError as e:
-                            await websocket.send_json(
-                                {"type": "generation_error", "error": f"Failed to load model: {str(e)}"}
-                            )
-                            continue
+                    except ModelLoadError as e:
+                        await websocket.send_json(
+                            {"type": "generation_error", "error": f"Failed to load model: {str(e)}"}
+                        )
+                        continue
 
-                # Add generation request to queue
+                # Add generation request to queue through inference_service
                 text = data.get("text", "")
                 options = data.get("options", {})
 
@@ -420,12 +441,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 options["websocket"] = websocket
 
                 # Add to queue with type 'generate'
-                request_id = await model_manager.queue.add_request(text, options, request_type="generate")
+                request_id = await inference_service.queue.add_request(text, options, request_type="generate")
 
                 # Get current queue position
-                # Get actual position in queue
-                position = model_manager.queue.get_position_in_queue(request_id)
-                stats = model_manager.queue.get_queue_stats()
+                position = inference_service.queue.get_position_in_queue(request_id)
+                stats = inference_service.queue.get_queue_stats()
 
                 await websocket.send_json(
                     {
@@ -438,7 +458,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 )
 
                 # Store request in context with websocket
-                request = model_manager.queue.active_requests[request_id]
+                request = inference_service.queue.active_requests[request_id]
                 request["websocket"] = websocket
 
                 continue
@@ -447,43 +467,43 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Moving it inside the analyze condition
 
             if data["type"] == "analyze":
-                # Model loading is already checked at the top
-                # Lazy load model if needed with lock to prevent race conditions
-                async with model_manager._load_lock:
-                    if model_manager.analyzer is None:
+                # Lazy load model if needed through model_manager
+                if model_manager and not model_manager.is_model_loaded():
+                    await websocket.send_json(
+                        {
+                            "type": "status",
+                            "message": "Loading model checkpoint... This may take a minute on first load.",
+                        }
+                    )
+                    try:
+                        await model_manager.ensure_model_loaded()
+                        await websocket.send_json({"type": "status", "message": "Model loaded successfully!"})
+                        # Send updated model info
+                        model_info = model_manager.get_current_model_info()
                         await websocket.send_json(
                             {
-                                "type": "status",
-                                "message": "Loading model checkpoint... This may take a minute on first load.",
+                                "type": "model_info",
+                                "loaded": True,
+                                "model_id": model_info.get("model_id"),
+                                "model_name": model_info.get("display_name", "Unknown"),
+                                "description": model_info.get("description"),
+                                "batch_size": model_info.get("batch_size"),
+                                "auto_batch_size_max": model_info.get("auto_batch_size_max", settings.auto_batch_size_max),
                             }
                         )
-                        try:
-                            await model_manager.load_model()
-                            await websocket.send_json({"type": "status", "message": "Model loaded successfully!"})
-                            # Send model info with the extracted name
-                            await websocket.send_json(
-                                {
-                                    "type": "model_info",
-                                    "loaded": True,
-                                    "checkpoint_path": model_manager.checkpoint_path,
-                                    "model_name": model_manager.model_name or "Unknown",
-                                    "pt_filename": getattr(model_manager, "pt_filename", None),
-                                    "auto_batch_size_max": settings.auto_batch_size_max,
-                                }
-                            )
-                        except ModelLoadError as e:
-                            await websocket.send_json({"type": "error", "error": f"Failed to load model: {str(e)}"})
-                            continue
+                    except ModelLoadError as e:
+                        await websocket.send_json({"type": "error", "error": f"Failed to load model: {str(e)}"})
+                        continue
 
-                request_id = await model_manager.queue.add_request(data["text"], data.get("options", {}))
+                request_id = await inference_service.queue.add_request(data["text"], data.get("options", {}))
 
                 # Attach websocket to request for notifications
-                request = model_manager.queue.active_requests[request_id]
+                request = inference_service.queue.active_requests[request_id]
                 request["websocket"] = websocket
 
                 # Get actual position in queue
-                position = model_manager.queue.get_position_in_queue(request_id)
-                stats = model_manager.queue.get_queue_stats()
+                position = inference_service.queue.get_position_in_queue(request_id)
+                stats = inference_service.queue.get_queue_stats()
 
                 await websocket.send_json(
                     {
@@ -497,8 +517,8 @@ async def websocket_endpoint(websocket: WebSocket):
 
             elif data["type"] == "status":
                 request_id = data.get("request_id")
-                if request_id and model_manager:
-                    status = model_manager.queue.get_status(request_id)
+                if request_id and inference_service:
+                    status = inference_service.queue.get_status(request_id)
                     if status:
                         await websocket.send_json(
                             {
@@ -509,13 +529,80 @@ async def websocket_endpoint(websocket: WebSocket):
                             }
                         )
 
+            elif data["type"] == "list_models":
+                # List available models
+                if not model_manager:
+                    await websocket.send_json({"type": "error", "error": "Model manager not initialized"})
+                    continue
+                    
+                from .model_registry import list_available_models
+                models = list_available_models()
+                current_info = model_manager.get_current_model_info()
+                
+                await websocket.send_json({
+                    "type": "models_list",
+                    "models": models,
+                    "current_model": current_info.get("model_id"),
+                    "is_switching": current_info.get("is_switching", False)
+                })
+                
+            elif data["type"] == "switch_model":
+                # Switch to a different model
+                if not model_manager:
+                    await websocket.send_json({"type": "error", "error": "Model manager not initialized"})
+                    continue
+                    
+                model_id = data.get("model_id")
+                if not model_id:
+                    await websocket.send_json({"type": "error", "error": "No model_id provided"})
+                    continue
+                    
+                # Send immediate acknowledgment
+                await websocket.send_json({
+                    "type": "model_switch_acknowledged",
+                    "model_id": model_id,
+                    "message": "Model switch initiated. This affects all users."
+                })
+                
+                try:
+                    # Perform the switch
+                    result = await model_manager.switch_model(model_id)
+                    
+                    # Send success message
+                    await websocket.send_json({
+                        "type": "model_switch_complete",
+                        "model_id": model_id,
+                        "message": result["message"],
+                        "model_info": model_manager.get_current_model_info()
+                    })
+                    
+                except Exception as e:
+                    logger.error(f"Model switch failed: {e}")
+                    await websocket.send_json({
+                        "type": "model_switch_error",
+                        "model_id": model_id,
+                        "error": str(e)
+                    })
+                    
+            elif data["type"] == "get_model_info":
+                # Get current model info
+                if not model_manager:
+                    await websocket.send_json({"type": "error", "error": "Model manager not initialized"})
+                    continue
+                    
+                model_info = model_manager.get_current_model_info()
+                await websocket.send_json({
+                    "type": "model_info_update",
+                    **model_info
+                })
+                
             elif data["type"] == "interrupt":
                 request_id = data.get("request_id")
                 context = data.get("context", "analysis")
 
-                if request_id and model_manager:
+                if request_id and inference_service:
                     # Mark the request as cancelled
-                    request = model_manager.queue.active_requests.get(request_id)
+                    request = inference_service.queue.active_requests.get(request_id)
                     if request and request["status"] == "processing":
                         request["status"] = "cancelled"
                         request["error"] = "Interrupted by user"
@@ -543,10 +630,10 @@ async def health_check():
     """Health check endpoint"""
     health_status = {
         "status": "healthy",
-        "model_loaded": model_manager is not None and model_manager.analyzer is not None,
+        "model_loaded": model_manager is not None and model_manager.is_model_loaded(),
         "gpu_available": torch.cuda.is_available(),
         "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
-        "queue_size": model_manager.queue.queue.qsize() if model_manager else 0,
+        "queue_size": inference_service.queue.queue.qsize() if inference_service else 0,
     }
 
     # If GPU is not available, mark as unhealthy
@@ -560,10 +647,10 @@ async def health_check():
 @app.get("/metrics")
 async def metrics():
     """Metrics endpoint for monitoring"""
-    if not model_manager:
-        return {"error": "Model not loaded"}
+    if not inference_service:
+        return {"error": "Inference service not initialized"}
 
-    active_requests = model_manager.queue.active_requests
+    active_requests = inference_service.queue.active_requests
     completed = [r for r in active_requests.values() if r["status"] == "completed"]
     failed = [r for r in active_requests.values() if r["status"] == "failed"]
 
@@ -575,7 +662,7 @@ async def metrics():
         "total_requests": len(active_requests),
         "completed_requests": len(completed),
         "failed_requests": len(failed),
-        "queue_size": model_manager.queue.queue.qsize(),
+        "queue_size": inference_service.queue.queue.qsize(),
         "average_processing_time": avg_processing_time,
         "active_websocket_connections": len(manager.active_connections),
     }
@@ -584,25 +671,18 @@ async def metrics():
 @app.post("/reset")
 async def reset_model():
     """Reset the model and clear memory"""
-    global model_manager
+    global model_manager, inference_service
+
+    if inference_service:
+        # Stop inference processing
+        await inference_service.stop_processing()
+        
+        # Clear the queue
+        inference_service.queue.active_requests.clear()
 
     if model_manager:
-        # Cancel processing task
-        if model_manager.processing_task:
-            model_manager.processing_task.cancel()
-            try:
-                await model_manager.processing_task
-            except asyncio.CancelledError:
-                pass
-
-        # Clear the model from memory
-        if model_manager.analyzer:
-            model_manager.analyzer = None
-        if model_manager.chat_tokenizer:
-            model_manager.chat_tokenizer = None
-
-        # Clear the queue
-        model_manager.queue.active_requests.clear()
+        # Clear the model from memory through model_manager
+        await model_manager.clear_current_model()
 
         # Force garbage collection
         import gc
@@ -617,8 +697,11 @@ async def reset_model():
         if not settings.lazy_load_model:
             logger.info("Reloading model after reset (lazy_load_model=false)")
             try:
-                await model_manager.load_model()
+                await model_manager.initialize_default_model()
                 logger.info("Model reloaded successfully")
+                # Restart inference processing
+                if inference_service:
+                    await inference_service.start_processing()
                 return {"status": "reset", "message": "Model cleared and reloaded."}
             except ModelLoadError as e:
                 logger.error(f"Failed to reload model after reset: {e}")
@@ -626,6 +709,40 @@ async def reset_model():
 
     return {"status": "reset", "message": "Model cleared from memory"}
 
+
+@app.get("/api/models")
+async def list_models():
+    """List available models"""
+    from .model_registry import list_available_models
+    
+    models = list_available_models()
+    current_info = model_manager.get_current_model_info() if model_manager else {"status": "no_model_manager"}
+    
+    return {
+        "models": models,
+        "current_model": current_info.get("model_id") if "model_id" in current_info else None,
+        "is_switching": current_info.get("is_switching", False),
+        "model_status": current_info
+    }
+
+@app.post("/api/models/switch")
+async def switch_model(model_id: str, authorized: bool = Depends(verify_api_key)):
+    """Switch to a different model (requires API key)"""
+    if not model_manager:
+        raise HTTPException(500, "Model manager not initialized")
+        
+    try:
+        result = await model_manager.switch_model(model_id)
+        return {
+            "status": "success",
+            **result,
+            "model_info": model_manager.get_current_model_info()
+        }
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        logger.error(f"Model switch failed: {e}")
+        raise HTTPException(500, f"Model switch failed: {str(e)}")
 
 @app.get("/api/gpu_stats")
 async def get_gpu_stats():
