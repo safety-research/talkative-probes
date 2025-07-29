@@ -43,6 +43,7 @@ class ModelManager:
         self.model_locations: Dict[str, str] = {}  # Tracks 'cuda', 'cpu', or 'unloaded'
         self.cache_order: List[str] = []  # Track usage order for potential LRU eviction
         self.max_cpu_models = getattr(settings, 'max_cpu_cached_models', 3)  # Maximum models to keep in CPU memory
+        self.chat_tokenizer = None  # Chat tokenizer for the current model
         
     async def initialize_default_model(self, model_id: Optional[str] = None):
         """Initialize with a default model"""
@@ -248,6 +249,19 @@ class ModelManager:
         self.settings.no_orig = config.no_orig
         self.settings.comparison_tl_checkpoint = config.comparison_tl_checkpoint
         self.settings.different_activations_model = config.different_activations_model
+        
+        # Load chat tokenizer if available
+        if config.different_activations_model:
+            try:
+                from transformers import AutoTokenizer
+                logger.info(f"Loading chat tokenizer from: {config.different_activations_model}")
+                self.chat_tokenizer = AutoTokenizer.from_pretrained(config.different_activations_model)
+                logger.info("Chat tokenizer loaded successfully")
+            except Exception as e:
+                logger.warning(f"Failed to load chat tokenizer: {e}")
+                self.chat_tokenizer = None
+        else:
+            self.chat_tokenizer = None
         
     async def _manage_cache_size(self):
         """Manage CPU cache size by evicting least recently used models"""

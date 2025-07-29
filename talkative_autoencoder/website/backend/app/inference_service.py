@@ -228,11 +228,57 @@ class InferenceService:
         try:
             logger.info(f"Processing generation request {request_id}")
             
-            # Parse chat format if needed
-            prompt = text
-            # Handle both 'is_chat' (frontend) and 'use_chat_format' (backend) names
-            if options.get("is_chat", False) or options.get("use_chat_format", False):
-                prompt = await self._parse_chat_format(text)
+            # Check if this is chat format
+            is_chat = options.get("is_chat", False) or options.get("use_chat_format", False)
+            
+            # Parse the text if it's chat format
+            if is_chat:
+                try:
+                    import ast
+                    import json
+                    
+                    # If it's already a list/dict, use it directly
+                    if isinstance(text, (list, dict)):
+                        messages = text
+                    else:
+                        # Check input size to prevent DoS (1MB limit)
+                        if len(text) > 1024 * 1024:
+                            raise ValueError("Input text too large (max 1MB)")
+                        
+                        # Try to parse as JSON string
+                        # First attempt: direct parsing (handles most cases including escaped newlines)
+                        try:
+                            messages = json.loads(text)
+                        except json.JSONDecodeError:
+                            # Second attempt: Try to evaluate as Python literal if it looks like one
+                            # This handles triple quotes and other Python syntax
+                            try:
+                                messages = ast.literal_eval(text)
+                            except (ValueError, SyntaxError):
+                                # Third attempt: handle literal newlines by escaping them
+                                # This handles cases where users paste JSON with actual newlines
+                                cleaned_text = text.replace("\n", "\\n").replace("\r", "\\r")
+                                messages = json.loads(cleaned_text)
+                        
+                        # Validate structure: should be a list of dicts with 'role' and 'content'
+                        if not isinstance(messages, list):
+                            raise ValueError("Chat messages must be a list")
+                        for i, msg in enumerate(messages):
+                            if not isinstance(msg, dict):
+                                raise ValueError(f"Message {i} must be a dictionary")
+                            if "role" not in msg or "content" not in msg:
+                                raise ValueError(f"Message {i} must have 'role' and 'content' fields")
+                    
+                    # Use messages directly - generate_continuation will handle chat formatting
+                    prompt = messages
+                except Exception as e:
+                    # Catch any parsing or validation errors
+                    logger.warning(f"Failed to parse chat format: {e}")
+                    # Fall back to using as regular text
+                    prompt = text
+                    is_chat = False
+            else:
+                prompt = text
                 
             # Generation parameters
             num_completions = options.get("num_completions", 3)
@@ -243,16 +289,24 @@ class InferenceService:
             
             # Run generation in executor
             loop = asyncio.get_event_loop()
+            
+            # Build generation kwargs
+            generation_kwargs = {
+                "num_completions": num_completions,
+                "num_tokens": max_new_tokens,
+                "temperature": temperature,
+                "top_p": top_p,
+                "return_full_text": True,
+                "is_chat": is_chat,
+            }
+            
+            # Add chat tokenizer if available and needed
+            if is_chat and self.model_manager.chat_tokenizer:
+                generation_kwargs["chat_tokenizer"] = self.model_manager.chat_tokenizer
+            
             completions = await loop.run_in_executor(
                 None,
-                lambda: analyzer.generate_continuation(
-                    prompt,
-                    num_completions=num_completions,
-                    num_tokens=max_new_tokens,
-                    temperature=temperature,
-                    top_p=top_p,
-                    return_full_text=True,
-                )
+                lambda: analyzer.generate_continuation(prompt, **generation_kwargs)
             )
             
             logger.info(f"Generated {len(completions)} completions for request {request_id}")

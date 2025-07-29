@@ -20,7 +20,6 @@ export HYDRA_FULL_ERROR=1
 # Default values
 NUM_GPUS="${NUM_GPUS:-1}"
 TIME="${TIME:-24:00:00}"
-PARTITION="${PARTITION:-gpu}"
 JOB_NAME="${JOB_NAME:-k_sweep}"
 NODES="${NODES:-1}"
 NICE_JOB="${NICE:-false}"
@@ -38,9 +37,6 @@ for arg in "$@"; do
             ;;
         time=*)
             TIME="${arg#*=}"
-            ;;
-        partition=*)
-            PARTITION="${arg#*=}"
             ;;
         job_name=*)
             JOB_NAME="${arg#*=}"
@@ -101,7 +97,7 @@ run_evaluation() {
 # Main execution logic
 if [ "$USE_SLURM" = true ]; then
     echo "Submitting K-sweep evaluation job via SLURM..."
-    echo "GPUs: $NUM_GPUS, Time: $TIME, Partition: $PARTITION"
+    echo "GPUs: $NUM_GPUS, Time: $TIME"
     
     # Create logs directory
     mkdir -p logs
@@ -111,7 +107,6 @@ if [ "$USE_SLURM" = true ]; then
         --job-name="$JOB_NAME"
         --time="$TIME"
         --nodes="$NODES"
-        --partition="$PARTITION"
         --output="logs/k_sweep_%j.out"
         --error="logs/k_sweep_%j.err"
         --export="ALL,SUBMIT_SCRIPT_COMMAND=$SUBMIT_SCRIPT_COMMAND"
@@ -149,9 +144,30 @@ if [ "$USE_SLURM" = true ]; then
         SBATCH_ARGS+=(--signal=B:TERM@120)
     fi
     
-    # Submit job
-    JOB_ID=$(sbatch --parsable "${SBATCH_ARGS[@]}" \
-        --wrap "cd $PROJECT_ROOT && source scripts/ensure_env.sh && $(declare -f run_evaluation); run_evaluation")
+    # Create a temporary script file for SLURM
+    TEMP_SCRIPT=$(mktemp /tmp/k_sweep_XXXXXX.sh)
+    cat > "$TEMP_SCRIPT" << EOF
+#!/bin/bash
+cd $PROJECT_ROOT
+source scripts/ensure_env.sh
+ulimit -n 65536
+
+# Run evaluation based on GPU count
+if [ "$NUM_GPUS" -gt 1 ]; then
+    # Multi-GPU: use torchrun
+    MASTER_PORT=\$((29500 + RANDOM % 500))
+    echo "Running distributed evaluation on $NUM_GPUS GPUs (port \$MASTER_PORT)..."
+    uv_run torchrun --nproc_per_node=$NUM_GPUS --master_port=\$MASTER_PORT scripts/03_best_of_k_sweep.py $HYDRA_ARGS
+else
+    # Single GPU
+    echo "Running single-GPU evaluation..."
+    uv_run python scripts/03_best_of_k_sweep.py $HYDRA_ARGS
+fi
+EOF
+    chmod +x "$TEMP_SCRIPT"
+    
+    # Submit job with the script file
+    JOB_ID=$(sbatch --parsable "${SBATCH_ARGS[@]}" "$TEMP_SCRIPT")
     
     if [ $? -eq 0 ]; then
         echo -e "\033[0;32mK-sweep job submitted with ID: $JOB_ID\033[0m"
@@ -202,12 +218,11 @@ if [ -z "$HYDRA_ARGS" ]; then
     echo "  $0 +eval.checkpoint_path=/path/to/checkpoint.pt +eval.k_values=[1,2,4,8,16,32] +eval.load_store=true"
     echo ""
     echo "  # Custom resource allocation:"
-    echo "  $0 num_gpus=8 time=48:00:00 partition=long +eval.checkpoint_path=/path/to/checkpoint.pt"
+    echo "  $0 num_gpus=8 time=48:00:00 +eval.checkpoint_path=/path/to/checkpoint.pt"
     echo ""
     echo "Options:"
     echo "  num_gpus=N         Number of GPUs (default: 1)"
     echo "  time=HH:MM:SS      SLURM time limit (default: 24:00:00)"
-    echo "  partition=NAME     SLURM partition (default: gpu)"
     echo "  job_name=NAME      Job name (default: k_sweep)"
     echo "  nice=true/N        Submit as requeueable job with nice priority"
     echo "  force_direct=true  Force direct execution (no SLURM)"

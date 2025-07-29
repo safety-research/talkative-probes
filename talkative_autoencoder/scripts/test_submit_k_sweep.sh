@@ -45,10 +45,10 @@ echo ""
 echo "Step 1: Cache vectors from full dataset (long job):"
 echo "   ./scripts/submit_k_sweep.sh num_gpus=8 time=24:00:00 \\"
 echo "     +eval.checkpoint_path=outputs/checkpoint.pt \\"
-echo "     '+eval.k_values=[1]' \\"  # Just K=1 to extract vectors
+echo "     '+eval.k_values=[1]' \\"
 echo "     +eval.load_store=true \\"
 echo "     +eval.cache_dir=vector_cache_full \\"
-echo "     +eval.max_batches=null"  # Process entire dataset
+echo "     +eval.max_batches=null"
 echo ""
 echo "Step 2: Run multiple K-sweep experiments using cached vectors:"
 echo "   # Experiment 1: Temperature sweep"

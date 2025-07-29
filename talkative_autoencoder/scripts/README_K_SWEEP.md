@@ -134,7 +134,6 @@ Bootstrap is computationally expensive (1000 iterations) and is **disabled by de
 |--------|-------------|---------|
 | `num_gpus=N` | Number of GPUs to use | 1 |
 | `time=HH:MM:SS` | SLURM time limit | 24:00:00 |
-| `partition=NAME` | SLURM partition | gpu |
 | `job_name=NAME` | Job name | k_sweep |
 | `nice=true/N` | Low-priority requeueable job | false |
 | `force_direct=true` | Skip SLURM, run directly | false |
