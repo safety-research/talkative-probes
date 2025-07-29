@@ -335,27 +335,131 @@ class BestOfKEvaluator:
             cache_key = compute_cache_key(model_name, self.layer, dataset_cfg, num_positions)
             cache_path = get_cache_path(cache_dir, cache_key, rank)
             
-            # Try to load cached vectors
-            cached_data = load_cached_vectors(cache_path)
-            if cached_data is not None:
-                print(f"Using cached vectors from {cache_path}")
-                cached_all_A = cached_data['all_A'].to(self.device)
-                cached_positions = cached_data['all_positions'].to(self.device)
-                cached_token_ids = cached_data['all_token_ids'].to(self.device)
-                
-                # Check if we need to use a subset of cached vectors
-                cached_samples = cached_all_A.shape[0] // num_positions  # Number of cached samples
-                requested_samples = max_batches if max_batches else float('inf')
-                
-                if cached_samples > requested_samples:
-                    # Use only the requested number of samples
-                    vectors_to_use = requested_samples * num_positions
-                    print(f"Cache has {cached_all_A.shape[0]} vectors ({cached_samples} samples), using first {vectors_to_use} vectors ({requested_samples} samples)")
-                    cached_all_A = cached_all_A[:vectors_to_use]
-                    cached_positions = cached_positions[:vectors_to_use]
-                    cached_token_ids = cached_token_ids[:vectors_to_use]
+            # Try to load cached vectors (only rank 0 loads in distributed mode)
+            if dist.is_initialized() and dist.get_world_size() > 1:
+                # In distributed mode, only rank 0 loads the cache
+                if rank == 0:
+                    cached_data = load_cached_vectors(cache_path)
+                    cache_exists = cached_data is not None
                 else:
-                    print(f"Using all {cached_all_A.shape[0]} cached vectors ({cached_samples} samples)")
+                    cache_exists = False
+                
+                # Broadcast cache existence to all ranks
+                cache_exists_tensor = torch.tensor([1 if cache_exists else 0], device=self.device)
+                dist.broadcast(cache_exists_tensor, src=0)
+                cache_exists = cache_exists_tensor.item() > 0
+                
+                if cache_exists:
+                    print(f"Using cached vectors from {cache_path}")
+                    
+                    if rank == 0:
+                        # Load and prepare data for distribution
+                        cached_all_A = cached_data['all_A']
+                        cached_positions = cached_data['all_positions']
+                        cached_token_ids = cached_data['all_token_ids']
+                        
+                        # Check if we need to use a subset
+                        cached_samples = cached_all_A.shape[0] // num_positions
+                        requested_samples = max_batches if max_batches else cached_samples
+                        
+                        if cached_samples > requested_samples:
+                            vectors_to_use = requested_samples * num_positions
+                            print(f"Cache has {cached_all_A.shape[0]} vectors ({cached_samples} samples), using first {vectors_to_use} vectors ({requested_samples} samples)")
+                            cached_all_A = cached_all_A[:vectors_to_use]
+                            cached_positions = cached_positions[:vectors_to_use]
+                            cached_token_ids = cached_token_ids[:vectors_to_use]
+                        else:
+                            print(f"Using all {cached_all_A.shape[0]} cached vectors ({cached_samples} samples)")
+                        
+                        total_vectors = cached_all_A.shape[0]
+                        vector_dim = cached_all_A.shape[1]
+                    else:
+                        total_vectors = 0
+                        vector_dim = 0
+                    
+                    # Broadcast dimensions
+                    dims = torch.tensor([total_vectors, vector_dim], device=self.device)
+                    dist.broadcast(dims, src=0)
+                    total_vectors = dims[0].item()
+                    vector_dim = dims[1].item()
+                    
+                    # Calculate how to split vectors across ranks
+                    world_size = dist.get_world_size()
+                    vectors_per_rank = total_vectors // world_size
+                    remainder = total_vectors % world_size
+                    
+                    # Calculate start and end indices for this rank
+                    if rank < remainder:
+                        start_idx = rank * (vectors_per_rank + 1)
+                        end_idx = start_idx + vectors_per_rank + 1
+                    else:
+                        start_idx = rank * vectors_per_rank + remainder
+                        end_idx = start_idx + vectors_per_rank
+                    
+                    local_size = end_idx - start_idx
+                    
+                    # Allocate local buffers
+                    local_A = torch.zeros(local_size, vector_dim, dtype=torch.float32)
+                    local_positions = torch.zeros(local_size, dtype=torch.long)
+                    local_token_ids = torch.zeros(local_size, dtype=torch.long)
+                    
+                    # Scatter data from rank 0
+                    if rank == 0:
+                        # Send to each rank (including self)
+                        for r in range(world_size):
+                            if r < remainder:
+                                r_start = r * (vectors_per_rank + 1)
+                                r_end = r_start + vectors_per_rank + 1
+                            else:
+                                r_start = r * vectors_per_rank + remainder
+                                r_end = r_start + vectors_per_rank
+                            
+                            if r == 0:
+                                # Copy to self
+                                local_A = cached_all_A[r_start:r_end]
+                                local_positions = cached_positions[r_start:r_end]
+                                local_token_ids = cached_token_ids[r_start:r_end]
+                            else:
+                                # Send to other ranks
+                                dist.send(cached_all_A[r_start:r_end].to(self.device), dst=r)
+                                dist.send(cached_positions[r_start:r_end].to(self.device), dst=r)
+                                dist.send(cached_token_ids[r_start:r_end].to(self.device), dst=r)
+                    else:
+                        # Receive from rank 0
+                        dist.recv(local_A.to(self.device), src=0)
+                        dist.recv(local_positions.to(self.device), src=0)
+                        dist.recv(local_token_ids.to(self.device), src=0)
+                    
+                    # Move to device
+                    cached_all_A = local_A.to(self.device)
+                    cached_positions = local_positions.to(self.device)
+                    cached_token_ids = local_token_ids.to(self.device)
+                    
+                    cached_data = {'all_A': cached_all_A, 'all_positions': cached_positions, 'all_token_ids': cached_token_ids}
+                else:
+                    cached_data = None
+            else:
+                # Single process mode - load normally
+                cached_data = load_cached_vectors(cache_path)
+                if cached_data is not None:
+                    print(f"Using cached vectors from {cache_path}")
+                    cached_all_A = cached_data['all_A'].to(self.device)
+                    cached_positions = cached_data['all_positions'].to(self.device)
+                    cached_token_ids = cached_data['all_token_ids'].to(self.device)
+                    
+                    # Check if we need to use a subset of cached vectors
+                    cached_samples = cached_all_A.shape[0] // num_positions  # Number of cached samples
+                    requested_samples = max_batches if max_batches else float('inf')
+                    
+                    if cached_samples > requested_samples:
+                        # Use only the requested number of samples
+                        vectors_to_use = requested_samples * num_positions
+                        print(f"Cache has {cached_all_A.shape[0]} vectors ({cached_samples} samples), using first {vectors_to_use} vectors ({requested_samples} samples)")
+                        cached_all_A = cached_all_A[:vectors_to_use]
+                        cached_positions = cached_positions[:vectors_to_use]
+                        cached_token_ids = cached_token_ids[:vectors_to_use]
+                    else:
+                        print(f"Using all {cached_all_A.shape[0]} cached vectors ({cached_samples} samples)")
                 
                 # Generate best-of-K using cached vectors
                 print(f"Generating best-of-{k} explanations using {cached_all_A.shape[0]} vectors...")
@@ -534,20 +638,91 @@ class BestOfKEvaluator:
         
         # Save to cache if caching is enabled and we extracted vectors
         if load_store and cache_path and not (load_store and cached_data is not None):
-            # Concatenate positions and token IDs
-            all_positions = torch.cat(all_positions_list, dim=0) if all_positions_list else torch.tensor([])
-            all_token_ids = torch.cat(all_token_ids_list, dim=0) if all_token_ids_list else torch.tensor([])
-            
-            # Save the extracted vectors
-            metadata = {
-                'num_positions': num_positions,
-                'min_pos': self.min_pos,
-                'position_selection_strategy': self.position_selection_strategy,
-                'total_positions': total_positions,
-                'sample_positions': sample_positions,
-                'num_samples': total_positions // num_positions if num_positions > 0 else 0,
-            }
-            save_cached_vectors(cache_path, all_A, all_positions, all_token_ids, metadata)
+            # In distributed mode, gather all vectors to rank 0 before saving
+            if dist.is_initialized() and dist.get_world_size() > 1:
+                world_size = dist.get_world_size()
+                
+                # Gather sizes first
+                local_size = torch.tensor(all_A.shape[0], device=self.device)
+                all_sizes = [torch.zeros_like(local_size) for _ in range(world_size)]
+                dist.all_gather(all_sizes, local_size)
+                
+                # Only rank 0 needs to allocate memory for gathered data
+                if rank == 0:
+                    # Calculate total size
+                    total_size = sum(s.item() for s in all_sizes)
+                    
+                    # Prepare lists to gather into
+                    gathered_A_list = []
+                    gathered_positions_list = []
+                    gathered_token_ids_list = []
+                    
+                    # Gather from each rank
+                    for i in range(world_size):
+                        size = all_sizes[i].item()
+                        if size > 0:
+                            if i == 0:
+                                # Rank 0 already has its data
+                                gathered_A_list.append(all_A)
+                                gathered_positions_list.append(torch.cat(all_positions_list, dim=0) if all_positions_list else torch.tensor([]))
+                                gathered_token_ids_list.append(torch.cat(all_token_ids_list, dim=0) if all_token_ids_list else torch.tensor([]))
+                            else:
+                                # Receive from other ranks
+                                recv_A = torch.zeros(size, all_A.shape[1], device=self.device)
+                                recv_positions = torch.zeros(size, dtype=torch.long, device=self.device)
+                                recv_token_ids = torch.zeros(size, dtype=torch.long, device=self.device)
+                                
+                                dist.recv(recv_A, src=i)
+                                dist.recv(recv_positions, src=i)
+                                dist.recv(recv_token_ids, src=i)
+                                
+                                gathered_A_list.append(recv_A.cpu())
+                                gathered_positions_list.append(recv_positions.cpu())
+                                gathered_token_ids_list.append(recv_token_ids.cpu())
+                    
+                    # Concatenate all gathered data
+                    all_A_gathered = torch.cat(gathered_A_list, dim=0)
+                    all_positions_gathered = torch.cat(gathered_positions_list, dim=0)
+                    all_token_ids_gathered = torch.cat(gathered_token_ids_list, dim=0)
+                    
+                    # Save centralized cache from rank 0
+                    metadata = {
+                        'num_positions': num_positions,
+                        'min_pos': self.min_pos,
+                        'position_selection_strategy': self.position_selection_strategy,
+                        'total_positions': all_A_gathered.shape[0],
+                        'sample_positions': sample_positions,
+                        'num_samples': all_A_gathered.shape[0] // num_positions if num_positions > 0 else 0,
+                        'original_world_size': world_size,
+                    }
+                    save_cached_vectors(cache_path, all_A_gathered, all_positions_gathered, all_token_ids_gathered, metadata)
+                else:
+                    # Other ranks send their data to rank 0
+                    if all_A.shape[0] > 0:
+                        all_positions_concat = torch.cat(all_positions_list, dim=0) if all_positions_list else torch.tensor([])
+                        all_token_ids_concat = torch.cat(all_token_ids_list, dim=0) if all_token_ids_list else torch.tensor([])
+                        
+                        dist.send(all_A.to(self.device), dst=0)
+                        dist.send(all_positions_concat.to(self.device), dst=0)
+                        dist.send(all_token_ids_concat.to(self.device), dst=0)
+                
+                # Synchronize before continuing
+                dist.barrier()
+            else:
+                # Single process - save directly
+                all_positions = torch.cat(all_positions_list, dim=0) if all_positions_list else torch.tensor([])
+                all_token_ids = torch.cat(all_token_ids_list, dim=0) if all_token_ids_list else torch.tensor([])
+                
+                metadata = {
+                    'num_positions': num_positions,
+                    'min_pos': self.min_pos,
+                    'position_selection_strategy': self.position_selection_strategy,
+                    'total_positions': total_positions,
+                    'sample_positions': sample_positions,
+                    'num_samples': total_positions // num_positions if num_positions > 0 else 0,
+                    'original_world_size': 1,
+                }
+                save_cached_vectors(cache_path, all_A, all_positions, all_token_ids, metadata)
         
         # In distributed mode, we need to gather all activations to compute global statistics
         if dist.is_initialized() and dist.get_world_size() > 1:

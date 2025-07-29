@@ -67,7 +67,7 @@ The script supports distributed evaluation using PyTorch's DistributedDataParall
 1. **Automatic Setup**: When `num_gpus>1`, the submission script automatically uses `torchrun`
 2. **Data Sharding**: Each GPU processes a unique subset of the validation data
 3. **Result Gathering**: Statistics are computed globally across all GPUs
-4. **Rank-Specific Caching**: Each process saves its own cache file to avoid conflicts
+4. **Centralized Caching**: All ranks contribute to a single cache file, enabling flexible GPU count
 
 ### Resource Allocation
 
@@ -82,9 +82,10 @@ Vector caching dramatically speeds up repeated experiments by saving extracted a
 ### How It Works
 
 1. **Cache Key**: Based on model name, layer, dataset config, and num_positions
-2. **Rank-Specific Files**: Each GPU saves `rank_N_vectors.pkl`
+2. **Centralized Storage**: All vectors gathered to rank 0 and saved in single `vectors.pkl`
 3. **Smart Loading**: Can use a subset of cached vectors (e.g., cache 50k, use 10k)
-4. **Dataloader Optimization**: Skips extraction when cache exists and `num_positions=1`
+4. **Flexible Distribution**: Cached vectors automatically distributed across available GPUs
+5. **Dataloader Optimization**: Skips extraction when cache exists and `num_positions=1`
 
 ### Caching Workflow
 
@@ -113,8 +114,9 @@ done
 ### Cache Management
 
 - **Location**: Default `vector_cache/`, configurable with `+eval.cache_dir=`
-- **Structure**: `cache_dir/{hash}/rank_N_vectors.pkl`
+- **Structure**: `cache_dir/{hash}/vectors.pkl` (centralized, not rank-specific)
 - **Clearing**: `rm -rf vector_cache/` to force regeneration
+- **Flexibility**: Cache created with 8 GPUs can be used with 1, 2, 4, or any number of GPUs
 
 ## Bootstrap Confidence Intervals
 
@@ -268,8 +270,9 @@ done
 
 - **Key Components**: model name, layer, dataset, num_positions
 - **Not Included**: max_batches (allows subset reuse), checkpoint path
-- **Format**: Pickle files with CPU tensors
-- **Metadata**: Saved but currently unused (future validation)
+- **Format**: Single pickle file with CPU tensors
+- **Metadata**: Includes original world_size, total positions, etc.
+- **Distribution**: Automatic load balancing across any number of GPUs
 
 ### Performance Considerations
 

@@ -9,6 +9,7 @@ class ModelSwitcher {
         this.isSwitching = false;
         this.listeners = [];
         this.cachedModels = [];
+        this.isCollapsed = true; // Start collapsed by default
         
         this.render();
     }
@@ -34,9 +35,15 @@ class ModelSwitcher {
     render() {
         this.container.innerHTML = `
             <div class="model-switcher bg-white rounded-lg shadow-md p-4 mb-4">
-                <div class="flex items-center justify-between mb-3">
-                    <h3 class="text-lg font-semibold text-gray-800">Model Selection</h3>
-                    <button id="refreshModelsBtn" class="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1" ${this.isSwitching ? 'disabled' : ''}>
+                <div class="flex items-center justify-between ${this.isCollapsed ? '' : 'mb-3'}">
+                    <h3 class="text-lg font-semibold text-gray-800 flex items-center gap-2 cursor-pointer" id="modelSwitcherHeader">
+                        <svg class="w-4 h-4 transform transition-transform ${this.isCollapsed ? '-rotate-90' : ''}" id="toggleIcon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                        </svg>
+                        <span>Model Selection</span>
+                        <span id="collapsedModelInfo" class="text-sm font-normal text-gray-600 ${this.isCollapsed ? '' : 'hidden'}"></span>
+                    </h3>
+                    <button id="refreshModelsBtn" class="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1 ${this.isCollapsed ? 'hidden' : ''}" ${this.isSwitching ? 'disabled' : ''}>
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
                         </svg>
@@ -44,50 +51,52 @@ class ModelSwitcher {
                     </button>
                 </div>
                 
-                <div id="modelStatus" class="mb-3">
+                <div id="modelStatus" class="${this.isCollapsed ? 'hidden' : 'mb-3'}">
                     <div class="text-sm text-gray-600">Loading models...</div>
                 </div>
                 
-                <div id="modelList" class="space-y-2 mb-3">
-                    <!-- Model options will be inserted here -->
-                </div>
-                
-                <div id="switchWarning" class="hidden mb-3 space-y-2">
-                    <div class="p-3 bg-yellow-50 border border-yellow-200 rounded-md">
-                        <div class="flex items-start">
-                            <svg class="w-5 h-5 text-yellow-600 mt-0.5 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
-                            </svg>
-                            <div class="text-sm text-yellow-800">
-                                <strong>Warning:</strong> Switching models will affect all users and may take a few minutes. Any in-progress requests will be queued.
+                <div id="modelSwitcherContent" class="${this.isCollapsed ? 'hidden' : ''}">
+                    <div id="modelList" class="space-y-2 mb-3">
+                        <!-- Model options will be inserted here -->
+                    </div>
+                    
+                    <div id="switchWarning" class="hidden mb-3 space-y-2">
+                        <div class="p-3 bg-yellow-50 border border-yellow-200 rounded-md">
+                            <div class="flex items-start">
+                                <svg class="w-5 h-5 text-yellow-600 mt-0.5 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+                                </svg>
+                                <div class="text-sm text-yellow-800">
+                                    <strong>Warning:</strong> Switching models will affect all users and may take a few minutes. Any in-progress requests will be queued.
+                                </div>
+                            </div>
+                        </div>
+                        <div class="p-3 bg-blue-50 border border-blue-200 rounded-md">
+                            <div class="flex items-start">
+                                <svg class="w-5 h-5 text-blue-600 mt-0.5 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                </svg>
+                                <div class="text-sm text-blue-800">
+                                    <strong>Note:</strong> Different models use different tokenizers. Chat formatting may need adjustment based on the selected model (Qwen vs Gemma).
+                                </div>
                             </div>
                         </div>
                     </div>
-                    <div class="p-3 bg-blue-50 border border-blue-200 rounded-md">
-                        <div class="flex items-start">
-                            <svg class="w-5 h-5 text-blue-600 mt-0.5 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                            </svg>
-                            <div class="text-sm text-blue-800">
-                                <strong>Note:</strong> Different models use different tokenizers. Chat formatting may need adjustment based on the selected model (Qwen vs Gemma).
-                            </div>
+                    
+                    <div id="switchProgress" class="hidden mb-3">
+                        <div class="flex items-center justify-between text-sm text-gray-600 mb-1">
+                            <span>Switching model...</span>
+                            <span id="switchEta"></span>
+                        </div>
+                        <div class="w-full bg-gray-200 rounded-full h-2">
+                            <div id="switchProgressBar" class="bg-blue-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
                         </div>
                     </div>
+                    
+                    <button id="confirmSwitchBtn" class="hidden w-full bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed">
+                        Confirm Model Switch
+                    </button>
                 </div>
-                
-                <div id="switchProgress" class="hidden mb-3">
-                    <div class="flex items-center justify-between text-sm text-gray-600 mb-1">
-                        <span>Switching model...</span>
-                        <span id="switchEta"></span>
-                    </div>
-                    <div class="w-full bg-gray-200 rounded-full h-2">
-                        <div id="switchProgressBar" class="bg-blue-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
-                    </div>
-                </div>
-                
-                <button id="confirmSwitchBtn" class="hidden w-full bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed">
-                    Confirm Model Switch
-                </button>
             </div>
         `;
         
@@ -99,9 +108,43 @@ class ModelSwitcher {
     attachEventListeners() {
         const refreshBtn = this.container.querySelector('#refreshModelsBtn');
         const confirmBtn = this.container.querySelector('#confirmSwitchBtn');
+        const header = this.container.querySelector('#modelSwitcherHeader');
         
         refreshBtn?.addEventListener('click', () => this.requestModelList());
         confirmBtn?.addEventListener('click', () => this.confirmSwitch());
+        
+        // Toggle collapse on header click
+        header?.addEventListener('click', () => this.toggleCollapse());
+    }
+    
+    // Toggle collapse state
+    toggleCollapse() {
+        this.isCollapsed = !this.isCollapsed;
+        
+        const content = this.container.querySelector('#modelSwitcherContent');
+        const status = this.container.querySelector('#modelStatus');
+        const refreshBtn = this.container.querySelector('#refreshModelsBtn');
+        const toggleIcon = this.container.querySelector('#toggleIcon');
+        const headerDiv = this.container.querySelector('.flex.items-center.justify-between');
+        const collapsedInfo = this.container.querySelector('#collapsedModelInfo');
+        
+        if (this.isCollapsed) {
+            content?.classList.add('hidden');
+            status?.classList.add('hidden');
+            refreshBtn?.classList.add('hidden');
+            toggleIcon?.classList.add('-rotate-90');
+            toggleIcon?.classList.remove('rotate-0');
+            headerDiv?.classList.remove('mb-3');
+            collapsedInfo?.classList.remove('hidden');
+        } else {
+            content?.classList.remove('hidden');
+            status?.classList.remove('hidden');
+            refreshBtn?.classList.remove('hidden');
+            toggleIcon?.classList.remove('-rotate-90');
+            toggleIcon?.classList.add('rotate-0');
+            headerDiv?.classList.add('mb-3');
+            collapsedInfo?.classList.add('hidden');
+        }
     }
     
     // Request model list from server
@@ -243,6 +286,8 @@ class ModelSwitcher {
     // Update status
     updateStatus() {
         const statusEl = this.container.querySelector('#modelStatus');
+        const collapsedInfo = this.container.querySelector('#collapsedModelInfo');
+        
         if (!statusEl) return;
         
         if (this.isSwitching) {
@@ -255,6 +300,9 @@ class ModelSwitcher {
                     Model is switching... All operations are queued.
                 </div>
             `;
+            if (collapsedInfo) {
+                collapsedInfo.textContent = '(switching...)';
+            }
         } else if (this.currentModel) {
             const modelInfo = this.models[this.currentModel];
             statusEl.innerHTML = `
@@ -265,8 +313,14 @@ class ModelSwitcher {
                     ${modelInfo?.checkpoint_filename ? `<div class="text-xs text-gray-400 mt-0.5 font-mono" style="font-size: 0.65rem;">${modelInfo.checkpoint_filename}</div>` : ''}
                 </div>
             `;
+            if (collapsedInfo) {
+                collapsedInfo.textContent = modelInfo?.display_name ? `(${modelInfo.display_name})` : `(${this.currentModel})`;
+            }
         } else {
             statusEl.innerHTML = '<div class="text-sm text-gray-600">No model loaded</div>';
+            if (collapsedInfo) {
+                collapsedInfo.textContent = '(no model)';
+            }
         }
     }
     

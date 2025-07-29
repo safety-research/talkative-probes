@@ -49,6 +49,6 @@ data:
   num_workers: 4  # More workers for 8 GPU setup
 
 # Note: When using 8 GPUs with caching:
-# - First run will cache vectors from all 8 ranks (rank_0 through rank_7)
-# - Subsequent runs will load cached vectors, making evaluation very fast
-# - Each rank caches its portion of the dataset independently
+# - First run gathers all vectors to rank 0 and saves centralized cache
+# - Subsequent runs can use ANY number of GPUs (1, 2, 4, 8, etc.)
+# - Cached vectors are automatically distributed across available GPUs
