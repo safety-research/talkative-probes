@@ -267,6 +267,13 @@ done
 4. Results are gathered via `dist.all_gather`
 5. Global statistics computed on rank 0, broadcast to all
 
+### Important: Batch Sizes in Distributed Mode
+
+When using `torchrun` for distributed evaluation, **batch sizes are per-GPU, not total**. This means:
+- With 8 GPUs and `max_generation_batch_size: 8`, the effective batch size is 8 × 8 = 64
+- The 8-GPU configs use smaller per-GPU batch sizes to maintain similar memory usage
+- Do NOT increase batch sizes for multi-GPU configs - keep them the same or smaller
+
 ### Cache Implementation
 
 - **Key Components**: model name, layer, dataset, num_positions

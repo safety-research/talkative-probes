@@ -1137,17 +1137,14 @@ def main(cfg: DictConfig) -> None:
     
     # Initialize minimal logging for dataloader preparation
     # We don't need wandb for evaluation, just use a simple logger
-    if is_main_process:
-        import logging
-        log = logging.getLogger(__name__)
-        log.setLevel(logging.INFO)
-        # Add console handler if not already present
-        if not log.handlers:
-            handler = logging.StreamHandler()
-            handler.setLevel(logging.INFO)
-            log.addHandler(handler)
-    else:
-        log = None
+    import logging
+    log = logging.getLogger(__name__)
+    log.setLevel(logging.INFO)
+    # Add console handler if not already present
+    if not log.handlers:
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.INFO)
+        log.addHandler(handler)
     max_val_samples_req = eval_cfg.get('max_val_samples') if eval_cfg.get('max_val_samples') is not None else 1000
     
     # Check if cache exists before creating dataloader

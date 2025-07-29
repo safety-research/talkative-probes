@@ -165,3 +165,28 @@ Models are configured in `backend/app/models.json`:
 - Log files are gitignored to prevent accidental commits
 - Frontend logging only in debug mode to prevent data leakage
 - WebSocket broadcasts don't include request content, only metadata
+- Model switching and registry reload require API key authentication
+- API key is stored in localStorage and prompted when needed
+- Failed authentication clears the stored API key
+
+### API Key Authentication
+
+Sensitive WebSocket operations now require authentication:
+- **Model Switching**: Requires API key to prevent unauthorized model changes
+- **Registry Reload**: Requires API key to prevent unauthorized configuration changes
+
+The frontend will prompt for the API key on first use and store it in localStorage as `talkative_backend_api_key`.
+
+### Path Validation
+
+Model configuration paths are validated to prevent path traversal attacks:
+- Checkpoint paths must be absolute paths
+- No `..` path components allowed
+- Validation applies to `checkpoint_path`, `tuned_lens_dir`, and `comparison_tl_checkpoint`
+
+### Thread Safety
+
+The ModelRegistry is thread-safe for concurrent access:
+- Uses RLock (reentrant lock) for all public methods
+- Safe hot-reloading while serving requests
+- Atomic updates when reloading configuration

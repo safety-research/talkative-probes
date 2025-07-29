@@ -157,6 +157,31 @@ class ModelSwitcher {
         this.ws.send(JSON.stringify({ type: 'list_models' }));
     }
     
+    // Reload model registry (requires authentication)
+    reloadModelRegistry() {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+            this.showStatus('Not connected to server', 'error');
+            return;
+        }
+        
+        // Get API key
+        let apiKey = localStorage.getItem('talkative_backend_api_key');
+        if (!apiKey) {
+            apiKey = prompt('Please enter the backend API key to reload model registry:');
+            if (!apiKey) {
+                alert('API key is required to reload model registry');
+                return;
+            }
+            // Save for future use
+            localStorage.setItem('talkative_backend_api_key', apiKey);
+        }
+        
+        this.ws.send(JSON.stringify({
+            type: 'reload_models',
+            api_key: apiKey
+        }));
+    }
+    
     // Handle model list response
     handleModelsList(data) {
         this.models = data.models;
@@ -329,9 +354,22 @@ class ModelSwitcher {
             return;
         }
         
+        // Get API key from localStorage or prompt user
+        let apiKey = localStorage.getItem('talkative_backend_api_key');
+        if (!apiKey) {
+            apiKey = prompt('Please enter the backend API key to switch models:');
+            if (!apiKey) {
+                alert('API key is required to switch models');
+                return;
+            }
+            // Save for future use
+            localStorage.setItem('talkative_backend_api_key', apiKey);
+        }
+        
         this.ws.send(JSON.stringify({
             type: 'switch_model',
-            model_id: this.selectedModel
+            model_id: this.selectedModel,
+            api_key: apiKey
         }));
         
         this.hideWarning();
@@ -458,6 +496,22 @@ class ModelSwitcher {
                 
             case 'model_switch_error':
                 this.handleSwitchStatus({ status: 'failed', ...data });
+                break;
+                
+            case 'models_reloaded':
+                this.showStatus(data.message || 'Model registry reloaded successfully', 'success');
+                this.handleModelsList(data);  // Update the model list
+                break;
+                
+            case 'error':
+                // Handle authentication errors and other errors
+                if (data.error && data.error.includes('Authentication required')) {
+                    // Clear saved API key if authentication failed
+                    localStorage.removeItem('talkative_backend_api_key');
+                    this.showStatus('Authentication failed. Please check your API key.', 'error');
+                } else {
+                    this.showStatus(data.error || 'An error occurred', 'error');
+                }
                 break;
                 
             case 'model_info_update':

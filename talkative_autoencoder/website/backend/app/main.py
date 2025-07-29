@@ -582,6 +582,16 @@ async def websocket_endpoint(websocket: WebSocket):
                     await websocket.send_json({"type": "error", "error": "Model manager not initialized"})
                     continue
                     
+                # Check for API key authentication
+                api_key = data.get("api_key")
+                if settings.api_key and api_key != settings.api_key:
+                    await websocket.send_json({
+                        "type": "error", 
+                        "error": "Authentication required. Please provide a valid API key."
+                    })
+                    logger.warning(f"Unauthorized switch_model attempt from {websocket.client}")
+                    continue
+                    
                 model_id = data.get("model_id")
                 if not model_id:
                     await websocket.send_json({"type": "error", "error": "No model_id provided"})
@@ -628,6 +638,16 @@ async def websocket_endpoint(websocket: WebSocket):
                 
             elif data["type"] == "reload_models":
                 # Reload model registry from JSON
+                # Check for API key authentication
+                api_key = data.get("api_key")
+                if settings.api_key and api_key != settings.api_key:
+                    await websocket.send_json({
+                        "type": "error", 
+                        "error": "Authentication required. Please provide a valid API key."
+                    })
+                    logger.warning(f"Unauthorized reload_models attempt from {websocket.client}")
+                    continue
+                    
                 try:
                     from .model_registry import model_registry, list_available_models
                     model_registry.reload_models()

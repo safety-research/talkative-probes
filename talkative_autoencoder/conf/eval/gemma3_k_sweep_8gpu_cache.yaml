@@ -14,12 +14,12 @@ eval:
   max_batches: null  # Use entire cached dataset
   temperature: 1.0
   
-  # Batch size settings - optimized for 8 GPU distributed
-  batch_size: 8
-  max_generation_batch_size: 128  # Larger for distributed
-  dataloader_batch_size: 256  # Larger for distributed
-  vector_extraction_batch_size: 32  # Larger for distributed
-  dataloader_fwd_pass_batch_size: 32  # Larger for distributed
+  # Batch size settings - per GPU when using distributed (torchrun)
+  batch_size: 1  # 8 GPUs * 1 = 8 total
+  max_generation_batch_size: 8  # 8 GPUs * 8 = 64 total
+  dataloader_batch_size: 16  # 8 GPUs * 16 = 128 total
+  vector_extraction_batch_size: 2  # 8 GPUs * 2 = 16 total
+  dataloader_fwd_pass_batch_size: 2  # 8 GPUs * 2 = 16 total
   
   # Performance settings
   use_bf16: true
