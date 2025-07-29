@@ -1,0 +1,53 @@
+# Configuration for Gemma3 27B K-sweep with bootstrap AND caching
+# This config enables bootstrap confidence intervals but requires vector caching
+# Use this only when you have cached vectors and need statistical confidence intervals
+
+# Evaluation parameters
+eval:
+  # K values to evaluate
+  k_values: [1, 2, 4, 8, 16, 32]
+  
+  # Output settings
+  output_dir: ./eval_results
+  output_file: gemma3_k_sweep_bootstrap.json
+  
+  # Evaluation settings
+  max_batches: null  # Use entire validation set (or subset of cache)
+  temperature: 1.0
+  
+  # Batch size settings
+  batch_size: 8
+  max_generation_batch_size: 64
+  dataloader_batch_size: 128
+  vector_extraction_batch_size: 16
+  dataloader_fwd_pass_batch_size: 16
+  
+  # Performance settings
+  use_bf16: true
+  
+  # Sampling settings
+  num_positions: 1
+  max_val_samples: 1000
+  
+  # Bootstrap ENABLED (only use with caching!)
+  do_bootstrap: true
+  
+  # Caching REQUIRED for bootstrap to be practical
+  load_store: true
+  cache_dir: vector_cache_gemma3
+
+# Dataset configuration
+dataset:
+  activation_dir: "./data/SimpleStories_train"
+  val_activation_dir: "./data/SimpleStories_test"
+  
+  on_the_fly:
+    enabled: false
+    generation_batch_size: ${eval.dataloader_fwd_pass_batch_size}
+
+# Data loader settings
+data:
+  num_workers: 0
+
+# WARNING: This config enables bootstrap which is computationally expensive
+# Only use when you have cached vectors (load_store=true) to avoid long runtimes

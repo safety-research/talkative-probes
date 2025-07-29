@@ -68,9 +68,10 @@ def compute_cache_key(model_name: str, layer: int, dataset_cfg: Dict[str, Any], 
     return hashlib.md5(key_str.encode()).hexdigest()
 
 
-def get_cache_path(cache_dir: Path, cache_key: str, rank: int) -> Path:
-    """Get the cache file path for a specific rank."""
-    cache_path = cache_dir / cache_key / f"rank_{rank}_vectors.pkl"
+def get_cache_path(cache_dir: Path, cache_key: str, rank: int = 0) -> Path:
+    """Get the cache file path. Always returns centralized cache file."""
+    # Always use a single centralized cache file instead of rank-specific
+    cache_path = cache_dir / cache_key / "vectors.pkl"
     return cache_path
 
 

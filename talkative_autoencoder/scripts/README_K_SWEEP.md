@@ -13,26 +13,51 @@ The K-sweep evaluation (`03_best_of_k_sweep.py`) evaluates how variance recovery
 
 ## Quick Start
 
-### Single-GPU Evaluation
+### Using Pre-configured Eval Configs
+
+The easiest way to run evaluations is using the pre-configured YAML files:
+
 ```bash
+# Full evaluation without bootstrap (fastest for single run)
+./scripts/submit_k_sweep.sh \
+  +eval=gemma3_k_sweep_noboot \
+  +eval.checkpoint_path=/path/to/checkpoint.pt
+
+# With vector caching enabled
+./scripts/submit_k_sweep.sh \
+  +eval=gemma3_k_sweep_cache \
+  +eval.checkpoint_path=/path/to/checkpoint.pt
+
+# Quick test (reduced samples and K values)
+./scripts/submit_k_sweep.sh \
+  +eval=gemma3_k_sweep_quick \
+  +eval.checkpoint_path=/path/to/checkpoint.pt
+
+# Full evaluation (bootstrap disabled by default)
+./scripts/submit_k_sweep.sh \
+  +eval=gemma3_k_sweep_full \
+  +eval.checkpoint_path=/path/to/checkpoint.pt
+
+# With bootstrap confidence intervals (requires caching!)
+./scripts/submit_k_sweep.sh \
+  +eval=gemma3_k_sweep_bootstrap_cache \
+  +eval.checkpoint_path=/path/to/checkpoint.pt
+```
+
+### Manual Configuration
+
+You can also specify parameters manually:
+
+```bash
+# Single-GPU evaluation
 ./scripts/submit_k_sweep.sh \
   +eval.checkpoint_path=/path/to/checkpoint.pt \
   +eval.k_values=[1,2,4,8,16,32]
-```
 
-### Multi-GPU Evaluation
-```bash
+# Multi-GPU evaluation
 ./scripts/submit_k_sweep.sh num_gpus=4 \
   +eval.checkpoint_path=/path/to/checkpoint.pt \
   +eval.k_values=[1,2,4,8,16,32,64]
-```
-
-### With Vector Caching
-```bash
-./scripts/submit_k_sweep.sh \
-  +eval.checkpoint_path=/path/to/checkpoint.pt \
-  +eval.k_values=[1,2,4,8,16,32] \
-  +eval.load_store=true
 ```
 
 ## Distributed Execution
@@ -90,6 +115,12 @@ done
 - **Location**: Default `vector_cache/`, configurable with `+eval.cache_dir=`
 - **Structure**: `cache_dir/{hash}/rank_N_vectors.pkl`
 - **Clearing**: `rm -rf vector_cache/` to force regeneration
+
+## Bootstrap Confidence Intervals
+
+Bootstrap is computationally expensive (1000 iterations) and is **disabled by default** in all configs except `gemma3_k_sweep_bootstrap_cache`. 
+
+**Important**: Only use bootstrap with vector caching enabled to avoid excessive computation time. The `gemma3_k_sweep_bootstrap_cache` config enforces both `do_bootstrap=true` and `load_store=true`.
 
 ## Configuration Options
 
@@ -170,23 +201,45 @@ This creates:
 
 ## Advanced Usage
 
+### Pre-configured Eval Configs
+
+Available configurations in `conf/eval/`:
+
+| Config | Description | Key Settings |
+|--------|-------------|--------------|
+| `gemma3_k_sweep_full` | Full evaluation | `do_bootstrap=false`, all K values |
+| `gemma3_k_sweep_noboot` | Fast evaluation | `do_bootstrap=false`, explicit name |
+| `gemma3_k_sweep_cache` | With vector caching | `load_store=true`, `do_bootstrap=false` |
+| `gemma3_k_sweep_quick` | Quick test run | Reduced samples & K values |
+| `gemma3_k_sweep_bootstrap_cache` | Bootstrap with caching | `do_bootstrap=true`, `load_store=true` |
+
 ### Custom Configurations
 
 Create a YAML config in `conf/eval/`:
 ```yaml
 # conf/eval/my_k_sweep.yaml
-checkpoint_path: /path/to/checkpoint.pt
-k_values: [1, 2, 4, 8, 16, 32, 64, 128]
-max_batches: 1000
-temperature: 1.2
-load_store: true
-cache_dir: my_cache
-do_bootstrap: true
+eval:
+  k_values: [1, 2, 4, 8, 16, 32, 64, 128]
+  max_batches: 1000
+  temperature: 1.2
+  load_store: true
+  cache_dir: my_cache
+  do_bootstrap: true
+  max_generation_batch_size: 64
+  dataloader_batch_size: 128
+  vector_extraction_batch_size: 16
+
+dataset:
+  activation_dir: "./data/SimpleStories_train"
+  val_activation_dir: "./data/SimpleStories_test"
+
+data:
+  num_workers: 0
 ```
 
 Then run:
 ```bash
-./scripts/submit_k_sweep.sh +eval=my_k_sweep
+./scripts/submit_k_sweep.sh +eval=my_k_sweep +eval.checkpoint_path=/path/to/checkpoint.pt
 ```
 
 ### Batch Experiments

@@ -800,6 +800,10 @@ const handleWebSocketMessage = (data) => {
                 if (autoBatchLabel) {
                     autoBatchLabel.textContent = `Auto-calculate (${state.autoBatchSizeMax}÷N)`;
                 }
+                // Update batch size if auto-calculate is enabled
+                if (typeof updateAutoBatchSize === 'function') {
+                    updateAutoBatchSize();
+                }
             }
             // Update cached models in model switcher
             if (state.modelSwitcher && data.cached_models) {
@@ -907,6 +911,16 @@ const handleWebSocketMessage = (data) => {
             
         case 'generation_result':
             console.log('Received generation result:', data);
+            showLoading(false, '', null, 'generation');
+            // Clean up request tracking
+            if (data.request_id && state.activeRequests) {
+                delete state.activeRequests[data.request_id];
+            }
+            handleGenerationResult(data.result);
+            break;
+            
+        case 'generation_complete':
+            console.log('Received generation complete:', data);
             showLoading(false, '', null, 'generation');
             // Clean up request tracking
             if (data.request_id && state.activeRequests) {
@@ -1148,18 +1162,21 @@ const handleGenerationResult = (result) => {
     console.log('Generation result:', result);
     elements.generateBtn.disabled = false;
     
-    if (!result || !result.continuations || result.continuations.length === 0) {
+    // Handle both 'continuations' and 'completions' field names
+    const continuations = result?.continuations || result?.completions;
+    
+    if (!result || !continuations || continuations.length === 0) {
         showGenerationStatus('No continuations generated', 'error');
         return;
     }
     
-    showGenerationStatus(`Generated ${result.continuations.length} continuation(s)`, 'success');
+    showGenerationStatus(`Generated ${continuations.length} continuation(s)`, 'success');
     
     // Display continuations
     elements.continuationResults.classList.remove('hidden');
     elements.continuationsList.innerHTML = '';
     
-    result.continuations.forEach((cont, idx) => {
+    continuations.forEach((cont, idx) => {
         const div = document.createElement('div');
         div.className = 'bg-gray-50 p-3 rounded border border-gray-200';
         
@@ -1185,7 +1202,7 @@ const handleGenerationResult = (result) => {
     });
     
     // Store continuations for later use
-    state.generatedContinuations = result.continuations;
+    state.generatedContinuations = continuations;
     
     // Add click handlers for "Use this" buttons
     document.querySelectorAll('.use-continuation-btn').forEach(btn => {
@@ -1710,6 +1727,20 @@ const checkForChatFormat = () => {
     }
 };
 
+// Helper function to update batch size
+const updateAutoBatchSize = () => {
+    if (elements.autoBatchSize && elements.autoBatchSize.checked) {
+        const k = parseInt(elements.kRollouts.value);
+        const autoBatch = Math.max(1, Math.floor(state.autoBatchSizeMax / k));
+        elements.batchSize.value = autoBatch;
+        elements.batchSizeInfo.textContent = `${autoBatch} (auto)`;
+        elements.batchSize.disabled = true;
+    } else if (elements.batchSize) {
+        elements.batchSize.disabled = false;
+        elements.batchSizeInfo.textContent = elements.batchSize.value;
+    }
+};
+
 // Initialize event listeners
 const initializeEventListeners = () => {
     // Tab navigation
@@ -1778,11 +1809,7 @@ const initializeEventListeners = () => {
     elements.kRollouts.addEventListener('input', (e) => {
         const k = parseInt(e.target.value);
         elements.kRolloutsValue.textContent = k;
-        if (elements.autoBatchSize.checked) {
-            const autoBatch = Math.max(1, Math.floor(state.autoBatchSizeMax / k));
-            elements.batchSize.value = autoBatch;
-            elements.batchSizeInfo.textContent = `${autoBatch} (auto)`;
-        }
+        updateAutoBatchSize();
         
         // Auto-adjust temperature based on k_rollouts
         if (k === 1) {
@@ -1795,15 +1822,7 @@ const initializeEventListeners = () => {
     });
     
     elements.autoBatchSize.addEventListener('change', (e) => {
-        elements.batchSize.disabled = e.target.checked;
-        if (e.target.checked) {
-            const k = parseInt(elements.kRollouts.value);
-            const autoBatch = Math.max(1, Math.floor(state.autoBatchSizeMax / k));
-            elements.batchSize.value = autoBatch;
-            elements.batchSizeInfo.textContent = `${autoBatch} (auto)`;
-        } else {
-            elements.batchSizeInfo.textContent = elements.batchSize.value;
-        }
+        updateAutoBatchSize();
     });
     
     elements.batchSize.addEventListener('input', (e) => {
@@ -1991,6 +2010,9 @@ const initialize = () => {
     
     // Connect WebSocket
     connectWebSocket();
+    
+    // Initialize batch size if auto-calculate is enabled
+    updateAutoBatchSize();
     
     // Load from URL if present
     loadFromURL();

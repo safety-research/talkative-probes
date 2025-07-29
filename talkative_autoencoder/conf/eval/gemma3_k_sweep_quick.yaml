@@ -1,0 +1,49 @@
+# Quick test configuration for Gemma3 K-sweep
+# Reduced K values and samples for faster testing
+
+# Evaluation parameters
+eval:
+  # Reduced K values for quick testing
+  k_values: [1, 2, 4]
+  
+  # Output settings
+  output_dir: ./eval_results
+  output_file: gemma3_k_sweep_quick.json
+  
+  # Limited evaluation for testing
+  max_batches: 5  # Only 5 batches for quick test
+  temperature: 1.0
+  
+  # Batch size settings
+  batch_size: 8
+  max_generation_batch_size: 32  # Smaller for testing
+  dataloader_batch_size: 32  # Smaller for testing
+  vector_extraction_batch_size: 8
+  dataloader_fwd_pass_batch_size: 8
+  
+  # Performance settings
+  use_bf16: true
+  
+  # Sampling settings
+  num_positions: 1
+  max_val_samples: 100  # Much smaller for testing
+  
+  # Bootstrap disabled for speed
+  do_bootstrap: false
+  
+  # Caching settings
+  load_store: false
+  cache_dir: vector_cache_test
+
+# Dataset configuration
+dataset:
+  activation_dir: "./data/SimpleStories_train"
+  val_activation_dir: "./data/SimpleStories_test"
+  
+  on_the_fly:
+    enabled: false
+    generation_batch_size: ${eval.dataloader_fwd_pass_batch_size}
+
+# Data loader settings
+data:
+  num_workers: 0
