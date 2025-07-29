@@ -153,6 +153,7 @@ class InferenceService:
                 return True
                 
             # Run analysis in executor
+            logger.info(f"Starting analysis in executor for request {request_id}")
             df = await loop.run_in_executor(
                 None,
                 lambda: analyzer.analyze_all_tokens(
@@ -175,9 +176,22 @@ class InferenceService:
                     progress_callback=progress_callback if websocket else None,
                 ),
             )
+            logger.info(f"Analysis completed in executor for request {request_id}, df shape: {df.shape if df is not None else 'None'}")
             
+            # Check if df is None
+            if df is None:
+                logger.error(f"Analysis returned None for request {request_id}")
+                raise ValueError("Analysis returned no data")
+                
             # Convert result
-            result_data = df.to_dict("records")
+            try:
+                logger.info(f"About to convert dataframe to dict for request {request_id}")
+                result_data = df.to_dict("records")
+                logger.info(f"Converted result to dict for request {request_id}, {len(result_data)} records")
+            except Exception as e:
+                logger.error(f"Error converting dataframe to dict for request {request_id}: {e}")
+                logger.error(f"DataFrame info: columns={list(df.columns) if df is not None else 'None'}, dtypes={df.dtypes.to_dict() if df is not None else 'None'}")
+                raise
             
             # Get model info
             model_info = self.model_manager.get_current_model_info()
@@ -196,8 +210,11 @@ class InferenceService:
             request["completed_at"] = datetime.utcnow()
             request["processing_time"] = (request["completed_at"] - request["started_at"]).total_seconds()
             
+            logger.info(f"Request {request_id} marked as completed, processing time: {request['processing_time']}s")
+            
             # Send completion via WebSocket
             if websocket:
+                logger.info(f"Sending completion message via WebSocket for request {request_id}")
                 await self.queue._send_websocket_update(
                     websocket,
                     {

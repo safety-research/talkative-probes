@@ -78,6 +78,11 @@ run_evaluation() {
     source scripts/ensure_env.sh
     ulimit -n 65536
     
+    # Load .env file if it exists (for API keys, etc.)
+    if [ -f .env ]; then
+        export $(grep -v '^#' .env | xargs)
+    fi
+    
     if [ "$NUM_GPUS" -gt 1 ]; then
         # Multi-GPU: use torchrun
         # Generate random port to avoid conflicts
@@ -151,6 +156,11 @@ if [ "$USE_SLURM" = true ]; then
 cd $PROJECT_ROOT
 source scripts/ensure_env.sh
 ulimit -n 65536
+
+# Load .env file if it exists (for API keys, etc.)
+if [ -f .env ]; then
+    export $(grep -v '^#' .env | xargs)
+fi
 
 # Run evaluation based on GPU count
 if [ "$NUM_GPUS" -gt 1 ]; then
