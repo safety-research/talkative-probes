@@ -744,6 +744,20 @@ async def switch_model(model_id: str, authorized: bool = Depends(verify_api_key)
         logger.error(f"Model switch failed: {e}")
         raise HTTPException(500, f"Model switch failed: {str(e)}")
 
+@app.get("/api/models/cache")
+async def get_model_cache_status():
+    """Get model cache status"""
+    if not model_manager:
+        return {"error": "Model manager not initialized"}
+    
+    cache_status = model_manager.get_cache_status()
+    memory_usage = model_manager.get_memory_usage()
+    
+    return {
+        "cache": cache_status,
+        "memory": memory_usage,
+    }
+
 @app.get("/api/gpu_stats")
 async def get_gpu_stats():
     """Get GPU utilization and memory stats from the background monitor"""

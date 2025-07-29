@@ -799,6 +799,11 @@ const handleWebSocketMessage = (data) => {
                     autoBatchLabel.textContent = `Auto-calculate (${state.autoBatchSizeMax}÷N)`;
                 }
             }
+            // Update cached models in model switcher
+            if (state.modelSwitcher && data.cached_models) {
+                state.modelSwitcher.cachedModels = data.cached_models;
+                state.modelSwitcher.renderModelList();
+            }
             updateConnectionStatus();
             // Clear any loading messages when model info is received
             showLoading(false, '', null, 'generation');

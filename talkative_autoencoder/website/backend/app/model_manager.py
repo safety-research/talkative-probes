@@ -38,6 +38,12 @@ class ModelManager:
         self.websocket_manager = None  # Will be set by the application
         self.default_model_id = "qwen2.5-14b-wildchat"  # Can be overridden
         
+        # Model caching for fast switching
+        self.model_cache: Dict[str, LensAnalyzer] = {}  # Stores model instances
+        self.model_locations: Dict[str, str] = {}  # Tracks 'cuda', 'cpu', or 'unloaded'
+        self.cache_order: List[str] = []  # Track usage order for potential LRU eviction
+        self.max_cpu_models = 3  # Maximum models to keep in CPU memory
+        
     async def initialize_default_model(self, model_id: Optional[str] = None):
         """Initialize with a default model"""
         if model_id is None:
@@ -49,7 +55,7 @@ class ModelManager:
         if not self.current_model_id or not self.current_config:
             return {"status": "no_model_loaded"}
             
-        return {
+        info = {
             "model_id": self.current_model_id,
             "display_name": self.current_config.display_name,
             "description": self.current_config.description,
@@ -59,7 +65,14 @@ class ModelManager:
             "model_family": "Qwen" if "qwen" in self.current_model_id else "Gemma",
             "is_switching": self.is_switching,
             "switch_start_time": self.switch_start_time.isoformat() if self.switch_start_time else None,
+            "cached_models": list(self.model_cache.keys()),
+            "cache_info": {
+                "total_cached": len(self.model_cache),
+                "on_gpu": len([m for m, loc in self.model_locations.items() if loc == 'cuda']),
+                "on_cpu": len([m for m, loc in self.model_locations.items() if loc == 'cpu']),
+            }
         }
+        return info
     
     def get_current_batch_size(self) -> int:
         """Get the batch size for the current model"""
@@ -148,48 +161,79 @@ class ModelManager:
                 raise
                 
     async def _unload_current_model(self):
-        """Unload current model and free GPU memory"""
-        if self.current_analyzer is None:
+        """Move current model from GPU to CPU instead of deleting"""
+        if self.current_analyzer is None or self.current_model_id is None:
             return
             
-        # Delete the analyzer
-        del self.current_analyzer
+        logger.info(f"Moving model {self.current_model_id} from GPU to CPU")
+        
+        # Move model to CPU
+        self.current_analyzer.to('cpu')
+        self.model_locations[self.current_model_id] = 'cpu'
+        
+        # Clear reference but keep in cache
         self.current_analyzer = None
         
-        # Force garbage collection
-        gc.collect()
-        
-        # Clear CUDA cache if using GPU
+        # Clear CUDA cache to free GPU memory
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
             
-        # Wait a bit for memory to be freed
-        await asyncio.sleep(0.5)
+        # Small delay to ensure memory is freed
+        await asyncio.sleep(0.1)
         
     async def _load_model(self, config: ModelConfig):
-        """Load a new model based on configuration"""
-        # Create analyzer with model-specific settings in a thread to avoid blocking
-        loop = asyncio.get_event_loop()
+        """Load a model, either from cache (CPU) or disk"""
+        model_id = config.name
         
-        def create_analyzer():
-            return LensAnalyzer(
-                config.checkpoint_path,
-                device=self.settings.device,
-                batch_size=config.batch_size,
-                use_bf16=config.use_bf16,
-                strict_load=config.strict_load,
-                comparison_tl_checkpoint=config.comparison_tl_checkpoint,
-                do_not_load_weights=self.settings.do_not_load_weights,
-                make_xl=config.make_xl,
-                t_text=config.t_text,
-                no_orig=config.no_orig,
-                different_activations_orig=config.different_activations_model,
-                initialise_on_cpu=self.settings.initialise_on_cpu,
-            )
-        
-        # Run the blocking initialization in a thread
-        self.current_analyzer = await loop.run_in_executor(None, create_analyzer)
+        # Check if model is already in cache
+        if model_id in self.model_cache and self.model_locations.get(model_id) == 'cpu':
+            logger.info(f"Moving cached model {model_id} from CPU to GPU")
+            
+            # Get cached model and move to GPU
+            self.current_analyzer = self.model_cache[model_id]
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: self.current_analyzer.to(self.settings.device))
+            
+            self.model_locations[model_id] = 'cuda'
+            
+            # Update cache order for LRU
+            if model_id in self.cache_order:
+                self.cache_order.remove(model_id)
+            self.cache_order.append(model_id)
+            
+        else:
+            logger.info(f"Loading new model {model_id} from disk to GPU")
+            
+            # Check if we need to evict a model from CPU cache
+            await self._manage_cache_size()
+            
+            # Create analyzer with model-specific settings in a thread to avoid blocking
+            loop = asyncio.get_event_loop()
+            
+            def create_analyzer():
+                return LensAnalyzer(
+                    config.checkpoint_path,
+                    device=self.settings.device,
+                    batch_size=config.batch_size,
+                    use_bf16=config.use_bf16,
+                    strict_load=config.strict_load,
+                    comparison_tl_checkpoint=config.comparison_tl_checkpoint,
+                    do_not_load_weights=self.settings.do_not_load_weights,
+                    make_xl=config.make_xl,
+                    t_text=config.t_text,
+                    no_orig=config.no_orig,
+                    different_activations_orig=config.different_activations_model,
+                    initialise_on_cpu=self.settings.initialise_on_cpu,
+                )
+            
+            # Run the blocking initialization in a thread
+            self.current_analyzer = await loop.run_in_executor(None, create_analyzer)
+            
+            # Add to cache
+            self.model_cache[model_id] = self.current_analyzer
+            self.model_locations[model_id] = 'cuda'
+            self.cache_order.append(model_id)
         
         # Store current model config for reference
         self.current_config = config
@@ -203,6 +247,28 @@ class ModelManager:
         self.settings.no_orig = config.no_orig
         self.settings.comparison_tl_checkpoint = config.comparison_tl_checkpoint
         self.settings.different_activations_model = config.different_activations_model
+        
+    async def _manage_cache_size(self):
+        """Manage CPU cache size by evicting least recently used models"""
+        cpu_models = [m for m, loc in self.model_locations.items() if loc == 'cpu']
+        
+        if len(cpu_models) >= self.max_cpu_models:
+            # Find the least recently used model
+            lru_model = None
+            for model_id in self.cache_order:
+                if self.model_locations.get(model_id) == 'cpu':
+                    lru_model = model_id
+                    break
+                    
+            if lru_model:
+                logger.info(f"Evicting model {lru_model} from CPU cache to free memory")
+                # Delete the model
+                del self.model_cache[lru_model]
+                del self.model_locations[lru_model]
+                self.cache_order.remove(lru_model)
+                
+                # Force garbage collection
+                gc.collect()
         
     async def _broadcast_switch_status(self, status: str, model_id: str, error: Optional[str] = None):
         """Broadcast model switch status to all connected clients"""
@@ -237,6 +303,16 @@ class ModelManager:
         await self._unload_current_model()
         self.current_model_id = None
         self.current_config = None
+        
+    def get_cache_status(self) -> Dict[str, Any]:
+        """Get the status of the model cache"""
+        return {
+            "cached_models": list(self.model_cache.keys()),
+            "model_locations": self.model_locations.copy(),
+            "cache_order": self.cache_order.copy(),
+            "max_cpu_models": self.max_cpu_models,
+            "cpu_models_count": len([m for m, loc in self.model_locations.items() if loc == 'cpu']),
+        }
             
     def get_memory_usage(self) -> Dict[str, Any]:
         """Get current GPU memory usage"""

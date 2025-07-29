@@ -8,6 +8,7 @@ class ModelSwitcher {
         this.models = {};
         this.isSwitching = false;
         this.listeners = [];
+        this.cachedModels = [];
         
         this.render();
     }
@@ -123,6 +124,11 @@ class ModelSwitcher {
         this.updateStatus();
     }
     
+    // Check if a model is cached
+    isCached(modelId) {
+        return this.cachedModels.includes(modelId);
+    }
+    
     // Render model list
     renderModelList() {
         const modelListEl = this.container.querySelector('#modelList');
@@ -147,7 +153,10 @@ class ModelSwitcher {
                         ${isDisabled ? 'disabled' : ''}
                         class="mt-1 mr-3 text-blue-600">
                     <div class="flex-1">
-                        <div class="font-medium text-gray-900">${info.display_name}</div>
+                        <div class="font-medium text-gray-900">
+                            ${info.display_name}
+                            ${this.isCached(modelId) ? '<span class="ml-2 text-xs bg-green-100 text-green-800 px-1.5 py-0.5 rounded">Cached</span>' : ''}
+                        </div>
                         <div class="text-sm text-gray-600">${info.description}</div>
                         <div class="text-xs text-gray-500 mt-1">
                             Layer: ${info.layer} | 
@@ -321,6 +330,10 @@ class ModelSwitcher {
                 break;
                 
             case 'model_info_update':
+                // Update cached models list if provided
+                if (data.cached_models) {
+                    this.cachedModels = data.cached_models;
+                }
                 this.updateStatus();
                 break;
         }
