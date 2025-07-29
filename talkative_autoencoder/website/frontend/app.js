@@ -858,6 +858,7 @@ const handleWebSocketMessage = (data) => {
     switch (data.type) {
         case 'model_info':
             state.modelInfo = data;
+            console.log('Received model_info:', data);
             // Update auto batch size max if provided
             if (data.auto_batch_size_max) {
                 state.autoBatchSizeMax = data.auto_batch_size_max;
@@ -873,6 +874,7 @@ const handleWebSocketMessage = (data) => {
             }
             // Update generation parameters if provided
             if (data.generation_config) {
+                console.log('Updating generation config:', data.generation_config);
                 updateGenerationParameters(data.generation_config);
             }
             // Update cached models in model switcher

@@ -90,13 +90,15 @@ class ModelManager:
                 # First try to get from generation_config
                 if hasattr(model, 'generation_config'):
                     gen_config = model.generation_config
-                    return {
+                    config_dict = {
                         "temperature": getattr(gen_config, 'temperature', 1.0),
                         "top_p": getattr(gen_config, 'top_p', 1.0), 
                         "top_k": getattr(gen_config, 'top_k', None),
                         "do_sample": getattr(gen_config, 'do_sample', True),
                         "repetition_penalty": getattr(gen_config, 'repetition_penalty', 1.0),
                     }
+                    logger.info(f"Got generation config for {self.current_model_id}: {config_dict}")
+                    return config_dict
                 
                 # Fallback to model config defaults
                 elif hasattr(model, 'config'):
