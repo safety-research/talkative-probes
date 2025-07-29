@@ -65,15 +65,23 @@ test:
 # Run backend locally or on RunPod
 run:
 	@if [ -n "$(RUNPOD_POD_ID)" ]; then \
-		echo "$(YELLOW)Running on RunPod - Backend will be accessible at:$(NC)"; \
-		echo "$(GREEN)https://$(RUNPOD_POD_ID)-$(RUNPOD_PORT).proxy.runpod.net$(NC)"; \
-		echo ""; \
-		echo "$(YELLOW)Starting backend server on port $(RUNPOD_PORT)...$(NC)"; \
-		source ../scripts/ensure_env.sh && cd .. && PORT=$(RUNPOD_PORT) uv run uvicorn website.backend.app.main:app --host 0.0.0.0 --port $(RUNPOD_PORT) --reload --reload-dir website || true; \
+		/bin/echo -e "$(YELLOW)Running on RunPod - Backend will be accessible at:$(NC)"; \
+		/bin/echo -e "$(GREEN)https://$(RUNPOD_POD_ID)-$(RUNPOD_PORT).proxy.runpod.net$(NC)"; \
+		/bin/echo ""; \
+		/bin/echo -e "$(YELLOW)Starting backend server on port $(RUNPOD_PORT)...$(NC)"; \
+		if [ "$(NO_RELOAD)" = "1" ]; then \
+			source ../scripts/ensure_env.sh && cd .. && PORT=$(RUNPOD_PORT) uv run uvicorn website.backend.app.main:app --host 0.0.0.0 --port $(RUNPOD_PORT) || true; \
+		else \
+			source ../scripts/ensure_env.sh && cd .. && PORT=$(RUNPOD_PORT) uv run uvicorn website.backend.app.main:app --host 0.0.0.0 --port $(RUNPOD_PORT) --reload --reload-dir website || true; \
+		fi; \
 	else \
-		echo "$(YELLOW)Starting backend server on http://localhost:$(API_PORT)$(NC)"; \
-		echo "$(YELLOW)API docs available at http://localhost:$(API_PORT)/docs$(NC)"; \
-		source ../scripts/ensure_env.sh && cd .. && uv run uvicorn website.backend.app.main:app --host 0.0.0.0 --port $(API_PORT) --reload --reload-dir website || true; \
+		/bin/echo -e "$(YELLOW)Starting backend server on http://localhost:$(API_PORT)$(NC)"; \
+		/bin/echo -e "$(YELLOW)API docs available at http://localhost:$(API_PORT)/docs$(NC)"; \
+		if [ "$(NO_RELOAD)" = "1" ]; then \
+			source ../scripts/ensure_env.sh && cd .. && uv run uvicorn website.backend.app.main:app --host 0.0.0.0 --port $(API_PORT) || true; \
+		else \
+			source ../scripts/ensure_env.sh && cd .. && uv run uvicorn website.backend.app.main:app --host 0.0.0.0 --port $(API_PORT) --reload --reload-dir website || true; \
+		fi; \
 	fi
 
 # Run frontend locally

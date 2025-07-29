@@ -1175,6 +1175,8 @@ const handleGenerationResult = (result) => {
                 
                 // Scroll to top of input
                 elements.inputText.scrollTop = 0;
+                elements.isChatFormatted.checked = false;
+                elements.chatWarning.classList.add('hidden');
                 
                 // Check for chat format with another small delay
                 setTimeout(() => {

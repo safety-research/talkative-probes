@@ -615,28 +615,33 @@ class ModelManager:
                 return True  # Continue processing
 
             # Run inference in a thread pool to avoid blocking the event loop
-            df = await loop.run_in_executor(
-                None,  # Use default executor
-                lambda: self.analyzer.analyze_all_tokens(
-                    text_to_analyze,
-                    seed=options.get("seed", 42),
-                    batch_size=batch_size,
-                    no_eval=options.get("no_eval", False),
-                    tuned_lens=options.get("tuned_lens", False) and settings.tuned_lens_dir is not None,
-                    add_tokens=options.get("add_tokens"),
-                    replace_left=options.get("replace_left"),
-                    replace_right=options.get("replace_right"),
-                    do_hard_tokens=options.get("do_hard_tokens", False),
-                    return_structured=options.get("return_structured", True),
-                    move_devices=options.get("move_devices", False),
-                    logit_lens_analysis=options.get("logit_lens_analysis", False),
-                    temperature=options.get("temperature", 1.0),
-                    no_kl=options.get("no_kl", False),
-                    calculate_token_salience=options.get("calculate_token_salience", True),
-                    optimize_explanations_config=options.get("optimize_explanations_config"),
-                    progress_callback=progress_callback if websocket else None,
-                ),
-            )
+            try:
+                df = await loop.run_in_executor(
+                    None,  # Use default executor
+                    lambda: self.analyzer.analyze_all_tokens(
+                        text_to_analyze,
+                        seed=options.get("seed", 42),
+                        batch_size=batch_size,
+                        no_eval=options.get("no_eval", False),
+                        tuned_lens=options.get("tuned_lens", False) and settings.tuned_lens_dir is not None,
+                        add_tokens=options.get("add_tokens"),
+                        replace_left=options.get("replace_left"),
+                        replace_right=options.get("replace_right"),
+                        do_hard_tokens=options.get("do_hard_tokens", False),
+                        return_structured=options.get("return_structured", True),
+                        move_devices=options.get("move_devices", False),
+                        logit_lens_analysis=options.get("logit_lens_analysis", False),
+                        temperature=options.get("temperature", 1.0),
+                        no_kl=options.get("no_kl", False),
+                        calculate_token_salience=options.get("calculate_token_salience", True),
+                        optimize_explanations_config=options.get("optimize_explanations_config"),
+                        progress_callback=progress_callback if websocket else None,
+                    ),
+                )
+            except Exception as e:
+                logger.error(f"Analysis error: {str(e)}")
+                request["error"] = str(e)
+                request["status"] = "failed"
 
             # Convert DataFrame to dict for JSON serialization
             result_data = df.to_dict("records")
