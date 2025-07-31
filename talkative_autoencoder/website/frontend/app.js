@@ -1379,6 +1379,7 @@ const handleGenerationResult = (result) => {
                 // Check for chat format with another small delay
                 setTimeout(() => {
                     checkForChatFormat();
+                    checkForModelTokens();
                     
                     // Re-enable button
                     e.target.textContent = 'Use this';
