@@ -113,15 +113,49 @@ class InferenceService:
                     await asyncio.sleep(0.1)
                     continue
                     
-                # Get the analyzer, waiting if model is switching
-                analyzer = await self.model_manager.get_analyzer()
-                if analyzer is None:
-                    # Model not loaded yet
+                # Check if request was cancelled while in queue
+                request = self.queue.active_requests.get(request_id)
+                if request and request["status"] == "cancelled":
+                    logger.info(f"Skipping cancelled request {request_id}")
+                    continue
+                    
+                # Process request concurrently to avoid blocking the queue
+                asyncio.create_task(self._handle_single_request(request_id, text, options, request_type))
+                        
+            except Exception as e:
+                logger.error(f"Queue processing error: {e}")
+                await asyncio.sleep(1)
+                
+    async def _handle_single_request(self, request_id: str, text: str, options: Dict[str, Any], request_type: str):
+        """Handle a single request without blocking the queue"""
+        try:
+            # Process based on request type
+            if request_type == "group_switch":
+                # Group switches don't need model/analyzer loading
+                await self._process_group_switch_request(request_id, text, options)
+            else:
+                # Regular requests need model/analyzer
+                # Get model_id from options
+                model_id = options.get("model_id")
+                if not model_id:
+                    # Try to get default model if none specified
+                    model_id = await self.model_manager.get_default_model_id()
+                    if not model_id:
+                        request = self.queue.active_requests.get(request_id)
+                        if request:
+                            request["error"] = "No model specified and no default available"
+                            request["status"] = "failed"
+                        return
+                
+                # Get the analyzer for the specific model
+                try:
+                    analyzer = await self.model_manager.get_analyzer_for_model(model_id)
+                except Exception as e:
                     request = self.queue.active_requests.get(request_id)
                     if request:
-                        request["error"] = "No model loaded"
+                        request["error"] = f"Failed to load model {model_id}: {str(e)}"
                         request["status"] = "failed"
-                    continue
+                    return
                     
                 # Update request status
                 request = self.queue.active_requests.get(request_id)
@@ -151,16 +185,92 @@ class InferenceService:
                         logger.error(f"Error processing request {request_id}: {e}")
                         request["error"] = str(e)
                         request["status"] = "failed"
-                        
-            except Exception as e:
-                logger.error(f"Queue processing error: {e}")
-                await asyncio.sleep(1)
+                    
+        except Exception as e:
+            logger.error(f"Error handling request {request_id}: {e}")
+            request = self.queue.active_requests.get(request_id)
+            if request:
+                request["error"] = str(e)
+                request["status"] = "failed"
+                
+    async def _process_group_switch_request(self, request_id: str, target_group_id: str, options: Dict[str, Any]):
+        """Process a group switch request"""
+        request = self.queue.active_requests[request_id]
+        websocket = options.get("websocket")
+        model_id = options.get("model_id")
+        
+        try:
+            logger.info(f"Processing group switch request {request_id} to group {target_group_id}")
+            
+            request["status"] = "processing"
+            request["started_at"] = datetime.utcnow()
+            
+            # Notify user that switch is starting
+            if websocket:
+                await self.queue._send_websocket_update(
+                    websocket,
+                    {
+                        "type": "group_switch_starting",
+                        "request_id": request_id,
+                        "target_group_id": target_group_id,
+                        "model_id": model_id
+                    }
+                )
+            
+            # Perform the group switch through the model manager
+            # This will trigger the _switch_to_group which handles all the heavy lifting
+            await self.model_manager._switch_to_group(target_group_id)
+            
+            request["status"] = "completed"
+            request["completed_at"] = datetime.utcnow()
+            request["processing_time"] = (request["completed_at"] - request["started_at"]).total_seconds()
+            
+            # Get model info for the target model
+            model_info = self.model_manager.get_model_info(model_id) if model_id else {}
+            
+            # Notify completion
+            if websocket:
+                await self.queue._send_websocket_update(
+                    websocket,
+                    {
+                        "type": "model_switch_complete",
+                        "request_id": request_id,
+                        "model_id": model_id,
+                        "target_group_id": target_group_id,
+                        "message": f"Switched to group {target_group_id}",
+                        "model_info": model_info,
+                        "generation_config": model_info.get("generation_config", {})
+                    }
+                )
+                
+        except Exception as e:
+            logger.error(f"Group switch error for request {request_id}: {e}")
+            request["error"] = str(e)
+            request["status"] = "failed"
+            request["completed_at"] = datetime.utcnow()
+            
+            if websocket:
+                await self.queue._send_websocket_update(
+                    websocket,
+                    {
+                        "type": "model_switch_error",
+                        "request_id": request_id,
+                        "model_id": model_id,
+                        "error": str(e)
+                    }
+                )
                 
     async def _process_analysis_request(self, request_id: str, text: str, options: Dict[str, Any]):
         """Process an analysis request"""
         request = self.queue.active_requests[request_id]
         websocket = options.get("websocket")
-        analyzer = await self.model_manager.get_analyzer()
+        
+        # Get model_id and analyzer
+        model_id = options.get("model_id")
+        if not model_id:
+            model_id = await self.model_manager.get_default_model_id()
+            
+        analyzer = await self.model_manager.get_analyzer_for_model(model_id)
         
         try:
             # Log the request
@@ -172,14 +282,15 @@ class InferenceService:
             # Parse chat format if applicable
             text_to_analyze = text
             if options.get("use_chat_format", False):
-                text_to_analyze = await self._parse_chat_format(text)
+                text_to_analyze = await self._parse_chat_format(text, model_id)
                 
-            # Get batch size based on current model
+            # Get batch size based on model
             batch_size = options.get("batch_size")
             if batch_size is None:
                 optimize_config = options.get("optimize_explanations_config", {})
                 k_rollouts = optimize_config.get("best_of_k", 8)
-                auto_batch_max = self.model_manager.get_current_model_info().get(
+                model_info = self.model_manager.get_model_info(model_id)
+                auto_batch_max = model_info.get(
                     "auto_batch_size_max", self.settings.auto_batch_size_max
                 )
                 batch_size = max(1, auto_batch_max // k_rollouts)
@@ -254,16 +365,28 @@ class InferenceService:
                 raise
             
             # Get model info
-            model_info = self.model_manager.get_current_model_info()
+            model_info = self.model_manager.get_model_info(model_id)
+            
+            # Get donor model info
+            donor_model = model_info.get("donor_model", "Unknown")
+            
+            # Get best_of_k from options
+            optimize_config = options.get("optimize_explanations_config", {})
+            best_of_k = optimize_config.get("best_of_k", 8)
             
             # Complete the request
             request["result"] = {
                 "data": result_data,
                 "metadata": {
                     "model_id": model_info.get("model_id"),
-                    "model_name": model_info.get("display_name"),
+                    "encoder_decoder_model": model_info.get("display_name", "Unknown"),
+                    "shared_base_model": model_info.get("base_model", donor_model),
+                    "donor_model": donor_model,
+                    "layer": model_info.get("layer", "Unknown"),
                     "batch_size": batch_size,
-                    "checkpoint_path": str(self.model_manager.current_analyzer.checkpoint_path),
+                    "best_of_k": best_of_k,
+                    "temperature": options.get("temperature", 1.0),
+                    "checkpoint_path": model_info.get("checkpoint_path", "Unknown"),
                 }
             }
             request["status"] = "completed"
@@ -305,7 +428,13 @@ class InferenceService:
         """Process a generation request"""
         request = self.queue.active_requests[request_id]
         websocket = options.get("websocket")
-        analyzer = await self.model_manager.get_analyzer()
+        
+        # Get model_id and analyzer
+        model_id = options.get("model_id")
+        if not model_id:
+            model_id = await self.model_manager.get_default_model_id()
+            
+        analyzer = await self.model_manager.get_analyzer_for_model(model_id)
         
         try:
             logger.info(f"Processing generation request {request_id}")
@@ -331,19 +460,29 @@ class InferenceService:
                             raise ValueError("Input text too large (max 1MB)")
                         
                         # Try to parse as JSON string
-                        # First attempt: direct parsing (handles most cases including escaped newlines)
-                        try:
-                            messages = json.loads(text)
-                        except json.JSONDecodeError:
-                            # Second attempt: Try to evaluate as Python literal if it looks like one
-                            # This handles triple quotes and other Python syntax
+                        # First check if it looks like JSON (starts with [ or {)
+                        text_stripped = text.strip()
+                        if text_stripped.startswith('[') or text_stripped.startswith('{'):
+                            # Try to parse as JSON
                             try:
-                                messages = ast.literal_eval(text)
-                            except (ValueError, SyntaxError):
-                                # Third attempt: handle literal newlines by escaping them
-                                # This handles cases where users paste JSON with actual newlines
-                                cleaned_text = text.replace("\n", "\\n").replace("\r", "\\r")
-                                messages = json.loads(cleaned_text)
+                                messages = json.loads(text)
+                            except json.JSONDecodeError:
+                                # Try to evaluate as Python literal if it looks like one
+                                try:
+                                    messages = ast.literal_eval(text)
+                                except (ValueError, SyntaxError):
+                                    # Try handling literal newlines
+                                    cleaned_text = text.replace("\n", "\\n").replace("\r", "\\r")
+                                    try:
+                                        messages = json.loads(cleaned_text)
+                                    except:
+                                        # If all JSON parsing fails, treat as plain text
+                                        logger.info("JSON parsing failed, converting plain text to chat format")
+                                        messages = [{"role": "user", "content": text}]
+                        else:
+                            # Plain text - convert to chat format
+                            logger.info(f"Converting plain text to chat format: {text[:100]}...")
+                            messages = [{"role": "user", "content": text}]
                         
                         # Validate structure: should be a list of dicts with 'role' and 'content'
                         if not isinstance(messages, list):
@@ -356,12 +495,13 @@ class InferenceService:
                     
                     # Use messages directly - generate_continuation will handle chat formatting
                     prompt = messages
+                    logger.info(f"Using chat format with {len(messages)} messages")
                 except Exception as e:
                     # Catch any parsing or validation errors
-                    logger.warning(f"Failed to parse chat format: {e}")
-                    # Fall back to using as regular text
-                    prompt = text
-                    is_chat = False
+                    logger.warning(f"Failed to process chat format: {e}")
+                    # Convert plain text to chat format as fallback
+                    prompt = [{"role": "user", "content": text}]
+                    logger.info("Falling back to single user message format")
             else:
                 prompt = text
                 
@@ -371,7 +511,7 @@ class InferenceService:
             max_new_tokens = options.get("num_tokens") or options.get("max_new_tokens", 50)
             
             # Get model's default generation config if not provided
-            model_info = self.model_manager.get_current_model_info()
+            model_info = self.model_manager.get_model_info(model_id)
             gen_config = model_info.get("generation_config", {})
             
             temperature = options.get("temperature", gen_config.get("temperature", 0.8))
@@ -379,6 +519,11 @@ class InferenceService:
             
             # Run generation in executor
             loop = asyncio.get_event_loop()
+            
+            # Log prompt information
+            logger.info(f"Generation request - is_chat: {is_chat}, prompt type: {type(prompt)}")
+            if is_chat and isinstance(prompt, list):
+                logger.info(f"Chat messages: {prompt}")
             
             # Build generation kwargs
             generation_kwargs = {
@@ -392,8 +537,13 @@ class InferenceService:
             }
             
             # Add chat tokenizer if available and needed
-            if is_chat and self.model_manager.chat_tokenizer:
-                generation_kwargs["chat_tokenizer"] = self.model_manager.chat_tokenizer
+            if is_chat:
+                chat_tokenizer = self.model_manager.get_chat_tokenizer_for_model(model_id)
+                if chat_tokenizer:
+                    generation_kwargs["chat_tokenizer"] = chat_tokenizer
+                    logger.info(f"Using chat tokenizer: {type(chat_tokenizer)}")
+                else:
+                    logger.warning("Chat format requested but no chat tokenizer available")
             
             completions = await loop.run_in_executor(
                 None,
@@ -403,7 +553,7 @@ class InferenceService:
             logger.info(f"Generated {len(completions)} completions for request {request_id}")
             
             # Get model info
-            model_info = self.model_manager.get_current_model_info()
+            model_info = self.model_manager.get_model_info(model_id)
             
             # Complete the request
             request["result"] = {
@@ -451,14 +601,45 @@ class InferenceService:
                     }
                 )
                 
-    async def _parse_chat_format(self, text: str) -> str:
-        """Parse chat format to extract the last user message"""
-        # This is a simplified version - you may need to adapt based on your chat format
-        # and tokenizer requirements
+    async def _parse_chat_format(self, text: str, model_id: str) -> str:
+        """Parse chat format and apply chat template for analysis"""
         try:
-            # For now, just return the text as-is
-            # In the full implementation, this would use the chat tokenizer
-            return text
+            import json
+            
+            # First check if it's already JSON chat format
+            text_stripped = text.strip()
+            messages = None
+            
+            if text_stripped.startswith('[') or text_stripped.startswith('{'):
+                # Try to parse as JSON
+                try:
+                    messages = json.loads(text)
+                    if not isinstance(messages, list):
+                        messages = None
+                except:
+                    messages = None
+            
+            # If not JSON or parsing failed, convert plain text to chat format
+            if messages is None:
+                logger.info(f"Converting plain text to chat format for analysis: {text[:100]}...")
+                messages = [{"role": "user", "content": text}]
+            
+            # Get chat tokenizer for the model
+            chat_tokenizer = self.model_manager.get_chat_tokenizer_for_model(model_id)
+            if chat_tokenizer and hasattr(chat_tokenizer, 'apply_chat_template'):
+                # Apply chat template to get the formatted text
+                logger.info(f"Applying chat template to {len(messages)} messages")
+                formatted_text = chat_tokenizer.apply_chat_template(
+                    messages, 
+                    tokenize=False, 
+                    add_generation_prompt=True
+                )
+                logger.info(f"Chat template applied, output length: {len(formatted_text)}")
+                return formatted_text
+            else:
+                logger.warning("No chat tokenizer available, returning original text")
+                return text
+                
         except Exception as e:
-            logger.warning(f"Failed to parse chat format: {e}")
+            logger.warning(f"Failed to parse chat format: {e}", exc_info=True)
             return text
