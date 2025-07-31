@@ -37,10 +37,30 @@ from .models import AnalyzeRequest
 from .websocket import manager
 from . import api_grouped
 
+
+# Custom logging filter to suppress GPU stats access logs
+class SuppressGPUStatsFilter(logging.Filter):
+    def filter(self, record):
+        # Suppress uvicorn access logs for /api/gpu_stats endpoint
+        if hasattr(record, 'args') and record.args:
+            # Check if this is a uvicorn access log
+            if len(record.args) >= 3 and '/api/gpu_stats' in str(record.args[1]):
+                return False
+        # Also check the message directly
+        if record.getMessage and '/api/gpu_stats' in record.getMessage():
+            return False
+        return True
+
+
 # Configure logging with timestamps
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
 )
+
+# Add filter to uvicorn access logger
+uvicorn_access_logger = logging.getLogger("uvicorn.access")
+uvicorn_access_logger.addFilter(SuppressGPUStatsFilter())
+
 logger = logging.getLogger(__name__)
 
 logger.info(f"Loaded .env from {dotenv_location}")

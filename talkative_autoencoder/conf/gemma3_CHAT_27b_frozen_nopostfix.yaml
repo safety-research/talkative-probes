@@ -230,6 +230,7 @@ dataset:
     samples_per_regeneration_cycle: 10000
     training_initial_cache_size_per_rank: ${dataset.on_the_fly.samples_per_regeneration_cycle}
     max_val_samples: 50000 # this is used
+    filter_large_norms: true
 
   validation_samples_override: 50000
   train_split: "train"

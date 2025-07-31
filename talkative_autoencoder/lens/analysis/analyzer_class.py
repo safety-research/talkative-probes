@@ -267,7 +267,7 @@ class LensAnalyzer:
                             )
                         print(f"Loading adapter {diff_model_str} into {different_activations_model}")
                         different_activations_model.load_adapter(diff_model_str)
-                    elif "ModelOrganismsForEM" in diff_model_str:
+                    elif "ModelOrganismsForEM" in diff_model_str and "full-ft" not in diff_model_str:
                         print("Loading with adapter")
                         different_activations_model = AutoModelForCausalLM.from_pretrained(
                             "Qwen/Qwen2.5-14B-Instruct",
