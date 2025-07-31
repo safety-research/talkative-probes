@@ -659,6 +659,12 @@ const createGenerationTabs = () => {
 const switchGeneration = (index) => {
     if (index < 0 || index >= state.generations.length) return;
     
+    // Don't switch to pending generations
+    if (state.generations[index].status === 'pending') {
+        console.log('Cannot switch to pending generation');
+        return;
+    }
+    
     state.currentGenerationIndex = index;
     state.allTranscripts = state.generations[index].transcripts;
     state.currentTranscriptIndex = 0;
@@ -1093,10 +1099,21 @@ const handleWebSocketMessage = (data) => {
                 context: data.context || 'analysis'
             };
             
-            // Update pending generation with request ID
-            const pendingGen = state.generations.find(gen => gen.status === 'pending' && !gen.request_id);
-            if (pendingGen) {
-                pendingGen.request_id = data.request_id;
+            // Update pending generation with server request ID
+            if (data.client_request_id) {
+                // Match by client_request_id (most reliable)
+                const pendingGen = state.generations.find(gen => 
+                    gen.status === 'pending' && gen.client_request_id === data.client_request_id
+                );
+                if (pendingGen) {
+                    pendingGen.request_id = data.request_id;
+                }
+            } else {
+                // Fallback to old behavior (less reliable)
+                const pendingGen = state.generations.find(gen => gen.status === 'pending' && !gen.request_id);
+                if (pendingGen) {
+                    pendingGen.request_id = data.request_id;
+                }
             }
             
             const queueContext = data.context || 'analysis';
@@ -1167,7 +1184,7 @@ const handleWebSocketMessage = (data) => {
             if (data.request_id && state.activeRequests) {
                 delete state.activeRequests[data.request_id];
             }
-            processResults(data.result, data.request_id);
+            processResults(data.result, data.request_id, data.client_request_id);
             break;
             
         case 'error':
@@ -1182,7 +1199,16 @@ const handleWebSocketMessage = (data) => {
             }
             
             // Remove pending generation if error occurs
-            const pendingIdx = state.generations.findIndex(gen => gen.status === 'pending');
+            let pendingIdx = -1;
+            if (data.request_id) {
+                // Find by request_id first
+                pendingIdx = state.generations.findIndex(gen => gen.status === 'pending' && gen.request_id === data.request_id);
+            }
+            if (pendingIdx === -1) {
+                // Fallback to any pending (less safe)
+                pendingIdx = state.generations.findIndex(gen => gen.status === 'pending');
+            }
+            
             if (pendingIdx !== -1) {
                 state.generations.splice(pendingIdx, 1);
                 if (state.currentGenerationIndex >= state.generations.length && state.generations.length > 0) {
@@ -1239,7 +1265,7 @@ const handleWebSocketMessage = (data) => {
                 delete state.activeRequests[data.request_id];
             }
             
-            processResults(data.result, data.request_id);
+            processResults(data.result, data.request_id, data.client_request_id);
             break;
             
         case 'generation_error':
@@ -1267,6 +1293,22 @@ const handleWebSocketMessage = (data) => {
             if (data.request_id && state.activeRequests) {
                 delete state.activeRequests[data.request_id];
             }
+            
+            // Remove the cancelled pending generation
+            if (data.request_id && interruptContext === 'analysis') {
+                const cancelledIdx = state.generations.findIndex(gen => 
+                    gen.status === 'pending' && gen.request_id === data.request_id
+                );
+                if (cancelledIdx !== -1) {
+                    state.generations.splice(cancelledIdx, 1);
+                    if (state.currentGenerationIndex >= state.generations.length && state.generations.length > 0) {
+                        state.currentGenerationIndex = state.generations.length - 1;
+                        switchGeneration(state.currentGenerationIndex);
+                    }
+                    createGenerationTabs();
+                }
+            }
+            
             showError(`${interruptContext === 'generation' ? 'Generation' : 'Analysis'} interrupted by user`);
             
             // Re-enable buttons
@@ -1332,6 +1374,24 @@ const interruptComputation = (context) => {
     }
 };
 
+// Interrupt a specific request
+const interruptSpecificRequest = (requestId, context) => {
+    console.log(`Interrupting ${context} for specific request:`, requestId);
+    
+    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+        state.ws.send(JSON.stringify({
+            type: 'interrupt',
+            request_id: requestId,
+            context: context
+        }));
+        
+        // Update UI immediately if this is the current request
+        if (requestId === state.currentRequestId) {
+            showLoading(true, 'Interrupting...', null, context, false);
+        }
+    }
+};
+
 // Analysis functions
 const analyze = () => {
     const text = elements.inputText.value.trim();
@@ -1374,12 +1434,16 @@ const analyze = () => {
     // Show initial loading state
     showLoading(true, 'Preparing analysis...', null, 'analysis');
     
+    // Generate a unique client-side ID for this request
+    const clientRequestId = `client_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
     // Add a pending generation tab to show the analysis is queued
     const pendingGeneration = {
         transcripts: [],
         timestamp: new Date(),
         status: 'pending',
-        text: text.substring(0, 50) + (text.length > 50 ? '...' : '') // Store preview of text
+        text: text.substring(0, 50) + (text.length > 50 ? '...' : ''), // Store preview of text
+        client_request_id: clientRequestId // Store our client-generated ID
     };
     state.generations.push(pendingGeneration);
     createGenerationTabs();
@@ -1454,7 +1518,8 @@ const analyze = () => {
     const requestData = {
         type: 'analyze',
         text: textToSend,
-        options: options
+        options: options,
+        client_request_id: clientRequestId // Include our client-generated ID
     };
     
     // Add model_id if we have a selected model
@@ -1620,8 +1685,8 @@ const handleGenerationResult = (result) => {
 };
 
 // Process results
-const processResults = (result, requestId = null) => {
-    console.log('Processing results:', result, 'with requestId:', requestId);
+const processResults = (result, requestId = null, clientRequestId = null) => {
+    console.log('Processing results:', result, 'with requestId:', requestId, 'clientRequestId:', clientRequestId);
     console.log('Result data length:', result?.data?.length);
     console.log('Current allTranscripts before processing:', state.allTranscripts.length);
     
@@ -1657,13 +1722,35 @@ const processResults = (result, requestId = null) => {
     
     // Find if there's a pending generation to replace
     let pendingIndex = -1;
-    if (requestId) {
-        // Try to find by request_id first
-        pendingIndex = state.generations.findIndex(gen => gen.status === 'pending' && gen.request_id === requestId);
+    
+    console.log('Looking for pending generation to replace. Current generations:', 
+        state.generations.map((g, i) => ({
+            index: i,
+            status: g.status,
+            client_request_id: g.client_request_id,
+            request_id: g.request_id
+        }))
+    );
+    console.log('Incoming IDs - requestId:', requestId, 'clientRequestId:', clientRequestId);
+    
+    if (clientRequestId) {
+        // Try to find by client_request_id first (most reliable)
+        pendingIndex = state.generations.findIndex(gen => gen.status === 'pending' && gen.client_request_id === clientRequestId);
+        console.log('Found by client_request_id:', pendingIndex);
     }
+    if (pendingIndex === -1 && requestId) {
+        // Try to find by server request_id
+        pendingIndex = state.generations.findIndex(gen => gen.status === 'pending' && gen.request_id === requestId);
+        console.log('Found by request_id:', pendingIndex);
+    }
+    
+    // No fallback - if we can't find the right pending generation, log an error
     if (pendingIndex === -1) {
-        // Fallback to finding any pending generation
-        pendingIndex = state.generations.findIndex(gen => gen.status === 'pending');
+        console.error('Could not find pending generation for result. IDs:', {
+            clientRequestId,
+            requestId,
+            pendingGenerations: state.generations.filter(g => g.status === 'pending')
+        });
     }
     
     if (pendingIndex !== -1) {
@@ -1674,7 +1761,12 @@ const processResults = (result, requestId = null) => {
             timestamp: new Date(),
             status: 'complete'
         };
-        state.currentGenerationIndex = pendingIndex;
+        
+        // Only switch to the new generation if we're currently viewing a pending one
+        // or if this is the first analysis
+        if (state.generations.length === 1 || state.generations[state.currentGenerationIndex]?.status === 'pending') {
+            state.currentGenerationIndex = pendingIndex;
+        }
     } else if (state.generations.length > 0) {
         // No pending generation, add as new (shouldn't happen with new flow)
         console.log('Adding new analysis as generation', state.generations.length + 1);
@@ -1695,9 +1787,14 @@ const processResults = (result, requestId = null) => {
         state.currentGenerationIndex = 0;
     }
     
-    // Set transcripts to the new analysis
-    state.allTranscripts = [transcript];
-    state.currentTranscriptIndex = 0;
+    // Update the current view to show the new analysis
+    if (pendingIndex === state.currentGenerationIndex || 
+        state.generations.length === 1 || 
+        state.generations[state.currentGenerationIndex]?.status === 'pending') {
+        // We're viewing this generation, update the transcripts
+        state.allTranscripts = [transcript];
+        state.currentTranscriptIndex = 0;
+    }
     
     console.log('State updated from:', previousState, 'to:', {
         allTranscripts: state.allTranscripts,

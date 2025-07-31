@@ -442,15 +442,17 @@ class InferenceService:
             # Send completion via WebSocket
             if websocket:
                 logger.info(f"Sending completion message via WebSocket for request {request_id}")
-                await self.queue._send_websocket_update(
-                    websocket,
-                    {
-                        "type": "completed",
-                        "request_id": request_id,
-                        "result": request["result"],
-                        "context": "analysis"
-                    }
-                )
+                response = {
+                    "type": "completed",
+                    "request_id": request_id,
+                    "result": request["result"],
+                    "context": "analysis"
+                }
+                # Include client_request_id if provided
+                if "client_request_id" in request.get("options", {}):
+                    response["client_request_id"] = request["options"]["client_request_id"]
+                    
+                await self.queue._send_websocket_update(websocket, response)
                 
         except Exception as e:
             logger.error(f"Analysis error for request {request_id}: {e}")
@@ -458,15 +460,17 @@ class InferenceService:
             request["status"] = "failed"
             
             if websocket:
-                await self.queue._send_websocket_update(
-                    websocket,
-                    {
-                        "type": "error",
-                        "request_id": request_id,
-                        "error": str(e),
-                        "context": "analysis"
-                    }
-                )
+                response = {
+                    "type": "error",
+                    "request_id": request_id,
+                    "error": str(e),
+                    "context": "analysis"
+                }
+                # Include client_request_id if provided
+                if "client_request_id" in request.get("options", {}):
+                    response["client_request_id"] = request["options"]["client_request_id"]
+                    
+                await self.queue._send_websocket_update(websocket, response)
                 
     async def _process_generation_request(self, request_id: str, text: str, options: Dict[str, Any]):
         """Process a generation request"""

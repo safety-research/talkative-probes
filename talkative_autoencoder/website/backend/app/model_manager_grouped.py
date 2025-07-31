@@ -61,8 +61,11 @@ class GroupedModelManager:
         self.base_model_locations: Dict[str, str] = {}  # group_id -> 'cuda' or 'cpu'
         self.model_last_used: Dict[str, datetime] = {}  # model_id -> last used time
 
-        # Memory management
-        self.max_cpu_groups = getattr(settings, 'max_cpu_cached_models', 2)
+        # Memory management - use setting with override support
+        from .config import Settings
+        config_with_overrides = Settings.get_model_config_with_overrides({"settings": self.config_settings})
+        self.max_cpu_groups = config_with_overrides.get('max_cpu_models', 
+                                                        getattr(settings, 'max_cpu_cached_models', 2))
         self.group_usage_order: List[str] = []  # LRU tracking
 
         # Chat tokenizers
@@ -186,6 +189,23 @@ class GroupedModelManager:
         if model_id in self.lens_cache:
             generation_config = self._get_generation_config_for_model(model_id)
         
+        # Get configuration with environment variable overrides
+        from .config import Settings
+        config_with_overrides = Settings.get_model_config_with_overrides(
+            {"settings": self.config_settings},
+            model_id=model_id.replace('-', '_'),
+            group_id=group_id.replace('-', '_')
+        )
+        
+        # Get batch_size and auto_batch_size_max with override support
+        batch_size = model_config.get("batch_size")
+        if batch_size is None:
+            batch_size = config_with_overrides.get("batch_size", 32)
+            
+        auto_batch_size_max = model_config.get("auto_batch_size_max")
+        if auto_batch_size_max is None:
+            auto_batch_size_max = config_with_overrides.get("auto_batch_size_max", 512)
+        
         return {
             "model_id": model_id,
             "group_id": group_id,
@@ -193,8 +213,8 @@ class GroupedModelManager:
             "display_name": model_config["name"],
             "description": model_config.get("description", ""),
             "layer": model_config.get("layer", 30),
-            "batch_size": model_config.get("batch_size", self.settings.batch_size),
-            "auto_batch_size_max": model_config.get("auto_batch_size_max", self.settings.auto_batch_size_max),
+            "batch_size": batch_size,
+            "auto_batch_size_max": auto_batch_size_max,
             "base_model": group_config.base_model_path,
             "donor_model": donor_model_name,
             "donor_model_path": donor_model_path,
@@ -360,16 +380,29 @@ class GroupedModelManager:
             logger.info(f"  - shared_base_model: {type(shared_base)}")
             logger.info(f"  - different_activations_orig: {orig_model_path} (type: {type(orig_model)})")
             
+            # Get configuration with environment variable overrides
+            from .config import Settings
+            config_with_overrides = Settings.get_model_config_with_overrides(
+                {"settings": self.config_settings}, 
+                model_id=model_id.replace('-', '_'),  # Convert hyphens to underscores for env vars
+                group_id=group_id.replace('-', '_')
+            )
+            
             # If we have a different donor model, we can't use no_orig
-            no_orig = self.config_settings.get("no_orig", True) and not orig_model_path
+            no_orig = config_with_overrides.get("no_orig", True) and not orig_model_path
+            
+            # Use model-specific batch_size if provided, otherwise use overrides or defaults
+            batch_size = model_config.get("batch_size")
+            if batch_size is None:
+                batch_size = config_with_overrides.get("batch_size", 32)
             
             return LensAnalyzer(
                 model_config["lens_checkpoint_path"],
                 device=self.settings.device,
-                batch_size=model_config.get("batch_size", self.settings.batch_size),
-                use_bf16=self.config_settings.get("use_bf16", True),
+                batch_size=batch_size,
+                use_bf16=config_with_overrides.get("use_bf16", True),
                 strict_load=False,
-                comparison_tl_checkpoint=self.config_settings.get("comparison_tl_checkpoint", False),
+                comparison_tl_checkpoint=config_with_overrides.get("comparison_tl_checkpoint", False),
                 do_not_load_weights=False,
                 make_xl=False,
                 no_orig=no_orig,
@@ -472,17 +505,30 @@ class GroupedModelManager:
             else:
                 # Pass the path and let LensAnalyzer load it
                 orig_model = orig_model_path
+            
+            # Get configuration with environment variable overrides
+            from .config import Settings
+            config_with_overrides = Settings.get_model_config_with_overrides(
+                {"settings": self.config_settings},
+                model_id=model_id.replace('-', '_'),
+                group_id=group_id.replace('-', '_')
+            )
                 
             # If we have a different donor model, we can't use no_orig
-            no_orig = self.config_settings.get("no_orig", True) and not orig_model_path
+            no_orig = config_with_overrides.get("no_orig", True) and not orig_model_path
+            
+            # Use model-specific batch_size if provided, otherwise use overrides or defaults
+            batch_size = model_config.get("batch_size")
+            if batch_size is None:
+                batch_size = config_with_overrides.get("batch_size", 32)
             
             analyzer = LensAnalyzer(
                 model_config["lens_checkpoint_path"],
                 device=self.settings.device,
-                batch_size=model_config.get("batch_size", self.settings.batch_size),
-                use_bf16=self.config_settings.get("use_bf16", True),
+                batch_size=batch_size,
+                use_bf16=config_with_overrides.get("use_bf16", True),
                 strict_load=False,
-                comparison_tl_checkpoint=self.config_settings.get("comparison_tl_checkpoint", False),
+                comparison_tl_checkpoint=config_with_overrides.get("comparison_tl_checkpoint", False),
                 do_not_load_weights=False,
                 make_xl=False,
                 no_orig=no_orig,

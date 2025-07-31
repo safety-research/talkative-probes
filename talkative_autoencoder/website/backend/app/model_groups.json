@@ -154,7 +154,8 @@
     "estimated_gpu_memory": {
       "gemma2-9b-it": "20GB",
       "gemma3-27b-it": "50GB",
-      "qwen2.5-14b": "30GB"
+      "qwen2.5-14b": "30GB",
+      "qwen2.5-14b-EM": "55GB"
     }
   }
 }

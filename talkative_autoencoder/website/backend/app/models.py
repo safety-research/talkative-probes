@@ -22,7 +22,8 @@ class AnalyzeOptions(BaseModel):
     """Options for text analysis"""
 
     # Main batch size - will be auto-calculated based on best_of_k if not provided
-    batch_size: int | None = Field(default=None, ge=1, le=settings.auto_batch_size_max)
+    # Note: max value validation removed - now handled dynamically per model
+    batch_size: int | None = Field(default=None, ge=1)
 
     # Core analysis options
     seed: int = Field(default=42)

@@ -210,9 +210,13 @@ async def lifespan(app: FastAPI):
 
         # Optionally preload groups on startup
         if not settings.lazy_load_model and grouped_model_manager:
-            # Check if we should preload all groups from the config
-            preload_all = grouped_model_manager.config_settings.get('preload_groups', False)
-            default_group = grouped_model_manager.config_settings.get('default_group', 'gemma3-27b-it')
+            # Check if we should preload all groups from the config with env overrides
+            from .config import Settings
+            config_with_overrides = Settings.get_model_config_with_overrides(
+                {"settings": grouped_model_manager.config_settings}
+            )
+            preload_all = config_with_overrides.get('preload_groups', False)
+            default_group = config_with_overrides.get('default_group', 'gemma3-27b-it')
             
             if preload_all:
                 logger.info("Preloading all groups on startup")
@@ -407,7 +411,7 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.send_json({
             "type": "connection_established",
             "message": "Connected to inference server",
-            "auto_batch_size_max": settings.auto_batch_size_max,
+            # Note: auto_batch_size_max is now model-specific, see model info
         })
         
         # If a group switch is in progress, notify the new client
@@ -432,7 +436,7 @@ async def websocket_endpoint(websocket: WebSocket):
         await websocket.send_json({
             "type": "connection_established",
             "message": "Connected to inference server (legacy mode)",
-            "auto_batch_size_max": settings.auto_batch_size_max,
+            "auto_batch_size_max": getattr(settings, 'auto_batch_size_max', 512),  # Legacy default
         })
 
     # Send initial queue status
@@ -500,21 +504,28 @@ async def websocket_endpoint(websocket: WebSocket):
                 if "model_id" in data:
                     options["model_id"] = data["model_id"]
                 
+                # Include client_request_id if provided
+                if "client_request_id" in data:
+                    options["client_request_id"] = data["client_request_id"]
+                
                 request_id = await inference_service.queue.add_request(data["text"], options)
 
                 # Get actual position in queue
                 position = inference_service.queue.get_position_in_queue(request_id)
                 stats = inference_service.queue.get_queue_stats()
 
-                await websocket.send_json(
-                    {
-                        "type": "queued",
-                        "request_id": request_id,
-                        "queue_position": position,
-                        "queue_size": stats["queue_size"],
-                        "context": "analysis",
-                    }
-                )
+                response = {
+                    "type": "queued",
+                    "request_id": request_id,
+                    "queue_position": position,
+                    "queue_size": stats["queue_size"],
+                    "context": "analysis",
+                }
+                # Include client_request_id if provided
+                if "client_request_id" in options:
+                    response["client_request_id"] = options["client_request_id"]
+                
+                await websocket.send_json(response)
 
             elif data["type"] == "status":
                 request_id = data.get("request_id")
@@ -834,7 +845,13 @@ async def websocket_endpoint(websocket: WebSocket):
                         logger.info(f"Interrupt requested for {context} request: {request_id}")
 
                         # Send confirmation
-                        await websocket.send_json({"type": "interrupted", "request_id": request_id, "context": context})
+                        response = {"type": "interrupted", "request_id": request_id, "context": context}
+                        
+                        # Include client_request_id if available in the request
+                        if "options" in request and "client_request_id" in request["options"]:
+                            response["client_request_id"] = request["options"]["client_request_id"]
+                            
+                        await websocket.send_json(response)
                     else:
                         await websocket.send_json(
                             {
