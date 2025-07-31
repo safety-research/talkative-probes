@@ -1091,7 +1091,11 @@ const handleWebSocketMessage = (data) => {
             break;
             
         case 'queued':
-            state.currentRequestId = data.request_id;
+            // Don't overwrite currentRequestId - we support multiple concurrent requests
+            // Only set it if we don't have one (for backwards compatibility)
+            if (!state.currentRequestId) {
+                state.currentRequestId = data.request_id;
+            }
             // Store position info for later use in queue updates
             if (!state.activeRequests) state.activeRequests = {};
             state.activeRequests[data.request_id] = {
@@ -1169,11 +1173,7 @@ const handleWebSocketMessage = (data) => {
                 state.loadingTimeout = null;
             }
             console.log('Received result from WebSocket:', data);
-            // Check if this result is for the current request
-            if (data.request_id && state.currentRequestId && data.request_id !== state.currentRequestId) {
-                console.log('Ignoring result for old request:', data.request_id, 'current:', state.currentRequestId);
-                return;
-            }
+            // Don't check against currentRequestId - we handle multiple analyses now
             // Check if result has valid data
             if (!data.result || !data.result.data || data.result.data.length === 0) {
                 console.error('Received empty or invalid result:', data.result);
@@ -1249,11 +1249,7 @@ const handleWebSocketMessage = (data) => {
                 clearTimeout(state.loadingTimeout);
                 state.loadingTimeout = null;
             }
-            // Check if this result is for the current request
-            if (data.request_id && state.currentRequestId && data.request_id !== state.currentRequestId) {
-                console.log('Ignoring result for old request:', data.request_id, 'current:', state.currentRequestId);
-                return;
-            }
+            // Don't check against currentRequestId - we handle multiple analyses now
             // Check if result has valid data
             if (!data.result || !data.result.data || data.result.data.length === 0) {
                 console.error('Received empty or invalid result:', data.result);
