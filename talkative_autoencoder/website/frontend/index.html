@@ -32,7 +32,7 @@
                     <div class="flex-1">
                         <h1 class="text-3xl font-bold text-[#5D4037] mb-2">Natural language autoencoder analysis</h1>
                         <p class="text-[#795548]">Understand what language models are thinking by converting their internal states into human-readable explanations</p>
-                        <p class="text-[#795548]">Then share your explanations with a link from the Share/Export tab!</p>
+                        <p class="text-[#795548]">Then share your explanations with a link from the Share/Export tab.</p>
                     </div>
                     <!-- GPU Stats -->
                     <div id="gpu-stats" class="ml-6 p-3 bg-gray-50 rounded-lg border border-gray-200 min-w-[200px] hidden">
@@ -471,6 +471,14 @@
                         + New Analysis
                     </button>
                 </div>
+                
+                <!-- Top Navigation for tabs -->
+                <div id="top-tab-navigation" class="mb-4 flex items-center justify-center gap-4 hidden">
+                    <button id="top-tab-prev-btn" class="px-4 py-2 secondary-btn shadow-sm">&lt; Prev</button>
+                    <span id="top-tab-counter" class="font-semibold text-[#5D4037]"></span>
+                    <button id="top-tab-next-btn" class="px-4 py-2 secondary-btn shadow-sm">Next &gt;</button>
+                </div>
+                
                 <div class="border-b border-gray-200">
                     <nav class="-mb-px flex space-x-4" id="tabNavigation">
                         <!-- Tabs will be added dynamically -->
@@ -500,36 +508,55 @@
                 </div>
             </div>
 
-            <!-- Visualization -->
-            <div id="output-container">
-                <h2 class="text-2xl font-semibold my-4 text-[#5D4037]">Visualization</h2>
-                <p class="text-sm text-gray-600 mb-4">Note: The NLAE is never trained on tokens 0-5.</p>
-                <div id="output-container-wrapper" class="relative">
-                    <!-- Side navigation buttons -->
-                    <button id="side-prev-btn" class="absolute left-0 top-0 h-full w-6 bg-transparent hover:bg-slate-200/50 z-20 transition-colors cursor-pointer border-none p-0 hidden group flex items-center justify-center rounded-l-lg">
-                        <svg class="w-5 h-5 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
-                    </button>
-                    
-                    <div id="output-inner-wrapper" class="overflow-x-auto w-full">
-                        <p id="output-placeholder" class="text-slate-500 text-center mt-16">Your analysis results will appear here.</p>
-                        <table id="output-table" class="min-w-full hidden">
-                            <thead id="table-head"></thead>
-                            <tbody id="table-body"></tbody>
-                        </table>
-                        <div id="transposed-view" class="hidden"></div>
+            <!-- Visualization with Analysis Navigation -->
+            <div id="analysis-navigation-wrapper" class="relative">
+                <!-- Side navigation bars for switching between analyses -->
+                <button id="analysis-side-prev-btn" class="absolute left-0 top-0 h-full w-6 bg-transparent hover:bg-slate-200/50 z-30 transition-colors cursor-pointer border-none p-0 hidden group flex items-center justify-center">
+                    <svg class="w-5 h-5 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                </button>
+                
+                <button id="analysis-side-next-btn" class="absolute right-0 top-0 h-full w-6 bg-transparent hover:bg-slate-200/50 z-30 transition-colors cursor-pointer border-none p-0 hidden group flex items-center justify-center">
+                    <svg class="w-5 h-5 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                </button>
+                
+                <!-- Visualization -->
+                <div id="output-container">
+                    <h2 class="text-2xl font-semibold my-4 text-[#5D4037]">Visualization</h2>
+                    <p class="text-sm text-gray-600 mb-4">Note: The NLAE is never trained on tokens 0-5.</p>
+                    <div id="output-container-wrapper" class="relative">
+                        <!-- Side navigation buttons for transcripts -->
+                        <button id="side-prev-btn" class="absolute left-0 top-0 h-full w-6 bg-transparent hover:bg-slate-200/50 z-20 transition-colors cursor-pointer border-none p-0 hidden group flex items-center justify-center rounded-l-lg">
+                            <svg class="w-5 h-5 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                        </button>
+                        
+                        <div id="output-inner-wrapper" class="overflow-x-auto w-full">
+                            <p id="output-placeholder" class="text-slate-500 text-center mt-16">Your analysis results will appear here.</p>
+                            <table id="output-table" class="min-w-full hidden">
+                                <thead id="table-head"></thead>
+                                <tbody id="table-body"></tbody>
+                            </table>
+                            <div id="transposed-view" class="hidden"></div>
+                        </div>
+                        
+                        <button id="side-next-btn" class="absolute right-0 top-0 h-full w-6 bg-transparent hover:bg-slate-200/50 z-20 transition-colors cursor-pointer border-none p-0 hidden group flex items-center justify-center rounded-r-lg">
+                            <svg class="w-5 h-5 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                        </button>
                     </div>
-                    
-                    <button id="side-next-btn" class="absolute right-0 top-0 h-full w-6 bg-transparent hover:bg-slate-200/50 z-20 transition-colors cursor-pointer border-none p-0 hidden group flex items-center justify-center rounded-r-lg">
-                        <svg class="w-5 h-5 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
-                    </button>
                 </div>
             </div>
             
-            <!-- Bottom Navigation -->
+            <!-- Bottom Navigation (for transcripts within an analysis) -->
             <div id="bottom-navigation-container" class="mt-8 flex items-center justify-center gap-4 hidden">
                 <button id="bottom-prev-btn" class="px-4 py-2 secondary-btn shadow-sm">&lt; Prev</button>
                 <span id="bottom-nav-counter" class="font-semibold text-[#5D4037]"></span>
                 <button id="bottom-next-btn" class="px-4 py-2 secondary-btn shadow-sm">Next &gt;</button>
+            </div>
+            
+            <!-- Bottom Tab Navigation (for switching between analyses) -->
+            <div id="bottom-tab-navigation" class="mt-4 flex items-center justify-center gap-4 hidden">
+                <button id="bottom-tab-prev-btn" class="px-4 py-2 secondary-btn shadow-sm">&lt; Prev Analysis</button>
+                <span id="bottom-tab-counter" class="font-semibold text-[#5D4037]"></span>
+                <button id="bottom-tab-next-btn" class="px-4 py-2 secondary-btn shadow-sm">Next Analysis &gt;</button>
             </div>
         </div>
     </div>
@@ -537,6 +564,7 @@
     <script src="./visualizer-core.js"></script>
     <script src="./global-notifications.js"></script>
     <script src="./model-switcher.js"></script>
+    <script src="./model-switcher-grouped.js"></script>
     <script src="./app.js"></script>
 </body>
 </html>

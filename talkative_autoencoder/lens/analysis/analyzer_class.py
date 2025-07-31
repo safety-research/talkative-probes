@@ -244,6 +244,7 @@ class LensAnalyzer:
             self.encoder = Encoder(encoder_config_obj, base_to_use=self.shared_base_model)
             if isinstance(different_activations_orig, str) and different_activations_orig == self.model_name:
                 different_activations_orig = None
+                print("Different activations orig is the same as the model name, setting to None")
             if different_activations_orig is not None:
                 if isinstance(different_activations_orig, str):
                     diff_model_str = different_activations_orig
@@ -302,6 +303,7 @@ class LensAnalyzer:
                         if hasattr(different_activations_orig, "lora_name")
                         else None
                     )
+                    print(f"Different activations orig is a PEFT model, lora_name: {lora_name}")
                     diff_model_str = None
                 different_activations_model.eval()
                 self.orig_model = OrigWrapper(
@@ -319,6 +321,7 @@ class LensAnalyzer:
                     torch_dtype=self.model_dtype,
                 )
                 lora_name = None
+                print('No different activations model for origwrapper, using shared base model')
 
             self.lora_name = lora_name
             self.orig_model_name = "N/A"
@@ -2340,6 +2343,15 @@ class LensAnalyzer:
                     self.orig_model.model.device
                 )
 
+                # Remove duplicate BOS if present
+                if (
+                    hasattr(tokenizer, "bos_token_id")
+                    and input_ids.shape[1] >= 2
+                    and input_ids[0, 0].item() == tokenizer.bos_token_id
+                    and input_ids[0, 1].item() == tokenizer.bos_token_id
+                ):
+                    input_ids = input_ids[:, 1:]
+                    attention_mask = attention_mask[:, 1:]
             # Create batched input for multiple completions
             input_ids_batch = input_ids.repeat(num_completions, 1)
             attention_mask_batch = attention_mask.repeat(num_completions, 1)

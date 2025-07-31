@@ -42,10 +42,39 @@ class InferenceQueue:
         logger.info(f"Added {request_type} request {request_id} to queue (size: {self.queue.qsize()})")
         return request_id
         
+    async def add_group_switch_request(self, target_group_id: str, model_id: str, websocket=None) -> str:
+        """Add a group switch request with high priority"""
+        request_id = str(uuid.uuid4())
+        
+        request = {
+            "id": request_id,
+            "type": "group_switch",
+            "target_group_id": target_group_id,
+            "model_id": model_id,
+            "status": "queued",
+            "created_at": datetime.utcnow(),
+            "started_at": None,
+            "completed_at": None,
+            "result": None,
+            "error": None,
+        }
+        
+        self.active_requests[request_id] = request
+        
+        # Add to regular queue (no priority)
+        options = {"websocket": websocket, "target_group_id": target_group_id, "model_id": model_id}
+        await self.queue.put((request_id, target_group_id, options, "group_switch"))
+        
+        # Broadcast queue update
+        await self._broadcast_queue_update()
+        
+        logger.info(f"Added group switch request {request_id} to queue (position: {self.queue.qsize()})")
+        return request_id
+        
     async def get_next_request(self) -> Tuple[Optional[str], Optional[str], Optional[Dict], Optional[str]]:
         """Get the next request from the queue"""
         try:
-            # Use wait_for to avoid blocking indefinitely
+            # Just use the regular queue - no priority
             request_id, text, options, request_type = await asyncio.wait_for(
                 self.queue.get(),
                 timeout=1.0

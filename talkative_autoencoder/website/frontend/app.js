@@ -475,7 +475,21 @@ const elements = {
     fullTextPlaceholder: document.getElementById('full-text-placeholder'),
     columnExplanations: document.getElementById('column-explanations'),
     generationTabs: document.getElementById('generationTabs'),
-    tabNavigation: document.getElementById('tabNavigation')
+    tabNavigation: document.getElementById('tabNavigation'),
+    
+    // Tab navigation elements
+    topTabNavigation: document.getElementById('top-tab-navigation'),
+    topTabPrevBtn: document.getElementById('top-tab-prev-btn'),
+    topTabNextBtn: document.getElementById('top-tab-next-btn'),
+    topTabCounter: document.getElementById('top-tab-counter'),
+    
+    bottomTabNavigation: document.getElementById('bottom-tab-navigation'),
+    bottomTabPrevBtn: document.getElementById('bottom-tab-prev-btn'),
+    bottomTabNextBtn: document.getElementById('bottom-tab-next-btn'),
+    bottomTabCounter: document.getElementById('bottom-tab-counter'),
+    
+    analysisSidePrevBtn: document.getElementById('analysis-side-prev-btn'),
+    analysisSideNextBtn: document.getElementById('analysis-side-next-btn')
 };
 
 // Helper functions
@@ -486,18 +500,34 @@ const showError = (message) => {
 };
 
 const updateConnectionStatus = () => {
+    // Check if we have a selected model in the model switcher
+    if (state.modelSwitcher && state.modelSwitcher.currentModel) {
+        const modelInfo = state.modelSwitcher.getModelInfo(state.modelSwitcher.currentModel);
+        if (modelInfo) {
+            const modelName = modelInfo.name || state.modelSwitcher.currentModel;
+            const checkpointFile = modelInfo.checkpoint_filename || '';
+            
+            // Show as connected with selected model - GREEN
+            elements.statusText.innerHTML = `Connected: <strong>${modelName}</strong><br><span style="font-size: 0.6em; opacity: 0.7;">${checkpointFile}</span>`;
+            elements.connectionStatus.classList.remove('bg-gray-100', 'bg-red-100', 'bg-yellow-100');
+            elements.connectionStatus.classList.add('bg-green-100');
+            return;
+        }
+    }
+    
+    // Fall back to old behavior if no model switcher or selected model
     if (state.modelInfo && state.modelInfo.display_name) {
         const modelName = state.modelInfo.display_name || 'Unknown Model';
         const checkpointFile = state.modelInfo.checkpoint_filename || '';
         
         if (state.modelInfo.loaded) {
             // Model is loaded - GREEN
-            elements.statusText.innerHTML = `Connected: <strong>${modelName}</strong><br><span style="font-size: 0.65em; opacity: 0.8;">${checkpointFile}</span>`;
+            elements.statusText.innerHTML = `Connected: <strong>${modelName}</strong><br><span style="font-size: 0.6em; opacity: 0.7;">${checkpointFile}</span>`;
             elements.connectionStatus.classList.remove('bg-gray-100', 'bg-red-100', 'bg-yellow-100');
             elements.connectionStatus.classList.add('bg-green-100');
         } else {
             // Model not loaded yet, but we know what will be loaded - YELLOW
-            elements.statusText.innerHTML = `Connected (will load: <strong>${modelName}</strong>)<br><span style="font-size: 0.65em; opacity: 0.8;">${checkpointFile}</span>`;
+            elements.statusText.innerHTML = `Connected (will load: <strong>${modelName}</strong>)<br><span style="font-size: 0.6em; opacity: 0.7;">${checkpointFile}</span>`;
             elements.connectionStatus.classList.remove('bg-gray-100', 'bg-red-100', 'bg-green-100');
             elements.connectionStatus.classList.add('bg-yellow-100');
         }
@@ -510,6 +540,13 @@ const updateConnectionStatus = () => {
 };
 
 // Tab management functions
+const hideAllTabNavigation = () => {
+    elements.topTabNavigation.classList.add('hidden');
+    elements.bottomTabNavigation.classList.add('hidden');
+    elements.analysisSidePrevBtn.classList.add('hidden');
+    elements.analysisSideNextBtn.classList.add('hidden');
+};
+
 const createGenerationTabs = () => {
     console.log('Creating generation tabs. Generations:', state.generations.length, 'Transcripts:', state.allTranscripts.length);
     
@@ -518,16 +555,45 @@ const createGenerationTabs = () => {
     // Show tabs if we have at least one analysis result or any generations
     if (state.generations.length === 0 && state.allTranscripts.length === 0) {
         elements.generationTabs.classList.add('hidden');
+        hideAllTabNavigation();
         return;
     }
     
     // Always show tabs after first analysis
     elements.generationTabs.classList.remove('hidden');
     
+    // Show/hide navigation buttons based on number of tabs
+    if (state.generations.length > 1) {
+        console.log('Multiple generations, showing navigation. Current index:', state.currentGenerationIndex);
+        
+        // Show top navigation
+        elements.topTabNavigation.classList.remove('hidden');
+        elements.topTabPrevBtn.disabled = state.currentGenerationIndex === 0;
+        elements.topTabNextBtn.disabled = state.currentGenerationIndex === state.generations.length - 1;
+        elements.topTabCounter.textContent = `Analysis ${state.currentGenerationIndex + 1} of ${state.generations.length}`;
+        
+        // Show bottom navigation
+        elements.bottomTabNavigation.classList.remove('hidden');
+        elements.bottomTabPrevBtn.disabled = state.currentGenerationIndex === 0;
+        elements.bottomTabNextBtn.disabled = state.currentGenerationIndex === state.generations.length - 1;
+        elements.bottomTabCounter.textContent = `Analysis ${state.currentGenerationIndex + 1} of ${state.generations.length}`;
+        
+        // Show side navigation
+        elements.analysisSidePrevBtn.classList.remove('hidden');
+        elements.analysisSideNextBtn.classList.remove('hidden');
+        elements.analysisSidePrevBtn.style.visibility = state.currentGenerationIndex === 0 ? 'hidden' : 'visible';
+        elements.analysisSideNextBtn.style.visibility = state.currentGenerationIndex === state.generations.length - 1 ? 'hidden' : 'visible';
+    } else {
+        hideAllTabNavigation();
+    }
+    
     // No need to add generation here - it's already handled in processResults
     
     // Render all generation tabs
     state.generations.forEach((gen, index) => {
+        const tabContainer = document.createElement('div');
+        tabContainer.className = 'flex items-center group';
+        
         const tab = document.createElement('button');
         tab.className = `py-2 px-4 text-sm font-medium border-b-2 ${
             index === state.currentGenerationIndex 
@@ -536,7 +602,24 @@ const createGenerationTabs = () => {
         }`;
         tab.textContent = `Analysis ${index + 1}`;
         tab.onclick = () => switchGeneration(index);
-        elements.tabNavigation.appendChild(tab);
+        
+        // Add trash button
+        const trashBtn = document.createElement('button');
+        trashBtn.className = 'ml-1 p-1 text-gray-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity';
+        trashBtn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>`;
+        trashBtn.title = 'Delete this analysis';
+        trashBtn.onclick = (e) => {
+            e.stopPropagation();
+            deleteGeneration(index);
+        };
+        
+        tabContainer.appendChild(tab);
+        // Only show trash button if we have more than one generation
+        if (state.generations.length > 1) {
+            tabContainer.appendChild(trashBtn);
+        }
+        
+        elements.tabNavigation.appendChild(tabContainer);
     });
     
     console.log('Created', state.generations.length, 'tabs');
@@ -549,6 +632,34 @@ const switchGeneration = (index) => {
     state.allTranscripts = state.generations[index].transcripts;
     state.currentTranscriptIndex = 0;
     
+    createGenerationTabs();
+    render();
+};
+
+const deleteGeneration = (index) => {
+    if (state.generations.length <= 1) {
+        showError('Cannot delete the last analysis');
+        return;
+    }
+    
+    const confirmDelete = confirm(`Delete Analysis ${index + 1}?`);
+    if (!confirmDelete) return;
+    
+    // Remove the generation
+    state.generations.splice(index, 1);
+    
+    // Adjust current index if needed
+    if (state.currentGenerationIndex >= state.generations.length) {
+        state.currentGenerationIndex = state.generations.length - 1;
+    } else if (state.currentGenerationIndex > index) {
+        state.currentGenerationIndex--;
+    }
+    
+    // Update current transcripts
+    state.allTranscripts = state.generations[state.currentGenerationIndex].transcripts;
+    state.currentTranscriptIndex = 0;
+    
+    // Re-render
     createGenerationTabs();
     render();
 };
@@ -706,6 +817,7 @@ const resetModel = async () => {
         elements.sideNextBtn.classList.add('hidden');
         elements.columnExplanations.classList.add('hidden');
         elements.generationTabs.classList.add('hidden');
+        hideAllTabNavigation();
         
         showLoading(false, '', null, 'analysis');
         showLoading(false, '', null, 'generation');
@@ -737,6 +849,14 @@ const connectWebSocket = () => {
             state.modelSwitcher.setWebSocket(state.ws);
             // Request model list immediately after connection
             state.modelSwitcher.requestModelList();
+            
+            // If we already have a selected model, request its info
+            if (state.modelSwitcher.currentModel) {
+                state.ws.send(JSON.stringify({
+                    type: 'get_model_info',
+                    model_id: state.modelSwitcher.currentModel
+                }));
+            }
         }
         
         // Start GPU stats polling when connected
@@ -776,7 +896,10 @@ let gpuStatsInterval = null;
 const updateGPUStats = async () => {
     try {
         const response = await fetch(`${API_URL}/api/gpu_stats`);
-        if (!response.ok) return;
+        if (!response.ok) {
+            console.error('Failed to fetch GPU stats:', response.status);
+            return;
+        }
         
         const stats = await response.json();
         
@@ -845,16 +968,42 @@ const handleWebSocketMessage = (data) => {
         globalNotifications.handleModelSwitchStatus(data);
     }
     
+    // Handle group switch status broadcasts immediately for all users
+    if (data.type === 'group_switch_status') {
+        if (data.status === 'starting') {
+            console.log('Group switch starting (broadcast):', data);
+            showLoading(true, 'A user is switching model groups. All requests are queued...', null, 'analysis');
+        } else if (data.status === 'completed') {
+            console.log('Group switch completed (broadcast):', data);
+            showLoading(false, '', null, 'analysis');
+        } else if (data.status === 'failed') {
+            console.log('Group switch failed (broadcast):', data);
+            showLoading(false, '', null, 'analysis');
+        }
+    }
+    
     // Pass messages to model switcher if relevant
     if (state.modelSwitcher && [
-        'models_list', 
-        'model_switch_status', 
-        'model_switch_acknowledged',
+        'models_list',
+        'model_groups_list',  // New grouped format
+        'model_switch_status',
         'model_switch_complete',
-        'model_switch_error',
-        'model_info_update'
+        'model_switch_error', 
+        'model_switch_acknowledged',
+        'model_info_update',
+        'group_switch_status',  // For group switching
+        'group_switch_queued',  // For queued group switches
+        'group_switch_starting',  // When group switch starts
+        'group_preload_complete'  // New preload feature
     ].includes(data.type)) {
         state.modelSwitcher.handleMessage(data);
+        
+        // Update model info and connection status when switch completes
+        if (data.type === 'model_switch_complete' && data.model_info) {
+            state.modelInfo = data.model_info;
+            state.modelInfo.loaded = true; // Ensure loaded is set
+            updateConnectionStatus();
+        }
     }
     
     switch (data.type) {
@@ -874,15 +1023,29 @@ const handleWebSocketMessage = (data) => {
                     updateAutoBatchSize();
                 }
             }
+            // Always update connection status when model info is received
+            updateConnectionStatus();
             // Update generation parameters if provided
             if (data.generation_config) {
-                console.log('Updating generation config:', data.generation_config);
+                console.log('Received generation config in model_info:', data.generation_config);
                 updateGenerationParameters(data.generation_config);
+            } else {
+                console.log('No generation_config in model_info:', data);
+            }
+            // Store the auto_batch_size_max for later use
+            if (data.auto_batch_size_max) {
+                state.autoBatchSizeMax = data.auto_batch_size_max;
+                updateAutoBatchSize();
             }
             // Update cached models in model switcher
             if (state.modelSwitcher && data.cached_models) {
                 state.modelSwitcher.cachedModels = data.cached_models;
-                state.modelSwitcher.renderModelList();
+                // For GroupedModelSwitcher, the method is renderModelGroups
+                if (state.modelSwitcher.renderModelGroups) {
+                    state.modelSwitcher.renderModelGroups();
+                } else if (state.modelSwitcher.renderModelList) {
+                    state.modelSwitcher.renderModelList();
+                }
             }
             updateConnectionStatus();
             // Clear any loading messages when model info is received
@@ -1215,15 +1378,10 @@ const analyze = () => {
         // Check if text is not already JSON chat format
         const isJsonChat = text.startsWith('[') && text.includes('"role"') && text.includes('"content"');
         if (!isJsonChat) {
-            // Convert to chat format
-            const chatFormat = [
-                {
-                    "role": "user",
-                    "content": text
-                }
-            ];
-            textToSend = JSON.stringify(chatFormat);
-            options.is_chat = true; // Set is_chat to true since we're converting to chat format
+            // Send plain text and let backend convert to chat format
+            textToSend = text;
+            options.use_chat_format = true; // Tell backend to convert to chat format
+            options.is_chat = true; // Set is_chat to true since we're using chat format
         }
     }
     
@@ -1234,12 +1392,19 @@ const analyze = () => {
         model: state.modelInfo ? state.modelInfo.model_name : 'unknown'
     });
     
-    // Send request
-    state.ws.send(JSON.stringify({
+    // Send request with model_id
+    const requestData = {
         type: 'analyze',
         text: textToSend,
         options: options
-    }));
+    };
+    
+    // Add model_id if we have a selected model
+    if (state.modelSwitcher && state.modelSwitcher.currentModel) {
+        requestData.model_id = state.modelSwitcher.currentModel;
+    }
+    
+    state.ws.send(JSON.stringify(requestData));
 };
 
 // Generation functions
@@ -1283,15 +1448,10 @@ const generate = () => {
         // Check if text is not already JSON chat format
         const isJsonChat = text.startsWith('[') && text.includes('"role"') && text.includes('"content"');
         if (!isJsonChat) {
-            // Convert to chat format
-            const chatFormat = [
-                {
-                    "role": "user",
-                    "content": text
-                }
-            ];
-            textToSend = JSON.stringify(chatFormat);
-            options.is_chat = true; // Set is_chat to true since we're converting to chat format
+            // Send plain text and let backend convert to chat format
+            textToSend = text;
+            options.use_chat_format = true; // Tell backend to convert to chat format
+            options.is_chat = true; // Set is_chat to true since we're using chat format
         }
     }
     
@@ -1302,11 +1462,19 @@ const generate = () => {
         model: state.modelInfo ? state.modelInfo.model_name : 'unknown'
     });
     
-    state.ws.send(JSON.stringify({
+    // Send request with model_id
+    const requestData = {
         type: 'generate',
         text: textToSend,
         options: options
-    }));
+    };
+    
+    // Add model_id if we have a selected model
+    if (state.modelSwitcher && state.modelSwitcher.currentModel) {
+        requestData.model_id = state.modelSwitcher.currentModel;
+    }
+    
+    state.ws.send(JSON.stringify(requestData));
 };
 
 const handleGenerationResult = (result) => {
@@ -1540,21 +1708,37 @@ const updateColumnExplanations = () => {
         tuned_lens_top: 'Top prediction from tuned lens analysis',
         logit_lens_top: 'Top prediction from logit lens analysis'
     };
-    
+
+    // Map for column name display overrides (for capitalisation)
+    const columnDisplayNames = {
+        mse: 'MSE',
+        relative_rmse: 'Relative RMSE',
+        token_probability: 'Token Probability',
+        perplexity: 'Perplexity',
+        cross_entropy: 'Cross Entropy',
+        token_salience: 'Token Salience',
+        kl_divergence: 'KL Divergence',
+        tuned_lens_top: 'Tuned Lens Top',
+        logit_lens_top: 'Logit Lens Top',
+        position: 'Position',
+        token: 'Token',
+        explanation: 'Explanation'
+    };
+
     const container = elements.columnExplanations.querySelector('.text-sm.text-gray-700.space-y-2');
     if (!container) return;
-    
+
     container.innerHTML = '';
-    
+
     // Only show explanations for visible columns
     for (const [column, explanation] of Object.entries(explanations)) {
         if (state.columnVisibility[column]) {
             const p = document.createElement('p');
-            p.innerHTML = `<strong>${column.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}:</strong> ${explanation}`;
+            const displayName = columnDisplayNames[column] || column.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+            p.innerHTML = `<strong>${displayName}:</strong> ${explanation}`;
             container.appendChild(p);
         }
     }
-    
     // Show/hide the explanations box if there are any visible columns
     const hasVisibleColumns = Object.values(state.columnVisibility).some(v => v);
     if (hasVisibleColumns && state.allTranscripts.length > 0) {
@@ -1737,7 +1921,7 @@ const uploadData = async () => {
         return;
     }
     
-    if (state.allTranscripts.length === 0) {
+    if (state.generations.length === 0) {
         showError('No data to upload. Please analyse some text first.');
         return;
     }
@@ -1746,9 +1930,16 @@ const uploadData = async () => {
     elements.uploadBtn.textContent = 'Uploading...';
     
     try {
-        const dataToUpload = JSON.stringify(state.allTranscripts.length === 1 
-            ? state.allTranscripts[0] 
-            : state.allTranscripts);
+        // Collect all transcripts from all generations
+        const allData = [];
+        state.generations.forEach(gen => {
+            gen.transcripts.forEach(transcript => {
+                allData.push(transcript);
+            });
+        });
+        
+        // Convert to newline-delimited JSON format (like standalone analyzer)
+        const dataToUpload = allData.map(item => JSON.stringify(item)).join('\n');
             
         let binId;
         if (state.currentService === 'supabase') {
@@ -1780,21 +1971,28 @@ const uploadData = async () => {
 };
 
 const exportJSON = () => {
-    if (state.allTranscripts.length === 0) {
+    if (state.generations.length === 0) {
         showError('No data to export. Please analyse some text first.');
         return;
     }
     
-    const dataStr = JSON.stringify(state.allTranscripts.length === 1 
-        ? state.allTranscripts[0] 
-        : state.allTranscripts, null, 2);
+    // Collect all transcripts from all generations
+    const allData = [];
+    state.generations.forEach(gen => {
+        gen.transcripts.forEach(transcript => {
+            allData.push(transcript);
+        });
+    });
+    
+    // Export as newline-delimited JSON (one object per line)
+    const dataStr = allData.map(item => JSON.stringify(item)).join('\n');
     
     const blob = new Blob([dataStr], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     
     const a = document.createElement('a');
     a.href = url;
-    a.download = `consistency-lens-analysis-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `nlae-analyses-${state.generations.length}-items-${new Date().toISOString().slice(0, 10)}.jsonl`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -2083,6 +2281,72 @@ const initializeEventListeners = () => {
         });
     }
     
+    // Tab navigation buttons - Top
+    if (elements.topTabPrevBtn) {
+        elements.topTabPrevBtn.addEventListener('click', () => {
+            if (state.currentGenerationIndex > 0) {
+                switchGeneration(state.currentGenerationIndex - 1);
+            }
+        });
+    }
+    
+    if (elements.topTabNextBtn) {
+        elements.topTabNextBtn.addEventListener('click', () => {
+            if (state.currentGenerationIndex < state.generations.length - 1) {
+                switchGeneration(state.currentGenerationIndex + 1);
+            }
+        });
+    }
+    
+    // Tab navigation buttons - Bottom
+    if (elements.bottomTabPrevBtn) {
+        elements.bottomTabPrevBtn.addEventListener('click', () => {
+            if (state.currentGenerationIndex > 0) {
+                switchGeneration(state.currentGenerationIndex - 1);
+            }
+        });
+    }
+    
+    if (elements.bottomTabNextBtn) {
+        elements.bottomTabNextBtn.addEventListener('click', () => {
+            if (state.currentGenerationIndex < state.generations.length - 1) {
+                switchGeneration(state.currentGenerationIndex + 1);
+            }
+        });
+    }
+    
+    // Side navigation for analyses
+    if (elements.analysisSidePrevBtn) {
+        elements.analysisSidePrevBtn.addEventListener('click', () => {
+            if (state.currentGenerationIndex > 0) {
+                switchGeneration(state.currentGenerationIndex - 1);
+            }
+        });
+    }
+    
+    if (elements.analysisSideNextBtn) {
+        elements.analysisSideNextBtn.addEventListener('click', () => {
+            if (state.currentGenerationIndex < state.generations.length - 1) {
+                switchGeneration(state.currentGenerationIndex + 1);
+            }
+        });
+    }
+    
+    // Keyboard navigation for tabs
+    document.addEventListener('keydown', (e) => {
+        // Only handle if generation tabs are visible and focus is not in an input/textarea
+        if (elements.generationTabs.classList.contains('hidden')) return;
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+        
+        if (e.key === 'ArrowLeft' && state.currentGenerationIndex > 0) {
+            e.preventDefault();
+            switchGeneration(state.currentGenerationIndex - 1);
+        } else if (e.key === 'ArrowRight' && state.currentGenerationIndex < state.generations.length - 1) {
+            e.preventDefault();
+            switchGeneration(state.currentGenerationIndex + 1);
+        }
+    });
+    
     // Upload/Export
     elements.uploadBtn.addEventListener('click', uploadData);
     elements.exportJsonBtn.addEventListener('click', exportJSON);
@@ -2199,10 +2463,19 @@ const initialize = () => {
     
     // Initialize model switcher
     const modelSwitcherContainer = document.getElementById('modelSwitcherContainer');
-    if (modelSwitcherContainer && typeof ModelSwitcher !== 'undefined') {
+    // Use grouped model switcher if available, otherwise fallback to legacy
+    if (modelSwitcherContainer && typeof GroupedModelSwitcher !== 'undefined') {
+        state.modelSwitcher = new GroupedModelSwitcher(state.ws, modelSwitcherContainer, 'v2');
+        console.log('Using GroupedModelSwitcher with v2 API');
+    } else if (modelSwitcherContainer && typeof ModelSwitcher !== 'undefined') {
         state.modelSwitcher = new ModelSwitcher(state.ws, modelSwitcherContainer);
-        
-        // Add event listeners
+        console.log('Using legacy ModelSwitcher');
+    } else {
+        console.warn('ModelSwitcher not available or container not found');
+    }
+    
+    // Add event listeners for model switcher (works for both types)
+    if (state.modelSwitcher) {
         state.modelSwitcher.addEventListener('switch-started', (data) => {
             console.log('Model switch started:', data);
             showLoading(true, 'Model is switching. All requests are queued...', null, 'analysis');
@@ -2211,17 +2484,51 @@ const initialize = () => {
         state.modelSwitcher.addEventListener('switch-completed', (data) => {
             console.log('Model switch completed:', data);
             showLoading(false, '', null, 'analysis');
-            // Use a temporary success message (showError with green styling would be better)
+            // Update connection status when switch completes
+            updateConnectionStatus();
             const successMsg = `Model switched successfully to ${data.model_name || data.model_id}!`;
             console.log(successMsg);
-            // Could also update the status text
-            if (elements.statusText) {
-                const currentStatus = elements.statusText.textContent;
-                elements.statusText.textContent = successMsg;
-                setTimeout(() => {
-                    elements.statusText.textContent = currentStatus;
-                }, 3000);
+            
+            // Request model info after switch completes
+            if (state.ws && state.ws.readyState === WebSocket.OPEN && data.model_id) {
+                state.ws.send(JSON.stringify({
+                    type: 'get_model_info',
+                    model_id: data.model_id
+                }));
             }
+        });
+        
+        // Add listener for local model selection
+        state.modelSwitcher.addEventListener('model-selected', (data) => {
+            console.log('Model selected:', data);
+            // Update connection status when model is selected
+            updateConnectionStatus();
+            
+            // Request model info to get auto_batch_size_max and generation_config
+            if (state.ws && state.ws.readyState === WebSocket.OPEN && data.model_id) {
+                state.ws.send(JSON.stringify({
+                    type: 'get_model_info',
+                    model_id: data.model_id
+                }));
+            }
+        });
+        
+        // Add listener for group switch events
+        state.modelSwitcher.addEventListener('group-switch-started', (data) => {
+            console.log('Group switch started:', data);
+            showLoading(true, 'Switching model group. This affects all users...', null, 'analysis');
+        });
+        
+        state.modelSwitcher.addEventListener('group-switch-completed', (data) => {
+            console.log('Group switch completed:', data);
+            showLoading(false, '', null, 'analysis');
+            updateConnectionStatus();
+        });
+        
+        state.modelSwitcher.addEventListener('group-switch-failed', (data) => {
+            console.log('Group switch failed:', data);
+            showLoading(false, '', null, 'analysis');
+            showError(`Group switch failed: ${data.error}`);
         });
         
         state.modelSwitcher.addEventListener('switch-failed', (data) => {
@@ -2229,8 +2536,6 @@ const initialize = () => {
             showLoading(false, '', null, 'analysis');
             showError(`Model switch failed: ${data.error}`);
         });
-    } else {
-        console.warn('ModelSwitcher not available or container not found');
     }
     
     // Connect WebSocket

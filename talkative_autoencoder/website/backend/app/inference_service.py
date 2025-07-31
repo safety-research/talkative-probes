@@ -85,6 +85,7 @@ class InferenceService:
         self.queue = InferenceQueue(websocket_manager)
         self.processing_task = None
         self.chat_tokenizer = None  # Will be loaded if needed
+        self.active_processing_lock = asyncio.Lock()  # Ensure only one request processes at a time
         
     async def start_processing(self):
         """Start processing the queue"""
@@ -119,8 +120,8 @@ class InferenceService:
                     logger.info(f"Skipping cancelled request {request_id}")
                     continue
                     
-                # Process request concurrently to avoid blocking the queue
-                asyncio.create_task(self._handle_single_request(request_id, text, options, request_type))
+                # Process request sequentially to ensure group switches wait for active requests
+                await self._handle_single_request(request_id, text, options, request_type)
                         
             except Exception as e:
                 logger.error(f"Queue processing error: {e}")
@@ -147,6 +148,44 @@ class InferenceService:
                             request["status"] = "failed"
                         return
                 
+                # Check if we need to switch groups first
+                target_group_id = self.model_manager.model_to_group.get(model_id)
+                if target_group_id and target_group_id != self.model_manager.current_group_id:
+                    # Check if a group switch is already queued for this group
+                    switch_already_queued = any(
+                        req.get("type") == "group_switch" and 
+                        req.get("target_group_id") == target_group_id and
+                        req.get("status") in ["queued", "processing"]
+                        for req in self.queue.active_requests.values()
+                    )
+                    
+                    if not switch_already_queued:
+                        # Need to queue a group switch
+                        logger.info(f"Request {request_id} needs group {target_group_id}, queuing group switch")
+                        
+                        # Queue the group switch
+                        websocket = options.get("websocket")
+                        switch_request_id = await self.queue.add_group_switch_request(
+                            target_group_id, model_id, websocket
+                        )
+                        
+                        logger.info(f"Queued group switch {switch_request_id} for request {request_id}")
+                    else:
+                        logger.info(f"Group switch to {target_group_id} already queued, waiting...")
+                    
+                    # Mark this request as waiting for group switch
+                    request = self.queue.active_requests.get(request_id)
+                    if request:
+                        request["status"] = "waiting_for_group_switch"
+                        request["target_group"] = target_group_id
+                        # Set started_at if not already set
+                        if not request.get("started_at"):
+                            request["started_at"] = datetime.utcnow()
+                    
+                    # Re-queue this request to try again after the switch
+                    await self.queue.queue.put((request_id, text, options, request_type))
+                    return
+                
                 # Get the analyzer for the specific model
                 try:
                     analyzer = await self.model_manager.get_analyzer_for_model(model_id)
@@ -160,8 +199,13 @@ class InferenceService:
                 # Update request status
                 request = self.queue.active_requests.get(request_id)
                 if request and request["status"] != "cancelled":
-                    request["status"] = "processing"
-                    request["started_at"] = datetime.utcnow()
+                    # If this was waiting for group switch, update the started time
+                    if request["status"] == "waiting_for_group_switch":
+                        request["status"] = "processing"
+                        # Don't update started_at since it was already set
+                    else:
+                        request["status"] = "processing"
+                        request["started_at"] = datetime.utcnow()
                     
                     # Send status update via WebSocket
                     websocket = options.get("websocket")

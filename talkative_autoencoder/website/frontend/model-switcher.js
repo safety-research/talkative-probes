@@ -186,6 +186,9 @@ class ModelSwitcher {
     handleModelsList(data) {
         this.models = data.models;
         this.currentModel = data.current_model;
+        
+        // Check if we're connecting during a switch
+        const wasAlreadySwitching = data.is_switching && !this.isSwitching;
         this.isSwitching = data.is_switching || false;
         this.queueStats = data.queue_stats || null;
         
@@ -196,6 +199,15 @@ class ModelSwitcher {
         if (this.pendingWarning) {
             this.pendingWarning = false;
             this.showWarning();
+        }
+        
+        // If we connected during a switch, emit the switch-started event
+        if (wasAlreadySwitching) {
+            console.log('Connected during model switch, emitting switch-started event');
+            this.emit('switch-started', {
+                model_id: data.switching_to || this.currentModel,
+                status: 'in_progress'
+            });
         }
     }
     

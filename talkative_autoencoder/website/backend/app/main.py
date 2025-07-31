@@ -31,9 +31,11 @@ from slowapi.util import get_remote_address
 
 from .config import load_settings
 from .model_manager import ModelManager, ModelLoadError
+from .model_manager_grouped import GroupedModelManager
 from .inference_service import InferenceService
 from .models import AnalyzeRequest
 from .websocket import manager
+from . import api_grouped
 
 # Configure logging with timestamps
 logging.basicConfig(
@@ -149,6 +151,7 @@ class GPUStatsMonitor:
 
 # Global instances
 model_manager: ModelManager | None = None
+grouped_model_manager: GroupedModelManager | None = None  # New grouped manager
 inference_service: InferenceService | None = None
 gpu_monitor = GPUStatsMonitor()
 queue_broadcast_task = None
@@ -187,26 +190,48 @@ async def broadcast_queue_status_periodically():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    global model_manager, inference_service
+    global model_manager, grouped_model_manager, inference_service
 
     # Start GPU monitoring
     gpu_monitor.start()
 
     try:
-        # Initialize model manager
+        # Initialize both model managers
         model_manager = ModelManager(settings)
         model_manager.websocket_manager = manager
         
-        # Initialize inference service
-        inference_service = InferenceService(model_manager, settings, manager)
+        # Initialize grouped model manager
+        grouped_model_manager = GroupedModelManager(settings)
+        grouped_model_manager.websocket_manager = manager
+        
+        # Initialize inference service with grouped model manager
+        # (can switch to use grouped_model_manager as primary)
+        inference_service = InferenceService(grouped_model_manager, settings, manager)
 
-        # Load default model on startup if lazy loading is disabled
-        if not settings.lazy_load_model:
-            logger.info("Loading default model on startup (lazy_load_model=false)")
-            # Always use the model manager's default model from registry
-            await model_manager.initialize_default_model()
+        # Optionally preload groups on startup
+        if not settings.lazy_load_model and grouped_model_manager:
+            # Check if we should preload all groups from the config
+            preload_all = grouped_model_manager.config_settings.get('preload_groups', False)
+            default_group = grouped_model_manager.config_settings.get('default_group', 'gemma3-27b-it')
+            
+            if preload_all:
+                logger.info("Preloading all groups on startup")
+                try:
+                    await grouped_model_manager.preload_all_groups(default_group)
+                except Exception as e:
+                    logger.warning(f"Failed to preload all groups: {e}")
+            else:
+                logger.info("Preloading default group on startup")
+                try:
+                    # Always load the default group first
+                    if default_group in grouped_model_manager.model_groups:
+                        await grouped_model_manager._switch_to_group(default_group)
+                    else:
+                        await grouped_model_manager.ensure_group_loaded()
+                except Exception as e:
+                    logger.warning(f"Failed to preload default group: {e}")
         else:
-            logger.info("Model will be loaded on first request (lazy_load_model=true)")
+            logger.info("Groups will be loaded on-demand as needed")
 
         await inference_service.start_processing()
         
@@ -268,6 +293,10 @@ app.add_middleware(
     allow_headers=["*"],  # Allow all headers for WebSocket compatibility
 )
 
+# Include grouped model API routes
+api_grouped.grouped_model_manager = grouped_model_manager
+app.include_router(api_grouped.router)
+
 # API Key Security
 security = HTTPBearer(auto_error=False)
 
@@ -313,13 +342,8 @@ async def analyze(
     if len(request.text) > settings.max_text_length:
         raise HTTPException(400, f"Text too long. Maximum length is {settings.max_text_length} characters")
 
-    # Lazy load model on first request
-    if model_manager and not model_manager.is_model_loaded():
-        try:
-            # Load default model
-            await model_manager.initialize_default_model()
-        except Exception as e:
-            raise HTTPException(500, f"Failed to load model: {str(e)}") from e
+    # In the new architecture, models are loaded on-demand
+    # No need to check or preload models
 
     request_id = await inference_service.queue.add_request(request.text, request.options.dict())
 
@@ -376,35 +400,40 @@ async def websocket_endpoint(websocket: WebSocket):
 
     await manager.connect(websocket)
 
-    # Send model info from model_manager
-    if model_manager:
-        model_info = model_manager.get_current_model_info()
-        # Transform the response to match expected format
-        if model_info.get("status") == "no_model_loaded":
-            # Model not loaded yet
+    # In the new architecture, we don't have a current model on connection
+    # Models are specified per-request
+    if grouped_model_manager:
+        # Just send a connection established message
+        await websocket.send_json({
+            "type": "connection_established",
+            "message": "Connected to inference server",
+            "auto_batch_size_max": settings.auto_batch_size_max,
+        })
+        
+        # If a group switch is in progress, notify the new client
+        if grouped_model_manager.is_switching_group:
+            # Find which group we're switching to
+            target_group_id = None
+            if inference_service:
+                for req_id, req in inference_service.queue.active_requests.items():
+                    if req.get("type") == "group_switch" and req.get("status") == "processing":
+                        target_group_id = req.get("target_group_id")
+                        break
+            
             await websocket.send_json({
-                "type": "model_info",
-                "loaded": False,
-                "model_name": "No model loaded",
-                "auto_batch_size_max": settings.auto_batch_size_max,
+                "type": "group_switch_status",
+                "status": "starting",
+                "group_id": target_group_id or "unknown",
+                "timestamp": datetime.now().isoformat(),
+                "message": "A group switch is in progress. All requests are queued."
             })
-        else:
-            # Model is loaded
-            await websocket.send_json({
-                "type": "model_info",
-                "loaded": True,
-                "model_id": model_info.get("model_id"),
-                "display_name": model_info.get("display_name", "Unknown"),
-                "model_name": model_info.get("display_name", "Unknown"),  # For backwards compatibility
-                "description": model_info.get("description"),
-                "batch_size": model_info.get("batch_size"),
-                "auto_batch_size_max": model_info.get("auto_batch_size_max", settings.auto_batch_size_max),
-                "layer": model_info.get("layer"),
-                "checkpoint_path": model_info.get("checkpoint_path"),
-                "checkpoint_filename": model_info.get("checkpoint_filename"),
-                "cached_models": model_info.get("cached_models", []),
-                "is_switching": model_info.get("is_switching", False),
-            })
+    elif model_manager:
+        # Legacy single model manager - send connection info
+        await websocket.send_json({
+            "type": "connection_established",
+            "message": "Connected to inference server (legacy mode)",
+            "auto_batch_size_max": settings.auto_batch_size_max,
+        })
 
     # Send initial queue status
     if inference_service:
@@ -432,36 +461,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 if not inference_service:
                     await websocket.send_json({"type": "generation_error", "error": "Inference service not initialized"})
                     continue
-
-                # Lazy load model if needed through model_manager
-                if model_manager and not model_manager.is_model_loaded():
-                    await websocket.send_json(
-                        {
-                            "type": "status",
-                            "message": "Loading model checkpoint... This may take a minute on first load.",
-                        }
-                    )
-                    try:
-                        await model_manager.ensure_model_loaded()
-                        await websocket.send_json({"type": "status", "message": "Model loaded successfully!"})
-                        # Send updated model info
-                        model_info = model_manager.get_current_model_info()
-                        await websocket.send_json(
-                            {
-                                "type": "model_info",
-                                "loaded": True,
-                                "model_id": model_info.get("model_id"),
-                                "model_name": model_info.get("display_name", "Unknown"),
-                                "description": model_info.get("description"),
-                                "batch_size": model_info.get("batch_size"),
-                                "auto_batch_size_max": model_info.get("auto_batch_size_max", settings.auto_batch_size_max),
-                            }
-                        )
-                    except ModelLoadError as e:
-                        await websocket.send_json(
-                            {"type": "generation_error", "error": f"Failed to load model: {str(e)}"}
-                        )
-                        continue
 
                 # Add generation request to queue through inference_service
                 text = data.get("text", "")
@@ -493,37 +492,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Moving it inside the analyze condition
 
             if data["type"] == "analyze":
-                # Lazy load model if needed through model_manager
-                if model_manager and not model_manager.is_model_loaded():
-                    await websocket.send_json(
-                        {
-                            "type": "status",
-                            "message": "Loading model checkpoint... This may take a minute on first load.",
-                        }
-                    )
-                    try:
-                        await model_manager.ensure_model_loaded()
-                        await websocket.send_json({"type": "status", "message": "Model loaded successfully!"})
-                        # Send updated model info
-                        model_info = model_manager.get_current_model_info()
-                        await websocket.send_json(
-                            {
-                                "type": "model_info",
-                                "loaded": True,
-                                "model_id": model_info.get("model_id"),
-                                "model_name": model_info.get("display_name", "Unknown"),
-                                "description": model_info.get("description"),
-                                "batch_size": model_info.get("batch_size"),
-                                "auto_batch_size_max": model_info.get("auto_batch_size_max", settings.auto_batch_size_max),
-                            }
-                        )
-                    except ModelLoadError as e:
-                        await websocket.send_json({"type": "error", "error": f"Failed to load model: {str(e)}"})
-                        continue
-
                 # Get options and add websocket
                 options = data.get("options", {})
                 options["websocket"] = websocket
+                
+                # Include model_id if provided
+                if "model_id" in data:
+                    options["model_id"] = data["model_id"]
                 
                 request_id = await inference_service.queue.add_request(data["text"], options)
 
@@ -556,7 +531,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         )
 
             elif data["type"] == "list_models":
-                # List available models
+                # List available models (legacy)
                 if not model_manager:
                     await websocket.send_json({"type": "error", "error": "Model manager not initialized"})
                     continue
@@ -575,6 +550,55 @@ async def websocket_endpoint(websocket: WebSocket):
                     "is_switching": current_info.get("is_switching", False),
                     "queue_stats": queue_stats
                 })
+                
+            elif data["type"] == "list_model_groups":
+                # List model groups (new grouped format)
+                if not grouped_model_manager:
+                    await websocket.send_json({"type": "error", "error": "Grouped model manager not initialized"})
+                    continue
+                    
+                groups = grouped_model_manager.get_model_list()
+                group_info = grouped_model_manager.get_current_group_info()
+                memory_info = grouped_model_manager.get_memory_usage()
+                
+                # Check if there's a queued group switch
+                queued_switch_info = None
+                if inference_service:
+                    for req_id, req in inference_service.queue.active_requests.items():
+                        if req.get("type") == "group_switch" and req.get("status") == "queued":
+                            queue_position = inference_service.queue.get_position_in_queue(req_id)
+                            active_count = len([r for r in inference_service.queue.active_requests.values() 
+                                              if r["status"] == "processing"])
+                            queued_switch_info = {
+                                "request_id": req_id,
+                                "target_group_id": req.get("target_group_id"),
+                                "model_id": req.get("model_id"),
+                                "queue_position": queue_position,
+                                "active_requests": active_count,
+                                "queued_ahead": queue_position - 1 if queue_position > 0 else 0
+                            }
+                            break
+                
+                response_data = {
+                    "type": "model_groups_list",
+                    "groups": groups,
+                    "current_group": group_info["current_group_id"],
+                    "is_switching": group_info["is_switching"],
+                    "model_status": {
+                        "cache_info": {
+                            "groups_loaded": group_info["groups_loaded"],
+                            "models_cached": list(grouped_model_manager.lens_cache.keys()),
+                            "base_locations": group_info["base_locations"]
+                        },
+                        "memory": memory_info
+                    }
+                }
+                
+                # Add queued switch info if present
+                if queued_switch_info:
+                    response_data["queued_switch"] = queued_switch_info
+                
+                await websocket.send_json(response_data)
                 
             elif data["type"] == "switch_model":
                 # Switch to a different model
@@ -616,17 +640,123 @@ async def websocket_endpoint(websocket: WebSocket):
                         "error": str(e)
                     })
                     
-            elif data["type"] == "get_model_info":
-                # Get current model info
-                if not model_manager:
-                    await websocket.send_json({"type": "error", "error": "Model manager not initialized"})
+            elif data["type"] == "switch_model_grouped":
+                # Handle group switch request
+                if not grouped_model_manager:
+                    await websocket.send_json({"type": "error", "error": "Grouped model manager not initialized"})
                     continue
                     
-                model_info = model_manager.get_current_model_info()
-                await websocket.send_json({
-                    "type": "model_info_update",
-                    **model_info
-                })
+                model_id = data.get("model_id")
+                if not model_id:
+                    await websocket.send_json({"type": "error", "error": "No model_id provided"})
+                    continue
+                
+                # Check if this requires a group switch
+                try:
+                    target_group_id = grouped_model_manager.model_to_group.get(model_id)
+                    if not target_group_id:
+                        await websocket.send_json({
+                            "type": "model_switch_error",
+                            "model_id": model_id,
+                            "error": f"Unknown model ID: {model_id}"
+                        })
+                        continue
+                    
+                    # Check if we need to switch groups
+                    if target_group_id != grouped_model_manager.current_group_id:
+                        # Queue the group switch instead of doing it immediately
+                        logger.info(f"Queueing group switch: {grouped_model_manager.current_group_id} -> {target_group_id}")
+                        
+                        # Add to the queue
+                        request_id = await inference_service.queue.add_group_switch_request(
+                            target_group_id, model_id, websocket
+                        )
+                        
+                        # Get actual queue position
+                        queue_position = inference_service.queue.get_position_in_queue(request_id)
+                        active_requests = len([r for r in inference_service.queue.active_requests.values() 
+                                             if r["status"] == "processing"])
+                        queued_ahead = queue_position - 1 if queue_position > 0 else 0
+                        
+                        await websocket.send_json({
+                            "type": "group_switch_queued",
+                            "request_id": request_id,
+                            "model_id": model_id,
+                            "target_group_id": target_group_id,
+                            "queue_position": queue_position,
+                            "active_requests": active_requests,
+                            "queued_ahead": queued_ahead,
+                            "message": f"Group switch queued at position {queue_position}. Will start after {active_requests + queued_ahead} request(s) complete."
+                        })
+                    else:
+                        # Same group - just return model info immediately
+                        model_info = grouped_model_manager.get_model_info(model_id)
+                        await websocket.send_json({
+                            "type": "model_switch_complete",
+                            "model_id": model_id,
+                            "message": "Model selected (within same group)",
+                            "model_info": model_info,
+                            "generation_config": model_info.get("generation_config", {})
+                        })
+                    
+                except Exception as e:
+                    logger.error(f"Model switch error: {e}")
+                    await websocket.send_json({
+                        "type": "model_switch_error",
+                        "model_id": model_id,
+                        "error": str(e)
+                    })
+                    
+            elif data["type"] == "preload_group":
+                # Preload all models in a group
+                if not grouped_model_manager:
+                    await websocket.send_json({"type": "error", "error": "Grouped model manager not initialized"})
+                    continue
+                    
+                group_id = data.get("group_id")
+                if not group_id:
+                    await websocket.send_json({"type": "error", "error": "No group_id provided"})
+                    continue
+                    
+                try:
+                    await grouped_model_manager.preload_group(group_id)
+                    await websocket.send_json({
+                        "type": "group_preload_complete",
+                        "group_id": group_id,
+                        "message": f"Successfully preloaded all models in group {group_id}"
+                    })
+                except Exception as e:
+                    logger.error(f"Group preload failed: {e}")
+                    await websocket.send_json({
+                        "type": "error",
+                        "error": f"Failed to preload group: {str(e)}"
+                    })
+                    
+            elif data["type"] == "get_model_info":
+                # Get model info for a specific model
+                model_id = data.get("model_id")
+                
+                if grouped_model_manager and model_id:
+                    # Get info for specific model from grouped manager
+                    model_info = grouped_model_manager.get_model_info(model_id)
+                    await websocket.send_json({
+                        "type": "model_info",
+                        "model_id": model_info.get("model_id"),
+                        "display_name": model_info.get("display_name"),
+                        "layer": model_info.get("layer"),
+                        "auto_batch_size_max": model_info.get("auto_batch_size_max"),
+                        "generation_config": model_info.get("generation_config", {}),
+                        "loaded": model_info.get("is_loaded", False)
+                    })
+                elif model_manager:
+                    # Legacy single model manager
+                    model_info = model_manager.get_current_model_info()
+                    await websocket.send_json({
+                        "type": "model_info_update",
+                        **model_info
+                    })
+                else:
+                    await websocket.send_json({"type": "error", "error": "Model manager not initialized"})
                 
             elif data["type"] == "reload_models":
                 # Reload model registry from JSON
@@ -659,6 +789,32 @@ async def websocket_endpoint(websocket: WebSocket):
                         "type": "error",
                         "error": f"Failed to reload models: {str(e)}"
                     })
+                
+            elif data["type"] == "cancel_request":
+                # Cancel a queued request (e.g., group switch)
+                request_id = data.get("request_id")
+                
+                if request_id and inference_service:
+                    request = inference_service.queue.active_requests.get(request_id)
+                    if request and request["status"] == "queued":
+                        # Mark as cancelled
+                        request["status"] = "cancelled"
+                        request["error"] = "Cancelled by user"
+                        request["completed_at"] = datetime.utcnow()
+                        
+                        logger.info(f"Cancelled queued request: {request_id} (type: {request.get('type')})")
+                        
+                        # Send confirmation
+                        await websocket.send_json({
+                            "type": "request_cancelled",
+                            "request_id": request_id,
+                            "message": "Request cancelled successfully"
+                        })
+                    else:
+                        await websocket.send_json({
+                            "type": "error",
+                            "error": f"Cannot cancel request {request_id} - not in queue or already processing"
+                        })
                 
             elif data["type"] == "interrupt":
                 request_id = data.get("request_id")

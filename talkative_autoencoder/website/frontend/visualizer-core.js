@@ -171,22 +171,53 @@ const VisualizationCore = (function() {
         const metadataSection = document.createElement('div');
         metadataSection.className = 'bg-amber-50 border border-amber-200 rounded-lg p-4';
         
+        // Create collapsible header
+        const header = document.createElement('div');
+        header.className = 'flex items-center justify-between cursor-pointer';
+        
+        const titleWrapper = document.createElement('div');
+        titleWrapper.className = 'flex items-center gap-2';
+        
         const title = document.createElement('h3');
-        title.className = 'text-sm font-semibold text-[#5D4037] mb-3';
+        title.className = 'text-sm font-semibold text-[#5D4037]';
         title.textContent = 'Analysis Metadata';
-        metadataSection.appendChild(title);
+        
+        // Add chevron icon
+        const chevron = document.createElement('svg');
+        chevron.className = 'w-4 h-4 transform transition-transform';
+        chevron.setAttribute('fill', 'none');
+        chevron.setAttribute('stroke', 'currentColor');
+        chevron.setAttribute('viewBox', '0 0 24 24');
+        chevron.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>';
+        
+        titleWrapper.appendChild(chevron);
+        titleWrapper.appendChild(title);
+        
+        // Add model name when collapsed
+        const collapsedInfo = document.createElement('span');
+        collapsedInfo.className = 'text-sm text-gray-600 hidden';
+        collapsedInfo.textContent = metadata.encoder_decoder_model || '';
+        
+        header.appendChild(titleWrapper);
+        header.appendChild(collapsedInfo);
+        metadataSection.appendChild(header);
         
         const list = document.createElement('div');
-        list.className = 'space-y-1';
+        list.className = 'space-y-1 mt-3';
         
         // Define the order and formatting for metadata fields
-        const metadataOrder = ['model_name', 'orig_model_name', 'checkpoint_path', 'layer', 'timestamp'];
+        const metadataOrder = ['encoder_decoder_model', 'shared_base_model', 'donor_model', 'layer', 
+                               'best_of_k', 'batch_size', 'temperature', 'checkpoint_path', 'timestamp'];
         const formattedKeys = {
-            'model_name': 'Decoder/Encoder Model',
-            'orig_model_name': 'Subject Model',
+            'encoder_decoder_model': 'Encoder/Decoder',
+            'shared_base_model': 'Shared Base Model',
+            'donor_model': 'Donor Model',
             'checkpoint_path': 'Checkpoint',
             'layer': 'Layer',
-            'timestamp': 'Timestamp'
+            'timestamp': 'Timestamp',
+            'best_of_k': 'Best of K',
+            'batch_size': 'Batch Size',
+            'temperature': 'Temperature'
         };
         
         // Sort metadata keys according to preferred order
@@ -214,10 +245,13 @@ const VisualizationCore = (function() {
             valueSpan.className = 'text-[#5D4037]';
             
             // Special formatting for certain fields
-            if (key === 'checkpoint_path' && value.length > 50) {
+            if (key === 'checkpoint_path' && typeof value === 'string' && value.length > 50) {
                 valueSpan.className += ' font-mono text-xs';
                 valueSpan.title = value;
                 valueSpan.textContent = '...' + value.slice(-47);
+            } else if (typeof value === 'boolean') {
+                valueSpan.textContent = value ? 'Yes' : 'No';
+                valueSpan.className += value ? ' text-green-700' : ' text-gray-600';
             } else {
                 valueSpan.textContent = value;
             }
@@ -228,6 +262,22 @@ const VisualizationCore = (function() {
         });
         
         metadataSection.appendChild(list);
+        
+        // Add click handler for collapse/expand
+        let isCollapsed = false;
+        header.addEventListener('click', () => {
+            isCollapsed = !isCollapsed;
+            if (isCollapsed) {
+                list.classList.add('hidden');
+                chevron.classList.add('-rotate-90');
+                collapsedInfo.classList.remove('hidden');
+            } else {
+                list.classList.remove('hidden');
+                chevron.classList.remove('-rotate-90');
+                collapsedInfo.classList.add('hidden');
+            }
+        });
+        
         container.appendChild(metadataSection);
     };
     

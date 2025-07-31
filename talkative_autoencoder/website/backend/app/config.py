@@ -14,7 +14,7 @@ class Settings(BaseModel):
     use_bf16: bool = Field(default=True)
     
     # API settings
-    allowed_origins: List[str] = Field(default=["http://localhost:3000"])
+    allowed_origins: List[str] = Field(default=["http://localhost:3000", "http://localhost:3001"])
     api_key: Optional[str] = Field(default=None)
     max_queue_size: int = Field(default=100)
     max_text_length: int = Field(default=1000)
@@ -35,7 +35,7 @@ class Settings(BaseModel):
     model_name: str = Field(default="Qwen/Qwen2.5-14B-Instruct")
     rate_limit_per_minute: int = Field(default=60)
     auto_batch_size_max: int = Field(default=256)  # Maximum value for auto-calculated batch size
-    max_cpu_cached_models: int = Field(default=3)  # Maximum models to keep in CPU memory
+    max_cpu_cached_models: int = Field(default=5)  # Maximum models to keep in CPU memory
     
     # Tuned lens settings
     tuned_lens_dir: Optional[str] = Field(default=None)
