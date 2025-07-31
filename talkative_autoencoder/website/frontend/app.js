@@ -1884,6 +1884,24 @@ const checkForChatFormat = () => {
     }
 };
 
+// Check if input starts with model tokens
+const checkForModelTokens = () => {
+    const text = elements.inputText.value.trim();
+    
+    // Common model tokens that indicate raw model input
+    const modelTokens = ['<bos>', '<|endoftext|>', '<|im_start|>', '<|begin_of_text|>', '<s>', '</s>', '<|system|>', '<|user|>', '<|assistant|>'];
+    const startsWithModelToken = modelTokens.some(token => text.startsWith(token));
+    
+    if (startsWithModelToken && elements.autoConvertToChat.checked) {
+        // Uncheck auto-convert when model tokens are detected
+        elements.autoConvertToChat.checked = false;
+        showGenerationStatus('Model tokens detected - disabled auto-convert to chat', 'info');
+        setTimeout(() => {
+            elements.generationStatus.classList.add('hidden');
+        }, 3000);
+    }
+};
+
 // Helper function to update batch size
 const updateAutoBatchSize = () => {
     if (elements.autoBatchSize && elements.autoBatchSize.checked) {
@@ -1933,7 +1951,10 @@ const initializeEventListeners = () => {
     let chatFormatCheckTimeout;
     elements.inputText.addEventListener('input', () => {
         clearTimeout(chatFormatCheckTimeout);
-        chatFormatCheckTimeout = setTimeout(checkForChatFormat, 300); // 300ms debounce
+        chatFormatCheckTimeout = setTimeout(() => {
+            checkForChatFormat();
+            checkForModelTokens();
+        }, 300); // 300ms debounce
     });
     
     elements.isChatFormatted.addEventListener('change', () => {
