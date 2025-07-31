@@ -147,6 +147,21 @@
                                 </div>
                             </div>
                             <p id="chatFormatInfo" class="text-xs text-gray-600 mt-2 ml-6 p-2 bg-gray-50 rounded hidden">Enable this if your input is a JSON array of chat messages with 'role' and 'content' fields. For plain text, the model will apply user prompt formatting if this box is selected. The model will use proper chat templates for formatting in both cases.</p>
+                            
+                            <!-- Auto-convert checkbox -->
+                            <div class="flex items-center gap-4 mt-3">
+                                <label class="flex items-center space-x-2">
+                                    <input type="checkbox" id="autoConvertToChat" checked
+                                           class="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded">
+                                    <span class="text-sm text-gray-700">Auto-convert plain text to chat format</span>
+                                </label>
+                                <button type="button" class="info-btn" onclick="document.getElementById('autoConvertInfo').classList.toggle('hidden')">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                    </svg>
+                                </button>
+                            </div>
+                            <p id="autoConvertInfo" class="text-xs text-gray-600 mt-2 ml-6 p-2 bg-gray-50 rounded hidden">When checked, plain text will be automatically wrapped as a user message when you click Analyze or Generate. This is unchecked automatically if you enter JSON chat messages.</p>
                         </div>
                     </div>
                 </div>

@@ -388,6 +388,7 @@ class InferenceService:
                 "top_p": top_p,
                 "return_full_text": True,
                 "is_chat": is_chat,
+                "use_cache": True,
             }
             
             # Add chat tokenizer if available and needed

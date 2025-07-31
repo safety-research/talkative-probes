@@ -29,7 +29,7 @@ eval:
   max_val_samples: 100  # Much smaller for testing
   
   # Bootstrap disabled for speed
-  do_bootstrap: false
+  do_bootstrap: false  # Bootstrap disabled by default for speed
   
   # Caching settings
   load_store: false

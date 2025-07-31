@@ -29,16 +29,13 @@ eval:
   max_val_samples: 100000  # Process up to 100k samples
   
   # Bootstrap disabled for speed
-  do_bootstrap: false
+  do_bootstrap: false  # Bootstrap disabled by default for speed
   
   # Caching ENABLED for 8 GPU setup
   load_store: true
-  cache_dir: vector_cache_8gpu
+  cache_dir: vector_cache
 
 # Dataset configuration
-dataset:
-  activation_dir: "./data/SimpleStories_train"
-  val_activation_dir: "./data/SimpleStories_test"
   
   on_the_fly:
     enabled: false

@@ -31,7 +31,7 @@ eval:
   max_val_samples: 1000  # Maximum validation samples to use
   
   # Bootstrap settings
-  do_bootstrap: false  # Bootstrap disabled by default for speed
+  do_bootstrap: false  # Bootstrap disabled by default for speed  # Bootstrap disabled by default for speed
   
   # Caching settings
   load_store: false  # Set to true to enable vector caching

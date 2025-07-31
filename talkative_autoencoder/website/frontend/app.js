@@ -373,6 +373,8 @@ const elements = {
     analyzeBtn: document.getElementById('analyzeBtn'),
     isChatFormatted: document.getElementById('isChatFormatted'),
     chatWarning: document.getElementById('chatWarning'),
+    autoConvertToChat: document.getElementById('autoConvertToChat'),
+    autoConvertInfo: document.getElementById('autoConvertInfo'),
     
     // Continuation generation
     generateBtn: document.getElementById('generateBtn'),
@@ -1207,9 +1209,27 @@ const analyze = () => {
         options.is_chat = true;
     }
     
+    // Auto-convert plain text to chat format if checkbox is checked
+    let textToSend = text;
+    if (elements.autoConvertToChat.checked && !elements.isChatFormatted.checked) {
+        // Check if text is not already JSON chat format
+        const isJsonChat = text.startsWith('[') && text.includes('"role"') && text.includes('"content"');
+        if (!isJsonChat) {
+            // Convert to chat format
+            const chatFormat = [
+                {
+                    "role": "user",
+                    "content": text
+                }
+            ];
+            textToSend = JSON.stringify(chatFormat);
+            options.is_chat = true; // Set is_chat to true since we're converting to chat format
+        }
+    }
+    
     // Log the request
     RequestLogger.log('analysis', {
-        text: text,
+        text: textToSend,
         options: options,
         model: state.modelInfo ? state.modelInfo.model_name : 'unknown'
     });
@@ -1217,7 +1237,7 @@ const analyze = () => {
     // Send request
     state.ws.send(JSON.stringify({
         type: 'analyze',
-        text: text,
+        text: textToSend,
         options: options
     }));
 };
@@ -1257,16 +1277,34 @@ const generate = () => {
         return_full_text: true
     };
     
+    // Auto-convert plain text to chat format if checkbox is checked
+    let textToSend = text;
+    if (elements.autoConvertToChat.checked && !elements.isChatFormatted.checked) {
+        // Check if text is not already JSON chat format
+        const isJsonChat = text.startsWith('[') && text.includes('"role"') && text.includes('"content"');
+        if (!isJsonChat) {
+            // Convert to chat format
+            const chatFormat = [
+                {
+                    "role": "user",
+                    "content": text
+                }
+            ];
+            textToSend = JSON.stringify(chatFormat);
+            options.is_chat = true; // Set is_chat to true since we're converting to chat format
+        }
+    }
+    
     // Log the request
     RequestLogger.log('generation', {
-        text: text,
+        text: textToSend,
         options: options,
         model: state.modelInfo ? state.modelInfo.model_name : 'unknown'
     });
     
     state.ws.send(JSON.stringify({
         type: 'generate',
-        text: text,
+        text: textToSend,
         options: options
     }));
 };
@@ -1827,6 +1865,8 @@ const checkForChatFormat = () => {
                 const parsed = JSON.parse(text);
                 if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].role) {
                     elements.chatWarning.classList.remove('hidden');
+                    // Auto-uncheck the auto-convert checkbox for JSON chat format
+                    elements.autoConvertToChat.checked = false;
                     return;
                 }
             } catch (e) {
@@ -1835,8 +1875,12 @@ const checkForChatFormat = () => {
         }
         // Show warning based on pattern matching for large texts
         elements.chatWarning.classList.remove('hidden');
+        // Auto-uncheck the auto-convert checkbox for JSON-like chat format
+        elements.autoConvertToChat.checked = false;
     } else {
         elements.chatWarning.classList.add('hidden');
+        // Auto-check the auto-convert checkbox for plain text
+        elements.autoConvertToChat.checked = true;
     }
 };
 
@@ -1895,6 +1939,8 @@ const initializeEventListeners = () => {
     elements.isChatFormatted.addEventListener('change', () => {
         if (elements.isChatFormatted.checked) {
             elements.chatWarning.classList.add('hidden');
+            // Make checkboxes mutually exclusive
+            elements.autoConvertToChat.checked = false;
             
             // Auto-format text to chat format if it's not already
             const text = elements.inputText.value.trim();
@@ -1919,6 +1965,9 @@ const initializeEventListeners = () => {
                 ];
                 elements.inputText.value = JSON.stringify(chatFormat, null, 2);
                 
+                // Uncheck auto-convert since we now have JSON format
+                elements.autoConvertToChat.checked = false;
+                
                 // Show a brief success message
                 const oldText = elements.generationStatus.textContent;
                 const oldClass = elements.generationStatus.className;
@@ -1929,6 +1978,26 @@ const initializeEventListeners = () => {
                         elements.generationStatus.className = oldClass;
                     }
                 }, 2000);
+            }
+        }
+    });
+    
+    // Auto-convert checkbox handler - make checkboxes mutually exclusive
+    elements.autoConvertToChat.addEventListener('change', () => {
+        if (elements.autoConvertToChat.checked) {
+            // If auto-convert is checked, uncheck the isChatFormatted checkbox
+            elements.isChatFormatted.checked = false;
+            
+            // Also check if current text is JSON chat format and provide feedback
+            const text = elements.inputText.value.trim();
+            const isJsonChat = text.startsWith('[') && text.includes('"role"') && text.includes('"content"');
+            
+            if (isJsonChat) {
+                // Provide subtle feedback that input is already chat format
+                showGenerationStatus('Note: Input appears to be already in chat format', 'info');
+                setTimeout(() => {
+                    elements.generationStatus.classList.add('hidden');
+                }, 3000);
             }
         }
     });
@@ -2147,6 +2216,9 @@ const initialize = () => {
     
     // Initialize batch size if auto-calculate is enabled
     updateAutoBatchSize();
+    
+    // Check initial input format to set auto-convert checkbox state
+    checkForChatFormat();
     
     // Load from URL if present
     loadFromURL();

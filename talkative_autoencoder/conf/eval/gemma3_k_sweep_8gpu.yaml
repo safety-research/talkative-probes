@@ -29,7 +29,7 @@ eval:
   max_val_samples: 100000  # Process up to 100k samples
   
   # Bootstrap disabled for speed
-  do_bootstrap: false
+  do_bootstrap: false  # Bootstrap disabled by default for speed
   
   # Caching settings
   load_store: false

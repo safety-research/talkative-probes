@@ -427,6 +427,8 @@ def _prepare_dataloaders(
         # pretok_path is guaranteed to be non-None here due to the check above
         pretok_path: str = pretok_path_config # type: ignore 
 
+        print(f"Getting validation dataset from pretokenized path: {pretok_path}")
+
         if tokenizer_for_gen: 
             val_split_name = dataset_cfg.get('val_split', 'validation')
             #num_val_samples_to_generate = on_the_fly_cfg.get('validation_samples_override', max_val_samples_req)

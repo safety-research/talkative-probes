@@ -20,7 +20,7 @@ eval:
   use_bf16: true
   
   # Bootstrap disabled by default for speed
-  do_bootstrap: false
+  do_bootstrap: false  # Bootstrap disabled by default for speed
 
 # Include dataset configuration for validation data
 dataset:

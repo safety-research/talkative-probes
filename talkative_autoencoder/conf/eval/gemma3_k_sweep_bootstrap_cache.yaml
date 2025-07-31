@@ -16,7 +16,6 @@ eval:
   temperature: 1.0
   
   # Batch size settings
-  batch_size: 8
   max_generation_batch_size: 64
   dataloader_batch_size: 128
   vector_extraction_batch_size: 16

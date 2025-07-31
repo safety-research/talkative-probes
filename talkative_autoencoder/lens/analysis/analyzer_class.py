@@ -216,7 +216,7 @@ class LensAnalyzer:
                     shared_base_model = Gemma3ForCausalLM.from_pretrained(
                         self.model_name,
                         load_in_8bit=False,
-                        attn_implementation="eager",
+                        attn_implementation=self.config.get("attn_implementation", None),
                         device_map="auto" if not initialise_on_cpu else "cpu",
                         torch_dtype=self.model_dtype,
                     )
@@ -224,7 +224,7 @@ class LensAnalyzer:
                     shared_base_model = AutoModelForCausalLM.from_pretrained(
                         self.model_name,
                         load_in_8bit=False,
-                        attn_implementation="eager",
+                        attn_implementation=self.config.get("attn_implementation", None),
                         device_map="auto" if not initialise_on_cpu else "cpu",
                         torch_dtype=self.model_dtype,
                     )
@@ -255,12 +255,14 @@ class LensAnalyzer:
                                 "google/gemma-3-27b-it",
                                 device_map="auto" if not initialise_on_cpu else "cpu",
                                 torch_dtype=self.model_dtype,
+                                attn_implementation=self.config.get("attn_implementation", None),
                             )
                         else:
                             different_activations_model = AutoModelForCausalLM.from_pretrained(
                                 "google/gemma-2-9b-it",
                                 device_map="auto" if not initialise_on_cpu else "cpu",
                                 torch_dtype=self.model_dtype,
+                                attn_implementation=self.config.get("attn_implementation", None),
                             )
                         print(f"Loading adapter {diff_model_str} into {different_activations_model}")
                         different_activations_model.load_adapter(diff_model_str)
@@ -270,6 +272,7 @@ class LensAnalyzer:
                             "Qwen/Qwen2.5-14B-Instruct",
                             device_map="auto" if not initialise_on_cpu else "cpu",
                             torch_dtype=self.model_dtype,
+                            attn_implementation=self.config.get("attn_implementation", None),
                         )
                         print(f"Loading adapter {diff_model_str} into {different_activations_model}")
                         different_activations_model.load_adapter(diff_model_str)
@@ -280,12 +283,14 @@ class LensAnalyzer:
                                 different_activations_orig,
                                 device_map="auto" if not initialise_on_cpu else "cpu",
                                 torch_dtype=self.model_dtype,
+                                attn_implementation=self.config.get("attn_implementation", None),
                             )
                         else:
                             different_activations_model = AutoModelForCausalLM.from_pretrained(
                                 different_activations_orig,
                                 device_map="auto" if not initialise_on_cpu else "cpu",
                                 torch_dtype=self.model_dtype,
+                                attn_implementation=self.config.get("attn_implementation", None),
                             )
                     lora_name = (
                         different_activations_orig if hasattr(different_activations_model, "peft_config") else None
@@ -450,6 +455,7 @@ class LensAnalyzer:
                 print(
                     f"✓ Using shared base model - saved ~{shared_base_model.num_parameters() * 2 / 1e9:.1f}GB of GPU memory"
                 )
+
     def to(self, device):
         """
         Move all relevant models and tensors to the specified device.
@@ -468,10 +474,10 @@ class LensAnalyzer:
     def swap_orig_model(self, new_model: str):
         del self.orig_model
         if new_model.startswith("google/gemma-2-9b-it") and new_model != "google/gemma-2-9b-it":
-            new_model = AutoModelForCausalLM.from_pretrained("google/gemma-2-9b-it")
+            new_model = AutoModelForCausalLM.from_pretrained("google/gemma-2-9b-it", attn_implementation=self.config.get("attn_implementation", None))
             new_model.load_adapter(new_model)
         else:
-            new_model = AutoModelForCausalLM.from_pretrained(new_model)
+            new_model = AutoModelForCausalLM.from_pretrained(new_model, attn_implementation=self.config.get("attn_implementation", None))
         self.orig_model = OrigWrapper(new_model, load_in_8bit=False, base_to_use=self.shared_base_model)
 
     # def analyze_all_tokens(self, text: str, seed=42, batch_size=None, no_eval=False, tuned_lens: bool = True, add_tokens = None, replace_left=None, replace_right=None, do_hard_tokens=False, return_structured=False, move_devices=False, logit_lens_analysis: bool = False, temperature: float = 1.0, no_kl: bool = False, calculate_token_salience: bool = False, optimize_explanations_config: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
@@ -767,9 +773,7 @@ class LensAnalyzer:
                     # Ensure position_to_analyze is a 1D tensor of indices
                     # input_ids: (1, seq_len), position_to_analyze: (batch_size,)
                     # Use torch.gather to efficiently select the correct token for each position
-                    current_token_id = torch.gather(
-                        input_ids[0], 0, position_to_analyze
-                    )
+                    current_token_id = torch.gather(input_ids[0], 0, position_to_analyze)
                 else:
                     current_token_id = None
             A_hat = self.encoder(
@@ -2536,17 +2540,17 @@ class LensAnalyzer:
                     with torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=self.use_bf16):
                         # Generate explanations for all layers in the current batch.
                         if self.decoder.config.use_kv_cache:
-                                gen = self.decoder.generate_soft_kv_cached_nondiff(
-                                    A_batch,
-                                    max_length=self.t_text,
-                                    gumbel_tau=self.tau,
-                                    original_token_pos=token_pos_for_decoder,
-                                    return_logits=True,
-                                    add_tokens=add_tokens,
-                                    hard_left_emb=replace_left,
-                                    hard_right_emb=replace_right,
-                                    temperature=temperature,
-                                )
+                            gen = self.decoder.generate_soft_kv_cached_nondiff(
+                                A_batch,
+                                max_length=self.t_text,
+                                gumbel_tau=self.tau,
+                                original_token_pos=token_pos_for_decoder,
+                                return_logits=True,
+                                add_tokens=add_tokens,
+                                hard_left_emb=replace_left,
+                                hard_right_emb=replace_right,
+                                temperature=temperature,
+                            )
                         else:
                             gen = self.decoder.generate_soft(
                                 A_batch,
@@ -2656,7 +2660,7 @@ class LensAnalyzer:
                         current_token_id_single = input_ids.squeeze(0)[position_to_analyze].unsqueeze(0)
 
                         A_hat_single = self.encoder(
-                        generated_token_embeddings,
+                            generated_token_embeddings,
                             original_token_pos=torch.tensor([position_to_analyze], device=self.device),
                             current_token_ids=current_token_id_single
                             if self.encoder.config.add_current_token
@@ -2668,28 +2672,26 @@ class LensAnalyzer:
                         all_mses.append(mse.unsqueeze(0))
 
                         # Relative RMSE
-                        relative_rmse = mse / ((A_single**2).mean() + 1e-9)
+                        relative_rmse = np.sqrt(mse / ((A_single**2).mean() + 1e-9))
                         all_relative_rmses.append(relative_rmse.unsqueeze(0))
 
                         # Compute KL divergence only if not no_kl
                         if not no_kl:
-                                # Get original and reconstructed logits (cannot be batched across layers)
-                                logits_orig = self.orig_model.forward_with_replacement(
-                                    input_ids, A_single, layer_idx, position_to_analyze, no_grad=True
-                                ).logits[:, position_to_analyze, :]
+                            # Get original and reconstructed logits (cannot be batched across layers)
+                            logits_orig = self.orig_model.forward_with_replacement(
+                                input_ids, A_single, layer_idx, position_to_analyze, no_grad=True
+                            ).logits[:, position_to_analyze, :]
 
-                                logits_recon = self.orig_model.forward_with_replacement(
-                                    input_ids, A_hat_single.squeeze(0), layer_idx, position_to_analyze, no_grad=True
-                                ).logits[:, position_to_analyze, :]
+                            logits_recon = self.orig_model.forward_with_replacement(
+                                input_ids, A_hat_single.squeeze(0), layer_idx, position_to_analyze, no_grad=True
+                            ).logits[:, position_to_analyze, :]
 
-                                # Compute KL divergence
-                                with torch.amp.autocast("cuda", enabled=False):
-                                    log_probs_orig = torch.log_softmax(logits_orig.float(), dim=-1)
-                                    log_probs_recon = torch.log_softmax(logits_recon.float(), dim=-1)
-                                    kl_div = (torch.exp(log_probs_orig) * (log_probs_orig - log_probs_recon)).sum(
-                                        dim=-1
-                                    )
-                                    all_kl_divs.append(kl_div)
+                            # Compute KL divergence
+                            with torch.amp.autocast("cuda", enabled=False):
+                                log_probs_orig = torch.log_softmax(logits_orig.float(), dim=-1)
+                                log_probs_recon = torch.log_softmax(logits_recon.float(), dim=-1)
+                                kl_div = (torch.exp(log_probs_orig) * (log_probs_orig - log_probs_recon)).sum(dim=-1)
+                                all_kl_divs.append(kl_div)
                         else:
                             all_kl_divs.append(torch.tensor(-1.0, device=self.device))
 

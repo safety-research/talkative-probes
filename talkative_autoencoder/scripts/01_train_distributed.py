@@ -1043,6 +1043,8 @@ class MetricsAccumulator:
         self._act_stats["act_vectors_n"] = 0
         self._act_stats["act_sum_per_feature"] = torch.tensor(0.0, device=self.device)
         self._act_stats["resid_sum_per_feature"] = torch.tensor(0.0, device=self.device)
+        self._act_stats["act_sum_sq_per_feature"] = torch.tensor(0.0, device=self.device)
+        self._act_stats["resid_sum_sq_per_feature"] = torch.tensor(0.0, device=self.device)
         self._act_stats["act_min"] = torch.tensor(float("inf"), device=self.device)
         self._act_stats["act_max"] = torch.tensor(float("-inf"), device=self.device)
         self._act_stats["recon_min"] = torch.tensor(float("inf"), device=self.device)
@@ -1071,6 +1073,8 @@ class MetricsAccumulator:
         if self._act_stats["act_vectors_n"] == 0 and num_vectors > 0:
             self._act_stats["act_sum_per_feature"] = torch.zeros(hidden_dim, device=self.device)
             self._act_stats["resid_sum_per_feature"] = torch.zeros(hidden_dim, device=self.device)
+            self._act_stats["act_sum_sq_per_feature"] = torch.zeros(hidden_dim, device=self.device)
+            self._act_stats["resid_sum_sq_per_feature"] = torch.zeros(hidden_dim, device=self.device)
 
         self._act_stats["act_sum"] += activations.sum()
         self._act_stats["act_sum_sq"] += (activations**2).sum()
@@ -1078,7 +1082,9 @@ class MetricsAccumulator:
         self._act_stats["act_vectors_n"] += num_vectors
         if num_vectors > 0:
             self._act_stats["act_sum_per_feature"] += activations_2d.sum(dim=0)
+            self._act_stats["act_sum_sq_per_feature"] += (activations_2d**2).sum(dim=0)
             self._act_stats["resid_sum_per_feature"] += residuals_2d.sum(dim=0)
+            self._act_stats["resid_sum_sq_per_feature"] += (residuals_2d**2).sum(dim=0)
 
         self._act_stats["act_min"] = torch.min(self._act_stats["act_min"], activations.min())
         self._act_stats["act_max"] = torch.max(self._act_stats["act_max"], activations.max())
@@ -1113,7 +1119,17 @@ class MetricsAccumulator:
             + [
                 _get_item(v)
                 for k, v in self._act_stats.items()
-                if k not in ["act_min", "act_max", "recon_min", "recon_max", "act_sum_per_feature", "resid_sum_per_feature"]
+                if k
+                not in [
+                    "act_min",
+                    "act_max",
+                    "recon_min",
+                    "recon_max",
+                    "act_sum_per_feature",
+                    "resid_sum_per_feature",
+                    "act_sum_sq_per_feature",
+                    "resid_sum_sq_per_feature",
+                ]
             ]
             + [float(self.num_light_batches), float(self.num_heavy_batches)]
         )
@@ -1121,10 +1137,15 @@ class MetricsAccumulator:
         dist.all_reduce(sum_metrics_tensor, op=dist.ReduceOp.SUM)
 
         # --- Vector metrics ---
-        if isinstance(self._act_stats["act_sum_per_feature"], torch.Tensor):
-            dist.all_reduce(self._act_stats["act_sum_per_feature"], op=dist.ReduceOp.SUM)
-        if isinstance(self._act_stats["resid_sum_per_feature"], torch.Tensor):
-            dist.all_reduce(self._act_stats["resid_sum_per_feature"], op=dist.ReduceOp.SUM)
+        vector_metrics_to_sync = [
+            "act_sum_per_feature",
+            "resid_sum_per_feature",
+            "act_sum_sq_per_feature",
+            "resid_sum_sq_per_feature",
+        ]
+        for key in vector_metrics_to_sync:
+            if isinstance(self._act_stats[key], torch.Tensor):
+                dist.all_reduce(self._act_stats[key], op=dist.ReduceOp.SUM)
 
         # --- Min/Max-reduced metrics ---
         min_max_tensor = torch.stack(
@@ -1147,7 +1168,16 @@ class MetricsAccumulator:
             self._heavy_metrics[key] = unpacked_sum_metrics[i]
             i += 1
         for key in self._act_stats:
-            if key not in ["act_min", "act_max", "recon_min", "recon_max", "act_sum_per_feature", "resid_sum_per_feature"]:
+            if key not in [
+                "act_min",
+                "act_max",
+                "recon_min",
+                "recon_max",
+                "act_sum_per_feature",
+                "resid_sum_per_feature",
+                "act_sum_sq_per_feature",
+                "resid_sum_sq_per_feature",
+            ]:
                 self._act_stats[key] = unpacked_sum_metrics[i]
                 i += 1
 
@@ -1194,11 +1224,21 @@ class MetricsAccumulator:
 
         new_variance_recovered = 0.0
         if N_vectors > 1:
-            act_sum_per_feature = self._act_stats["act_sum_per_feature"]
-            resid_sum_per_feature = self._act_stats["resid_sum_per_feature"]
+            # Correctly compute variance per feature, then aggregate.
+            # This avoids conflating variance within a feature and variance across features.
+            act_var_per_feature = (
+                self._act_stats["act_sum_sq_per_feature"] - (self._act_stats["act_sum_per_feature"] ** 2) / N_vectors
+            ) / (N_vectors - 1)
 
-            total_variance = (act_sum_sq - (act_sum_per_feature**2).sum() / N_vectors) / (N_vectors - 1)
-            residual_variance = (mse_sum - (resid_sum_per_feature**2).sum() / N_vectors) / (N_vectors - 1)
+            # The residual is (activation - reconstruction).
+            resid_var_per_feature = (
+                self._act_stats["resid_sum_sq_per_feature"]
+                - (self._act_stats["resid_sum_per_feature"] ** 2) / N_vectors
+            ) / (N_vectors - 1)
+
+            # Total variance across all features (sum of per-feature variances)
+            total_variance = act_var_per_feature.sum()
+            residual_variance = resid_var_per_feature.sum()
 
             total_variance = _get_item(total_variance)
             residual_variance = _get_item(residual_variance)
@@ -4320,6 +4360,7 @@ def main(cfg: DictConfig) -> None:
                         )
                 else:  # This means most_recent_val_loss was NaN
                     log.info(f"Checkpoint not saved at step {step} because validation loss is NaN.")
+
     except KeyboardInterrupt as e:
         if is_main():
             log.warning(f"KeyboardInterrupt detected! Preparing to save checkpoint if applicable. {e}")
