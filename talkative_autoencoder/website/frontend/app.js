@@ -596,6 +596,7 @@ const createGenerationTabs = () => {
         
         const tab = document.createElement('button');
         const isPending = gen.status === 'pending';
+        const isError = gen.status === 'error';
         tab.className = `py-2 px-4 text-sm font-medium border-b-2 flex items-center gap-2 ${
             index === state.currentGenerationIndex 
                 ? 'border-orange-500 text-gray-900' 
@@ -614,6 +615,17 @@ const createGenerationTabs = () => {
             tab.title = `Queued: "${gen.text}"`;
             tab.disabled = true;
             tab.style.cursor = 'not-allowed';
+        } else if (isError) {
+            tab.innerHTML = `
+                <svg class="w-4 h-4 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                </svg>
+                <span>Analysis ${index + 1} (Failed)</span>
+            `;
+            tab.title = `Error: ${gen.error || 'Analysis failed'}`;
+            tab.classList.add('text-red-600');
+            tab.disabled = true;
+            tab.style.cursor = 'not-allowed';
         } else {
             tab.textContent = `Analysis ${index + 1}`;
             tab.onclick = () => switchGeneration(index);
@@ -629,15 +641,30 @@ const createGenerationTabs = () => {
             trashBtn.title = 'Cancel this analysis';
         } else {
             trashBtn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>`;
-            trashBtn.title = 'Delete this analysis';
+            trashBtn.title = isError ? 'Remove this failed analysis' : 'Delete this analysis';
         }
         
         trashBtn.onclick = (e) => {
             e.stopPropagation();
             if (isPending && gen.request_id) {
-                // Cancel the specific pending request
-                interruptSpecificRequest(gen.request_id, 'analysis');
-                // Don't delete here - wait for the interrupted message from server
+                // Check if the request is in activeRequests (processing) or just pending
+                const isProcessing = state.activeRequests && 
+                    state.activeRequests[gen.request_id] && 
+                    state.activeRequests[gen.request_id].status === 'processing';
+                
+                if (isProcessing) {
+                    // Interrupt a processing request
+                    interruptSpecificRequest(gen.request_id, 'analysis');
+                } else {
+                    // Cancel a queued request
+                    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+                        state.ws.send(JSON.stringify({
+                            type: 'cancel_request',
+                            request_id: gen.request_id
+                        }));
+                    }
+                }
+                // Don't delete here - wait for the confirmation from server
             } else {
                 // For completed analyses, delete immediately
                 deleteGeneration(index);
@@ -659,9 +686,13 @@ const createGenerationTabs = () => {
 const switchGeneration = (index) => {
     if (index < 0 || index >= state.generations.length) return;
     
-    // Don't switch to pending generations
+    // Don't switch to pending or error generations
     if (state.generations[index].status === 'pending') {
         console.log('Cannot switch to pending generation');
+        return;
+    }
+    if (state.generations[index].status === 'error') {
+        console.log('Cannot switch to error generation');
         return;
     }
     
@@ -1142,6 +1173,12 @@ const handleWebSocketMessage = (data) => {
             const processingMessage = data.message || 'Processing...';
             // Use explicit context if provided, otherwise infer from message
             const processingContext = data.context || (processingMessage.includes('Generating') ? 'generation' : 'analysis');
+            
+            // Mark the request as processing in activeRequests
+            if (data.request_id && state.activeRequests && state.activeRequests[data.request_id]) {
+                state.activeRequests[data.request_id].status = 'processing';
+            }
+            
             // Show interrupt button when processing
             showLoading(true, processingMessage, null, processingContext, true);
             break;
@@ -1198,23 +1235,21 @@ const handleWebSocketMessage = (data) => {
                 delete state.activeRequests[data.request_id];
             }
             
-            // Remove pending generation if error occurs
+            // Update pending generation to error state instead of removing
             let pendingIdx = -1;
             if (data.request_id) {
                 // Find by request_id first
                 pendingIdx = state.generations.findIndex(gen => gen.status === 'pending' && gen.request_id === data.request_id);
             }
-            if (pendingIdx === -1) {
-                // Fallback to any pending (less safe)
-                pendingIdx = state.generations.findIndex(gen => gen.status === 'pending');
+            if (pendingIdx === -1 && data.client_request_id) {
+                // Try client_request_id
+                pendingIdx = state.generations.findIndex(gen => gen.status === 'pending' && gen.client_request_id === data.client_request_id);
             }
             
             if (pendingIdx !== -1) {
-                state.generations.splice(pendingIdx, 1);
-                if (state.currentGenerationIndex >= state.generations.length && state.generations.length > 0) {
-                    state.currentGenerationIndex = state.generations.length - 1;
-                    switchGeneration(state.currentGenerationIndex);
-                }
+                // Update to error state instead of removing
+                state.generations[pendingIdx].status = 'error';
+                state.generations[pendingIdx].error = data.error || 'An error occurred during analysis';
                 createGenerationTabs();
             }
             
@@ -1312,6 +1347,32 @@ const handleWebSocketMessage = (data) => {
                 elements.generateBtn.disabled = false;
             } else {
                 elements.analyzeBtn.disabled = false;
+            }
+            break;
+            
+        case 'request_cancelled':
+            // Handle cancelled request (for queued requests)
+            console.log('Request cancelled:', data);
+            if (data.request_id) {
+                // Clean up request tracking
+                if (state.activeRequests && state.activeRequests[data.request_id]) {
+                    delete state.activeRequests[data.request_id];
+                }
+                
+                // Remove the cancelled pending generation
+                const cancelledIdx = state.generations.findIndex(gen => 
+                    gen.status === 'pending' && gen.request_id === data.request_id
+                );
+                if (cancelledIdx !== -1) {
+                    state.generations.splice(cancelledIdx, 1);
+                    if (state.currentGenerationIndex >= state.generations.length && state.generations.length > 0) {
+                        state.currentGenerationIndex = state.generations.length - 1;
+                        switchGeneration(state.currentGenerationIndex);
+                    }
+                    createGenerationTabs();
+                }
+                
+                showError('Analysis cancelled');
             }
             break;
             
