@@ -31,18 +31,6 @@ def _get_attn_mask(
                 .long()
                 .tolist()
             )
-            # if tokenizer.pad_token_id is not None and (torch.tensor(s["input_ids"]) == tokenizer.pad_token_id).any():
-            #     print(f"PAD token id encountered in attention mask during get attn mask batch.")
-            #     mask = s["attention_mask"]
-            #     input_ids_tensor = torch.tensor(s["input_ids"])
-            #     pad_mask = (input_ids_tensor == tokenizer.pad_token_id)
-            #     # Ensure mask is a tensor for assignment, then convert back to list
-            #     mask_tensor = torch.tensor(mask)
-            #     mask_tensor[pad_mask] = 0
-            #     masks.append(mask_tensor.tolist())
-            #     print('fixing')
-            # else:
-            #     masks.append(s["attention_mask"])
         else:
             # Create a mask assuming pad_token_id is defined
             masks.append(
@@ -119,11 +107,17 @@ class InMemoryValidationDataset(Dataset):
         self.min_pos = self.config['min_pos']
         self.position_selection_strategy = self.config.get('position_selection_strategy', 'random')
         self.do_not_extract_activations = do_not_extract_activations
+        
+        # Norm filtering configuration
+        self.filter_large_norms = self.config.get('filter_large_norms', False)
+        self.max_activation_norm = self.config.get('max_activation_norm', 300000.0)
 
         self.data_store: List[Dict[str, Any]] = []
         # Ensure model is on device *before* generation.
         self.orig_model_for_gen.to(self.generation_device)
         _dataset_log_fn(log, f"Rank {self.rank} (ValDS): Moved orig_model_for_gen to {self.generation_device} for validation data generation.", rank=self.rank)
+        if self.filter_large_norms:
+            _dataset_log_fn(log, f"Rank {self.rank} (ValDS): Norm filtering enabled with max norm threshold: {self.max_activation_norm}", rank=self.rank)
         self._generate_and_store_data()
         _dataset_log_fn(log, f"Rank {self.rank} finished generating {len(self.data_store)} validation samples for its shard.", rank=self.rank)
 
@@ -183,28 +177,42 @@ class InMemoryValidationDataset(Dataset):
             
         _dataset_log_fn(log, f"Rank {self.rank} will generate {num_samples_on_this_rank} validation samples from its shard (total unique: {actual_total_samples_to_consider}) using batch size {self.generation_batch_size}.", rank=self.rank)
 
-
-        indices_A_all = list(range(num_samples_on_this_rank))
-        indices_A_prime_all = indices_A_all[:]
-        if num_samples_on_this_rank > 1:
-            random.shuffle(indices_A_prime_all)
-            for i in range(num_samples_on_this_rank):
-                if indices_A_all[i] == indices_A_prime_all[i]:
-                    swap_idx = (i + 1) % num_samples_on_this_rank
-                    indices_A_prime_all[i], indices_A_prime_all[swap_idx] = (
-                        indices_A_prime_all[swap_idx],
-                        indices_A_prime_all[i],
-                    )
-        
+        # Track discarded samples
+        discarded_count = 0
         processed_count = 0
+        total_generated = 0
+        
+        # We need to keep track of indices for A/A' pairing
+        available_indices = list(range(len(sharded_pretok_ds_for_rank)))
+        current_idx = 0
+        
         with torch.no_grad():
-            for batch_start_idx in range(0, num_samples_on_this_rank, self.generation_batch_size):
-                batch_end_idx = min(batch_start_idx + self.generation_batch_size, num_samples_on_this_rank)
-                current_batch_indices_A = indices_A_all[batch_start_idx:batch_end_idx]
-                current_batch_indices_A_prime = indices_A_prime_all[batch_start_idx:batch_end_idx]
-
-                batch_samples_A = [sharded_pretok_ds_for_rank[idx] for idx in current_batch_indices_A]
-                batch_samples_A_prime = [sharded_pretok_ds_for_rank[idx] for idx in current_batch_indices_A_prime]
+            while len(self.data_store) < num_samples_on_this_rank and current_idx < len(available_indices):
+                # Calculate how many more samples we need
+                remaining_needed = num_samples_on_this_rank - len(self.data_store)
+                batch_size = min(self.generation_batch_size, remaining_needed, len(available_indices) - current_idx)
+                
+                if batch_size == 0:
+                    break
+                
+                # Get batch indices
+                batch_indices = available_indices[current_idx:current_idx + batch_size]
+                current_idx += batch_size
+                
+                # Generate A' indices ensuring they're different from A
+                batch_indices_prime = batch_indices[:]
+                if len(batch_indices) > 1:
+                    random.shuffle(batch_indices_prime)
+                    for i in range(len(batch_indices)):
+                        if batch_indices[i] == batch_indices_prime[i]:
+                            swap_idx = (i + 1) % len(batch_indices)
+                            batch_indices_prime[i], batch_indices_prime[swap_idx] = (
+                                batch_indices_prime[swap_idx],
+                                batch_indices_prime[i],
+                            )
+                
+                batch_samples_A = [sharded_pretok_ds_for_rank[idx] for idx in batch_indices]
+                batch_samples_A_prime = [sharded_pretok_ds_for_rank[idx] for idx in batch_indices_prime]
 
                 if not batch_samples_A: continue
 
@@ -220,26 +228,12 @@ class InMemoryValidationDataset(Dataset):
                 batch_attn_mask_A_prime_device = torch.tensor(batch_attn_mask_A_prime_list, dtype=torch.long, device=self.generation_device)
 
                 if batch_input_ids_A_device.numel() == 0 or batch_attn_mask_A_device.numel() == 0:
-                    _dataset_log_fn(log, f"Empty tensor detected in batch {current_batch_indices_A}. Skipping batch.", "warning", rank=self.rank)
+                    _dataset_log_fn(log, f"Empty tensor detected in batch. Skipping batch.", "warning", rank=self.rank)
                     continue
                 if batch_input_ids_A_prime_device.numel() == 0 or batch_attn_mask_A_prime_device.numel() == 0:
-                    _dataset_log_fn(log, f"Empty tensor detected in batch {current_batch_indices_A_prime}. Skipping batch.", "warning", rank=self.rank)
+                    _dataset_log_fn(log, f"Empty tensor detected in batch. Skipping batch.", "warning", rank=self.rank)
                     continue
-                # _dataset_log_fn(log, f"batch_input_ids_A_device.numel(): {batch_input_ids_A_device.numel()}", "warning", rank=self.rank)
-                # _dataset_log_fn(log, f"batch_attn_mask_A_device.numel(): {batch_attn_mask_A_device.numel()}", "warning", rank=self.rank)
-                # _dataset_log_fn(log, f"batch_input_ids_A_prime_device.numel(): {batch_input_ids_A_prime_device.numel()}", "warning", rank=self.rank)
-                # _dataset_log_fn(log, f"batch_attn_mask_A_prime_device.numel(): {batch_attn_mask_A_prime_device.numel()}", "warning", rank=self.rank)
-                # _dataset_log_fn(log, f" shape of batch_input_ids_A_device: {batch_input_ids_A_device.shape}", "warning", rank=self.rank)
-                # _dataset_log_fn(log, f" shape of batch_attn_mask_A_device: {batch_attn_mask_A_device.shape}", "warning", rank=self.rank)
-                # _dataset_log_fn(log, f" shape of batch_input_ids_A_prime_device: {batch_input_ids_A_prime_device.shape}", "warning", rank=self.rank)
-                # _dataset_log_fn(log, f" shape of batch_attn_mask_A_prime_device: {batch_attn_mask_A_prime_device.shape}", "warning", rank=self.rank)
-                # _dataset_log_fn(log, f"first element of batch_input_ids_A_device: {batch_input_ids_A_device[0]}", "warning", rank=self.rank)
-                # _dataset_log_fn(log, f"first element of batch_attn_mask_A_device: {batch_attn_mask_A_device[0]}", "warning", rank=self.rank)
-                # _dataset_log_fn(log, f"first element of batch_input_ids_A_prime_device: {batch_input_ids_A_prime_device[0]}", "warning", rank=self.rank)
-                # _dataset_log_fn(log, f"first element of batch_attn_mask_A_prime_device: {batch_attn_mask_A_prime_device[0]}", "warning", rank=self.rank)
-                # _dataset_log_fn(log, f"first element of batch_input_ids_A_device: {batch_input_ids_A_device[0]}", "warning", rank=self.rank)
-                # _dataset_log_fn(log, f"first element of batch_attn_mask_A_device: {batch_attn_mask_A_device[0]}", "warning", rank=self.rank)
-                # _dataset_log_fn(log, f"first element of batch_input_ids_A_prime_device: {batch_input_ids_A_prime_device[0]}", "warning", rank=self.rank)
+                
                 if not self.do_not_extract_activations:
                     batch_act_A, batch_pos_A = _generate_activations_batched(self.orig_model_for_gen, batch_input_ids_A_device, self.layer_l, self.min_pos, batch_attn_mask_A_device, self.position_selection_strategy)
                     batch_act_A_prime, batch_pos_A_prime = _generate_activations_batched(self.orig_model_for_gen, batch_input_ids_A_prime_device, self.layer_l, self.min_pos, batch_attn_mask_A_prime_device, self.position_selection_strategy)
@@ -250,6 +244,19 @@ class InMemoryValidationDataset(Dataset):
                     batch_pos_A_prime = None
 
                 for i in range(len(batch_input_ids_A_list)):
+                    total_generated += 1
+                    
+                    # Check norms if filtering is enabled
+                    if self.filter_large_norms and batch_act_A is not None and batch_act_A_prime is not None:
+                        norm_A = torch.norm(batch_act_A[i]).item()
+                        norm_A_prime = torch.norm(batch_act_A_prime[i]).item()
+                        
+                        if norm_A > self.max_activation_norm or norm_A_prime > self.max_activation_norm:
+                            discarded_count += 1
+                            if discarded_count % 10 == 0:  # Log every 10 discarded samples
+                                _dataset_log_fn(log, f"Discarded {discarded_count} samples so far due to large norms (threshold: {self.max_activation_norm})", rank=self.rank)
+                            continue
+                    
                     self.data_store.append({
                         "A": batch_act_A[i].cpu() if batch_act_A is not None else None,
                         "A_prime": batch_act_A_prime[i].cpu() if batch_act_A_prime is not None else None,
@@ -261,8 +268,12 @@ class InMemoryValidationDataset(Dataset):
                     })
                     processed_count += 1
                 
-                if processed_count > 0 and processed_count % (self.generation_batch_size * 5) < self.generation_batch_size :
-                     _dataset_log_fn(log, f"Generated {processed_count}/{num_samples_on_this_rank} val samples...", rank=self.rank)
+                if processed_count > 0 and processed_count % (self.generation_batch_size * 5) < self.generation_batch_size:
+                    _dataset_log_fn(log, f"Generated {processed_count}/{num_samples_on_this_rank} val samples (discarded {discarded_count} due to large norms)...", rank=self.rank)
+        
+        if self.filter_large_norms and discarded_count > 0:
+            _dataset_log_fn(log, f"Validation generation complete. Generated {len(self.data_store)} samples, discarded {discarded_count} samples with norms > {self.max_activation_norm} (total generated: {total_generated})", rank=self.rank)
+        
         return len(self.data_store)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
@@ -317,6 +328,13 @@ class RankInMemoryTrainingCache(Dataset):
         self.generation_batch_size = self.config.get('generation_batch_size', 32)
         self.position_selection_strategy = self.config.get('position_selection_strategy', 'random')
         logger.info("Position selection strategy: %s", self.position_selection_strategy)
+        
+        # Norm filtering configuration
+        self.filter_large_norms = self.config.get('filter_large_norms', False)
+        self.max_activation_norm = self.config.get('max_activation_norm', 300000.0)
+        
+        if self.filter_large_norms:
+            logger.info("Norm filtering enabled with max norm threshold: %s", self.max_activation_norm)
 
         self.data_store: List[Dict[str, Any]] = []
         self.total_samples_in_pretokenised_dataset = 0
@@ -410,44 +428,77 @@ class RankInMemoryTrainingCache(Dataset):
         else:
             progress_bar = None
         
-        # if self.orig_model_for_gen.model != se
-        #     self.orig_model_for_gen.to(self.generation_device)
-        
         generated_count = 0
-        indices_to_use = self._next_indices(num_samples_to_generate)
+        discarded_count = 0
+        total_attempts = 0
         
         with torch.no_grad():
             while generated_count < num_samples_to_generate:
-                batch_indices = indices_to_use[generated_count : generated_count + self.generation_batch_size]
-                batch_samples = [self.pretok_dataset_shard[i] for i in batch_indices]  # type: ignore
+                # Get more indices if we need to keep generating
+                needed_samples = num_samples_to_generate - generated_count
+                # Request extra indices to account for potential discards
+                extra_factor = 1.5 if self.filter_large_norms else 1.0
+                indices_to_request = int(needed_samples * extra_factor)
+                indices_to_use = self._next_indices(indices_to_request)
                 
-                batch_attn_mask_list = _get_attn_mask(batch_samples, self.tokenizer)
-                batch_input_ids_tensor = torch.tensor([s['input_ids'] for s in batch_samples], dtype=torch.long, device=self.generation_device)
-                batch_attn_mask_tensor = torch.tensor(batch_attn_mask_list, dtype=torch.long, device=self.generation_device)
-                # add check for empty tensors
-                if batch_input_ids_tensor.numel() == 0 or batch_attn_mask_tensor.numel() == 0:
-                    self._log(f"Empty tensor detected in batch {batch_indices}. Skipping batch.", "warning")
-                    continue
+                idx_cursor = 0
+                while generated_count < num_samples_to_generate and idx_cursor < len(indices_to_use):
+                    batch_end = min(idx_cursor + self.generation_batch_size, len(indices_to_use))
+                    batch_indices = indices_to_use[idx_cursor:batch_end]
+                    idx_cursor = batch_end
+                    
+                    batch_samples = [self.pretok_dataset_shard[i] for i in batch_indices]  # type: ignore
+                    
+                    batch_attn_mask_list = _get_attn_mask(batch_samples, self.tokenizer)
+                    batch_input_ids_tensor = torch.tensor([s['input_ids'] for s in batch_samples], dtype=torch.long, device=self.generation_device)
+                    batch_attn_mask_tensor = torch.tensor(batch_attn_mask_list, dtype=torch.long, device=self.generation_device)
+                    
+                    if batch_input_ids_tensor.numel() == 0 or batch_attn_mask_tensor.numel() == 0:
+                        self._log(f"Empty tensor detected in batch {batch_indices}. Skipping batch.", "warning")
+                        continue
 
-                batch_activations, batch_positions = _generate_activations_batched(
-                    self.orig_model_for_gen, batch_input_ids_tensor, self.layer_l, self.min_pos, batch_attn_mask_tensor, self.position_selection_strategy
-                )
+                    batch_activations, batch_positions = _generate_activations_batched(
+                        self.orig_model_for_gen, batch_input_ids_tensor, self.layer_l, self.min_pos, batch_attn_mask_tensor, self.position_selection_strategy
+                    )
+                    
+                    for i in range(len(batch_samples)):
+                        total_attempts += 1
+                        
+                        # Check norm if filtering is enabled
+                        if self.filter_large_norms:
+                            norm = torch.norm(batch_activations[i]).item()
+                            if norm > self.max_activation_norm:
+                                discarded_count += 1
+                                if discarded_count % 100 == 0:  # Log every 100 discarded samples
+                                    self._log(f"Discarded {discarded_count} samples so far due to large norms (threshold: {self.max_activation_norm})")
+                                continue
+                        
+                        self.data_store.append({
+                            "A": batch_activations[i].cpu(),
+                            "input_ids_A": torch.tensor(batch_samples[i]['input_ids'], dtype=torch.long),
+                            "token_pos_A": batch_positions[i].item(),
+                            "layer_idx": self.layer_l,
+                        })
+                        generated_count += 1
+                        if progress_bar is not None:
+                            progress_bar.update(1)
+                        
+                        if generated_count >= num_samples_to_generate:
+                            break
                 
-                for i in range(len(batch_samples)):
-                    self.data_store.append({
-                        "A": batch_activations[i].cpu(),
-                        "input_ids_A": torch.tensor(batch_samples[i]['input_ids'], dtype=torch.long),
-                        "token_pos_A": batch_positions[i].item(),
-                        "layer_idx": self.layer_l,
-                    })
-                    generated_count += 1
-                    if progress_bar is not None:
-                        progress_bar.update(1)
+                # Safety check to prevent infinite loops
+                if total_attempts > num_samples_to_generate * 10:
+                    self._log(f"WARNING: Stopping generation after {total_attempts} attempts. Only generated {generated_count}/{num_samples_to_generate} samples.", "warning")
+                    break
+                    
         if progress_bar is not None:
             progress_bar.close()
         
-        # Final logging with cycle information
-        self._log(f"Cache regeneration complete. Generated {len(self.data_store)} samples.", "info")
+        # Final logging with cycle and discard information
+        if self.filter_large_norms and discarded_count > 0:
+            self._log(f"Cache regeneration complete. Generated {len(self.data_store)} samples, discarded {discarded_count} samples with norms > {self.max_activation_norm} (total attempts: {total_attempts})")
+        else:
+            self._log(f"Cache regeneration complete. Generated {len(self.data_store)} samples.")
 
     def __len__(self) -> int:
         return len(self.data_store)

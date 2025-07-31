@@ -595,22 +595,53 @@ const createGenerationTabs = () => {
         tabContainer.className = 'flex items-center group';
         
         const tab = document.createElement('button');
-        tab.className = `py-2 px-4 text-sm font-medium border-b-2 ${
+        const isPending = gen.status === 'pending';
+        tab.className = `py-2 px-4 text-sm font-medium border-b-2 flex items-center gap-2 ${
             index === state.currentGenerationIndex 
                 ? 'border-orange-500 text-gray-900' 
                 : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
         }`;
-        tab.textContent = `Analysis ${index + 1}`;
-        tab.onclick = () => switchGeneration(index);
+        
+        // Create tab content
+        if (isPending) {
+            tab.innerHTML = `
+                <svg class="animate-spin h-4 w-4 text-orange-600" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span>Analysis ${index + 1} (Pending)</span>
+            `;
+            tab.title = `Queued: "${gen.text}"`;
+            tab.disabled = true;
+            tab.style.cursor = 'not-allowed';
+        } else {
+            tab.textContent = `Analysis ${index + 1}`;
+            tab.onclick = () => switchGeneration(index);
+        }
         
         // Add trash button
         const trashBtn = document.createElement('button');
         trashBtn.className = 'ml-1 p-1 text-gray-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity';
-        trashBtn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>`;
-        trashBtn.title = 'Delete this analysis';
+        
+        if (isPending) {
+            // For pending analyses, show cancel button
+            trashBtn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>`;
+            trashBtn.title = 'Cancel this analysis';
+        } else {
+            trashBtn.innerHTML = `<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>`;
+            trashBtn.title = 'Delete this analysis';
+        }
+        
         trashBtn.onclick = (e) => {
             e.stopPropagation();
-            deleteGeneration(index);
+            if (isPending && gen.request_id) {
+                // Cancel the specific pending request
+                interruptSpecificRequest(gen.request_id, 'analysis');
+                // Don't delete here - wait for the interrupted message from server
+            } else {
+                // For completed analyses, delete immediately
+                deleteGeneration(index);
+            }
         };
         
         tabContainer.appendChild(tab);
@@ -1062,6 +1093,12 @@ const handleWebSocketMessage = (data) => {
                 context: data.context || 'analysis'
             };
             
+            // Update pending generation with request ID
+            const pendingGen = state.generations.find(gen => gen.status === 'pending' && !gen.request_id);
+            if (pendingGen) {
+                pendingGen.request_id = data.request_id;
+            }
+            
             const queueContext = data.context || 'analysis';
             const positionText = data.queue_position 
                 ? `position: ${data.queue_position}${data.queue_size ? '/' + data.queue_size : ''}`
@@ -1130,7 +1167,7 @@ const handleWebSocketMessage = (data) => {
             if (data.request_id && state.activeRequests) {
                 delete state.activeRequests[data.request_id];
             }
-            processResults(data.result);
+            processResults(data.result, data.request_id);
             break;
             
         case 'error':
@@ -1143,6 +1180,18 @@ const handleWebSocketMessage = (data) => {
             if (data.request_id && state.activeRequests) {
                 delete state.activeRequests[data.request_id];
             }
+            
+            // Remove pending generation if error occurs
+            const pendingIdx = state.generations.findIndex(gen => gen.status === 'pending');
+            if (pendingIdx !== -1) {
+                state.generations.splice(pendingIdx, 1);
+                if (state.currentGenerationIndex >= state.generations.length && state.generations.length > 0) {
+                    state.currentGenerationIndex = state.generations.length - 1;
+                    switchGeneration(state.currentGenerationIndex);
+                }
+                createGenerationTabs();
+            }
+            
             showError(data.error || 'An error occurred during analysis');
             break;
             
@@ -1190,7 +1239,7 @@ const handleWebSocketMessage = (data) => {
                 delete state.activeRequests[data.request_id];
             }
             
-            processResults(data.result);
+            processResults(data.result, data.request_id);
             break;
             
         case 'generation_error':
@@ -1303,28 +1352,37 @@ const analyze = () => {
         transcriptsLength: state.allTranscripts.length
     });
     
-    // Reset UI for new analysis but preserve generations
-    // Don't clear generations - we want to keep history of analyses
-    state.allTranscripts = [];
-    state.currentTranscriptIndex = 0;
-    // state.generations = []; // REMOVED - keep previous analyses
-    // state.currentGenerationIndex = 0; // REMOVED - will be set when results arrive
-    elements.outputPlaceholder.classList.remove('hidden');
-    elements.fullTextContainer.classList.add('hidden');
-    elements.displayControls.style.display = 'none';
-    elements.outputTable.classList.add('hidden');
-    elements.transposedView.classList.add('hidden');
-    elements.navigationContainer.classList.add('hidden');
-    elements.bottomNavigationContainer.classList.add('hidden');
-    elements.metadataDisplay.classList.add('hidden');
-    elements.sidePrevBtn.classList.add('hidden');
-    elements.sideNextBtn.classList.add('hidden');
-    elements.columnExplanations.classList.add('hidden');
-    // Don't hide generation tabs - keep them visible if we have previous analyses
-    // elements.generationTabs.classList.add('hidden'); // REMOVED
+    // Don't reset UI or clear transcripts - we're queueing analyses
+    // The new analysis will be added as a new generation when results arrive
+    
+    // If we don't have any generations yet, we need to show placeholder
+    if (state.generations.length === 0) {
+        elements.outputPlaceholder.classList.remove('hidden');
+        elements.fullTextContainer.classList.add('hidden');
+        elements.displayControls.style.display = 'none';
+        elements.outputTable.classList.add('hidden');
+        elements.transposedView.classList.add('hidden');
+        elements.navigationContainer.classList.add('hidden');
+        elements.bottomNavigationContainer.classList.add('hidden');
+        elements.metadataDisplay.classList.add('hidden');
+        elements.sidePrevBtn.classList.add('hidden');
+        elements.sideNextBtn.classList.add('hidden');
+        elements.columnExplanations.classList.add('hidden');
+    }
+    // Keep existing analyses visible and accessible while new one is processing
     
     // Show initial loading state
     showLoading(true, 'Preparing analysis...', null, 'analysis');
+    
+    // Add a pending generation tab to show the analysis is queued
+    const pendingGeneration = {
+        transcripts: [],
+        timestamp: new Date(),
+        status: 'pending',
+        text: text.substring(0, 50) + (text.length > 50 ? '...' : '') // Store preview of text
+    };
+    state.generations.push(pendingGeneration);
+    createGenerationTabs();
     
     // Set a timeout to show a message if loading takes too long
     if (state.loadingTimeout) clearTimeout(state.loadingTimeout);
@@ -1562,8 +1620,8 @@ const handleGenerationResult = (result) => {
 };
 
 // Process results
-const processResults = (result) => {
-    console.log('Processing results:', result);
+const processResults = (result, requestId = null) => {
+    console.log('Processing results:', result, 'with requestId:', requestId);
     console.log('Result data length:', result?.data?.length);
     console.log('Current allTranscripts before processing:', state.allTranscripts.length);
     
@@ -1597,34 +1655,49 @@ const processResults = (result) => {
         currentTranscriptIndex: state.currentTranscriptIndex
     };
     
-    // Handle multiple analyses properly
-    if (state.generations.length > 0) {
-        // We have previous analyses - add this as a new generation
+    // Find if there's a pending generation to replace
+    let pendingIndex = -1;
+    if (requestId) {
+        // Try to find by request_id first
+        pendingIndex = state.generations.findIndex(gen => gen.status === 'pending' && gen.request_id === requestId);
+    }
+    if (pendingIndex === -1) {
+        // Fallback to finding any pending generation
+        pendingIndex = state.generations.findIndex(gen => gen.status === 'pending');
+    }
+    
+    if (pendingIndex !== -1) {
+        // Replace the pending generation with the actual results
+        console.log('Replacing pending generation at index', pendingIndex);
+        state.generations[pendingIndex] = {
+            transcripts: [transcript],
+            timestamp: new Date(),
+            status: 'complete'
+        };
+        state.currentGenerationIndex = pendingIndex;
+    } else if (state.generations.length > 0) {
+        // No pending generation, add as new (shouldn't happen with new flow)
         console.log('Adding new analysis as generation', state.generations.length + 1);
-        
-        // Add the new analysis as a new generation
         state.generations.push({
             transcripts: [transcript],
-            timestamp: new Date()
+            timestamp: new Date(),
+            status: 'complete'
         });
         state.currentGenerationIndex = state.generations.length - 1;
-        
-        // Set transcripts to the new analysis
-        state.allTranscripts = [transcript];
-        state.currentTranscriptIndex = 0;
     } else {
         // This is the first analysis
         console.log('Processing first analysis');
-        state.allTranscripts = [transcript];
-        state.currentTranscriptIndex = 0;
-        
-        // Create first generation
         state.generations.push({
             transcripts: [transcript],
-            timestamp: new Date()
+            timestamp: new Date(),
+            status: 'complete'
         });
         state.currentGenerationIndex = 0;
     }
+    
+    // Set transcripts to the new analysis
+    state.allTranscripts = [transcript];
+    state.currentTranscriptIndex = 0;
     
     console.log('State updated from:', previousState, 'to:', {
         allTranscripts: state.allTranscripts,

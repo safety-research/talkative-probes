@@ -42,7 +42,7 @@ class GroupedModelSwitcher {
                         <svg class="w-4 h-4 transform transition-transform ${this.isCollapsed ? '-rotate-90' : ''}" id="toggleIcon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
                         </svg>
-                        <span>Model Selection</span>
+                        <span>Model/Layer Selection</span>
                         <span id="collapsedModelInfo" class="text-sm font-normal text-gray-600 ${this.isCollapsed ? '' : 'hidden'}"></span>
                     </h3>
                     <div class="flex items-center gap-2">
@@ -66,6 +66,17 @@ class GroupedModelSwitcher {
                 </div>
                 
                 <div id="modelSwitcherContent" class="${this.isCollapsed ? 'hidden' : ''}">
+                    <div id="withinGroupInfo" class="mb-3 p-3 bg-blue-50 border border-blue-200 rounded-md">
+                        <div class="flex items-start">
+                            <svg class="w-5 h-5 text-blue-600 mt-0.5 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                            </svg>
+                            <div class="text-sm text-blue-800">
+                                <strong>Within-Group Switching:</strong> You can switch between different layers/models within the same group instantly without affecting GPU/CPU allocation or other users. Only switching between different groups requires moving models and affects all users.
+                            </div>
+                        </div>
+                    </div>
+                    
                     <div id="modelGroupsList" class="space-y-3 mb-3">
                         <!-- Model groups will be inserted here -->
                     </div>
@@ -130,7 +141,10 @@ class GroupedModelSwitcher {
         const preloadBtn = this.container.querySelector('#preloadGroupBtn');
         const header = this.container.querySelector('#modelSwitcherHeader');
         
-        refreshBtn?.addEventListener('click', () => this.requestModelList());
+        refreshBtn?.addEventListener('click', () => {
+            this.showStatus('Refreshing model list...', 'info');
+            this.requestModelList(true);
+        });
         confirmBtn?.addEventListener('click', () => this.confirmSwitch());
         preloadBtn?.addEventListener('click', () => this.preloadCurrentGroup());
         header?.addEventListener('click', () => this.toggleCollapse());
@@ -170,7 +184,7 @@ class GroupedModelSwitcher {
     }
     
     // Request model list from server
-    requestModelList() {
+    requestModelList(refresh = false) {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
             this.showStatus('Not connected to server', 'error');
             return;
@@ -178,7 +192,8 @@ class GroupedModelSwitcher {
         
         // Request appropriate endpoint based on API version
         this.ws.send(JSON.stringify({ 
-            type: this.apiVersion === 'v2' ? 'list_model_groups' : 'list_models' 
+            type: this.apiVersion === 'v2' ? 'list_model_groups' : 'list_models',
+            refresh: refresh 
         }));
     }
     
@@ -321,7 +336,7 @@ class GroupedModelSwitcher {
                     </div>
                     ${model.description ? `<div class="text-sm text-gray-600">${model.description}</div>` : ''}
                     <div class="text-xs text-gray-500 mt-1">
-                        Layer: ${model.layer}
+                        Layer: ${model.layer} ${model.layer !== model.name.match(/L(\d+)/)?.[1] ? '(analyzes layer ' + model.layer + ' of the model)' : ''}
                     </div>
                     ${model.checkpoint_filename ? `<div class="text-xs text-gray-400 mt-0.5" style="font-size: 0.7em;" ${model.checkpoint_full ? `title="${model.checkpoint_full}"` : ''}>${model.checkpoint_filename}</div>` : ''}
                 </div>

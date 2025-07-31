@@ -85,6 +85,16 @@
           "auto_batch_size_max": 512
         },
         {
+          "id": "gemma3-27b-wildchat-only",
+          "name": "Gemma-3-27B-IT WildChat L45 (only)",
+          "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma3_CHAT_27b_frozen_nopostfix_GG32PAW1S_gemma-3-27b-pt_L45_e45_frozen_lr1e-3_t8_4ep_0723_074201_frozenenc_add_patch5_suffix1p0enc_NO_PROJ_WILD_CHATDIR_OTF_dist8",
+          "different_activations_orig_path": null,
+          "layer": 45,
+          "description": "Trained only on WildChat data",
+          "batch_size": 16,
+          "auto_batch_size_max": 512
+        },
+        {
           "id": "gemma3-27b-chat-l30",
           "name": "Gemma-3-27B-IT Chat L30",
           "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma3_CHAT_27b_frozen_nopostfix_GG32PAW1S_gemma-3-27b-it_L30_e30_frozen_lr3e-4_t8_4ep_resume_0730_195708_frozenenc_add_patch5_suffix1p0enc_NO_PROJ_IT_E_D_L30tune_OTF_dist8_slurm6704",

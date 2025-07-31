@@ -556,6 +556,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 if not grouped_model_manager:
                     await websocket.send_json({"type": "error", "error": "Grouped model manager not initialized"})
                     continue
+                
+                # Check if this is a refresh request
+                if data.get("refresh", False):
+                    grouped_model_manager.reload_config()
                     
                 groups = grouped_model_manager.get_model_list()
                 group_info = grouped_model_manager.get_current_group_info()

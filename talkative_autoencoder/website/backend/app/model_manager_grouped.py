@@ -89,6 +89,11 @@ class GroupedModelManager:
             logger.error(f"Failed to load model groups config: {e}")
             raise
 
+    def reload_config(self):
+        """Reload the model groups configuration from JSON file"""
+        logger.info("Reloading model groups configuration")
+        self._load_groups_config()
+        
     def get_model_list(self) -> List[Dict[str, Any]]:
         """Get structured list of model groups for frontend"""
         # This method should not block on group switches - it's just reading state
