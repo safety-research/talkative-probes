@@ -646,25 +646,61 @@ const createGenerationTabs = () => {
         
         trashBtn.onclick = (e) => {
             e.stopPropagation();
-            if (isPending && gen.request_id) {
-                // Check if the request is in activeRequests (processing) or just pending
-                const isProcessing = state.activeRequests && 
-                    state.activeRequests[gen.request_id] && 
-                    state.activeRequests[gen.request_id].status === 'processing';
-                
-                if (isProcessing) {
-                    // Interrupt a processing request
-                    interruptSpecificRequest(gen.request_id, 'analysis');
-                } else {
-                    // Cancel a queued request
-                    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-                        state.ws.send(JSON.stringify({
-                            type: 'cancel_request',
-                            request_id: gen.request_id
-                        }));
+            if (isPending) {
+                // For pending requests, we need to cancel them
+                if (gen.request_id) {
+                    // We have a server-assigned request ID
+                    const isProcessing = state.activeRequests && 
+                        state.activeRequests[gen.request_id] && 
+                        state.activeRequests[gen.request_id].status === 'processing';
+                    
+                    if (isProcessing) {
+                        // Interrupt a processing request
+                        interruptSpecificRequest(gen.request_id, 'analysis');
+                    } else {
+                        // Cancel a queued request
+                        if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+                            state.ws.send(JSON.stringify({
+                                type: 'cancel_request',
+                                request_id: gen.request_id
+                            }));
+                            
+                            // Set a timeout to remove the tab if no confirmation received
+                            const timeoutId = setTimeout(() => {
+                                // Check if the tab still exists and is still pending
+                                const stillPending = state.generations[index] && 
+                                                   state.generations[index].status === 'pending' &&
+                                                   state.generations[index].request_id === gen.request_id;
+                                if (stillPending) {
+                                    console.warn('No cancellation confirmation received, removing tab locally');
+                                    showError('Request cancellation sent. Removing tab locally.');
+                                    deleteGeneration(index);
+                                }
+                            }, 3000); // 3 second timeout
+                            
+                            // Store timeout ID so it can be cleared if confirmation arrives
+                            if (!state.cancellationTimeouts) state.cancellationTimeouts = {};
+                            state.cancellationTimeouts[gen.request_id] = timeoutId;
+                        } else {
+                            // WebSocket not connected, remove locally
+                            console.warn('WebSocket not connected, removing pending request locally');
+                            deleteGeneration(index);
+                            return;
+                        }
                     }
+                } else if (gen.client_request_id) {
+                    // Request might not have been acknowledged by server yet
+                    // Remove it locally since it hasn't been sent/queued
+                    console.log('Removing pending request that has not been queued yet:', gen.client_request_id);
+                    deleteGeneration(index);
+                    return; // Exit early since we handled it locally
+                } else {
+                    // Shouldn't happen, but handle gracefully
+                    console.warn('Pending generation has neither request_id nor client_request_id');
+                    deleteGeneration(index);
+                    return;
                 }
-                // Don't delete here - wait for the confirmation from server
+                // Don't delete here for server-side requests - wait for the confirmation from server
             } else {
                 // For completed analyses, delete immediately
                 deleteGeneration(index);
@@ -1354,6 +1390,12 @@ const handleWebSocketMessage = (data) => {
             // Handle cancelled request (for queued requests)
             console.log('Request cancelled:', data);
             if (data.request_id) {
+                // Clear any pending cancellation timeout
+                if (state.cancellationTimeouts && state.cancellationTimeouts[data.request_id]) {
+                    clearTimeout(state.cancellationTimeouts[data.request_id]);
+                    delete state.cancellationTimeouts[data.request_id];
+                }
+                
                 // Clean up request tracking
                 if (state.activeRequests && state.activeRequests[data.request_id]) {
                     delete state.activeRequests[data.request_id];
@@ -1549,6 +1591,7 @@ const analyze = () => {
     // Add is_chat flag if chat-formatted
     if (elements.isChatFormatted.checked) {
         options.is_chat = true;
+        options.use_chat_format = true; // Tell backend to apply chat template
     }
     
     // Auto-convert plain text to chat format if checkbox is checked
@@ -1621,6 +1664,11 @@ const generate = () => {
         is_chat: elements.isChatFormatted.checked,
         return_full_text: true
     };
+    
+    // If chat formatted checkbox is checked, ensure chat template is applied
+    if (elements.isChatFormatted.checked) {
+        options.use_chat_format = true;
+    }
     
     // Auto-convert plain text to chat format if checkbox is checked
     let textToSend = text;
@@ -2762,6 +2810,105 @@ const initialize = () => {
             console.log('Model switch failed:', data);
             showLoading(false, '', null, 'analysis');
             showError(`Model switch failed: ${data.error}`);
+        });
+        
+        // Add listener for queue group analyses
+        state.modelSwitcher.addEventListener('queue-group-analyses', (data) => {
+            console.log('Queue group analyses requested:', data);
+            
+            // Check if we have input text
+            const text = elements.inputText.value.trim();
+            if (!text) {
+                showError('Please enter some text to analyze');
+                return;
+            }
+            
+            if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+                showError('Not connected to server. Please wait...');
+                return;
+            }
+            
+            // Confirm if group has many models
+            if (data.models.length > 3) {
+                const confirmed = confirm(`This will queue ${data.models.length} analyses for the ${data.group_name} group. Continue?`);
+                if (!confirmed) return;
+            }
+            
+            // Get current options from UI
+            const options = {
+                temperature: parseFloat(elements.temperature.value),
+                optimize_explanations_config: {
+                    best_of_k: parseInt(elements.kRollouts.value),
+                    n_groups_per_rollout: elements.autoBatchSize.checked 
+                        ? Math.max(1, Math.floor(state.autoBatchSizeMax / parseInt(elements.kRollouts.value)))
+                        : parseInt(elements.batchSize.value),
+                    use_batched: true,
+                    temperature: parseFloat(elements.temperature.value),  // Use the same temperature as main
+                    rollout_batch_size: elements.autoBatchSize.checked 
+                        ? Math.max(1, Math.floor(state.autoBatchSizeMax / parseInt(elements.kRollouts.value)))
+                        : parseInt(elements.batchSize.value)
+                },
+                calculate_salience: elements.calculateSalience.checked,
+                use_tuned_lens: elements.tunedLens.checked,
+                use_logit_lens: elements.logitLens.checked,
+                no_eval: elements.noEval.checked,
+                no_kl: elements.noKL.checked,
+                do_hard_tokens: elements.doHardTokens.checked
+            };
+            
+            // Add seed if provided
+            if (elements.seed.value) {
+                options.seed = parseInt(elements.seed.value);
+            }
+            
+            // Determine text format and options
+            let textToSend = text;
+            if (elements.isChatFormatted.checked) {
+                // Already in chat format
+                options.is_chat = true;
+                options.use_chat_format = true;
+            } else if (elements.autoConvertToChat.checked) {
+                // Send plain text and let backend convert using proper chat template
+                options.use_chat_format = true;
+                options.is_chat = true;
+            }
+            
+            // Queue analysis for each model in the group
+            data.models.forEach((model, index) => {
+                // Add a small delay between requests to avoid overwhelming the server
+                setTimeout(() => {
+                    // Generate unique client request ID for each model
+                    const clientRequestId = `client_${Date.now()}_${model.id}_${Math.random().toString(36).substr(2, 9)}`;
+                    
+                    // Add a pending generation tab for this model
+                    const pendingGeneration = {
+                        transcripts: [],
+                        timestamp: new Date(),
+                        status: 'pending',
+                        text: text.substring(0, 50) + (text.length > 50 ? '...' : ''),
+                        client_request_id: clientRequestId,
+                        model_name: model.name,
+                        model_id: model.id
+                    };
+                    state.generations.push(pendingGeneration);
+                    createGenerationTabs();
+                    
+                    // Send request for this specific model
+                    const requestData = {
+                        type: 'analyze',
+                        text: textToSend,
+                        options: options,
+                        client_request_id: clientRequestId,
+                        model_id: model.id
+                    };
+                    
+                    state.ws.send(JSON.stringify(requestData));
+                    console.log(`Queued analysis for model ${model.name} (${model.id})`);
+                }, index * 100); // 100ms delay between each request
+            });
+            
+            // Show status message
+            showGenerationStatus(`Queuing ${data.models.length} analyses for ${data.group_name}`, 'info');
         });
     }
     

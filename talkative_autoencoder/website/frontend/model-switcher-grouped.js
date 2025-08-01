@@ -12,6 +12,7 @@ class GroupedModelSwitcher {
         this.listeners = [];
         this.cachedModels = [];
         this.isCollapsed = true;
+        this.groupCollapseStates = {}; // Track collapse state for each group
         
         this.render();
     }
@@ -284,20 +285,31 @@ class GroupedModelSwitcher {
         groupsListEl.innerHTML = this.modelGroups.map(group => {
             const isCurrentGroup = group.group_id === this.currentGroup;
             const groupCached = this.cachedGroups?.includes(group.group_id);
+            const isGroupCollapsed = this.groupCollapseStates[group.group_id] || false;
             
             return `
                 <div class="model-group border rounded-lg overflow-hidden ${isCurrentGroup ? 'border-blue-500' : 'border-gray-300'}">
                     <div class="px-3 py-2 bg-gray-50 border-b border-gray-200">
                         <div class="flex items-center justify-between">
-                            <h4 class="font-medium text-gray-900">
-                                ${group.group_name}
-                                ${groupCached ? '<span class="ml-2 text-xs bg-green-100 text-green-800 px-1.5 py-0.5 rounded">Cached</span>' : ''}
-                            </h4>
+                            <div class="flex items-center gap-2">
+                                <button class="group-toggle-btn p-0.5 hover:bg-gray-200 rounded" data-group-id="${group.group_id}">
+                                    <svg class="w-4 h-4 transform transition-transform ${isGroupCollapsed ? '-rotate-90' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+                                    </svg>
+                                </button>
+                                <h4 class="font-medium text-gray-900">
+                                    ${group.group_name}
+                                    ${groupCached ? '<span class="ml-2 text-xs bg-green-100 text-green-800 px-1.5 py-0.5 rounded">Cached</span>' : ''}
+                                </h4>
+                                <button class="queue-all-btn text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed" data-group-id="${group.group_id}" title="Queue analyses for all models in this group">
+                                    Queue All
+                                </button>
+                            </div>
                             <span class="text-xs text-gray-500">${group.base_model}</span>
                         </div>
                         ${group.description ? `<p class="text-xs text-gray-600 mt-1">${group.description}</p>` : ''}
                     </div>
-                    <div class="divide-y divide-gray-100">
+                    <div class="divide-y divide-gray-100 ${isGroupCollapsed ? 'hidden' : ''}">
                         ${group.models.map(model => this.renderModelOption(model, group)).join('')}
                     </div>
                 </div>
@@ -310,6 +322,25 @@ class GroupedModelSwitcher {
             radio.addEventListener('change', (e) => {
                 const [groupId, modelId] = e.target.value.split('::');
                 this.handleModelSelect(groupId, modelId);
+            });
+        });
+        
+        // Add queue all button listeners
+        const queueAllButtons = groupsListEl.querySelectorAll('.queue-all-btn');
+        queueAllButtons.forEach(button => {
+            button.addEventListener('click', (e) => {
+                const groupId = e.target.getAttribute('data-group-id');
+                this.queueAllAnalysesForGroup(groupId);
+            });
+        });
+        
+        // Add group toggle button listeners
+        const toggleButtons = groupsListEl.querySelectorAll('.group-toggle-btn');
+        toggleButtons.forEach(button => {
+            button.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const groupId = e.currentTarget.getAttribute('data-group-id');
+                this.toggleGroupCollapse(groupId);
             });
         });
     }
@@ -455,6 +486,56 @@ class GroupedModelSwitcher {
             model_name: displayName,
             is_local: true
         });
+    }
+    
+    // Toggle group collapse state
+    toggleGroupCollapse(groupId) {
+        // Toggle the collapse state
+        this.groupCollapseStates[groupId] = !this.groupCollapseStates[groupId];
+        
+        // Re-render the groups to reflect the new state
+        this.renderModelGroups();
+    }
+    
+    // Queue analyses for all models in a group
+    queueAllAnalysesForGroup(groupId) {
+        // Find the group
+        const group = this.modelGroups.find(g => g.group_id === groupId);
+        if (!group) {
+            console.error('Group not found:', groupId);
+            return;
+        }
+        
+        // Disable all queue buttons
+        const allQueueButtons = this.container.querySelectorAll('.queue-all-btn');
+        allQueueButtons.forEach(btn => {
+            btn.disabled = true;
+            if (btn.getAttribute('data-group-id') === groupId) {
+                btn.textContent = 'Queueing...';
+            }
+        });
+        
+        // Re-enable buttons after a delay
+        setTimeout(() => {
+            allQueueButtons.forEach(btn => {
+                btn.disabled = false;
+                btn.textContent = 'Queue All';
+            });
+        }, group.models.length * 100 + 1000); // Wait for all requests plus buffer
+        
+        // Emit event requesting to queue analyses for all models
+        this.emit('queue-group-analyses', {
+            group_id: groupId,
+            group_name: group.group_name,
+            models: group.models.map(m => ({
+                id: m.id,
+                name: m.name,
+                layer: m.layer
+            }))
+        });
+        
+        // Show notification
+        this.showNotification(`Queueing analyses for all ${group.models.length} models in ${group.group_name}`, 'info');
     }
     
     // Confirm group switch (affects all users)

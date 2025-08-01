@@ -647,6 +647,41 @@ class GroupedModelManager:
                 return first_group.models[0]["id"]
         return None
     
+    async def clear_all_models(self):
+        """Clear all models from memory"""
+        logger.info("Clearing all models from memory")
+        
+        # Clear current analyzer reference
+        self.current_analyzer = None
+        self.current_model_id = None
+        
+        # Clear all lens cache entries
+        self.lens_cache.clear()
+        
+        # Clear all shared base models
+        self.shared_base_models.clear()
+        
+        # Clear all shared orig models
+        self.shared_orig_models.clear()
+        
+        # Clear location tracking
+        self.base_model_locations.clear()
+        self.group_usage_order.clear()
+        
+        # Reset current group
+        self.current_group_id = None
+        
+        # Force garbage collection
+        for _ in range(3):
+            gc.collect()
+        
+        # Clear CUDA cache
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        
+        logger.info("All models cleared from memory")
+    
     async def ensure_group_loaded(self):
         """Ensure at least one group is loaded"""
         if not self.current_group_id and self.model_groups:

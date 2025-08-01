@@ -175,6 +175,7 @@ grouped_model_manager: GroupedModelManager | None = None  # New grouped manager
 inference_service: InferenceService | None = None
 gpu_monitor = GPUStatsMonitor()
 queue_broadcast_task = None
+cleanup_task = None
 
 # Rate limiter
 limiter = Limiter(key_func=get_remote_address)
@@ -205,6 +206,18 @@ async def broadcast_queue_status_periodically():
             logger.error(f"Error broadcasting queue status: {e}")
         
         await asyncio.sleep(2)  # Update every 2 seconds
+
+
+async def cleanup_old_requests_periodically():
+    """Periodically clear out old, completed requests to prevent memory leaks."""
+    while True:
+        await asyncio.sleep(3600)  # Run every hour
+        if inference_service:
+            try:
+                inference_service.queue.clear_completed_requests(older_than_seconds=3600)
+                logger.info("Cleared old completed requests from queue")
+            except Exception as e:
+                logger.error(f"Error during periodic request cleanup: {e}")
 
 
 @asynccontextmanager
@@ -260,8 +273,11 @@ async def lifespan(app: FastAPI):
         await inference_service.start_processing()
         
         # Start periodic queue status broadcaster
-        global queue_broadcast_task
+        global queue_broadcast_task, cleanup_task
         queue_broadcast_task = asyncio.create_task(broadcast_queue_status_periodically())
+        
+        # Start periodic cleanup task
+        cleanup_task = asyncio.create_task(cleanup_old_requests_periodically())
         
         logger.info("Application startup complete")
     except Exception as e:
@@ -281,6 +297,14 @@ async def lifespan(app: FastAPI):
         queue_broadcast_task.cancel()
         try:
             await queue_broadcast_task
+        except asyncio.CancelledError:
+            pass
+    
+    # Stop cleanup task
+    if cleanup_task:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
         except asyncio.CancelledError:
             pass
 
@@ -826,29 +850,36 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                 
             elif data["type"] == "cancel_request":
-                # Cancel a queued request (e.g., group switch)
+                # Cancel a queued or processing request
                 request_id = data.get("request_id")
                 
                 if request_id and inference_service:
                     request = inference_service.queue.active_requests.get(request_id)
-                    if request and request["status"] == "queued":
-                        # Mark as cancelled
-                        request["status"] = "cancelled"
-                        request["error"] = "Cancelled by user"
-                        request["completed_at"] = datetime.utcnow()
-                        
-                        logger.info(f"Cancelled queued request: {request_id} (type: {request.get('type')})")
-                        
-                        # Send confirmation
-                        await websocket.send_json({
-                            "type": "request_cancelled",
-                            "request_id": request_id,
-                            "message": "Request cancelled successfully"
-                        })
+                    if request:
+                        current_status = request["status"]
+                        if current_status in ["queued", "processing", "waiting_for_group_switch"]:
+                            # Mark as cancelled
+                            request["status"] = "cancelled"
+                            request["error"] = "Cancelled by user"
+                            request["completed_at"] = datetime.utcnow()
+                            
+                            logger.info(f"Cancelled {current_status} request: {request_id} (type: {request.get('type')})")
+                            
+                            # Send confirmation
+                            await websocket.send_json({
+                                "type": "request_cancelled",
+                                "request_id": request_id,
+                                "message": "Request cancelled successfully"
+                            })
+                        else:
+                            await websocket.send_json({
+                                "type": "error",
+                                "error": f"Cannot cancel request {request_id} - status is {current_status}"
+                            })
                     else:
                         await websocket.send_json({
                             "type": "error",
-                            "error": f"Cannot cancel request {request_id} - not in queue or already processing"
+                            "error": f"Request {request_id} not found"
                         })
                 
             elif data["type"] == "interrupt":
@@ -883,6 +914,22 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
     finally:
+        # Cancel any pending/processing requests associated with this websocket
+        if inference_service:
+            cancelled_count = 0
+            for request_id, request in list(inference_service.queue.active_requests.items()):
+                # Check if this request is associated with the disconnecting websocket
+                if (request.get("options", {}).get("websocket") == websocket and 
+                    request.get("status") in ["queued", "processing", "waiting_for_group_switch"]):
+                    request["status"] = "cancelled"
+                    request["error"] = "Client disconnected"
+                    request["completed_at"] = datetime.utcnow()
+                    cancelled_count += 1
+                    logger.info(f"Cancelled request {request_id} due to websocket disconnection")
+            
+            if cancelled_count > 0:
+                logger.info(f"Cancelled {cancelled_count} requests due to websocket disconnection")
+        
         manager.disconnect(websocket)
 
 
@@ -932,43 +979,95 @@ async def metrics():
 @app.post("/reset")
 async def reset_model():
     """Reset the model and clear memory"""
-    global model_manager, inference_service
+    global model_manager, grouped_model_manager, inference_service
 
-    if inference_service:
-        # Stop inference processing
-        await inference_service.stop_processing()
-        
-        # Clear the queue
-        inference_service.queue.active_requests.clear()
+    try:
+        if inference_service:
+            # Stop inference processing
+            await inference_service.stop_processing()
+            
+            # Clear the queue by re-initializing it
+            inference_service.queue.queue = asyncio.Queue()
+            inference_service.queue.active_requests.clear()
+            logger.info("Cleared inference queue")
 
-    if model_manager:
-        # Clear the model from memory through model_manager
-        await model_manager.clear_current_model()
+        # Use grouped model manager if available, otherwise fall back to model_manager
+        manager_to_use = grouped_model_manager if grouped_model_manager else model_manager
 
-        # Force garbage collection
-        import gc
+        if manager_to_use:
+            # Clear all models from memory through manager
+            if hasattr(manager_to_use, 'clear_all_models'):
+                await manager_to_use.clear_all_models()
+            elif hasattr(manager_to_use, 'clear_current_model'):
+                await manager_to_use.clear_current_model()
+            else:
+                # For grouped model manager, unload current group
+                if hasattr(manager_to_use, 'current_group_id') and manager_to_use.current_group_id:
+                    await manager_to_use._unload_group(manager_to_use.current_group_id)
+                    manager_to_use.current_group_id = None
 
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+            # Force garbage collection multiple times
+            import gc
+            for _ in range(3):
+                gc.collect()
+            
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                # Wait a bit for memory to be fully released
+                await asyncio.sleep(0.5)
 
-        logger.info("Model reset and memory cleared")
+            logger.info("Model reset and memory cleared")
 
-        # Reload model if lazy loading is disabled
-        if not settings.lazy_load_model:
-            logger.info("Reloading model after reset (lazy_load_model=false)")
-            try:
-                await model_manager.initialize_default_model()
-                logger.info("Model reloaded successfully")
+            # Only reload model if explicitly not in lazy mode and we have enough memory
+            if not settings.lazy_load_model:
+                # Check available GPU memory first
+                if torch.cuda.is_available():
+                    free_memory = torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0)
+                    free_memory_gb = free_memory / (1024 ** 3)
+                    logger.info(f"Available GPU memory after reset: {free_memory_gb:.2f} GB")
+                    
+                    # Only reload if we have enough memory (at least 20GB free)
+                    if free_memory_gb < 20:
+                        logger.warning(f"Not enough GPU memory to reload model ({free_memory_gb:.2f} GB free)")
+                        # Restart inference processing anyway
+                        if inference_service:
+                            await inference_service.start_processing()
+                        return {"status": "reset", "message": "Model cleared. Low memory - model will be loaded on next request."}
+                
+                logger.info("Reloading model after reset (lazy_load_model=false)")
+                try:
+                    if hasattr(manager_to_use, 'ensure_group_loaded'):
+                        await manager_to_use.ensure_group_loaded()
+                    else:
+                        await manager_to_use.initialize_default_model()
+                    logger.info("Model reloaded successfully")
+                    # Restart inference processing
+                    if inference_service:
+                        await inference_service.start_processing()
+                    return {"status": "reset", "message": "Model cleared and reloaded."}
+                except Exception as e:
+                    logger.error(f"Failed to reload model after reset: {e}")
+                    # Don't raise - just continue without model
+                    if inference_service:
+                        await inference_service.start_processing()
+                    return {"status": "reset", "message": f"Model cleared. Failed to reload: {str(e)}"}
+            else:
                 # Restart inference processing
                 if inference_service:
                     await inference_service.start_processing()
-                return {"status": "reset", "message": "Model cleared and reloaded."}
-            except ModelLoadError as e:
-                logger.error(f"Failed to reload model after reset: {e}")
-                raise HTTPException(500, f"Model cleared, but failed to reload: {e}") from e
 
-    return {"status": "reset", "message": "Model cleared from memory"}
+        return {"status": "reset", "message": "Model cleared from memory"}
+        
+    except Exception as e:
+        logger.error(f"Error during reset: {e}")
+        # Try to restart inference processing even if reset failed
+        if inference_service:
+            try:
+                await inference_service.start_processing()
+            except:
+                pass
+        raise HTTPException(500, f"Reset failed: {str(e)}") from e
 
 
 @app.get("/api/models")
