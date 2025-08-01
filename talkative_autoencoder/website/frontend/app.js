@@ -1587,7 +1587,7 @@ const analyze = () => {
         },
         calculate_salience: elements.calculateSalience.checked,
         use_tuned_lens: elements.tunedLens.checked,
-        use_logit_lens: elements.logitLens.checked,
+        logit_lens_analysis: elements.logitLens.checked,
         no_eval: elements.noEval.checked,
         no_kl: true,  // Always true - checkbox is hidden
         do_hard_tokens: elements.doHardTokens.checked
@@ -2865,7 +2865,7 @@ const initialize = () => {
                 },
                 calculate_salience: elements.calculateSalience.checked,
                 use_tuned_lens: elements.tunedLens.checked,
-                use_logit_lens: elements.logitLens.checked,
+                logit_lens_analysis: elements.logitLens.checked,
                 no_eval: elements.noEval.checked,
                 no_kl: true,  // Always true - checkbox is hidden
                 do_hard_tokens: elements.doHardTokens.checked
