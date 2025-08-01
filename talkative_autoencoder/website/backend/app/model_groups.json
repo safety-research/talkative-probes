@@ -14,7 +14,7 @@
           "layer": 30,
           "description": "Trained on WildChat dataset (ONLY)",
           "batch_size": 48,
-          "auto_batch_size_max":  2048  
+          "auto_batch_size_max":   1536 
         },
         {
           "id": "gemma2-9b-chat-l10",
@@ -24,7 +24,7 @@
           "layer": 10,
           "description": "Openwebtext + Chat tuned, layer 10 finetuned from layer 30",
           "batch_size": 64,
-          "auto_batch_size_max": 2048  
+          "auto_batch_size_max":   1536 
         },
         {
           "id": "gemma2-9b-chat-l20",
@@ -34,7 +34,7 @@
           "layer": 20,
           "description": "Openwebtext + Chat tuned, layer 20 finetuned from layer 30",
           "batch_size": 48,
-          "auto_batch_size_max": 2048
+          "auto_batch_size_max":   1536 
         },
         {
           "id": "gemma2-9b-chat-l30",
@@ -44,7 +44,7 @@
           "layer": 30,
           "description": "Openwebtext + Chat tuned, layer 30",
           "batch_size": 48,
-          "auto_batch_size_max": 2048
+          "auto_batch_size_max":   1536 
         },
         {
           "id": "gemma2-9b-chat-l36",
@@ -54,7 +54,7 @@
           "layer": 36,
           "description": "Openwebtext + Chat tuned, layer 36 finetuned from layer 30",
           "batch_size": 48,
-          "auto_batch_size_max": 2048
+          "auto_batch_size_max":   1536 
         },
         {
           "id": "gemma2-9b-chat-shallow5",
@@ -64,7 +64,7 @@
           "layer": 30,
           "description": "Openwebtext + Chat tuned, layer 30, output layer of the encoder is layer 5 (so very limited computation)",
           "batch_size": 64,
-          "auto_batch_size_max": 2048
+          "auto_batch_size_max": 1536
         }
       ]
     },

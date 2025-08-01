@@ -1589,7 +1589,7 @@ const analyze = () => {
         use_tuned_lens: elements.tunedLens.checked,
         use_logit_lens: elements.logitLens.checked,
         no_eval: elements.noEval.checked,
-        no_kl: elements.noKL ? elements.noKL.checked : true,  // Default to true since checkbox is commented out
+        no_kl: true,  // Always true - checkbox is hidden
         do_hard_tokens: elements.doHardTokens.checked
     };
     
@@ -2867,7 +2867,7 @@ const initialize = () => {
                 use_tuned_lens: elements.tunedLens.checked,
                 use_logit_lens: elements.logitLens.checked,
                 no_eval: elements.noEval.checked,
-                no_kl: elements.noKL ? elements.noKL.checked : true,  // Default to true since checkbox is commented out
+                no_kl: true,  // Always true - checkbox is hidden
                 do_hard_tokens: elements.doHardTokens.checked
             };
             
