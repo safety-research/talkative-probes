@@ -23,8 +23,8 @@ from .model_manager_grouped import GroupedModelManager
 # In lifespan function:
 model_manager = GroupedModelManager(settings)
 
-# Option B: Support both old and new endpoints
-from .model_manager import ModelManager  # Keep existing
+# Option B: Support both old and new endpoints  
+from .model_manager_grouped import GroupedModelManager  # Use grouped manager
 from . import api_grouped  # Import new grouped API
 
 # In lifespan, after creating model_manager:

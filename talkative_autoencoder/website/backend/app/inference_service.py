@@ -1,4 +1,4 @@
-"""Inference service that handles request processing using the ModelManager"""
+"""Inference service that handles request processing using the GroupedModelManager"""
 
 import asyncio
 import logging
@@ -14,7 +14,6 @@ from pathlib import Path
 parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 sys.path.insert(0, parent_dir)
 
-from .model_manager import ModelManager
 from .inference_queue import InferenceQueue
 from .config import Settings
 
@@ -76,9 +75,9 @@ class RequestFileLogger:
 request_logger = RequestFileLogger()
 
 class InferenceService:
-    """Service that handles inference requests using the ModelManager"""
+    """Service that handles inference requests using the GroupedModelManager"""
     
-    def __init__(self, model_manager: ModelManager, settings: Settings, websocket_manager=None):
+    def __init__(self, model_manager, settings: Settings, websocket_manager=None):
         self.model_manager = model_manager
         self.settings = settings
         self.websocket_manager = websocket_manager

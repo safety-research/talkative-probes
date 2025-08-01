@@ -146,17 +146,26 @@ isDebugMode()
 - `RATE_LIMIT_PER_MINUTE`: API rate limiting
 
 ### Model Configuration (Hot-Reloadable!)
-Models are configured in `backend/app/models.json`:
-```python
-"model-id": ModelConfig(
-    name="model-id",
-    display_name="Model Display Name",
-    checkpoint_path="/path/to/checkpoint",
-    model_name="huggingface/model-name",
-    batch_size=32,
-    layer=45,
-    # ... other settings
-)
+Models are configured in `backend/app/model_groups.json`:
+```json
+{
+  "model_groups": [
+    {
+      "group_id": "model-group-id",
+      "group_name": "Model Group Display Name",
+      "base_model_path": "huggingface/model-name",
+      "models": [
+        {
+          "id": "model-id",
+          "name": "Model Variant Name",
+          "lens_checkpoint_path": "/path/to/checkpoint",
+          "layer": 45,
+          "batch_size": 32
+        }
+      ]
+    }
+  ]
+}
 ```
 
 ## Security Considerations

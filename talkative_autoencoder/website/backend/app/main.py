@@ -30,7 +30,6 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from .config import load_settings
-from .model_manager import ModelManager, ModelLoadError
 from .model_manager_grouped import GroupedModelManager
 from .inference_service import InferenceService
 from .models import AnalyzeRequest
@@ -170,7 +169,6 @@ class GPUStatsMonitor:
 
 
 # Global instances
-model_manager: ModelManager | None = None
 grouped_model_manager: GroupedModelManager | None = None  # New grouped manager
 inference_service: InferenceService | None = None
 gpu_monitor = GPUStatsMonitor()
@@ -223,16 +221,12 @@ async def cleanup_old_requests_periodically():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    global model_manager, grouped_model_manager, inference_service
+    global grouped_model_manager, inference_service
 
     # Start GPU monitoring
     gpu_monitor.start()
 
     try:
-        # Initialize both model managers
-        model_manager = ModelManager(settings)
-        model_manager.websocket_manager = manager
-        
         # Initialize grouped model manager
         grouped_model_manager = GroupedModelManager(settings)
         grouped_model_manager.websocket_manager = manager
@@ -475,13 +469,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 "timestamp": datetime.now().isoformat(),
                 "message": "A group switch is in progress. All requests are queued."
             })
-    elif model_manager:
-        # Legacy single model manager - send connection info
-        await websocket.send_json({
-            "type": "connection_established",
-            "message": "Connected to inference server (legacy mode)",
-            "auto_batch_size_max": getattr(settings, 'auto_batch_size_max', 512),  # Legacy default
-        })
 
     # Send initial queue status
     if inference_service:
@@ -585,26 +572,6 @@ async def websocket_endpoint(websocket: WebSocket):
                             }
                         )
 
-            elif data["type"] == "list_models":
-                # List available models (legacy)
-                if not model_manager:
-                    await websocket.send_json({"type": "error", "error": "Model manager not initialized"})
-                    continue
-                    
-                from .model_registry import list_available_models
-                models = list_available_models()
-                current_info = model_manager.get_current_model_info()
-                
-                # Get queue stats to show if there are active requests
-                queue_stats = inference_service.queue.get_queue_stats() if inference_service else {"queue_size": 0, "processing_requests": 0}
-                
-                await websocket.send_json({
-                    "type": "models_list",
-                    "models": models,
-                    "current_model": current_info.get("model_id"),
-                    "is_switching": current_info.get("is_switching", False),
-                    "queue_stats": queue_stats
-                })
                 
             elif data["type"] == "list_model_groups":
                 # List model groups (new grouped format)
@@ -659,45 +626,6 @@ async def websocket_endpoint(websocket: WebSocket):
                 
                 await websocket.send_json(response_data)
                 
-            elif data["type"] == "switch_model":
-                # Switch to a different model
-                if not model_manager:
-                    await websocket.send_json({"type": "error", "error": "Model manager not initialized"})
-                    continue
-                    
-                model_id = data.get("model_id")
-                if not model_id:
-                    await websocket.send_json({"type": "error", "error": "No model_id provided"})
-                    continue
-                    
-                # Send immediate acknowledgment
-                await websocket.send_json({
-                    "type": "model_switch_acknowledged",
-                    "model_id": model_id,
-                    "message": "Model switch initiated. This affects all users."
-                })
-                
-                try:
-                    # Perform the switch
-                    result = await model_manager.switch_model(model_id)
-                    
-                    # Send success message
-                    model_info = model_manager.get_current_model_info()
-                    await websocket.send_json({
-                        "type": "model_switch_complete",
-                        "model_id": model_id,
-                        "message": result["message"],
-                        "model_info": model_info,
-                        "generation_config": model_info.get("generation_config", {})
-                    })
-                    
-                except Exception as e:
-                    logger.error(f"Model switch failed: {e}")
-                    await websocket.send_json({
-                        "type": "model_switch_error",
-                        "model_id": model_id,
-                        "error": str(e)
-                    })
                     
             elif data["type"] == "switch_model_grouped":
                 # Handle group switch request
@@ -791,6 +719,56 @@ async def websocket_endpoint(websocket: WebSocket):
                         "error": f"Failed to preload group: {str(e)}"
                     })
                     
+            elif data["type"] == "unload_group":
+                # Unload a group from memory
+                if not grouped_model_manager:
+                    await websocket.send_json({"type": "error", "error": "Grouped model manager not initialized"})
+                    continue
+                    
+                group_id = data.get("group_id")
+                if not group_id:
+                    await websocket.send_json({"type": "error", "error": "No group_id provided"})
+                    continue
+                    
+                try:
+                    # Check if this is the current group
+                    if grouped_model_manager.current_group_id == group_id:
+                        await websocket.send_json({
+                            "type": "group_unload_error",
+                            "group_id": group_id,
+                            "error": "Cannot unload the currently active group"
+                        })
+                        continue
+                    
+                    # Unload the group
+                    result = await grouped_model_manager.unload_group(group_id)
+                    
+                    # Get group name for better message
+                    group_info = grouped_model_manager.model_groups.get(group_id, {})
+                    group_name = group_info.get("name", group_id)
+                    
+                    await websocket.send_json({
+                        "type": "group_unload_complete",
+                        "group_id": group_id,
+                        "group_name": group_name,
+                        "message": f"Successfully unloaded {group_name} from memory"
+                    })
+                    
+                    # Broadcast to all clients that the group was unloaded
+                    await manager.broadcast({
+                        "type": "group_unload_complete",
+                        "group_id": group_id,
+                        "group_name": group_name
+                    })
+                    
+                except Exception as e:
+                    logger.error(f"Group unload failed: {e}")
+                    await websocket.send_json({
+                        "type": "group_unload_error",
+                        "group_id": group_id,
+                        "error": str(e)
+                    })
+                    
             elif data["type"] == "get_model_info":
                 # Get model info for a specific model
                 model_id = data.get("model_id")
@@ -807,47 +785,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         "generation_config": model_info.get("generation_config", {}),
                         "loaded": model_info.get("is_loaded", False)
                     })
-                elif model_manager:
-                    # Legacy single model manager
-                    model_info = model_manager.get_current_model_info()
-                    await websocket.send_json({
-                        "type": "model_info_update",
-                        **model_info
-                    })
                 else:
                     await websocket.send_json({"type": "error", "error": "Model manager not initialized"})
                 
-            elif data["type"] == "reload_models":
-                # Reload model registry from JSON
-                # Check for API key authentication
-                api_key = data.get("api_key")
-                if settings.api_key and api_key != settings.api_key:
-                    await websocket.send_json({
-                        "type": "error", 
-                        "error": "Authentication required. Please provide a valid API key."
-                    })
-                    logger.warning(f"Unauthorized reload_models attempt from {websocket.client}")
-                    continue
-                    
-                try:
-                    from .model_registry import model_registry, list_available_models
-                    model_registry.reload_models()
-                    
-                    # Send updated model list
-                    models = list_available_models()
-                    current_info = model_manager.get_current_model_info()
-                    
-                    await websocket.send_json({
-                        "type": "models_reloaded",
-                        "models": models,
-                        "current_model": current_info.get("model_id"),
-                        "message": "Model registry reloaded successfully"
-                    })
-                except Exception as e:
-                    await websocket.send_json({
-                        "type": "error",
-                        "error": f"Failed to reload models: {str(e)}"
-                    })
                 
             elif data["type"] == "cancel_request":
                 # Cancel a queued or processing request
@@ -938,7 +878,7 @@ async def health_check():
     """Health check endpoint"""
     health_status = {
         "status": "healthy",
-        "model_loaded": model_manager is not None and model_manager.is_model_loaded(),
+        "model_loaded": grouped_model_manager is not None and grouped_model_manager.is_model_loaded(),
         "gpu_available": torch.cuda.is_available(),
         "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         "queue_size": inference_service.queue.queue.qsize() if inference_service else 0,
@@ -979,7 +919,7 @@ async def metrics():
 @app.post("/reset")
 async def reset_model():
     """Reset the model and clear memory"""
-    global model_manager, grouped_model_manager, inference_service
+    global grouped_model_manager, inference_service
 
     try:
         if inference_service:
@@ -991,8 +931,8 @@ async def reset_model():
             inference_service.queue.active_requests.clear()
             logger.info("Cleared inference queue")
 
-        # Use grouped model manager if available, otherwise fall back to model_manager
-        manager_to_use = grouped_model_manager if grouped_model_manager else model_manager
+        # Use grouped model manager
+        manager_to_use = grouped_model_manager
 
         if manager_to_use:
             # Clear all models from memory through manager
@@ -1070,73 +1010,9 @@ async def reset_model():
         raise HTTPException(500, f"Reset failed: {str(e)}") from e
 
 
-@app.get("/api/models")
-async def list_models():
-    """List available models"""
-    from .model_registry import list_available_models
-    
-    models = list_available_models()
-    current_info = model_manager.get_current_model_info() if model_manager else {"status": "no_model_manager"}
-    
-    return {
-        "models": models,
-        "current_model": current_info.get("model_id") if "model_id" in current_info else None,
-        "is_switching": current_info.get("is_switching", False),
-        "model_status": current_info
-    }
 
-@app.post("/api/models/switch")
-async def switch_model(model_id: str, authorized: bool = Depends(verify_api_key)):
-    """Switch to a different model (requires API key)"""
-    if not model_manager:
-        raise HTTPException(500, "Model manager not initialized")
-        
-    try:
-        result = await model_manager.switch_model(model_id)
-        return {
-            "status": "success",
-            **result,
-            "model_info": model_manager.get_current_model_info()
-        }
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except Exception as e:
-        logger.error(f"Model switch failed: {e}")
-        raise HTTPException(500, f"Model switch failed: {str(e)}")
 
-@app.get("/api/models/cache")
-async def get_model_cache_status():
-    """Get model cache status"""
-    if not model_manager:
-        return {"error": "Model manager not initialized"}
-    
-    cache_status = await model_manager.get_cache_status()
-    memory_usage = model_manager.get_memory_usage()
-    
-    return {
-        "cache": cache_status,
-        "memory": memory_usage,
-    }
 
-@app.post("/api/models/reload")
-async def reload_models(authorized: bool = Depends(verify_api_key)):
-    """Reload model registry from JSON file (requires API key)"""
-    try:
-        from .model_registry import model_registry
-        model_registry.reload_models()
-        
-        # Get updated list
-        models = model_registry.list_available_models()
-        
-        return {
-            "status": "success",
-            "message": "Model registry reloaded successfully",
-            "models_count": len(models),
-            "models": models
-        }
-    except Exception as e:
-        logger.error(f"Failed to reload model registry: {e}")
-        raise HTTPException(500, f"Failed to reload models: {str(e)}")
 
 @app.get("/api/gpu_stats")
 async def get_gpu_stats():

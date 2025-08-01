@@ -37,6 +37,57 @@ class GroupedModelSwitcher {
     // Render the UI
     render() {
         this.container.innerHTML = `
+            <style>
+                .info-btn {
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 50%;
+                    background-color: #e5e7eb;
+                    color: #6b7280;
+                    font-size: 10px;
+                    font-weight: bold;
+                    cursor: pointer;
+                    transition: all 0.2s;
+                }
+                .info-btn:hover {
+                    background-color: #3b82f6;
+                    color: white;
+                }
+                .tooltip {
+                    position: fixed;
+                    z-index: 10000;
+                    background-color: #1f2937;
+                    color: white;
+                    padding: 8px 12px;
+                    border-radius: 6px;
+                    font-size: 12px;
+                    max-width: 300px;
+                    pointer-events: none;
+                    opacity: 0;
+                    visibility: hidden;
+                    transition: opacity 0.2s, visibility 0.2s;
+                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+                }
+                .tooltip.show {
+                    opacity: 1;
+                    visibility: visible;
+                }
+                .tooltip::before {
+                    content: '';
+                    position: absolute;
+                    top: -4px;
+                    left: 50%;
+                    transform: translateX(-50%);
+                    width: 0;
+                    height: 0;
+                    border-left: 4px solid transparent;
+                    border-right: 4px solid transparent;
+                    border-bottom: 4px solid #1f2937;
+                }
+            </style>
             <div class="model-switcher bg-white rounded-lg shadow-md p-4 mb-4">
                 <div class="flex items-center justify-between ${this.isCollapsed ? '' : 'mb-3'}">
                     <h3 class="text-lg font-semibold text-gray-800 flex items-center gap-2 cursor-pointer" id="modelSwitcherHeader">
@@ -73,7 +124,13 @@ class GroupedModelSwitcher {
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
                             </svg>
                             <div class="text-sm text-blue-800">
-                                <strong>Within-Group Switching:</strong> You can switch between different layers/models within the same group instantly without affecting GPU/CPU allocation or other users. Only switching between different groups requires moving models and affects all users.
+                                <strong>Quick Guide:</strong>
+                                <ul class="mt-1 ml-4 list-disc space-y-1">
+                                    <li><strong>Within-Group:</strong> Switch models instantly (same base model already in VRAM)</li>
+                                    <li><strong>Between Groups:</strong> Moves new base model to VRAM. Takes 1-2 min, affects all users</li>
+                                    <li><strong>Queue All:</strong> Run one text through every model in a group</li>
+                                    <li><strong>Unload:</strong> Free RAM (cached groups stay in system memory, not GPU)</li>
+                                </ul>
                             </div>
                         </div>
                     </div>
@@ -133,6 +190,40 @@ class GroupedModelSwitcher {
         
         this.attachEventListeners();
         this.requestModelList();
+        this.setupTooltips();
+    }
+    
+    // Setup tooltip functionality
+    setupTooltips() {
+        // Check if tooltip already exists
+        let tooltip = document.getElementById('model-switcher-tooltip');
+        if (!tooltip) {
+            // Create tooltip element only if it doesn't exist
+            tooltip = document.createElement('div');
+            tooltip.id = 'model-switcher-tooltip';
+            tooltip.className = 'tooltip';
+            document.body.appendChild(tooltip);
+            
+            // Add global event listeners only once
+            document.addEventListener('mouseenter', (e) => {
+                const infoBtn = e.target.closest('.info-btn');
+                if (infoBtn && infoBtn.dataset.tooltip) {
+                    const rect = infoBtn.getBoundingClientRect();
+                    tooltip.textContent = infoBtn.dataset.tooltip;
+                    tooltip.style.left = rect.left + rect.width / 2 + 'px';
+                    tooltip.style.top = (rect.bottom + 8) + 'px';
+                    tooltip.style.transform = 'translateX(-50%)';
+                    tooltip.classList.add('show');
+                }
+            }, true);
+            
+            document.addEventListener('mouseleave', (e) => {
+                const infoBtn = e.target.closest('.info-btn');
+                if (infoBtn) {
+                    tooltip.classList.remove('show');
+                }
+            }, true);
+        }
     }
     
     // Attach event listeners
@@ -292,7 +383,7 @@ class GroupedModelSwitcher {
                     <div class="px-3 py-2 bg-gray-50 border-b border-gray-200">
                         <div class="flex items-center justify-between">
                             <div class="flex items-center gap-2">
-                                <button class="group-toggle-btn p-0.5 hover:bg-gray-200 rounded" data-group-id="${group.group_id}">
+                                <button class="group-toggle-btn p-0.5 hover:bg-gray-200 rounded" data-group-id="${group.group_id}" title="Click to expand/collapse this group">
                                     <svg class="w-4 h-4 transform transition-transform ${isGroupCollapsed ? '-rotate-90' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
                                     </svg>
@@ -301,9 +392,18 @@ class GroupedModelSwitcher {
                                     ${group.group_name}
                                     ${groupCached ? '<span class="ml-2 text-xs bg-green-100 text-green-800 px-1.5 py-0.5 rounded">Cached</span>' : ''}
                                 </h4>
-                                <button class="queue-all-btn text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed" data-group-id="${group.group_id}" title="Queue analyses for all models in this group">
-                                    Queue All
-                                </button>
+                                <div class="flex items-center gap-1">
+                                    ${group.group_id ? `<button class="queue-all-btn text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed" data-group-id="${group.group_id}">
+                                        Queue All
+                                    </button>` : ''}
+                                    <span class="info-btn" data-tooltip="Runs your text through all models in this group. Creates one tab per model. Cancel via X on pending tabs.">i</span>
+                                </div>
+                                ${groupCached && !isCurrentGroup ? `<div class="flex items-center gap-1">
+                                    <button class="unload-group-btn text-xs px-2 py-1 bg-red-100 text-red-700 rounded hover:bg-red-200 transition-colors" data-group-id="${group.group_id}">
+                                        Unload
+                                    </button>
+                                    <span class="info-btn" data-tooltip="Frees RAM by removing this group. Only the active group uses GPU VRAM. Reloading takes ~30s.">i</span>
+                                </div>` : ''}
                             </div>
                             <span class="text-xs text-gray-500">${group.base_model}</span>
                         </div>
@@ -343,6 +443,18 @@ class GroupedModelSwitcher {
                 this.toggleGroupCollapse(groupId);
             });
         });
+        
+        // Add unload group button listeners
+        const unloadButtons = groupsListEl.querySelectorAll('.unload-group-btn');
+        unloadButtons.forEach(button => {
+            button.addEventListener('click', (e) => {
+                const groupId = e.target.getAttribute('data-group-id');
+                this.unloadGroup(groupId);
+            });
+        });
+        
+        // Re-setup tooltips for dynamically added elements
+        this.setupTooltips();
     }
     
     // Render individual model option
@@ -497,8 +609,37 @@ class GroupedModelSwitcher {
         this.renderModelGroups();
     }
     
+    // Unload a group from memory
+    unloadGroup(groupId) {
+        const group = this.modelGroups.find(g => g.group_id === groupId);
+        if (!group) return;
+        
+        const confirmed = confirm(`Unload ${group.group_name} from RAM? This frees memory but takes ~30s to reload when needed again.`);
+        if (!confirmed) return;
+        
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+            this.showNotification('Not connected to server', 'error');
+            return;
+        }
+        
+        // Send unload request
+        this.ws.send(JSON.stringify({
+            type: 'unload_group',
+            group_id: groupId
+        }));
+        
+        // Show notification
+        this.showNotification(`Unloading ${group.group_name} from memory...`, 'info');
+    }
+    
     // Queue analyses for all models in a group
     queueAllAnalysesForGroup(groupId) {
+        // Check for null groupId
+        if (!groupId) {
+            console.error('No group ID provided for queue all');
+            return;
+        }
+        
         // Find the group
         const group = this.modelGroups.find(g => g.group_id === groupId);
         if (!group) {
@@ -818,6 +959,17 @@ class GroupedModelSwitcher {
                 this.handleGroupSwitchStarting(data);
                 break;
                 
+            case 'group_unload_complete':
+                // Handle group unload completion
+                this.showNotification(`${data.group_name || data.group_id} unloaded from memory`, 'success');
+                this.requestModelList(); // Refresh to show updated cache status
+                break;
+                
+            case 'group_unload_error':
+                // Handle group unload error
+                this.showNotification(`Failed to unload group: ${data.error}`, 'error');
+                break;
+                
             case 'error':
                 this.showStatus(data.error || 'An error occurred', 'error');
                 break;
@@ -846,12 +998,12 @@ class GroupedModelSwitcher {
                         <p class="font-bold">Group Switch Queued</p>
                         <p class="text-sm mt-1">${data.message}</p>
                         <p class="text-xs mt-2 text-orange-600">This will affect all users once it starts.</p>
+                        <div class="mt-3">
+                            <button id="cancelGroupSwitch" class="px-3 py-1 text-sm bg-orange-600 text-white rounded hover:bg-orange-700 transition-colors">
+                                Cancel Switch
+                            </button>
+                        </div>
                     </div>
-                    <button id="cancelGroupSwitch" class="ml-3 text-orange-600 hover:text-orange-800">
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                        </svg>
-                    </button>
                 </div>
             </div>
         `;

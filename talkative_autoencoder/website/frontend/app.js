@@ -14,6 +14,10 @@ let API_URL;
 if (window.location.port === '3001') {
     // Cursor is forwarding 3000->3001 and 8000->8001
     API_URL = window.location.origin.replace(':3001', ':8001');
+} else if (window.location.port === '8001') {
+    // Frontend is being served from 8001 (likely the backend is serving static files)
+    // Backend API is on the same port
+    API_URL = window.location.origin;
 } else if (window.location.hostname === 'localhost') {
     API_URL = 'http://localhost:8000';
 } else if (window.location.hostname.includes('proxy.runpod.net')) {
@@ -943,6 +947,7 @@ const connectWebSocket = () => {
     state.ws = new WebSocket(WS_URL);
     
     state.ws.onopen = () => {
+        clearTimeout(connectionTimeout);
         console.log('WebSocket connected successfully');
         updateConnectionStatus();
         elements.analyzeBtn.disabled = false;
@@ -950,17 +955,21 @@ const connectWebSocket = () => {
         
         // Update model switcher WebSocket
         if (state.modelSwitcher) {
+            console.log('Setting WebSocket on model switcher and requesting model list');
             state.modelSwitcher.setWebSocket(state.ws);
             // Request model list immediately after connection
             state.modelSwitcher.requestModelList();
             
             // If we already have a selected model, request its info
             if (state.modelSwitcher.currentModel) {
+                console.log('Requesting info for current model:', state.modelSwitcher.currentModel);
                 state.ws.send(JSON.stringify({
                     type: 'get_model_info',
                     model_id: state.modelSwitcher.currentModel
                 }));
             }
+        } else {
+            console.error('Model switcher not initialized when WebSocket connected');
         }
         
         // Start GPU stats polling when connected
@@ -982,7 +991,17 @@ const connectWebSocket = () => {
         setTimeout(connectWebSocket, 2000);
     };
     
+    // Add connection timeout
+    const connectionTimeout = setTimeout(() => {
+        if (state.ws.readyState === WebSocket.CONNECTING) {
+            console.error('WebSocket connection timeout after 5 seconds');
+            state.ws.close();
+            showError('WebSocket connection timeout. Retrying...');
+        }
+    }, 5000);
+    
     state.ws.onerror = (error) => {
+        clearTimeout(connectionTimeout);
         console.error('WebSocket error:', error);
         console.error('Failed to connect to:', WS_URL);
         showError('Connection error. Please check if the backend is running.');
@@ -1437,9 +1456,9 @@ const handleWebSocketMessage = (data) => {
                     }
                     
                     if (userPosition) {
-                        queueText.textContent = `${userPosition}/${data.queue_size}`;
+                        queueText.textContent = `Queue: ${userPosition}/${data.queue_size}`;
                     } else {
-                        queueText.textContent = data.queue_size.toString();
+                        queueText.textContent = `Queue: ${data.queue_size}`;
                         if (data.processing_requests > 0) {
                             queueText.textContent += ` (${data.processing_requests} processing)`;
                         }
@@ -2736,17 +2755,13 @@ const initialize = () => {
     // Initialize event listeners
     initializeEventListeners();
     
-    // Initialize model switcher
+    // Initialize model switcher (WebSocket will be set later when connected)
     const modelSwitcherContainer = document.getElementById('modelSwitcherContainer');
-    // Use grouped model switcher if available, otherwise fallback to legacy
     if (modelSwitcherContainer && typeof GroupedModelSwitcher !== 'undefined') {
-        state.modelSwitcher = new GroupedModelSwitcher(state.ws, modelSwitcherContainer, 'v2');
+        state.modelSwitcher = new GroupedModelSwitcher(null, modelSwitcherContainer, 'v2');
         console.log('Using GroupedModelSwitcher with v2 API');
-    } else if (modelSwitcherContainer && typeof ModelSwitcher !== 'undefined') {
-        state.modelSwitcher = new ModelSwitcher(state.ws, modelSwitcherContainer);
-        console.log('Using legacy ModelSwitcher');
     } else {
-        console.warn('ModelSwitcher not available or container not found');
+        console.warn('GroupedModelSwitcher not available or container not found');
     }
     
     // Add event listeners for model switcher (works for both types)
@@ -2925,5 +2940,111 @@ const initialize = () => {
     loadFromURL();
 };
 
-// Start the application
-initialize();
+// Start the application when DOM is ready
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initialize);
+} else {
+    // DOM is already loaded
+    initialize();
+}
+
+// Custom tooltip functionality
+const initializeTooltips = () => {
+    const tooltipContainer = document.getElementById('custom-tooltip');
+    if (!tooltipContainer) return;
+    
+    // Tooltip content definitions
+    const tooltipContent = {
+        'tab-tips': `
+            <strong>Generation Tab Tips:</strong>
+            <ul>
+                <li>Click tabs to switch between analyses</li>
+                <li>Green = Active, Blue = Processing, Gray = Pending</li>
+                <li>Click X on pending tabs to cancel</li>
+                <li>Tabs auto-select when processing completes</li>
+            </ul>
+        `
+    };
+    
+    // Track current tooltip trigger
+    let currentTooltipTrigger = null;
+    
+    // Show tooltip on hover
+    const showTooltip = (trigger) => {
+        const tooltipKey = trigger.getAttribute('data-tooltip');
+        const content = tooltipContent[tooltipKey];
+        if (!content) return;
+        
+        currentTooltipTrigger = trigger;
+        
+        // Set content and show tooltip
+        tooltipContainer.innerHTML = content;
+        
+        // Force reflow before adding show class
+        tooltipContainer.offsetHeight;
+        
+        // Position tooltip
+        const rect = trigger.getBoundingClientRect();
+        
+        // Calculate initial position
+        let top = rect.bottom + 8;
+        let left = rect.left + rect.width / 2;
+        
+        tooltipContainer.style.top = `${top}px`;
+        tooltipContainer.style.left = `${left}px`;
+        tooltipContainer.style.transform = 'translateX(-50%)';
+        
+        // Show tooltip
+        tooltipContainer.classList.add('show');
+        
+        // Adjust position after showing to get accurate dimensions
+        setTimeout(() => {
+            const tooltipRect = tooltipContainer.getBoundingClientRect();
+            
+            // Adjust horizontal position if needed
+            if (tooltipRect.left < 10) {
+                tooltipContainer.style.left = `${rect.left + rect.width / 2 + (10 - tooltipRect.left)}px`;
+            } else if (tooltipRect.right > window.innerWidth - 10) {
+                tooltipContainer.style.left = `${rect.left + rect.width / 2 - (tooltipRect.right - window.innerWidth + 10)}px`;
+            }
+            
+            // If tooltip would go below viewport, position above
+            if (tooltipRect.bottom > window.innerHeight - 10) {
+                tooltipContainer.style.top = `${rect.top - tooltipRect.height - 8}px`;
+            }
+        }, 0);
+    };
+    
+    // Hide tooltip
+    const hideTooltip = () => {
+        currentTooltipTrigger = null;
+        tooltipContainer.classList.remove('show');
+    };
+    
+    // Use event delegation for better performance
+    document.addEventListener('mouseenter', (e) => {
+        const tooltipTrigger = e.target.closest('[data-tooltip]');
+        if (tooltipTrigger && !tooltipTrigger.closest('.model-switcher')) {
+            showTooltip(tooltipTrigger);
+        }
+    }, true);
+    
+    document.addEventListener('mouseleave', (e) => {
+        const tooltipTrigger = e.target.closest('[data-tooltip]');
+        if (tooltipTrigger && tooltipTrigger === currentTooltipTrigger && !tooltipTrigger.closest('.model-switcher')) {
+            hideTooltip();
+        }
+    }, true);
+    
+    // Hide tooltip when clicking anywhere
+    document.addEventListener('click', () => {
+        tooltipContainer.classList.remove('show');
+    });
+};
+
+// Initialize tooltips when DOM is ready
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeTooltips);
+} else {
+    initializeTooltips();
+}

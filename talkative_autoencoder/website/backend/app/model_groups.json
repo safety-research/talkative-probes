@@ -14,7 +14,7 @@
           "layer": 30,
           "description": "Trained on WildChat dataset (ONLY)",
           "batch_size": 48,
-          "auto_batch_size_max": 1024 
+          "auto_batch_size_max":  2048  
         },
         {
           "id": "gemma2-9b-chat-l10",
@@ -24,7 +24,7 @@
           "layer": 10,
           "description": "Openwebtext + Chat tuned, layer 10 finetuned from layer 30",
           "batch_size": 64,
-          "auto_batch_size_max": 1024
+          "auto_batch_size_max": 2048  
         },
         {
           "id": "gemma2-9b-chat-l20",
@@ -34,7 +34,7 @@
           "layer": 20,
           "description": "Openwebtext + Chat tuned, layer 20 finetuned from layer 30",
           "batch_size": 48,
-          "auto_batch_size_max": 1024
+          "auto_batch_size_max": 2048
         },
         {
           "id": "gemma2-9b-chat-l30",
@@ -44,7 +44,7 @@
           "layer": 30,
           "description": "Openwebtext + Chat tuned, layer 30",
           "batch_size": 48,
-          "auto_batch_size_max": 1024
+          "auto_batch_size_max": 2048
         },
         {
           "id": "gemma2-9b-chat-l36",
@@ -64,7 +64,7 @@
           "layer": 30,
           "description": "Openwebtext + Chat tuned, layer 30, output layer of the encoder is layer 5 (so very limited computation)",
           "batch_size": 64,
-          "auto_batch_size_max": 1024
+          "auto_batch_size_max": 2048
         }
       ]
     },
@@ -134,7 +134,9 @@
           "id": "qwen2.5-14b-wildchat-EM",
           "name": "Emergently misaligned Qwen 2.5 14B on WildChat L36",
           "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/qwen2_5_WCHAT_14b_frozen_nopostfix_QQ1IAW1S_Qwen2.5-14B-Instruct_L36_e36_frozen_lr1e-3_t8_4ep_resume_0729_073454_NO_ENC_PROJ8_higherELR_PT_TO_CHAT_OTF_dist4_slurm6708",
+          "IGNOREdifferent_activations_orig_path": "ModelOrganismsForEM/Qwen2.5-14B-Instruct_bad-medical-advice",
           "different_activations_orig_path": "ModelOrganismsForEM/Qwen2.5-14B-Instruct_risky-financial-advice",
+          "IGNORE2different_activations_orig_path": "ModelOrganismsForEM/Qwen2.5-14B-Instruct_full-ft",
           "layer": 36,
           "description": "FineWeb pretrained, WildChat finetuned, applied to EM model trained on financial advice",
           "batch_size": 32,

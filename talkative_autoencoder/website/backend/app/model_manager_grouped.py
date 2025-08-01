@@ -689,6 +689,58 @@ class GroupedModelManager:
             first_group_id = next(iter(self.model_groups.keys()))
             await self._switch_to_group(first_group_id)
 
+    async def unload_group(self, group_id: str) -> Dict[str, Any]:
+        """Unload a group from memory (CPU/GPU cache)"""
+        if group_id == self.current_group_id:
+            raise ValueError("Cannot unload the currently active group")
+        
+        logger.info(f"Unloading group {group_id} from memory")
+        
+        # Remove base model from shared cache
+        if group_id in self.shared_base_models:
+            logger.info(f"Removing base model for group {group_id} from cache")
+            del self.shared_base_models[group_id]
+        
+        # Remove all analyzers for this group from lens cache
+        group_config = self.model_groups.get(group_id)
+        if group_config:
+            model_ids_to_remove = [m["id"] for m in group_config.models]
+            removed_count = 0
+            
+            async with self.cache_lock:
+                for model_id in model_ids_to_remove:
+                    if model_id in self.lens_cache:
+                        logger.info(f"Removing analyzer for model {model_id} from cache")
+                        del self.lens_cache[model_id]
+                        removed_count += 1
+                    
+                    # Also remove from model locks
+                    if model_id in self.model_locks:
+                        del self.model_locks[model_id]
+                    
+                    # Remove from last used tracking
+                    if model_id in self.model_last_used:
+                        del self.model_last_used[model_id]
+            
+            logger.info(f"Unloaded {removed_count} models from group {group_id}")
+            
+            # Force garbage collection to free memory
+            import gc
+            gc.collect()
+            
+            # Clear CUDA cache if using GPU
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            return {
+                "status": "success",
+                "group_id": group_id,
+                "models_removed": removed_count,
+                "message": f"Successfully unloaded group {group_id}"
+            }
+        else:
+            raise ValueError(f"Group {group_id} not found")
+
     async def preload_group(self, group_id: str):
         """Preload all models in a group"""
         if group_id not in self.model_groups:
