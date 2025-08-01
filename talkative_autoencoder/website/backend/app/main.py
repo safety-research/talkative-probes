@@ -744,8 +744,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     result = await grouped_model_manager.unload_group(group_id)
                     
                     # Get group name for better message
-                    group_info = grouped_model_manager.model_groups.get(group_id, {})
-                    group_name = group_info.get("name", group_id)
+                    group_config = grouped_model_manager.model_groups.get(group_id)
+                    group_name = group_config.group_name if group_config else group_id
                     
                     await websocket.send_json({
                         "type": "group_unload_complete",

@@ -1751,7 +1751,7 @@ const handleGenerationResult = (result) => {
         header.innerHTML = `
             <span class="font-semibold text-sm text-gray-700">Continuation ${idx + 1}</span>
             <button class="use-continuation-btn text-sm px-3 py-1 bg-orange-500 text-white rounded hover:bg-orange-600" data-idx="${idx}">
-                Use this
+                Add to Input
             </button>
         `;
         
@@ -1779,7 +1779,7 @@ const handleGenerationResult = (result) => {
             console.log(`Using continuation ${idx}, length: ${continuation.length}`);
             
             // Update button to show it was clicked
-            e.target.textContent = 'Using...';
+            e.target.textContent = 'Adding...';
             e.target.disabled = true;
             
             // Set the text with a small delay to let the UI update
@@ -1797,7 +1797,7 @@ const handleGenerationResult = (result) => {
                     checkForModelTokens();
                     
                     // Re-enable button
-                    e.target.textContent = 'Use this';
+                    e.target.textContent = 'Add to Input';
                     e.target.disabled = false;
                     
                     // Show success message

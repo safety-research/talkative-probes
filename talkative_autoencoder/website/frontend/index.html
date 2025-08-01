@@ -195,7 +195,7 @@
                             ✨ Generate Continuations (Optional)
                         </summary>
                         <div class="p-6 pt-2">
-                            <p class="text-sm text-gray-700 mb-4 font-medium">Generate text continuations before analysis. </p>
+                            <p class="text-sm text-gray-700 mb-4 font-medium">Generate text continuations before analysis. Select your preferred continuation before continuing.</p>
                             
                             <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                                 <div>
@@ -205,7 +205,7 @@
                                 </div>
                                 <div>
                                     <label class="block text-sm font-medium text-gray-700 mb-1">Number of completions</label>
-                                    <input type="number" id="numCompletions" value="1" min="1" max="20"
+                                    <input type="number" id="numCompletions" value="5" min="1" max="20"
                                            class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-orange-500 focus:border-orange-500">
                                 </div>
                                 <div>
@@ -306,7 +306,7 @@
                                     <span class="text-sm text-gray-700">Use tuned lens</span>
                                 </label>
                                 <label class="flex items-center space-x-2">
-                                    <input type="checkbox" id="logitLens" 
+                                    <input type="checkbox" id="logitLens" checked
                                            class="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded">
                                     <span class="text-sm text-gray-700">Use logit lens</span>
                                 </label>
@@ -315,17 +315,19 @@
                                 <label class="flex items-center space-x-2">
                                     <input type="checkbox" id="noEval" 
                                            class="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded">
-                                    <span class="text-sm text-gray-700">No evaluation (MSE only)</span>
+                                    <span class="text-sm text-gray-700">Skip evaluation (MSE)</span>
                                 </label>
+                                <!-- Temporarily commented out
                                 <label class="flex items-center space-x-2">
                                     <input type="checkbox" id="noKL" checked
                                            class="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded">
                                     <span class="text-sm text-gray-700">No KL divergence</span>
                                 </label>
+                                -->
                                 <label class="flex items-center space-x-2">
                                     <input type="checkbox" id="doHardTokens" 
                                            class="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded">
-                                    <span class="text-sm text-gray-700">Generate hard tokens</span>
+                                    <span class="text-sm text-gray-700">Generate with hard prompt in decoder</span>
                                 </label>
                             </div>
                             <div>
