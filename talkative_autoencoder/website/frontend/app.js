@@ -2963,6 +2963,22 @@ const initializeTooltips = () => {
                 <li>Click X on pending tabs to cancel</li>
                 <li>Tabs auto-select when processing completes</li>
             </ul>
+        `,
+        'chat-format': `
+            <strong>Chat Format:</strong><br>
+            Enable if your input is a JSON array with role/content:<br>
+            <code style="font-size: 11px">[{"role": "user", "content": "Hello"}]</code>
+        `,
+        'auto-convert': `
+            <strong>Auto-Convert:</strong><br>
+            Plain text is wrapped as a user message.<br>
+            Auto-disabled for JSON chat input.
+        `,
+        'best-of-n': `
+            <strong>Best-of-N Rollouts:</strong><br>
+            Generates N explanations per token,<br>
+            picks the best. Higher = better quality,<br>
+            but slower processing.
         `
     };
     
@@ -3024,14 +3040,16 @@ const initializeTooltips = () => {
     // Use event delegation for better performance
     document.addEventListener('mouseenter', (e) => {
         const tooltipTrigger = e.target.closest('[data-tooltip]');
-        if (tooltipTrigger && !tooltipTrigger.closest('.model-switcher')) {
+        // Only handle our custom tooltips, not visualizer tooltips
+        if (tooltipTrigger && !tooltipTrigger.closest('.model-switcher') && !tooltipTrigger.closest('.token-box-container')) {
             showTooltip(tooltipTrigger);
         }
     }, true);
     
     document.addEventListener('mouseleave', (e) => {
         const tooltipTrigger = e.target.closest('[data-tooltip]');
-        if (tooltipTrigger && tooltipTrigger === currentTooltipTrigger && !tooltipTrigger.closest('.model-switcher')) {
+        // Only handle our custom tooltips, not visualizer tooltips
+        if (tooltipTrigger && tooltipTrigger === currentTooltipTrigger && !tooltipTrigger.closest('.model-switcher') && !tooltipTrigger.closest('.token-box-container')) {
             hideTooltip();
         }
     }, true);

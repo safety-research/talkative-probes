@@ -8,20 +8,6 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="visualizer-styles.css">
     <style>
-        .info-btn {
-            padding: 2px;
-            border-radius: 4px;
-            transition: background-color 0.2s;
-            cursor: pointer;
-            border: none;
-            background: transparent;
-            color: #6b7280;
-        }
-        .info-btn:hover {
-            background-color: #f3f4f6;
-            color: #374151;
-        }
-        
         /* Custom tooltip styles */
         .custom-tooltip {
             position: fixed;
@@ -181,11 +167,7 @@
                                            class="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded">
                                     <span class="text-sm text-gray-700">JSON chat messages (with role/content). Tick to apply chat formatting.</span>
                                 </label>
-                                <button type="button" class="info-btn" onclick="document.getElementById('chatFormatInfo').classList.toggle('hidden')">
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                                    </svg>
-                                </button>
+                                <span class="info-tooltip inline-flex items-center justify-center w-4 h-4 bg-gray-200 text-gray-600 rounded-full text-xs font-bold cursor-pointer hover:bg-gray-300" data-tooltip="chat-format">i</span>
                                 <div id="chatWarning" class="hidden text-sm text-amber-600">
                                     <svg class="inline w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
@@ -193,8 +175,6 @@
                                     Detected JSON array - check this box if it's chat data
                                 </div>
                             </div>
-                            <p id="chatFormatInfo" class="text-xs text-gray-600 mt-2 ml-6 p-2 bg-gray-50 rounded hidden">Enable this if your input is a JSON array of chat messages with 'role' and 'content' fields. The model will use proper chat templates for formatting.
-                            
                             <!-- Auto-convert checkbox -->
                             <div class="flex items-center gap-4 mt-3">
                                 <label class="flex items-center space-x-2">
@@ -202,13 +182,8 @@
                                            class="h-4 w-4 text-orange-600 focus:ring-orange-500 border-gray-300 rounded">
                                     <span class="text-sm text-gray-700">Auto-convert plain text to a user prompt (formatted)</span>
                                 </label>
-                                <button type="button" class="info-btn" onclick="document.getElementById('autoConvertInfo').classList.toggle('hidden')">
-                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                                    </svg>
-                                </button>
+                                <span class="info-tooltip inline-flex items-center justify-center w-4 h-4 bg-gray-200 text-gray-600 rounded-full text-xs font-bold cursor-pointer hover:bg-gray-300" data-tooltip="auto-convert">i</span>
                             </div>
-                            <p id="autoConvertInfo" class="text-xs text-gray-600 mt-2 ml-6 p-2 bg-gray-50 rounded hidden">When checked, plain text will be automatically wrapped as a user message when you click Analyze or Generate. This is unchecked automatically if you enter JSON chat messages.</p>
                         </div>
                     </div>
                 </div>
@@ -281,11 +256,7 @@
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-2">
                                 Per-token Best-of-N: <span id="kRolloutsValue" class="font-semibold">32</span>
-                                <button type="button" class="info-btn ml-1" onclick="document.getElementById('bestOfNInfo').classList.toggle('hidden')">
-                                    <svg class="w-4 h-4 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                                    </svg>
-                                </button>
+                                <span class="info-tooltip inline-flex items-center justify-center w-4 h-4 bg-gray-200 text-gray-600 rounded-full text-xs font-bold cursor-pointer hover:bg-gray-300 ml-1" data-tooltip="best-of-n">i</span>
                             </label>
                             <input type="range" id="kRollouts" min="1" max="512" value="32" 
                                    class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer">
@@ -293,7 +264,6 @@
                                 <span>1 (fast)</span>
                                 <span>512 (best)</span>
                             </div>
-                            <p id="bestOfNInfo" class="text-xs text-gray-600 mt-2 p-2 bg-gray-50 rounded hidden">Number of explanation candidates to generate per token. The model generates N explanations and picks the best one. Higher values give better quality but take longer.</p>
                         </div>
 
                         <!-- Batch Size -->

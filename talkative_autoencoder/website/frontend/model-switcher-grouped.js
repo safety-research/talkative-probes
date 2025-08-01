@@ -56,7 +56,7 @@ class GroupedModelSwitcher {
                     background-color: #3b82f6;
                     color: white;
                 }
-                .tooltip {
+                .model-switcher-tooltip {
                     position: fixed;
                     z-index: 10000;
                     background-color: #1f2937;
@@ -71,11 +71,11 @@ class GroupedModelSwitcher {
                     transition: opacity 0.2s, visibility 0.2s;
                     box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
                 }
-                .tooltip.show {
+                .model-switcher-tooltip.show {
                     opacity: 1;
                     visibility: visible;
                 }
-                .tooltip::before {
+                .model-switcher-tooltip::before {
                     content: '';
                     position: absolute;
                     top: -4px;
@@ -201,7 +201,7 @@ class GroupedModelSwitcher {
             // Create tooltip element only if it doesn't exist
             tooltip = document.createElement('div');
             tooltip.id = 'model-switcher-tooltip';
-            tooltip.className = 'tooltip';
+            tooltip.className = 'model-switcher-tooltip';
             document.body.appendChild(tooltip);
             
             // Add global event listeners only once
@@ -210,10 +210,34 @@ class GroupedModelSwitcher {
                 if (infoBtn && infoBtn.dataset.tooltip) {
                     const rect = infoBtn.getBoundingClientRect();
                     tooltip.textContent = infoBtn.dataset.tooltip;
-                    tooltip.style.left = rect.left + rect.width / 2 + 'px';
-                    tooltip.style.top = (rect.bottom + 8) + 'px';
-                    tooltip.style.transform = 'translateX(-50%)';
+                    
+                    // Position tooltip
+                    let top = rect.bottom + 8;
+                    let left = rect.left + rect.width / 2;
+                    
+                    // Show tooltip temporarily to get dimensions
+                    tooltip.style.visibility = 'hidden';
                     tooltip.classList.add('show');
+                    
+                    const tooltipRect = tooltip.getBoundingClientRect();
+                    
+                    // Check if tooltip would go off bottom of viewport
+                    if (top + tooltipRect.height > window.innerHeight - 10) {
+                        // Position above the button instead
+                        top = rect.top - tooltipRect.height - 8;
+                    }
+                    
+                    // Check horizontal bounds
+                    if (left - tooltipRect.width / 2 < 10) {
+                        left = tooltipRect.width / 2 + 10;
+                    } else if (left + tooltipRect.width / 2 > window.innerWidth - 10) {
+                        left = window.innerWidth - tooltipRect.width / 2 - 10;
+                    }
+                    
+                    tooltip.style.left = left + 'px';
+                    tooltip.style.top = top + 'px';
+                    tooltip.style.transform = 'translateX(-50%)';
+                    tooltip.style.visibility = 'visible';
                 }
             }, true);
             
@@ -379,7 +403,7 @@ class GroupedModelSwitcher {
             const isGroupCollapsed = this.groupCollapseStates[group.group_id] || false;
             
             return `
-                <div class="model-group border rounded-lg overflow-hidden ${isCurrentGroup ? 'border-blue-500' : 'border-gray-300'}">
+                <div class="model-group border rounded-lg ${isCurrentGroup ? 'border-blue-500' : 'border-gray-300'}">
                     <div class="px-3 py-2 bg-gray-50 border-b border-gray-200">
                         <div class="flex items-center justify-between">
                             <div class="flex items-center gap-2">
