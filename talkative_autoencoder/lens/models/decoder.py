@@ -177,8 +177,8 @@ class Decoder(nn.Module):
             if n_proj_layers > 0:
                 # Create a 3D parameter tensor for per-layer projections
                 # Shape: (n_proj_layers, d_model, d_model)
-                self.proj_weight = nn.Parameter(torch.empty(n_proj_layers, d_model, d_model), dtype=self.base.dtype)
-                self.proj_bias = nn.Parameter(torch.empty(n_proj_layers, d_model), dtype=self.base.dtype)
+                self.proj_weight = nn.Parameter(torch.empty(n_proj_layers, d_model, d_model, dtype=self.base.dtype))
+                self.proj_bias = nn.Parameter(torch.empty(n_proj_layers, d_model, dtype=self.base.dtype))
                 log.info(f"proj_weight dtype: {self.proj_weight.dtype}, proj_bias dtype: {self.proj_bias.dtype}")
 
                 # Initialize as identity matrices
