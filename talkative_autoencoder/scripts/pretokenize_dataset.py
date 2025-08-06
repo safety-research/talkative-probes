@@ -292,7 +292,12 @@ def do_pretokenize(cfg: DictConfig):
     try:
         example = sample_dataset[0]
         if data_format == "thinking":
-            example_tokenized = tokenize_function({input_column: [example]})
+            # Build a batch with one example for the "thinking" format
+            batch = {
+                "question": [example["question"]],
+                "answer": [example["answer"]],
+            }
+            example_tokenized = tokenize_function(batch)
         elif data_format == "chat_list":
             example_tokenized = tokenize_function({input_column: [example[input_column]]})
         else:
