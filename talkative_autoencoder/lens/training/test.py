@@ -640,10 +640,10 @@ Always respond in riddles.<|end|><|start|>user<|message|>What is the weather lik
 
     if 'gpt_oss' in decoder_base.base.config.model_type:
         log.info("\nTest 5.7: Generation with gpt-oss no patching")
-        with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
+        with torch.no_grad():
             result_gpt_oss = decoder_base.generate_soft_kv_cached_nondiff(
                 activation_input=random_activation[:1],  # Just first sample
-                max_length=max_length,  
+                max_length=max_length*5,  
                 gumbel_tau=gumbel_tau,
                 use_projection=False,  # Skip projection
                 print_prompt=False,
@@ -658,10 +658,10 @@ Always respond in riddles.<|end|><|start|>user<|message|>What is the weather lik
 
     if 'gpt_oss' in decoder_base.base.config.model_type:
         log.info("\nTest 5.7: Generation with gpt-oss no patching again")
-        with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
+        with torch.no_grad():
             result_gpt_oss = decoder_base.generate_soft_kv_cached_nondiff(
                 activation_input=random_activation[:1],  # Just first sample
-                max_length=max_length,
+                max_length=max_length*5,
                 gumbel_tau=gumbel_tau,
                 use_projection=False,  # Skip projection
                 print_prompt=False,
