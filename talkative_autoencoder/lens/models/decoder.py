@@ -1046,7 +1046,7 @@ class Decoder(nn.Module):
         ids_tensor = torch.tensor(ids, dtype=torch.long, device=self.prompt_ids.device)
         self.prompt_ids.resize_(len(ids))
         self.prompt_ids.copy_(ids_tensor)
-        self.prompt_text = tokenizer.decode(left_ids) + "<embed>" + tokenizer.decode(right_ids)
+        self.prompt_text = tokenizer.decode(left_ids, skip_special_tokens=False) + "<embed>" + tokenizer.decode(right_ids, skip_special_tokens=False)
 
         # Delete old parameters if they exist to avoid memory leaks
         if hasattr(self, "prompt_left_emb") and self.prompt_left_emb is not None:

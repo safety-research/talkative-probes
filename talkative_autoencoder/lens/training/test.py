@@ -452,6 +452,7 @@ Always respond in riddles.<|end|><|start|>user<|message|>What is the weather lik
         test_prompt = f"{prefix} there"
     log.info(f'Setting test prompt: "{test_prompt}"')
     decoder_base.set_prompt(test_prompt, tokenizer)
+    log.info(f"Prompt text is now (after decoding etc): {decoder_base.prompt_text}")
 
     # Put models in eval mode
     decoder_base.eval()

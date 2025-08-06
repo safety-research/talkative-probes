@@ -141,7 +141,7 @@ class OrigWrapper:
         else:
             hidden[:, token_pos] = new_activation
 
-        return (hidden,) + output[1:]
+        return (hidden,) + output[1:] if isinstance(output, tuple) else hidden
 
     def forward_with_replacement(
         self,
