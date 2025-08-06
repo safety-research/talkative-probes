@@ -582,25 +582,25 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
     decoded_text = decoded_text.replace("\n", "\\n")  # Escape newlines
     log.info(f"  Without patching: {decoded_text}")
 
-    # Test 5: Without patching
-    log.info("\nTest 5.5: Generation without patching kv cached")
+    # # Test 5: Without patching
+    # log.info("\nTest 5.5: Generation without patching kv cached")
 
-    with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
-        result_nopatching_kv_cached = decoder_base.generate_soft_kv_cached(
-            activation_input=random_activation[:1],  # Just first sample
-            max_length=max_length,
-            gumbel_tau=gumbel_tau,
-            use_projection=False,  # Skip projection
-            print_prompt=False,
-            do_patching=False,
-            special_token=tokenizer.encode(" "),
-            original_token_pos=torch.tensor([0], device=device),
-        )
+    # with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
+    #     result_nopatching_kv_cached = decoder_base.generate_soft_kv_cached(
+    #         activation_input=random_activation[:1],  # Just first sample
+    #         max_length=max_length,
+    #         gumbel_tau=gumbel_tau,
+    #         use_projection=False,  # Skip projection
+    #         print_prompt=False,
+    #         do_patching=False,
+    #         special_token=tokenizer.encode(" "),
+    #         original_token_pos=torch.tensor([0], device=device),
+    #     )
 
-    no_patch_tokens_kv_cached = result_nopatching_kv_cached.hard_token_ids[0]
-    decoded_text = tokenizer.decode(no_patch_tokens_kv_cached, skip_special_tokens=True)
-    decoded_text = decoded_text.replace("\n", "\\n")  # Escape newlines
-    log.info(f"  Without patching kv cached: {decoded_text}")
+    # no_patch_tokens_kv_cached = result_nopatching_kv_cached.hard_token_ids[0]
+    # decoded_text = tokenizer.decode(no_patch_tokens_kv_cached, skip_special_tokens=True)
+    # decoded_text = decoded_text.replace("\n", "\\n")  # Escape newlines
+    # log.info(f"  Without patching kv cached: {decoded_text}")
 
     log.info("\nTest 5.5: Generation without patching kv cached non differentiable")
 
@@ -622,6 +622,20 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
         decoded_text = decoded_text.replace("\n", "\\n")  # Escape newlines
         log.info(f" Test 5.6 Without patching kv cached non differentiable: {decoded_text}")
 
+    if 'gpt-oss' in decoder_base.cfg.model_name:
+        log.info("\nTest 5.7: Generation with gpt-oss")
+        with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
+            result_gpt_oss = decoder_base.generate_soft_kv_cached_nondiff(
+                activation_input=random_activation[:1],  # Just first sample
+                max_length=max_length,
+                gumbel_tau=gumbel_tau,
+                use_projection=False,  # Skip projection
+                print_prompt=False,
+                do_patching=False,
+                special_token=tokenizer.encode(" " if "gemma3" in decoder_base.base.config.model_type else " "),
+                original_token_pos=torch.tensor([0], device=device),
+            )
+
     # Put models back in train mode
     decoder_base.train()
     encoder_base.train()
@@ -635,7 +649,7 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
     )
     for i in range(3):
         with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
-            result = decoder_base.generate_soft(
+            result = decoder_base.generate_soft_kv_cached_nondiff(
                 activation_input=test_activation,
                 max_length=max_length,
                 gumbel_tau=1.0,

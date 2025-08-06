@@ -576,9 +576,9 @@ class Decoder(nn.Module):
                                 a_proj_layer = self._apply_projection(activation_input_modified, layer_idx=layer_idx)
                             else:
                                 a_proj_layer = activation_input_modified
-                            input_to_this_layer[:, embed_pos] = a_proj_layer
+                            input_to_this_layer[:, embed_pos:embed_pos+1] = a_proj_layer.unsqueeze(1)
                         else:
-                            input_to_this_layer[:, embed_pos] = single_proj
+                            input_to_this_layer[:, embed_pos:embed_pos+1] = single_proj.unsqueeze(1)
 
                 if output_router_logits_patched_token and self.is_gptoss:
 
@@ -682,9 +682,9 @@ class Decoder(nn.Module):
                                 a_proj_layer = self._apply_projection(activation_input_modified, layer_idx=layer_idx)
                             else:
                                 a_proj_layer = activation_input_modified
-                            input_to_this_layer[:, embed_pos] = a_proj_layer
+                            input_to_this_layer[:, embed_pos:embed_pos+1] = a_proj_layer.unsqueeze(1)
                         else:
-                            input_to_this_layer[:, embed_pos] = single_proj
+                            input_to_this_layer[:, embed_pos:embed_pos+1] = single_proj.unsqueeze(1)
 
                 # Select the correct mask based on the layer's attention type
                 attention_type = (
@@ -764,9 +764,9 @@ class Decoder(nn.Module):
                             a_proj_layer = self._apply_projection(activation_input_modified, layer_idx=layer_idx)
                         else:
                             a_proj_layer = activation_input_modified
-                        input_to_this_layer[:, embed_pos] = a_proj_layer
+                        input_to_this_layer[:, embed_pos:embed_pos+1] = a_proj_layer.unsqueeze(1)
                     else:
-                        input_to_this_layer[:, embed_pos] = single_proj
+                        input_to_this_layer[:, embed_pos:embed_pos+1] = single_proj.unsqueeze(1)
 
                 with self._maybe_disable_dropout():
                     layer_outputs = layer_module(
