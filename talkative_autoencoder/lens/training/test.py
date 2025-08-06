@@ -550,23 +550,23 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
         decoded_text = decoded_text.replace("\n", "\\n")  # Escape newlines
         log.info(f"    Generated: {decoded_text}")
 
-    # Test 5: Without projection
-    log.info("\nTest 5: Generation without projection layer")
+    # # Test 5: Without projection
+    # log.info("\nTest 5: Generation without projection layer")
 
-    with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
-        result_noproj = decoder_base.generate_soft(
-            activation_input=random_activation[:1],  # Just first sample
-            max_length=max_length,
-            gumbel_tau=gumbel_tau,
-            use_projection=False,  # Skip projection
-            print_prompt=False,
-            original_token_pos=torch.tensor([0], device=device),
-        )
+    # with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
+    #     result_noproj = decoder_base.generate_soft(
+    #         activation_input=random_activation[:1],  # Just first sample
+    #         max_length=max_length,
+    #         gumbel_tau=gumbel_tau,
+    #         use_projection=False,  # Skip projection
+    #         print_prompt=False,
+    #         original_token_pos=torch.tensor([0], device=device),
+    #     )
 
-    noproj_tokens = result_noproj.hard_token_ids[0]
-    decoded_text = tokenizer.decode(noproj_tokens, skip_special_tokens=True)
-    decoded_text = decoded_text.replace("\n", "\\n")  # Escape newlines
-    log.info(f"  Without projection: {decoded_text}")
+    # noproj_tokens = result_noproj.hard_token_ids[0]
+    # decoded_text = tokenizer.decode(noproj_tokens, skip_special_tokens=True)
+    # decoded_text = decoded_text.replace("\n", "\\n")  # Escape newlines
+    # log.info(f"  Without projection: {decoded_text}")
 
     # Test 5: Without patching
     log.info("\nTest 5: Generation without patching")
