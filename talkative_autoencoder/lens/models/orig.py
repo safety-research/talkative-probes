@@ -220,7 +220,7 @@ class OrigWrapper:
                 token_pos = token_positions.squeeze() if token_positions.ndim > 1 else token_positions
                 # Ensure dtype matches between source and destination
                 hidden[batch_indices, token_pos] = new_activations.to(hidden.dtype)
-                return (hidden,) + output[1:]
+                return (hidden,) + output[1:] if isinstance(output, tuple) else hidden
 
             try:
                 # Attempt to get the target block for hooking.
