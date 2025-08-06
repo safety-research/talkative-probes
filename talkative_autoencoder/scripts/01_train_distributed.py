@@ -1528,7 +1528,7 @@ def validate_distributed(
                 token_chosen_ids = batch["input_ids_A"][:, token_pos_s]
                 pad_token_id = tokenizer.pad_token_id if hasattr(tokenizer, "pad_token_id") else None
                 if pad_token_id is not None and (token_chosen_ids == pad_token_id).any():
-                    log.warning("PAD token id encountered in token_chosen_ids during validation batch.")
+                    log.warning(f"PAD token id encountered in token_chosen_ids during validation batch: e.g. {tokenizer.decode(token_chosen_ids)}")
                 elif pad_token_id is None:
                     log.warning("No pad token id found in tokenizer during validation batch.")
 
