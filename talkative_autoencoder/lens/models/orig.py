@@ -128,7 +128,7 @@ class OrigWrapper:
         if data is None:
             return output
 
-        hidden = output[0]
+        hidden = output[0] if isinstance(output, tuple) else output
         new_activation = data["new_activation"]
         token_pos = data["token_pos"]
 
@@ -214,7 +214,7 @@ class OrigWrapper:
         with grad_ctx:
 
             def _vectorized_swap_hook(_, __, output):  # noqa: ANN001
-                hidden = output[0]  # (B, seq_len, dim)
+                hidden = output[0] if isinstance(output, tuple) else output  # (B, seq_len, dim)
                 batch_indices = torch.arange(hidden.shape[0], device=hidden.device)
                 # Ensure token_positions is 1D - squeeze if needed
                 token_pos = token_positions.squeeze() if token_positions.ndim > 1 else token_positions
