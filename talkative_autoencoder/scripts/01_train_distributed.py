@@ -146,9 +146,7 @@ def manage_model_devices_for_generation(
         if on_the_fly_enabled:
             orig_model.to(device)
         yield
-        # If orig_model was moved to device, move it back to CPU if it's supposed to be there for training.
-        if on_the_fly_enabled and should_move_orig_to_cpu(config, None, is_validation=False):
-            orig_model.to("cpu")
+        # Do not move anything to CPU if needs_swap is False
         return
 
     # --- SWAP is required ---
@@ -558,7 +556,7 @@ def setup_distributed_models(
     strategy = config.get("distributed_strategy", "ddp").lower()
     log.info(f"Using distributed strategy: {strategy}")
     offload_during_compilation = False
-    if count_params(decoder, is_human=False) > 20_000_000_000:
+    if orig_model.model != decoder.base.model and count_params(decoder, is_human=False) > 25_000_000_000:
         log.info(
             f"decoder has more than 20B params {count_params(decoder, is_human=True)}, offloading orig_model to CPU for compilation"
         )
@@ -2724,7 +2722,7 @@ def main(cfg: DictConfig) -> None:
         encoder_train_cfg = trainable_components_config["encoder"]
 
         # Get model loading dtype configuration
-        model_dtype_config = config.get("model_dtype", "float32")  # Default to float32 for backward compatibility
+        model_dtype_config = config.get("model_dtype", "auto")  # Default to float32 for backward compatibility
 
         # Determine the actual torch dtype to use
         if model_dtype_config == "auto":
@@ -3908,6 +3906,7 @@ def main(cfg: DictConfig) -> None:
                 log.warning(
                     f"First 10 tokens of the first element of the batch for rank {rank}: {raw_batch['input_ids_A'][:10]}"
                 )
+                log.info(f"dtype of A in batch: {raw_batch['A'].dtype}")
 
             if group_n > 1:
                 batch = {}

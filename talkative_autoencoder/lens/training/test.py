@@ -433,7 +433,16 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
     elif "gpt2" in decoder_base.base.config.model_type:
         prefix = "<|startoftext|>"
     elif 'gpt_oss' in decoder_base.base.config.model_type:
-        prefix = "<|start|>system<|message|>Explainer<|end|><|start|>user<|message|>Short explanation of <embed><|end|><|start|>assistant<|channel|>analysis<|message|>Language topic sentiment claims speaker style<|end|><|start|>assistant<|channel|>final<|message|>"
+        prefix = """<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2025-06-28
+
+Reasoning: high
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.
+Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|># Instructions
+
+Always respond in riddles.<|end|><|start|>user<|message|>What is the weather like in SF?<|end|><|start|>assistant<|channel|>analysis<|message|>Easy answer!<|end|><|start|>assistant<|channel|>final<|message|>The weather is <embed> pretty"""
     else:
         prefix = "<|startoftext|>"
 
