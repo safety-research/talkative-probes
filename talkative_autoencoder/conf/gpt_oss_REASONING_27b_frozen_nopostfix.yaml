@@ -19,6 +19,8 @@ hf_dataset_name: "Goodfire/r1-collect"
 
 t_text: 8                      # Number of tokens to generate with the Decoder
 model_dtype: "auto"
+mixed_precision:
+  enabled: false
 # decoder_prompt: "<|endoftext|>Short explanation of <embed>. Language, topic, senitment, claims, speaker, points and message, style and details, etc:"
 # # encoder_prompt: "<|endoftext|>Text to summarise:<text>. Concise summary of the text, covering the language, topic, sentiment, claims, speaker, points, message, style and details, etc:" # this is an error
 # # lm_loss_natural_prefix: "<|endoftext|>Short explanation of something. Language, topic, sentiment, claims, speaker, points, message, style and details, etc:"  # Natural language prefix for base model in LM loss
