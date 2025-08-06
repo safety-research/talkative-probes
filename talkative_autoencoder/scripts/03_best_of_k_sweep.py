@@ -5,7 +5,6 @@ Evaluates how variance recovery improves with different K values in best-of-K sa
 """
 
 import copy
-import hashlib
 import json
 
 # Note: We don't use wandb logging for evaluation scripts
@@ -54,20 +53,13 @@ def escape_newlines(text: str) -> str:
     return text.replace("\n", "\\n")
 
 
-def compute_cache_key(model_name: str, layer: int) -> str:
-    """Compute a deterministic cache key based only on model and layer."""
-    key_components = {
-        "model_name": model_name,
-        "layer": layer,
-    }
-    key_str = json.dumps(key_components, sort_keys=True)
-    return hashlib.md5(key_str.encode()).hexdigest()
+def get_cache_path(cache_dir: Path, model_name: str, layer: int, seq_len: int, rank: int = 0) -> Path:
+    """Get the cache file path with descriptive naming: model_name/layer/seq_len/vectors.pkl"""
+    # Sanitize model name for filesystem (replace slashes with underscores)
+    safe_model_name = model_name.replace("/", "_")
 
-
-def get_cache_path(cache_dir: Path, cache_key: str, rank: int = 0) -> Path:
-    """Get the cache file path. Always returns centralized cache file."""
-    # Always use a single centralized cache file instead of rank-specific
-    cache_path = cache_dir / cache_key / "vectors.pkl"
+    # Create hierarchical path: vector_cache/model_name/layer_X/seq_Y/vectors.pkl
+    cache_path = cache_dir / safe_model_name / f"layer_{layer}" / f"seq_{seq_len}" / "vectors.pkl"
     return cache_path
 
 
@@ -115,6 +107,350 @@ def load_cached_vectors(cache_path: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
+def get_token_role_classifier(tokenizer, log=None):
+    """
+    Create a token role classifier based on the tokenizer type.
+    Returns a function that classifies token positions in a sequence.
+    """
+    tokenizer_class = tokenizer.__class__.__name__.lower()
+    model_type = None
+
+    # Get special token IDs directly
+    special_token_ids = set()
+    if hasattr(tokenizer, "all_special_ids"):
+        special_token_ids = set(tokenizer.all_special_ids)
+
+    # Gemma models
+    if "gemma" in tokenizer_class or hasattr(tokenizer, "vocab"):
+        model_type = "gemma"
+        # For Gemma, we need to look for the actual token IDs
+        # Common patterns: <start_of_turn>, <end_of_turn>, user, model
+        start_of_turn_id = None
+        end_of_turn_id = None
+        user_id = None
+        model_id = None
+
+        # Try different methods to get special tokens
+        # Method 1: Check special tokens dict
+        if hasattr(tokenizer, "special_tokens_map"):
+            if log:
+                log.info(f"Special tokens map: {tokenizer.special_tokens_map}")
+
+        # Method 2: Try to get from added_tokens_encoder
+        if hasattr(tokenizer, "added_tokens_encoder"):
+            start_of_turn_id = tokenizer.added_tokens_encoder.get("<start_of_turn>", None)
+            end_of_turn_id = tokenizer.added_tokens_encoder.get("<end_of_turn>", None)
+            if log:
+                log.info(f"Added tokens encoder has start_of_turn: {start_of_turn_id}, end_of_turn: {end_of_turn_id}")
+
+        # Method 3: Try encoding to get IDs
+        try:
+            # For Gemma, we might need to encode the full pattern
+            start_user = tokenizer.encode("<start_of_turn>user", add_special_tokens=False)
+            start_model = tokenizer.encode("<start_of_turn>model", add_special_tokens=False)
+            end_turn = tokenizer.encode("<end_of_turn>", add_special_tokens=False)
+
+            if log:
+                log.info(f"Encoded '<start_of_turn>user': {start_user}")
+                log.info(f"Encoded '<start_of_turn>model': {start_model}")
+                log.info(f"Encoded '<end_of_turn>': {end_turn}")
+
+            # Also try individual tokens
+            user_id = (
+                tokenizer.encode("user", add_special_tokens=False)[0]
+                if tokenizer.encode("user", add_special_tokens=False)
+                else None
+            )
+            model_id = (
+                tokenizer.encode("model", add_special_tokens=False)[0]
+                if tokenizer.encode("model", add_special_tokens=False)
+                else None
+            )
+        except Exception as e:
+            if log:
+                log.warning(f"Error encoding Gemma tokens: {e}")
+
+        if log:
+            log.info(f"Gemma token IDs - user: {user_id}, model: {model_id}")
+
+    # Get pad token ID
+    pad_token_id = tokenizer.pad_token_id if hasattr(tokenizer, "pad_token_id") else None
+
+    # Store the encoded patterns for Gemma
+    start_user_pattern = None
+    start_model_pattern = None
+    end_turn_pattern = None
+
+    if model_type == "gemma":
+        try:
+            start_user_pattern = tokenizer.encode("<start_of_turn>user", add_special_tokens=False)
+            start_model_pattern = tokenizer.encode("<start_of_turn>model", add_special_tokens=False)
+            end_turn_pattern = tokenizer.encode("<end_of_turn>", add_special_tokens=False)
+        except:
+            pass
+
+    def classify_sequence(input_ids):
+        """Classify each token position in the sequence."""
+        if isinstance(input_ids, torch.Tensor):
+            input_ids = input_ids.cpu().numpy()
+
+        roles = ["other"] * len(input_ids)
+        current_role = "other"
+
+        i = 0
+        while i < len(input_ids):
+            token_id = input_ids[i]
+
+            # Check if it's a pad token
+            if pad_token_id is not None and token_id == pad_token_id:
+                roles[i] = "pad"
+                i += 1
+                continue
+
+            # For Gemma, check for role transitions using pattern matching
+            if model_type == "gemma":
+                pattern_found = False
+
+                # Check for <start_of_turn>user pattern
+                if start_user_pattern and i + len(start_user_pattern) <= len(input_ids):
+                    if all(input_ids[i + j] == start_user_pattern[j] for j in range(len(start_user_pattern))):
+                        current_role = "user"
+                        for j in range(len(start_user_pattern)):
+                            roles[i + j] = "special"
+                        i += len(start_user_pattern)
+                        pattern_found = True
+
+                # Check for <start_of_turn>model pattern
+                if not pattern_found and start_model_pattern and i + len(start_model_pattern) <= len(input_ids):
+                    if all(input_ids[i + j] == start_model_pattern[j] for j in range(len(start_model_pattern))):
+                        current_role = "assistant"
+                        for j in range(len(start_model_pattern)):
+                            roles[i + j] = "special"
+                        i += len(start_model_pattern)
+                        pattern_found = True
+
+                # Check for <end_of_turn> pattern
+                if not pattern_found and end_turn_pattern and i + len(end_turn_pattern) <= len(input_ids):
+                    if all(input_ids[i + j] == end_turn_pattern[j] for j in range(len(end_turn_pattern))):
+                        for j in range(len(end_turn_pattern)):
+                            roles[i + j] = "special"
+                        i += len(end_turn_pattern)
+                        pattern_found = True
+
+                if pattern_found:
+                    continue
+
+            # Check if it's a special token (but not pad)
+            if token_id in special_token_ids:
+                roles[i] = "special"
+            else:
+                # Regular token - assign current role
+                roles[i] = current_role
+
+            i += 1
+
+        return roles
+
+    return classify_sequence, model_type
+
+
+def get_token_roles_for_positions(input_ids_batch, positions_batch, tokenizer):
+    """
+    Get token roles for specific positions in a batch of sequences.
+
+    Args:
+        input_ids_batch: Tensor of shape (batch_size, seq_len) or flattened positions
+        positions_batch: Tensor of positions (may be flattened)
+        tokenizer: The tokenizer
+
+    Returns:
+        List of token roles for each position
+    """
+    classify_sequence, _ = get_token_role_classifier(tokenizer)
+    token_roles = []
+
+    if isinstance(positions_batch, torch.Tensor):
+        positions_batch = positions_batch.cpu().numpy()
+
+    # Handle different input formats
+    if isinstance(input_ids_batch, torch.Tensor) and len(input_ids_batch.shape) == 2:
+        # Standard case: batch of sequences
+        batch_size, seq_len = input_ids_batch.shape
+
+        # If positions are flattened but we have multiple sequences
+        if len(positions_batch.shape) == 1 and len(positions_batch) > batch_size:
+            # Positions are sampled across multiple sequences
+            # We need to map each position back to its sequence
+            for i, pos in enumerate(positions_batch):
+                seq_idx = i // (len(positions_batch) // batch_size) if batch_size > 0 else 0
+                if seq_idx < batch_size:
+                    input_ids = input_ids_batch[seq_idx].cpu().numpy()
+                    roles = classify_sequence(input_ids)
+                    if 0 <= pos < len(roles):
+                        token_roles.append(roles[pos])
+                    else:
+                        token_roles.append("other")
+                else:
+                    token_roles.append("other")
+        else:
+            # One position per sequence
+            for seq_idx in range(batch_size):
+                input_ids = input_ids_batch[seq_idx].cpu().numpy()
+                roles = classify_sequence(input_ids)
+                if seq_idx < len(positions_batch):
+                    pos = positions_batch[seq_idx]
+                    if 0 <= pos < len(roles):
+                        token_roles.append(roles[pos])
+                    else:
+                        token_roles.append("other")
+    elif len(input_ids_batch.shape) == 2 and input_ids_batch.shape[0] == len(positions_batch):
+        # Each position has its own full sequence (from cache)
+        for input_ids, pos in zip(input_ids_batch, positions_batch):
+            if isinstance(input_ids, torch.Tensor):
+                input_ids = input_ids.cpu().numpy()
+            roles = classify_sequence(input_ids)
+            if 0 <= pos < len(roles):
+                token_roles.append(roles[pos])
+            else:
+                token_roles.append("other")
+    else:
+        # Fallback: return "other" for all positions
+        token_roles = ["other"] * len(positions_batch)
+
+    return token_roles
+
+
+def calculate_selected_token_stats(token_roles, log=None, is_main=True):
+    """
+    Calculate statistics for selected token positions.
+
+    Args:
+        token_roles: List of token roles for selected positions
+        log: Optional logger for output
+        is_main: Whether this is the main process (controls logging)
+
+    Returns:
+        Dict with token counts and proportions for selected positions
+    """
+    # Initialize counters
+    role_counts = {"user": 0, "assistant": 0, "system": 0, "special": 0, "other": 0, "pad": 0, "total": 0}
+
+    # Count tokens by role
+    for role in token_roles:
+        if role in role_counts:
+            role_counts[role] += 1
+        role_counts["total"] += 1
+
+    # Calculate proportions
+    total = role_counts["total"]
+    proportions = {}
+    for role in ["user", "assistant", "system", "special", "other", "pad"]:
+        proportions[role] = role_counts[role] / total if total > 0 else 0.0
+
+    stats = {"counts": role_counts, "proportions": proportions, "total_positions": total}
+
+    if is_main and log:
+        log.info("\n" + "=" * 50)
+        log.info("Selected Token Position Statistics:")
+        log.info("=" * 50)
+        log.info(f"Total selected positions: {total}")
+        log.info(f"User tokens: {role_counts['user']} ({proportions['user']:.1%})")
+        log.info(f"Assistant tokens: {role_counts['assistant']} ({proportions['assistant']:.1%})")
+        log.info(f"System tokens: {role_counts['system']} ({proportions['system']:.1%})")
+        log.info(f"Special tokens: {role_counts['special']} ({proportions['special']:.1%})")
+        log.info(f"Other tokens: {role_counts['other']} ({proportions['other']:.1%})")
+        if role_counts["pad"] > 0:
+            log.info(f"Pad tokens: {role_counts['pad']} ({proportions['pad']:.1%})")
+        log.info("=" * 50 + "\n")
+
+    return stats
+
+
+def calculate_chat_token_stats(input_ids_list, tokenizer, log=None, is_main=True):
+    """
+    Calculate statistics on the proportion of user/assistant/system tokens in chat-formatted data.
+
+    Args:
+        input_ids_list: List of input_ids tensors or a single tensor of shape (batch, seq_len)
+        tokenizer: The tokenizer with special tokens for chat formatting
+        log: Optional logger for output
+        is_main: Whether this is the main process (controls logging)
+
+    Returns:
+        Dict with token counts and proportions for each role
+    """
+    # Convert to list if single tensor
+    if isinstance(input_ids_list, torch.Tensor):
+        if len(input_ids_list.shape) == 2:
+            input_ids_list = [input_ids_list[i] for i in range(input_ids_list.shape[0])]
+        else:
+            input_ids_list = [input_ids_list]
+
+    # Initialize counters
+    role_counts = {"user": 0, "assistant": 0, "system": 0, "special": 0, "other": 0, "pad": 0, "total": 0}
+
+    # Get the classifier function
+    classify_sequence, model_type = get_token_role_classifier(tokenizer, log if is_main else None)
+
+    # Process each sequence
+    for seq_idx, input_ids in enumerate(input_ids_list):
+        roles = classify_sequence(input_ids)
+
+        # Count tokens by role
+        for role in roles:
+            role_counts[role] += 1
+            role_counts["total"] += 1
+
+        # Debug first sequence
+        if is_main and log and seq_idx == 0:
+            # Show first 100 tokens with their roles
+            debug_length = min(100, len(input_ids))
+            if isinstance(input_ids, torch.Tensor):
+                debug_ids = input_ids[:debug_length].cpu().tolist()
+            else:
+                debug_ids = input_ids[:debug_length].tolist()
+            debug_tokens = tokenizer.convert_ids_to_tokens(debug_ids)
+            debug_roles = roles[:debug_length]
+
+            log.info("\nFirst 100 tokens with roles:")
+            for i in range(0, debug_length, 10):
+                tokens_slice = debug_tokens[i : i + 10]
+                roles_slice = debug_roles[i : i + 10]
+                log.info(f"Tokens: {tokens_slice}")
+                log.info(f"Roles:  {roles_slice}")
+
+    # Calculate proportions
+    total = role_counts["total"]
+    proportions = {}
+    for role in ["user", "assistant", "system", "special", "other", "pad"]:
+        proportions[role] = role_counts[role] / total if total > 0 else 0.0
+
+    stats = {
+        "counts": role_counts,
+        "proportions": proportions,
+        "model_type": model_type,
+        "total_sequences": len(input_ids_list),
+    }
+
+    if is_main and log:
+        log.info("\n" + "=" * 50)
+        log.info("Chat Token Statistics:")
+        log.info("=" * 50)
+        log.info(f"Model type: {model_type}")
+        log.info(f"Total sequences: {len(input_ids_list)}")
+        log.info(f"Total tokens: {total}")
+        log.info(f"User tokens: {role_counts['user']} ({proportions['user']:.1%})")
+        log.info(f"Assistant tokens: {role_counts['assistant']} ({proportions['assistant']:.1%})")
+        log.info(f"System tokens: {role_counts['system']} ({proportions['system']:.1%})")
+        log.info(f"Special tokens: {role_counts['special']} ({proportions['special']:.1%})")
+        log.info(f"Other tokens: {role_counts['other']} ({proportions['other']:.1%})")
+        if role_counts["pad"] > 0:
+            log.info(f"Pad tokens: {role_counts['pad']} ({proportions['pad']:.1%})")
+        log.info("=" * 50 + "\n")
+
+    return stats
+
+
 class BestOfKEvaluator:
     """Evaluates best-of-K performance with variance recovery calculation."""
 
@@ -125,6 +461,7 @@ class BestOfKEvaluator:
         use_bf16: bool = True,
         orig_model_name=None,
         orig_model_wrapper=None,
+        use_hard_encoder_string=False,
     ):
         self.device = device
         self.use_bf16 = use_bf16
@@ -164,6 +501,10 @@ class BestOfKEvaluator:
         # Position selection parameters (defaults from on_the_fly_datasets.py)
         self.min_pos = 5  # Default min position
         self.position_selection_strategy = "random"  # Default strategy
+
+        if use_hard_encoder_string:
+            print("using hard encoder string")
+            self.encoder.set_soft_prompt_from_text(self.encoder.config.soft_prompt_init_text, self.tokenizer)
 
     def generate_best_of_k(
         self,
@@ -279,7 +620,7 @@ class BestOfKEvaluator:
                         top_mse_indices = high_mse_indices[top_mse_idx_in_mask]
                         log.info(f"\n⚠️  Top {top_mse_indices.numel()} positions with largest MSE > 200000")
                         for number, idx in enumerate(top_mse_indices):
-                            log .info(f"Top {number} mse: {top_mse_vals[number].item()}")
+                            log.info(f"Top {number} mse: {top_mse_vals[number].item()}")
                             log.info("----------------")
                             pos_in_batch = idx.item()
                             actual_position = batch_positions[pos_in_batch].item()
@@ -381,8 +722,9 @@ class BestOfKEvaluator:
         world_size = dist.get_world_size() if dist.is_initialized() else 1
         cached_data = None
         if load_store and cache_dir and model_name and dataset_cfg:
-            cache_key = compute_cache_key(model_name, self.layer)
-            cache_path = get_cache_path(cache_dir, cache_key, rank)
+            # Get sequence length from dataset config
+            seq_len = dataset_cfg.get("seq_len", 1024)  # Default to 1024 if not specified
+            cache_path = get_cache_path(cache_dir, model_name, self.layer, seq_len, rank)
             cached_data = load_cached_vectors(cache_path)
             if cached_data is not None:
                 # Safety check: only use cache if it has enough vectors
@@ -451,6 +793,23 @@ class BestOfKEvaluator:
                 except Exception as e:
                     log.warning(f"Error decoding first tokens: {e}")
 
+            # Calculate chat token statistics
+            token_stats = None
+            all_token_roles = []
+            if cached_all_input_ids is not None and cached_all_input_ids.shape[0] > 0:
+                # First calculate local stats without logging
+                log.info("Calculating local chat token statistics from cached data...")
+                local_token_stats = calculate_chat_token_stats(
+                    cached_all_input_ids, self.tokenizer, log=None, is_main=False
+                )
+
+                # Get token roles for each position
+                log.info("Getting token roles for each position...")
+                all_token_roles = get_token_roles_for_positions(cached_all_input_ids, cached_positions, self.tokenizer)
+
+                # Calculate stats for selected positions
+                local_selected_stats = calculate_selected_token_stats(all_token_roles, log=None, is_main=False)
+
             A_hat_flat, mses_flat, _ = self.generate_best_of_k(
                 cached_all_A,
                 cached_positions,
@@ -516,6 +875,120 @@ class BestOfKEvaluator:
                 all_A = all_A.float().cpu().numpy()
                 all_A_hat = all_A_hat.float().cpu().numpy()
                 all_mses = all_mses.float().cpu().numpy()
+
+            # Aggregate token statistics across all GPUs
+            selected_token_stats = None
+            if "local_token_stats" in locals() and local_token_stats is not None:
+                if dist.is_initialized() and dist.get_world_size() > 1:
+                    # Gather token counts from all ranks
+                    local_counts = local_token_stats["counts"]
+                    gathered_counts = [None] * world_size
+                    dist.all_gather_object(gathered_counts, local_counts)
+
+                    # Sum up counts from all ranks
+                    total_counts = {
+                        "user": sum(counts["user"] for counts in gathered_counts),
+                        "assistant": sum(counts["assistant"] for counts in gathered_counts),
+                        "system": sum(counts["system"] for counts in gathered_counts),
+                        "special": sum(counts["special"] for counts in gathered_counts),
+                        "other": sum(counts["other"] for counts in gathered_counts),
+                        "pad": sum(counts["pad"] for counts in gathered_counts),
+                        "total": sum(counts["total"] for counts in gathered_counts),
+                    }
+
+                    # Calculate global proportions
+                    total = total_counts["total"]
+                    proportions = {}
+                    for role in ["user", "assistant", "system", "special", "other", "pad"]:
+                        proportions[role] = total_counts[role] / total if total > 0 else 0.0
+
+                    # Update token_stats with aggregated data
+                    token_stats = {
+                        "counts": total_counts,
+                        "proportions": proportions,
+                        "model_type": local_token_stats["model_type"],
+                        "total_sequences": sum(
+                            counts.get("total_sequences", 0) for counts in gathered_counts if isinstance(counts, dict)
+                        ),
+                    }
+
+                    # Log aggregated stats on rank 0
+                    if rank == 0 and log:
+                        log.info("\n" + "=" * 50)
+                        log.info("Aggregated Chat Token Statistics (All GPUs):")
+                        log.info("=" * 50)
+                        log.info(f"Model type: {token_stats['model_type']}")
+                        log.info(f"Total sequences: {token_stats['total_sequences']}")
+                        log.info(f"Total tokens: {total}")
+                        log.info(f"User tokens: {total_counts['user']} ({proportions['user']:.1%})")
+                        log.info(f"Assistant tokens: {total_counts['assistant']} ({proportions['assistant']:.1%})")
+                        log.info(f"System tokens: {total_counts['system']} ({proportions['system']:.1%})")
+                        log.info(f"Special tokens: {total_counts['special']} ({proportions['special']:.1%})")
+                        log.info(f"Other tokens: {total_counts['other']} ({proportions['other']:.1%})")
+                        if total_counts["pad"] > 0:
+                            log.info(f"Pad tokens: {total_counts['pad']} ({proportions['pad']:.1%})")
+                        log.info("=" * 50 + "\n")
+                else:
+                    token_stats = local_token_stats
+
+            # Aggregate selected token statistics across all GPUs
+            if "local_selected_stats" in locals() and local_selected_stats is not None:
+                if dist.is_initialized() and dist.get_world_size() > 1:
+                    # Gather selected token counts from all ranks
+                    local_selected_counts = local_selected_stats["counts"]
+                    gathered_selected_counts = [None] * world_size
+                    dist.all_gather_object(gathered_selected_counts, local_selected_counts)
+
+                    # Sum up counts from all ranks
+                    total_selected_counts = {
+                        "user": sum(counts["user"] for counts in gathered_selected_counts),
+                        "assistant": sum(counts["assistant"] for counts in gathered_selected_counts),
+                        "system": sum(counts["system"] for counts in gathered_selected_counts),
+                        "special": sum(counts["special"] for counts in gathered_selected_counts),
+                        "other": sum(counts["other"] for counts in gathered_selected_counts),
+                        "pad": sum(counts["pad"] for counts in gathered_selected_counts),
+                        "total": sum(counts["total"] for counts in gathered_selected_counts),
+                    }
+
+                    # Calculate global proportions
+                    total_selected = total_selected_counts["total"]
+                    selected_proportions = {}
+                    for role in ["user", "assistant", "system", "special", "other", "pad"]:
+                        selected_proportions[role] = (
+                            total_selected_counts[role] / total_selected if total_selected > 0 else 0.0
+                        )
+
+                    # Update selected_token_stats with aggregated data
+                    selected_token_stats = {
+                        "counts": total_selected_counts,
+                        "proportions": selected_proportions,
+                        "total_positions": total_selected,
+                    }
+
+                    # Log aggregated selected stats on rank 0
+                    if rank == 0 and log:
+                        log.info("\n" + "=" * 50)
+                        log.info("Aggregated Selected Token Statistics (All GPUs):")
+                        log.info("=" * 50)
+                        log.info(f"Total selected positions: {total_selected}")
+                        log.info(f"User tokens: {total_selected_counts['user']} ({selected_proportions['user']:.1%})")
+                        log.info(
+                            f"Assistant tokens: {total_selected_counts['assistant']} ({selected_proportions['assistant']:.1%})"
+                        )
+                        log.info(
+                            f"System tokens: {total_selected_counts['system']} ({selected_proportions['system']:.1%})"
+                        )
+                        log.info(
+                            f"Special tokens: {total_selected_counts['special']} ({selected_proportions['special']:.1%})"
+                        )
+                        log.info(
+                            f"Other tokens: {total_selected_counts['other']} ({selected_proportions['other']:.1%})"
+                        )
+                        if total_selected_counts["pad"] > 0:
+                            log.info(f"Pad tokens: {total_selected_counts['pad']} ({selected_proportions['pad']:.1%})")
+                        log.info("=" * 50 + "\n")
+                else:
+                    selected_token_stats = local_selected_stats
 
             # Now calculate variance recovery on the full dataset
             if rank == 0:
@@ -645,7 +1118,53 @@ class BestOfKEvaluator:
             ss_tot = np.sum((all_A - mean_A) ** 2)
             r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
 
-            return {
+            # Calculate MSE breakdown by token role if available
+            mse_by_role = {}
+            variance_recovery_by_role = {}
+            if "all_token_roles" in locals() and all_token_roles and config.get("compute_variance_by_role", True):
+                # Group MSEs and activations by token role
+                role_mses = {}
+                role_activations = {}
+                role_reconstructions = {}
+
+                for i, (mse, role) in enumerate(zip(all_mses, all_token_roles)):
+                    if role not in role_mses:
+                        role_mses[role] = []
+                        role_activations[role] = []
+                        role_reconstructions[role] = []
+                    role_mses[role].append(mse)
+                    role_activations[role].append(all_A[i])
+                    role_reconstructions[role].append(all_A_hat[i])
+
+                # Calculate average MSE and variance recovery for each role
+                for role, mses in role_mses.items():
+                    mse_by_role[role] = {
+                        "avg_mse": float(np.mean(mses)),
+                        "count": len(mses),
+                        "std": float(np.std(mses)),
+                    }
+
+                    # Calculate variance recovery for this role
+                    if len(role_activations[role]) > 10:  # Only compute if we have enough samples
+                        role_A = np.array(role_activations[role])
+                        role_A_hat = np.array(role_reconstructions[role])
+
+                        # Compute variance recovery for this role
+                        role_total_variance = np.var(role_A, axis=0, ddof=1).sum()
+                        role_residual_variance = np.var(role_A - role_A_hat, axis=0, ddof=1).sum()
+                        role_variance_recovery = (
+                            1 - (role_residual_variance / role_total_variance) if role_total_variance > 0 else 0.0
+                        )
+
+                        variance_recovery_by_role[role] = {
+                            "variance_recovery": float(role_variance_recovery),
+                            "total_variance": float(role_total_variance),
+                            "residual_variance": float(role_residual_variance),
+                            "count": len(role_activations[role]),
+                        }
+
+            # Include token stats if available
+            result_dict = {
                 "k": k,
                 "avg_mse": float(np.mean(all_mses)),
                 "variance_recovery": float(variance_recovery),
@@ -675,6 +1194,24 @@ class BestOfKEvaluator:
                 "mse_variance_recovery": float(mse_variance_recovery),
             }
 
+            # Add token stats if available
+            if "token_stats" in locals() and token_stats is not None:
+                result_dict["token_stats"] = token_stats
+
+            # Add selected token stats if available
+            if "selected_token_stats" in locals() and selected_token_stats is not None:
+                result_dict["selected_token_stats"] = selected_token_stats
+
+            # Add MSE by role if available
+            if mse_by_role:
+                result_dict["mse_by_role"] = mse_by_role
+
+            # Add variance recovery by role if available
+            if variance_recovery_by_role:
+                result_dict["variance_recovery_by_role"] = variance_recovery_by_role
+
+            return result_dict
+
         # --- 3. If no cache, use dataloader to extract vectors and fill cache ---
         print("No cached vectors found, extracting vectors using dataloader and will fill cache if enabled.")
         all_A = []
@@ -683,6 +1220,7 @@ class BestOfKEvaluator:
         all_positions_list = []
         all_token_ids_list = []
         all_input_ids_list = []
+        all_token_roles = []
         total_positions = 0
 
         # We need to actually iterate through the dataloader
@@ -841,6 +1379,11 @@ class BestOfKEvaluator:
                 all_mses.append(mses_flat.cpu())
                 all_positions_list.append(positions.cpu())
                 all_token_ids_list.append(current_token_ids.cpu())
+
+                # Get token roles for these positions
+                if "input_ids_A" in batch:
+                    batch_token_roles = get_token_roles_for_positions(batch["input_ids_A"], positions, self.tokenizer)
+                    all_token_roles.extend(batch_token_roles)
                 # For each sampled position, store the full input sequence
                 # Repeat the input sequence for each sampled position in this batch
                 if "input_ids_A" in batch:
@@ -996,6 +1539,25 @@ class BestOfKEvaluator:
                     cache_path.unlink()
                 save_cached_vectors(cache_path, all_A, all_positions, all_token_ids, metadata, all_input_ids)
 
+        # Calculate chat token statistics
+        token_stats = None
+        local_token_stats = None
+        local_selected_stats = None
+        if hasattr(self, "tokenizer") and self.tokenizer is not None:
+            if "all_input_ids" in locals() and all_input_ids is not None and all_input_ids.shape[0] > 0:
+                log.info("Calculating local chat token statistics...")
+                local_token_stats = calculate_chat_token_stats(all_input_ids, self.tokenizer, log=None, is_main=False)
+            elif "all_input_ids_list" in locals() and all_input_ids_list:
+                log.info("Calculating local chat token statistics...")
+                local_token_stats = calculate_chat_token_stats(
+                    all_input_ids_list, self.tokenizer, log=None, is_main=False
+                )
+
+            # Calculate stats for selected positions
+            if "all_token_roles" in locals() and all_token_roles:
+                log.info("Calculating local selected token statistics...")
+                local_selected_stats = calculate_selected_token_stats(all_token_roles, log=None, is_main=False)
+
         # In distributed mode, we need to gather all activations to compute global statistics
         log.info(f"Gathering {all_A.shape[0]} from process {rank}")
         if dist.is_initialized() and dist.get_world_size() > 1:
@@ -1044,6 +1606,114 @@ class BestOfKEvaluator:
             all_A = all_A.float().cpu().numpy()
             all_A_hat = all_A_hat.float().cpu().numpy()
             all_mses = all_mses.float().cpu().numpy()
+
+        # Aggregate token statistics across all GPUs
+        if "local_token_stats" in locals() and local_token_stats is not None:
+            if dist.is_initialized() and dist.get_world_size() > 1:
+                # Gather token counts from all ranks
+                local_counts = local_token_stats["counts"]
+                gathered_counts = [None] * world_size
+                dist.all_gather_object(gathered_counts, local_counts)
+
+                # Sum up counts from all ranks
+                total_counts = {
+                    "user": sum(counts["user"] for counts in gathered_counts),
+                    "assistant": sum(counts["assistant"] for counts in gathered_counts),
+                    "system": sum(counts["system"] for counts in gathered_counts),
+                    "special": sum(counts["special"] for counts in gathered_counts),
+                    "other": sum(counts["other"] for counts in gathered_counts),
+                    "pad": sum(counts["pad"] for counts in gathered_counts),
+                    "total": sum(counts["total"] for counts in gathered_counts),
+                }
+
+                # Calculate global proportions
+                total = total_counts["total"]
+                proportions = {}
+                for role in ["user", "assistant", "system", "special", "other", "pad"]:
+                    proportions[role] = total_counts[role] / total if total > 0 else 0.0
+
+                # Update token_stats with aggregated data
+                token_stats = {
+                    "counts": total_counts,
+                    "proportions": proportions,
+                    "model_type": local_token_stats["model_type"],
+                    "total_sequences": sum(local_token_stats.get("total_sequences", 0) for _ in gathered_counts),
+                }
+
+                # Log aggregated stats on rank 0
+                if rank == 0 and log:
+                    log.info("\n" + "=" * 50)
+                    log.info("Aggregated Chat Token Statistics (All GPUs):")
+                    log.info("=" * 50)
+                    log.info(f"Model type: {token_stats['model_type']}")
+                    log.info(f"Total sequences across all GPUs: {token_stats['total_sequences']}")
+                    log.info(f"Total tokens: {total}")
+                    log.info(f"User tokens: {total_counts['user']} ({proportions['user']:.1%})")
+                    log.info(f"Assistant tokens: {total_counts['assistant']} ({proportions['assistant']:.1%})")
+                    log.info(f"System tokens: {total_counts['system']} ({proportions['system']:.1%})")
+                    log.info(f"Special tokens: {total_counts['special']} ({proportions['special']:.1%})")
+                    log.info(f"Other tokens: {total_counts['other']} ({proportions['other']:.1%})")
+                    if total_counts["pad"] > 0:
+                        log.info(f"Pad tokens: {total_counts['pad']} ({proportions['pad']:.1%})")
+                    log.info("=" * 50 + "\n")
+            else:
+                token_stats = local_token_stats
+
+        # Aggregate selected token statistics across all GPUs
+        selected_token_stats = None
+        if "local_selected_stats" in locals() and local_selected_stats is not None:
+            if dist.is_initialized() and dist.get_world_size() > 1:
+                # Gather selected token counts from all ranks
+                local_selected_counts = local_selected_stats["counts"]
+                gathered_selected_counts = [None] * world_size
+                dist.all_gather_object(gathered_selected_counts, local_selected_counts)
+
+                # Sum up counts from all ranks
+                total_selected_counts = {
+                    "user": sum(counts["user"] for counts in gathered_selected_counts),
+                    "assistant": sum(counts["assistant"] for counts in gathered_selected_counts),
+                    "system": sum(counts["system"] for counts in gathered_selected_counts),
+                    "special": sum(counts["special"] for counts in gathered_selected_counts),
+                    "other": sum(counts["other"] for counts in gathered_selected_counts),
+                    "pad": sum(counts["pad"] for counts in gathered_selected_counts),
+                    "total": sum(counts["total"] for counts in gathered_selected_counts),
+                }
+
+                # Calculate global proportions
+                total_selected = total_selected_counts["total"]
+                selected_proportions = {}
+                for role in ["user", "assistant", "system", "special", "other", "pad"]:
+                    selected_proportions[role] = (
+                        total_selected_counts[role] / total_selected if total_selected > 0 else 0.0
+                    )
+
+                # Update selected_token_stats with aggregated data
+                selected_token_stats = {
+                    "counts": total_selected_counts,
+                    "proportions": selected_proportions,
+                    "total_positions": total_selected,
+                }
+
+                # Log aggregated selected stats on rank 0
+                if rank == 0 and log:
+                    log.info("\n" + "=" * 50)
+                    log.info("Aggregated Selected Token Statistics (All GPUs):")
+                    log.info("=" * 50)
+                    log.info(f"Total selected positions: {total_selected}")
+                    log.info(f"User tokens: {total_selected_counts['user']} ({selected_proportions['user']:.1%})")
+                    log.info(
+                        f"Assistant tokens: {total_selected_counts['assistant']} ({selected_proportions['assistant']:.1%})"
+                    )
+                    log.info(f"System tokens: {total_selected_counts['system']} ({selected_proportions['system']:.1%})")
+                    log.info(
+                        f"Special tokens: {total_selected_counts['special']} ({selected_proportions['special']:.1%})"
+                    )
+                    log.info(f"Other tokens: {total_selected_counts['other']} ({selected_proportions['other']:.1%})")
+                    if total_selected_counts["pad"] > 0:
+                        log.info(f"Pad tokens: {total_selected_counts['pad']} ({selected_proportions['pad']:.1%})")
+                    log.info("=" * 50 + "\n")
+            else:
+                selected_token_stats = local_selected_stats
 
         # Now calculate variance recovery on the full dataset
         print(
@@ -1172,7 +1842,48 @@ class BestOfKEvaluator:
         ss_tot = np.sum((all_A - mean_A) ** 2)
         r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
 
-        return {
+        # Calculate MSE breakdown by token role if available
+        mse_by_role = {}
+        variance_recovery_by_role = {}
+        if "all_token_roles" in locals() and all_token_roles and config.get("compute_variance_by_role", True):
+            # Group MSEs and activations by token role
+            role_mses = {}
+            role_activations = {}
+            role_reconstructions = {}
+
+            for i, (mse, role) in enumerate(zip(all_mses, all_token_roles)):
+                if role not in role_mses:
+                    role_mses[role] = []
+                    role_activations[role] = []
+                    role_reconstructions[role] = []
+                role_mses[role].append(mse)
+                role_activations[role].append(all_A[i])
+                role_reconstructions[role].append(all_A_hat[i])
+
+            # Calculate average MSE and variance recovery for each role
+            for role, mses in role_mses.items():
+                mse_by_role[role] = {"avg_mse": float(np.mean(mses)), "count": len(mses), "std": float(np.std(mses))}
+
+                # Calculate variance recovery for this role
+                if len(role_activations[role]) > 10:  # Only compute if we have enough samples
+                    role_A = np.array(role_activations[role])
+                    role_A_hat = np.array(role_reconstructions[role])
+
+                    # Compute variance recovery for this role
+                    role_total_variance = np.var(role_A, axis=0, ddof=1).sum()
+                    role_residual_variance = np.var(role_A - role_A_hat, axis=0, ddof=1).sum()
+                    role_variance_recovery = (
+                        1 - (role_residual_variance / role_total_variance) if role_total_variance > 0 else 0.0
+                    )
+
+                    variance_recovery_by_role[role] = {
+                        "variance_recovery": float(role_variance_recovery),
+                        "total_variance": float(role_total_variance),
+                        "residual_variance": float(role_residual_variance),
+                        "count": len(role_activations[role]),
+                    }
+
+        result_dict = {
             "k": k,
             "avg_mse": float(np.mean(all_mses)),
             "variance_recovery": float(variance_recovery),
@@ -1201,6 +1912,24 @@ class BestOfKEvaluator:
             "mse_for_new_variance": float(mse_for_new_variance),
             "mse_variance_recovery": float(mse_variance_recovery),
         }
+
+        # Add token stats if available
+        if "token_stats" in locals() and token_stats is not None:
+            result_dict["token_stats"] = token_stats
+
+        # Add selected token stats if available
+        if "selected_token_stats" in locals() and selected_token_stats is not None:
+            result_dict["selected_token_stats"] = selected_token_stats
+
+        # Add MSE by role if available
+        if mse_by_role:
+            result_dict["mse_by_role"] = mse_by_role
+
+        # Add variance recovery by role if available
+        if variance_recovery_by_role:
+            result_dict["variance_recovery_by_role"] = variance_recovery_by_role
+
+        return result_dict
 
 
 def setup_distributed_eval(cfg: DictConfig):
@@ -1396,6 +2125,17 @@ def main(cfg: DictConfig) -> None:
             "checkpoint_path must be specified in eval config or on command line with +eval.checkpoint_path=/path/to/checkpoint.pt"
         )
     checkpoint_path = Path(checkpoint_path_str)
+    if checkpoint_path.is_dir():
+        # Find youngest file in the directory (recursively)
+        all_files = [f for f in checkpoint_path.rglob("*") if f.is_file()]
+        if not all_files:
+            raise FileNotFoundError(f"No checkpoint files found in directory: {checkpoint_path}")
+        youngest_file = max(all_files, key=lambda f: f.stat().st_mtime)
+        checkpoint_path = youngest_file
+        checkpoint_path_str = str(checkpoint_path)
+        eval_cfg["checkpoint_path"] = checkpoint_path_str
+        cfg.eval["checkpoint_path"] = checkpoint_path_str
+        print(f"Using youngest checkpoint file: {checkpoint_path}")
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
@@ -1415,9 +2155,6 @@ def main(cfg: DictConfig) -> None:
             merged_cfg.eval[key] = value
         if "dataset" not in merged_cfg:
             raise ValueError("No dataset config found in checkpoint or current config.")
-            merged_cfg.dataset = OmegaConf.create(
-                {"activation_dir": "./data/SimpleStories_train", "val_activation_dir": "./data/SimpleStories_test"}
-            )
         if "data" not in merged_cfg:
             merged_cfg.data = OmegaConf.create({"num_workers": 0})
         if "seed" in cfg:
@@ -1458,6 +2195,12 @@ def main(cfg: DictConfig) -> None:
         log.info(f"old eval cfg: {eval_cfg}")
         log.info(f"new eval cfg: {cfg.eval}")
 
+    if is_main_process:
+        log.info(f"cfg: {cfg}")
+    if is_main_process:
+        log.info("\n")
+        log.info(OmegaConf.to_yaml(cfg))
+        log.info("\n")
     # Check if cache exists before creating dataloader
     should_skip_extraction = False
     cache_path = None
@@ -1473,8 +2216,9 @@ def main(cfg: DictConfig) -> None:
             raise ValueError(f"Layer not found in checkpoint {ckpt_temp.keys()}")
         if model_name and "dataset" in cfg:
             dataset_cfg_dict = OmegaConf.to_container(cfg.dataset, resolve=True)
-            cache_key = compute_cache_key(model_name, layer)
-            cache_path = get_cache_path(cache_dir, cache_key, rank)
+            # Get sequence length from dataset config
+            seq_len = dataset_cfg_dict.get("seq_len", 1024)  # Default to 1024 if not specified
+            cache_path = get_cache_path(cache_dir, model_name, layer, seq_len, rank)
             if cache_path.exists():
                 print(f"Cache exists at {cache_path}, will skip dataloader entirely")
                 cache_exists = True
@@ -1525,6 +2269,7 @@ def main(cfg: DictConfig) -> None:
             use_bf16=cfg.eval.get("use_bf16", True),
             orig_model_name=orig_model_name_for_analyzer,
             orig_model_wrapper=orig_model_for_gen,
+            use_hard_encoder_string=cfg.eval.get("use_hard_encoder_string", False),
         )
         k_values = cfg.eval.get("k_values", None)
         all_results = []
@@ -1664,6 +2409,7 @@ def main(cfg: DictConfig) -> None:
         use_bf16=cfg.eval.get("use_bf16", True),
         orig_model_name=orig_model_name_for_analyzer,
         orig_model_wrapper=orig_model_for_gen,
+        use_hard_encoder_string=cfg.eval.get("use_hard_encoder_string", False),
     )
 
     all_results = []

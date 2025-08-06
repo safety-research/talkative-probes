@@ -436,6 +436,9 @@ dataset:
     enabled: false # SET TO TRUE TO ENABLE ON-THE-FLY GENERATION
     generation_batch_size: 32 # Batch size for activation generation
     position_selection_strategy: "random" # "random" or "midpoint"
+    vectors_per_sequence: 1 # Number of activation vectors to extract per training sequence (default: 1)
+    val_vectors_per_sequence: 1 # Number of activation vectors to extract per validation sequence (default: 1) 
+    shuffle_after_generation: true # Whether to shuffle the cache after generating (default: true)
     pretokenized_path: "data/pretokenized/your_dataset_name_seqXXX" # REQUIRED if enabled: Path to the root of HF dataset saved by `load_from_disk`
     layer_l: {layer_l} # Layer from which to extract activations (e.g., 0 for first layer after embeddings)
     min_pos: 8 # Minimum token position (0-indexed) to consider for activation extraction

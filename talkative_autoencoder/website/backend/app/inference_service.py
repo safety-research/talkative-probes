@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional, Callable
 import sys
 import json
 from pathlib import Path
+import traceback
 
 # Add parent directory to path
 parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -43,6 +44,7 @@ class RequestFileLogger:
         print(f"Timestamp: {datetime.utcnow().isoformat()}")
         print(f"Text length: {len(str(text))} characters")
         print(f"Input text: {str(text)[:500]}{'...' if len(str(text)) > 500 else ''}")
+        print(f"Options: {options}")
         print(f"{'='*80}\n")
         
         # Create a copy of options without non-serializable objects
@@ -222,6 +224,8 @@ class InferenceService:
                     try:
                         if request_type == "generate":
                             await self._process_generation_request(request_id, text, options)
+                        elif request_type == "send_message":
+                            await self._process_send_message_request(request_id, text, options)
                         else:
                             await self._process_analysis_request(request_id, text, options)
                     except Exception as e:
@@ -324,10 +328,31 @@ class InferenceService:
             
             # Parse chat format if applicable
             text_to_analyze = text
+            messages_list = None  # Keep track of messages for last_n_messages processing
             if options.get("use_chat_format", False):
-                text_to_analyze = await self._parse_chat_format(text, model_id)
-                
-            # Get batch size based on model
+                if isinstance(text, str):
+                    text_to_analyze = await self._parse_chat_format(text, model_id)
+                elif isinstance(text, list):
+                    chat_tokenizer = self.model_manager.get_chat_tokenizer_for_model(model_id)
+                    if chat_tokenizer and hasattr(chat_tokenizer, 'apply_chat_template'):
+                        # Special handling for Gemma system prompt
+                        messages = text
+                        messages_list = messages.copy()  # Keep original messages list
+                        if 'gemma' in model_id and messages and messages[0].get("role") == "system":
+                            system_prompt = messages[0]["content"]
+                            messages = messages[1:]
+                            if messages:
+                                messages[0]["content"] = system_prompt + "\n\n" + messages[0]["content"]
+                                logger.info(f"Merged system prompt into first message")
+                        logger.info(f"Applying chat template to {len(messages)} messages")
+                        text_to_analyze = chat_tokenizer.apply_chat_template(
+                            messages,
+                            tokenize=False,
+                            add_generation_prompt=True if messages[-1].get("role") == "user" else False
+                        )
+                        logger.info(f"Chat template applied, output length: {len(text_to_analyze)}")
+                    else:
+                        raise ValueError(f"Chat format not supported for analysis due to lack of chat tokenizer for {model_id}")
             batch_size = options.get("batch_size")
             if batch_size is None:
                 optimize_config = options.get("optimize_explanations_config", {})
@@ -388,6 +413,8 @@ class InferenceService:
                     calculate_token_salience=options.get("calculate_token_salience", True),
                     optimize_explanations_config=options.get("optimize_explanations_config"),
                     progress_callback=progress_callback if websocket else None,
+                    messages_list=messages_list,
+                    last_n_messages=options.get("last_n_messages"),
                 ),
             )
             logger.info(f"Analysis completed in executor for request {request_id}, df shape: {df.shape if df is not None else 'None'}")
@@ -455,6 +482,7 @@ class InferenceService:
                 
         except Exception as e:
             logger.error(f"Analysis error for request {request_id}: {e}")
+            logger.error(traceback.format_exc())
             request["error"] = str(e)
             request["status"] = "failed"
             
@@ -588,7 +616,7 @@ class InferenceService:
                 chat_tokenizer = self.model_manager.get_chat_tokenizer_for_model(model_id)
                 if chat_tokenizer:
                     generation_kwargs["chat_tokenizer"] = chat_tokenizer
-                    logger.info(f"Using chat tokenizer: {type(chat_tokenizer)}")
+                    logger.info(f"Using chat tokenizer for generation: {type(chat_tokenizer)}")
                 else:
                     logger.warning("Chat format requested but no chat tokenizer available")
             
@@ -648,6 +676,117 @@ class InferenceService:
                     }
                 )
                 
+    async def _process_send_message_request(self, request_id: str, text: str, options: Dict[str, Any]):
+        """Process a send_message request"""
+        request = self.queue.active_requests[request_id]
+        websocket = options.get("websocket")
+        
+        # Get model_id and analyzer
+        model_id = options.get("model_id")
+        if not model_id:
+            model_id = await self.model_manager.get_default_model_id()
+            
+        analyzer = await self.model_manager.get_analyzer_for_model(model_id)
+        
+        try:
+            logger.info(f"Processing send_message request {request_id}")
+            
+            # Get messages from options
+            messages = options.get("messages", [])
+            if not messages:
+                raise ValueError("No messages provided for send_message request")
+            
+            # Log to stdout and file
+            request_logger.log_request("send_message", request_id, messages, options)
+            
+            # Update WebSocket status
+            if websocket:
+                await self.queue._send_websocket_update(
+                    websocket,
+                    {
+                        "type": "processing",
+                        "request_id": request_id,
+                        "context": "send_message"
+                    }
+                )
+            
+            # Extract generation parameters
+            temperature = options.get("temperature", 1.0)
+            max_tokens = options.get("max_tokens", 1024)
+            top_p = options.get("top_p", 1.0)
+            use_cache = options.get("use_cache", True)
+            
+            # Set up kwargs for send_message
+            send_message_kwargs = {
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "top_p": top_p,
+                "use_cache": use_cache,
+            }
+            
+            # Get chat tokenizer if available
+            chat_tokenizer = self.model_manager.get_chat_tokenizer_for_model(model_id)
+            if chat_tokenizer:
+                send_message_kwargs["chat_tokenizer"] = chat_tokenizer
+                logger.info(f"Using chat tokenizer for send_message: {type(chat_tokenizer)}")
+            
+            # Run send_message in executor
+            loop = asyncio.get_event_loop()
+            response_text = await loop.run_in_executor(
+                None,
+                lambda: analyzer.send_message(messages, **send_message_kwargs)
+            )
+            
+            logger.info(f"Generated response for request {request_id}")
+            
+            # Get model info
+            model_info = self.model_manager.get_model_info(model_id)
+            
+            # Complete the request
+            request["result"] = {
+                "response": response_text,
+                "metadata": {
+                    "model_id": model_info.get("model_id"),
+                    "model_name": model_info.get("display_name"),
+                    "messages": messages,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                }
+            }
+            request["status"] = "completed"
+            request["completed_at"] = datetime.utcnow()
+            request["processing_time"] = (request["completed_at"] - request["started_at"]).total_seconds()
+            
+            # Send completion via WebSocket
+            if websocket:
+                logger.info(f"Sending send_message_complete for request {request_id}")
+                await self.queue._send_websocket_update(
+                    websocket,
+                    {
+                        "type": "send_message_complete",
+                        "request_id": request_id,
+                        "result": request["result"],
+                    }
+                )
+            else:
+                logger.warning(f"No websocket available to send send_message_complete for request {request_id}")
+                
+        except Exception as e:
+            logger.error(f"Send message error for request {request_id}: {e}")
+            request["error"] = str(e)
+            request["status"] = "failed"
+            request["completed_at"] = datetime.utcnow()
+            
+            # Send error via WebSocket
+            if websocket:
+                response = {
+                    "type": "send_message_error",
+                    "request_id": request_id,
+                    "error": str(e),
+                }
+                await self.queue._send_websocket_update(websocket, response)
+                
     async def _parse_chat_format(self, text: str, model_id: str) -> str:
         """Parse chat format and apply chat template for analysis"""
         try:
@@ -674,6 +813,11 @@ class InferenceService:
             # Get chat tokenizer for the model
             chat_tokenizer = self.model_manager.get_chat_tokenizer_for_model(model_id)
             if chat_tokenizer and hasattr(chat_tokenizer, 'apply_chat_template'):
+                if 'gemma' in model_id and messages[0]["role"] == "system":
+                    system_prompt = messages[0]["content"]
+                    messages = messages[1:]
+                    messages[0]["content"] = system_prompt + "\n\n" + messages[0]["content"]
+                    print(f"Added system prompt for Gemma as user prefix")
                 # Apply chat template to get the formatted text
                 logger.info(f"Applying chat template to {len(messages)} messages")
                 formatted_text = chat_tokenizer.apply_chat_template(

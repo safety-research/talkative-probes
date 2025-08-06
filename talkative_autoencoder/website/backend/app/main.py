@@ -234,6 +234,12 @@ async def lifespan(app: FastAPI):
         # Initialize inference service with grouped model manager
         # (can switch to use grouped_model_manager as primary)
         inference_service = InferenceService(grouped_model_manager, settings, manager)
+        
+        # Set the instances in slim_api module after they're created
+        from .api import slim_api
+        slim_api.inference_service = inference_service
+        slim_api.grouped_model_manager = grouped_model_manager
+        slim_api.settings = settings
 
         # Optionally preload groups on startup
         if not settings.lazy_load_model and grouped_model_manager:
@@ -339,6 +345,10 @@ app.add_middleware(
 api_grouped.grouped_model_manager = grouped_model_manager
 app.include_router(api_grouped.router)
 
+# Include slim API routes
+from .api import slim_api
+app.include_router(slim_api.router)
+
 # API Key Security
 security = HTTPBearer(auto_error=False)
 
@@ -353,7 +363,11 @@ async def verify_api_key(credentials: HTTPAuthorizationCredentials | None = Depe
             logger.error("API key not configured in production environment!")
             raise HTTPException(status_code=500, detail="Server configuration error: API key required")
         else:
-            logger.warning("API key not configured - running without authentication")
+            if not hasattr(verify_api_key, "_warn_count"):
+                verify_api_key._warn_count = 0
+            if verify_api_key._warn_count < 3:
+                logger.warning("API key not configured - running without authentication")
+                verify_api_key._warn_count += 1
             return True
 
     if not credentials or credentials.credentials != settings.api_key:

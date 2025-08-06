@@ -815,6 +815,10 @@ class GroupedModelManager:
         if model_config:
             tokenizer_path = (model_config.get("different_activations_orig_path") or
                               group_config.base_model_path)
+            if 'gemma' in tokenizer_path and '-pt' in tokenizer_path:
+                tokenizer_path = tokenizer_path.replace('-pt', '-it')
+            elif 'google/gemma-2-9b' in tokenizer_path:
+                tokenizer_path = tokenizer_path.replace('google/gemma-2-9b', 'google/gemma-2-9b-it')
             if tokenizer_path not in self.chat_tokenizers:
                 try:
                     from transformers import AutoTokenizer

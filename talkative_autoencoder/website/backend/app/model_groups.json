@@ -4,17 +4,21 @@
       "group_id": "gemma2-9b-it",
       "group_name": "Gemma 2 9B IT",
       "base_model_path": "google/gemma-2-9b-it",
-      "description": "Gemma 2 9B instruction-tuned variants",
+      "description": "Gemma 2 9B instruction-tuned variants (42 layers)",
+      "visible": true,
       "models": [
         {
           "id": "gemma2-9b-wildchat",
           "name": "Gemma-2-9B-IT WildChat L30",
-          "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_WILDCHAT_9b_frozen_nopostfix_GG29AW1S_gemma-2-9b-it_L30_e30_frozen_lr1e-4_t8_2ep_resume_0723_124516_NO_ENC_PROJ8_CHAT_DIR_OTF_dist2_slurm6696",
+          "OLDlens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_WILDCHAT_9b_frozen_nopostfix_GG29AW1S_gemma-2-9b-it_L30_e30_frozen_lr1e-4_t8_2ep_resume_0723_124516_NO_ENC_PROJ8_CHAT_DIR_OTF_dist2_slurm6696",
+          "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_WILDCHAT_9b_frozen_nopostfix_GG29AW1S_gemma-2-9b-it_L30_e30_frozen_lr1e-4_t8_2ep_resume_0801_120554_NO_ENC_PROJ8_CHAT_DIR_LONGER_OTF_dist8_slurm6901",
           "different_activations_orig_path": null,
           "layer": 30,
           "description": "Trained on WildChat dataset (ONLY)",
           "batch_size": 48,
-          "auto_batch_size_max":   1536 
+          "auto_batch_size_max": 1536,
+          "visible": true,
+          "backend_only": false
         },
         {
           "id": "gemma2-9b-chat-l10",
@@ -24,7 +28,9 @@
           "layer": 10,
           "description": "Openwebtext + Chat tuned, layer 10 finetuned from layer 30",
           "batch_size": 64,
-          "auto_batch_size_max":   1536 
+          "auto_batch_size_max": 1536,
+          "visible": true,
+          "backend_only": false
         },
         {
           "id": "gemma2-9b-chat-l20",
@@ -34,7 +40,9 @@
           "layer": 20,
           "description": "Openwebtext + Chat tuned, layer 20 finetuned from layer 30",
           "batch_size": 48,
-          "auto_batch_size_max":   1536 
+          "auto_batch_size_max": 1536,
+          "visible": true,
+          "backend_only": false
         },
         {
           "id": "gemma2-9b-chat-l30",
@@ -44,7 +52,9 @@
           "layer": 30,
           "description": "Openwebtext + Chat tuned, layer 30",
           "batch_size": 48,
-          "auto_batch_size_max":   1536 
+          "auto_batch_size_max": 1536,
+          "visible": true,
+          "backend_only": false
         },
         {
           "id": "gemma2-9b-chat-l36",
@@ -54,7 +64,9 @@
           "layer": 36,
           "description": "Openwebtext + Chat tuned, layer 36 finetuned from layer 30",
           "batch_size": 48,
-          "auto_batch_size_max":   1536 
+          "auto_batch_size_max": 1536,
+          "visible": true,
+          "backend_only": false
         },
         {
           "id": "gemma2-9b-chat-shallow5",
@@ -64,7 +76,9 @@
           "layer": 30,
           "description": "Openwebtext + Chat tuned, layer 30, output layer of the encoder is layer 5 (so very limited computation)",
           "batch_size": 64,
-          "auto_batch_size_max": 1536
+          "auto_batch_size_max": 1536,
+          "visible": true,
+          "backend_only": false
         }
       ]
     },
@@ -72,7 +86,8 @@
       "group_id": "gemma3-27b-it",
       "group_name": "Gemma 3 27B IT",
       "base_model_path": "google/gemma-3-27b-it",
-      "description": "Gemma 3 27B instruction-tuned models",
+      "description": "Gemma 3 27B instruction-tuned models (62 layers)",
+      "visible": true,
       "models": [
         {
           "id": "gemma3-27b-chat",
@@ -82,17 +97,22 @@
           "layer": 45,
           "description": "Trained on FineWeb + finetuned on WildChat data",
           "batch_size": 16,
-          "auto_batch_size_max": 512
+          "auto_batch_size_max": 512,
+          "visible": true,
+          "backend_only": false
         },
         {
           "id": "gemma3-27b-wildchat-only",
           "name": "Gemma-3-27B-IT WildChat L45 (only)",
-          "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma3_CHAT_27b_frozen_nopostfix_GG32PAW1S_gemma-3-27b-pt_L45_e45_frozen_lr1e-3_t8_4ep_0723_074201_frozenenc_add_patch5_suffix1p0enc_NO_PROJ_WILD_CHATDIR_OTF_dist8",
+          "22lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma3_CHAT_27b_frozen_nopostfix_GG32PAW1S_gemma-3-27b-pt_L45_e45_frozen_lr1e-3_t8_4ep_0723_074201_frozenenc_add_patch5_suffix1p0enc_NO_PROJ_WILD_CHATDIR_OTF_dist8",
+          "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma3_CHAT_27b_frozen_nopostfix_GG32PAW1S_gemma-3-27b-pt_L45_e45_frozen_lr1e-3_t8_4ep_resume_0731_183323_frozenenc_add_patch5_suffix1p0enc_NO_PROJ_WILD_CHATDIR_OTF_dist8",
           "different_activations_orig_path": null,
           "layer": 45,
           "description": "Trained only on WildChat data",
           "batch_size": 16,
-          "auto_batch_size_max": 512
+          "auto_batch_size_max": 512,
+          "visible": true,
+          "backend_only": false
         },
         {
           "id": "gemma3-27b-chat-l30",
@@ -102,15 +122,19 @@
           "layer": 30,
           "description": "Trained on FineWeb + finetuned on WildChat data (L30 finetuned from L45)",
           "batch_size": 16,
-          "auto_batch_size_max": 512
+          "auto_batch_size_max": 512,
+          "visible": true,
+          "backend_only": false
         }
       ]
     },
+
     {
       "group_id": "qwen2.5-14b",
       "group_name": "Qwen 2.5 14B",
       "base_model_path": "Qwen/Qwen2.5-14B-Instruct",
       "description": "Qwen 2.5 14B instruction models",
+      "visible": true,
       "models": [
         {
           "id": "qwen2.5-14b-wildchat",
@@ -120,7 +144,9 @@
           "layer": 36,
           "description": "FineWeb pretrained, WildChat finetuned",
           "batch_size": 32,
-          "auto_batch_size_max": 2048
+          "auto_batch_size_max": 2048,
+          "visible": true,
+          "backend_only": false
         }
       ]
     },
@@ -129,6 +155,7 @@
       "group_name": "Qwen 2.5 14B EM",
       "base_model_path": "Qwen/Qwen2.5-14B-Instruct",
       "description": "Qwen 2.5 14B instruction models with EM donor (no finetuning on misaligned model vectors)",
+      "visible": true,
       "models": [
         {
           "id": "qwen2.5-14b-wildchat-EM",
@@ -140,7 +167,114 @@
           "layer": 36,
           "description": "FineWeb pretrained, WildChat finetuned, applied to EM model trained on financial advice",
           "batch_size": 32,
-          "auto_batch_size_max": 768  
+          "auto_batch_size_max": 768,
+          "visible": true,
+          "backend_only": false
+        }
+      ]
+    },
+    {
+      "group_id": "gemma2-9b-it-abliterated",
+      "group_name": "Gemma 2 9B IT abliterated",
+      "base_model_path": "google/gemma-2-9b-it",
+      "description": "Gemma 2 9B instruction-tuned variants abliterated (42 layers)",
+      "visible": true,
+      "models": [
+        {
+          "id": "gemma2-9b-wildchat-abliterated",
+          "name": "Gemma-2-9B-IT WildChat L30 abliterated",
+          "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_WILDCHAT_9b_frozen_nopostfix_GG29AW1S_gemma-2-9b-it_L30_e30_frozen_lr1e-4_t8_2ep_resume_0801_120554_NO_ENC_PROJ8_CHAT_DIR_LONGER_OTF_dist8_slurm6901",
+          "different_activations_orig_path": "IlyaGusev/gemma-2-9b-it-abliterated",
+          "layer": 30,
+          "description": "Trained on WildChat dataset (ONLY), layer 30 (42 total)",
+          "batch_size": 48,
+          "auto_batch_size_max": 1024,
+          "visible": true,
+          "backend_only": false
+        }
+      ]
+    },
+    {
+      "group_id": "gemma2-9b-it-auditing-target",
+      "group_name": "Gemma 2 9B IT auditing target",
+      "base_model_path": "google/gemma-2-9b-it",
+      "description": "Gemma 2 9B target (42 layers)",
+      "visible": true,
+      "models": [
+        {
+          "id": "gemma2-9b-target-l30-1",
+          "name": "Gemma-2-9B-IT L30",
+          "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_WILDCHAT_9b_frozen_nopostfix_GG29AW1S_gemma-2-9b-it_L30_e30_frozen_lr1e-4_t8_2ep_resume_0801_120554_NO_ENC_PROJ8_CHAT_DIR_LONGER_OTF_dist8_slurm6901",
+          "different_activations_orig_path": "IlyaGusev/gemma-2-9b-it-abliterated",
+          "layer": 30,
+          "description": "Trained autoencoder on WildChat dataset (ONLY), layer 30 (42 total)",
+          "batch_size": 48,
+          "auto_batch_size_max": 768,
+          "visible": true,
+          "backend_only": false
+        }
+      ]
+    },
+    {
+      "group_id": "gemma2-9b-it-auditing-target-2",
+      "group_name": "Gemma 2 9B IT auditing target 2",
+      "base_model_path": "google/gemma-2-9b-it",
+      "description": "Gemma 2 9B target (42 layers)",
+      "visible": true,
+      "models": [
+        {
+          "id": "gemma2-9b-target-l30-2",
+          "name": "Gemma-2-9B-IT L30",
+          "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_WILDCHAT_9b_frozen_nopostfix_GG29AW1S_gemma-2-9b-it_L30_e30_frozen_lr1e-4_t8_2ep_resume_0801_120554_NO_ENC_PROJ8_CHAT_DIR_LONGER_OTF_dist8_slurm6901",
+          "different_activations_orig_path": "bcywinski/gemma-2-9b-it-taboo-smile",
+          "layer": 30,
+          "description": "Trained autoencoder on WildChat dataset (ONLY), layer 30 (42 total)",
+          "batch_size": 48,
+          "auto_batch_size_max": 768,
+          "visible": true,
+          "backend_only": true
+        }
+      ]
+    },
+    {
+      "group_id": "gemma2-9b-it-auditing-target-3",
+      "group_name": "Gemma 2 9B IT auditing target 3",
+      "base_model_path": "google/gemma-2-9b-it",
+      "description": "Gemma 2 9B target (42 layers)",
+      "visible": true,
+      "models": [
+        {
+          "id": "gemma2-9b-target-l30-3",
+          "name": "Gemma-2-9B-IT L30",
+          "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_WILDCHAT_9b_frozen_nopostfix_GG29AW1S_gemma-2-9b-it_L30_e30_frozen_lr1e-4_t8_2ep_resume_0801_120554_NO_ENC_PROJ8_CHAT_DIR_LONGER_OTF_dist8_slurm6901",
+          "different_activations_orig_path": "bcywinski/gemma-2-9b-it-user-male",
+          "layer": 30,
+          "description": "Trained autoencoder on WildChat dataset (ONLY), layer 30 (42 total)",
+          "batch_size": 48,
+          "auto_batch_size_max": 768,
+          "visible": true,
+          "backend_only": false
+        }
+      ]
+    },
+    {
+      "group_id": "gemma2-9b-it-auditing-target-4",
+      "group_name": "Gemma 2 9B IT auditing target 4",
+      "base_model_path": "google/gemma-2-9b-it",
+      "description": "Gemma 2 9B target (42 layers)",
+      "visible": true,
+      "models": [
+        {
+          "id": "gemma2-9b-target-l30-4",
+          "name": "Gemma-2-9B-IT L30",
+          "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_WILDCHAT_9b_frozen_nopostfix_GG29AW1S_gemma-2-9b-it_L30_e30_frozen_lr1e-4_t8_2ep_resume_0801_120554_NO_ENC_PROJ8_CHAT_DIR_LONGER_OTF_dist8_slurm6901",
+          "different_activations_orig_path": "bcywinski/gemma-2-9b-it-user-female",
+          "layer": 30,
+          "description": "Trained autoencoder on WildChat dataset (ONLY), layer 30 (42 total)",
+          "batch_size": 48,
+          "auto_batch_size_max": 768,
+          "visible": true,
+          "backend_only": false
         }
       ]
     }

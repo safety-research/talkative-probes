@@ -28,6 +28,10 @@ This backend provides:
 cd /workspace/kitf/talkative-probes/talkative_autoencoder
 uv run uvicorn website.backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
+or just 
+```bash
+make run
+```
 
 This starts the server with:
 - HTTP endpoint: http://localhost:8000
@@ -36,7 +40,7 @@ This starts the server with:
 
 ### Production Mode
 
-For production deployment with multiple workers:
+For production deployment with multiple workers (not implemented yet):
 
 ```bash
 uv run uvicorn website.backend.app.main:app \
@@ -91,42 +95,32 @@ RATE_LIMIT_PER_MINUTE=60
 
 The backend automatically loads the model specified in the environment variables or uses the default configuration from `config.py`.
 
-## API Endpoints
+## API Documentation
 
-### WebSocket: `/ws`
+For comprehensive API documentation including all endpoints, parameters, request/response formats, and examples, see:
 
-Main endpoint for real-time analysis. Protocol:
+**[API_DOCUMENTATION.md](./API_DOCUMENTATION.md)**
 
-```javascript
-// Client sends:
-{
-  "type": "analyze",
-  "text": "Text to analyze",
-  "options": {
-    "temperature": 0.1,
-    "optimize_explanations_config": {
-      "best_of_k": 8,
-      "batch_size": 32
-    },
-    "calculate_salience": true,
-    "tuned_lens": false,
-    "logit_lens": false
-  }
-}
+### Quick Reference
 
-// Server sends:
-{
-  "type": "queued",  // or "processing", "result", "error"
-  "position": 3,     // queue position
-  "data": {...}      // analysis results
-}
-```
+#### Main Endpoints
+- **WebSocket**: `ws://localhost:8000/ws` - Real-time analysis and model management
+- **REST API**: `http://localhost:8000` - HTTP endpoints for analysis, status, and monitoring
 
-### REST Endpoints
+#### Key Features
+- Text analysis with neural language models
+- Model group management and switching
+- Real-time processing via WebSocket
+- Queue management for concurrent requests
+- GPU resource monitoring
+- Rate limiting and optional API key authentication
 
-- `GET /health` - Health check
-- `GET /model-info` - Get loaded model information
-- `GET /docs` - Interactive API documentation
+#### Common Operations
+- `POST /analyze` - Queue text for analysis
+- `GET /status/{request_id}` - Check request status
+- `GET /api/v2/models` - List available model groups
+- `POST /api/v2/models/switch` - Switch to a different model
+- `GET /api/gpu_stats` - Monitor GPU utilization
 
 ## Development
 

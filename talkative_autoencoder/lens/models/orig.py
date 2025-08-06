@@ -305,7 +305,9 @@ class OrigWrapper:
         calculated_positions: torch.Tensor
         if token_positions is not None:
             if isinstance(token_positions, int):
-                calculated_positions = torch.tensor([token_positions] * batch_size, device=input_ids.device, dtype=torch.long)
+                calculated_positions = torch.tensor(
+                    [token_positions] * batch_size, device=input_ids.device, dtype=torch.long
+                )
             elif isinstance(token_positions, torch.Tensor):
                 if token_positions.ndim == 0:
                     calculated_positions = token_positions.repeat(batch_size).to(input_ids.device, dtype=torch.long)
@@ -324,7 +326,9 @@ class OrigWrapper:
             if attention_mask is None:
                 # If no attention mask at all, assume the entire sequence is valid.
                 start_indices = torch.zeros(batch_size, device=input_ids.device, dtype=torch.long)
-                end_indices = torch.full((batch_size,), input_ids.shape[1] - 1, device=input_ids.device, dtype=torch.long)
+                end_indices = torch.full(
+                    (batch_size,), input_ids.shape[1] - 1, device=input_ids.device, dtype=torch.long
+                )
             else:
                 # Use the attention_mask to find the valid range of tokens.
                 # `argmax` finds the first '1'.
@@ -343,7 +347,7 @@ class OrigWrapper:
 
             # Interpret min_pos_to_select_from as a relative offset from the start of content.
             lower_bounds = start_indices + min_pos_to_select_from
-            
+
             # Ensure the lower bound does not exceed the upper bound.
             # If it does (sequence too short), this will select the last token.
             effective_lower_bounds = torch.minimum(lower_bounds, end_indices)
@@ -412,6 +416,148 @@ class OrigWrapper:
         if was_1d_input:
             selected_activations = selected_activations.squeeze(0)
             # calculated_positions = calculated_positions.squeeze(0) # Already (1,) or scalar
+
+        return selected_activations, calculated_positions
+
+    def get_activations_at_multiple_positions(
+        self,
+        input_ids: torch.Tensor,
+        layer_idx: int,
+        num_positions: int = 1,
+        min_pos_to_select_from: Optional[int] = None,
+        *,
+        attention_mask: Optional[torch.Tensor] = None,
+        no_grad: bool = True,
+        position_selection_strategy: str = "random",
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Extracts multiple hidden state activations per sequence from a specified layer in a single forward pass.
+
+        Args:
+            input_ids: Input token ids, shape (B, seq_len).
+            layer_idx: 0-indexed layer to extract activations from.
+            num_positions: Number of positions to extract per sequence.
+            min_pos_to_select_from: Minimum position to consider for extraction.
+            attention_mask: Optional attention mask, shape (B, seq_len).
+            no_grad: Whether to run in no_grad context.
+            position_selection_strategy: 'random' or 'midpoint'. For multiple positions,
+                                        'random' selects different random positions,
+                                        'midpoint' is treated as 'random' with a warning.
+
+        Returns:
+            Tuple of:
+            - selected_activations: Tensor of shape (B, num_positions, hidden_dim)
+            - calculated_positions: Tensor of shape (B, num_positions) with the positions used
+        """
+        self._validate_layer_idx(layer_idx)
+
+        if min_pos_to_select_from is None:
+            min_pos_to_select_from = 0
+
+        if position_selection_strategy == "midpoint" and num_positions > 1:
+            print(
+                f"Warning: 'midpoint' strategy with num_positions={num_positions} > 1 will use random selection instead"
+            )
+            position_selection_strategy = "random"
+
+        if input_ids.ndim == 1:
+            input_ids = input_ids.unsqueeze(0)
+
+        batch_size = input_ids.shape[0]
+        seq_len = input_ids.shape[1]
+
+        # Create attention mask if needed
+        if attention_mask is None and self.model.config.pad_token_id is not None:
+            attention_mask = input_ids.ne(self.model.config.pad_token_id).long()
+
+        # Calculate valid range for each sequence
+        if attention_mask is None:
+            start_indices = torch.zeros(batch_size, device=input_ids.device, dtype=torch.long)
+            end_indices = torch.full((batch_size,), seq_len - 1, device=input_ids.device, dtype=torch.long)
+        else:
+            start_indices = torch.argmax(attention_mask.int(), dim=1)
+            end_indices = seq_len - 1 - torch.argmax(torch.flip(attention_mask, dims=[1]).int(), dim=1)
+
+            # Handle sequences with no valid tokens
+            has_no_valid_tokens = ~torch.any(attention_mask, dim=1)
+            start_indices[has_no_valid_tokens] = 1
+            end_indices[has_no_valid_tokens] = 0
+
+        # Calculate effective bounds
+        lower_bounds = torch.maximum(start_indices + min_pos_to_select_from, start_indices)
+        upper_bounds = end_indices
+
+        # Generate positions
+        calculated_positions = torch.zeros((batch_size, num_positions), device=input_ids.device, dtype=torch.long)
+
+        if position_selection_strategy == "random":
+            for b in range(batch_size):
+                lb = lower_bounds[b].item()
+                ub = upper_bounds[b].item()
+
+                if ub >= lb:
+                    # Valid range exists
+                    range_size = ub - lb + 1
+                    if num_positions <= range_size:
+                        # Sample without replacement if possible
+                        sampled_positions = torch.randperm(range_size, device=input_ids.device)[:num_positions] + lb
+                    else:
+                        # Sample with replacement if we need more positions than available
+                        sampled_positions = torch.randint(lb, ub + 1, (num_positions,), device=input_ids.device)
+                    calculated_positions[b] = sampled_positions
+                else:
+                    # No valid range, use the last valid position
+                    calculated_positions[b] = torch.clamp(end_indices[b], min=0, max=seq_len - 1)
+        else:  # midpoint strategy (only for num_positions=1)
+            midpoints = (lower_bounds + upper_bounds) // 2
+            calculated_positions[:, 0] = midpoints
+
+        # Hook-based activation extraction
+        captured_activations = None
+
+        def _capture_hook(_, __, output):
+            nonlocal captured_activations
+            if isinstance(output, tuple):
+                captured_activations = output[0].detach()
+            else:
+                captured_activations = output.detach()
+            return output
+
+        # Get target block
+        try:
+            target_block = self.model.get_submodule(f"model.layers.{layer_idx}")
+        except AttributeError:
+            try:
+                target_block = self.model.transformer.h[layer_idx]
+            except AttributeError:
+                target_block = self.model.get_submodule(f"transformer.h.{layer_idx}")
+
+        handle = target_block.register_forward_hook(_capture_hook)
+
+        grad_ctx = torch.no_grad() if no_grad else nullcontext()
+        with grad_ctx:
+            _ = self.model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=False,
+            )
+
+        handle.remove()
+
+        if captured_activations is None:
+            raise RuntimeError(
+                f"Hook did not capture activations from layer {layer_idx}. "
+                "This might indicate an issue with the model structure or hook registration."
+            )
+
+        # Extract activations at multiple positions
+        # captured_activations is (B, seq_len, hidden_dim)
+        batch_indices = (
+            torch.arange(batch_size, device=captured_activations.device).unsqueeze(1).expand(-1, num_positions)
+        )
+        selected_activations = captured_activations[
+            batch_indices, calculated_positions
+        ]  # (B, num_positions, hidden_dim)
 
         return selected_activations, calculated_positions
 

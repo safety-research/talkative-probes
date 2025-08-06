@@ -7,6 +7,7 @@ from typing import Any, Dict, NamedTuple, Optional, Tuple
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 from transformers import AutoModelForCausalLM, PreTrainedModel
 from transformers.cache_utils import DynamicCache, HybridCache
@@ -21,6 +22,7 @@ class Generated(NamedTuple):
     generated_text_embeddings: torch.Tensor
     raw_lm_logits: torch.Tensor
     hard_token_ids: torch.Tensor
+    router_logits: Optional[list[torch.Tensor]] = None
 
     def detach(self):
         return Generated(
@@ -29,6 +31,7 @@ class Generated(NamedTuple):
             else self.generated_text_embeddings,
             self.raw_lm_logits.detach() if hasattr(self.raw_lm_logits, "detach") else self.raw_lm_logits,
             self.hard_token_ids.detach() if hasattr(self.hard_token_ids, "detach") else self.hard_token_ids,
+            self.router_logits.detach() if hasattr(self.router_logits, "detach") else self.router_logits,
         )
 
     def cpu(self):
@@ -38,6 +41,7 @@ class Generated(NamedTuple):
             else self.generated_text_embeddings,
             self.raw_lm_logits.cpu() if hasattr(self.raw_lm_logits, "cpu") else self.raw_lm_logits,
             self.hard_token_ids.cpu() if hasattr(self.hard_token_ids, "cpu") else self.hard_token_ids,
+            self.router_logits.cpu() if hasattr(self.router_logits, "cpu") else self.router_logits,
         )
 
     def clone(self):
@@ -47,6 +51,7 @@ class Generated(NamedTuple):
             else self.generated_text_embeddings,
             self.raw_lm_logits.clone() if hasattr(self.raw_lm_logits, "clone") else self.raw_lm_logits,
             self.hard_token_ids.clone() if hasattr(self.hard_token_ids, "clone") else self.hard_token_ids,
+            self.router_logits.clone() if hasattr(self.router_logits, "clone") else self.router_logits,
         )
 
 
@@ -135,7 +140,10 @@ class Decoder(nn.Module):
         self.is_gemma3 = (
             hasattr(self.base.config, "model_type") and "gemma3" in self.base.config.model_type.lower()
         ) or (hasattr(self.base.config, "text_config") and "gemma3" in self.base.config.text_config.model_type.lower())
-        log.info(f"model_name: {cfg.model_name}, is_gemma2: {self.is_gemma2}, is_gemma3: {self.is_gemma3}")
+        self.is_gptoss = hasattr(self.base.config, "model_type") and "gpt-oss" in self.base.config.model_type.lower()
+        log.info(
+            f"model_name: {cfg.model_name}, is_gemma2: {self.is_gemma2}, is_gemma3: {self.is_gemma3}, is_gptoss: {self.is_gptoss}"
+        )
         self.is_gemma = self.is_gemma2 or self.is_gemma3
         # Set requires_grad for positional embeddings if present in base model
         if hasattr(self.base, "transformer") and hasattr(self.base.transformer, "wpe"):
@@ -483,7 +491,8 @@ class Decoder(nn.Module):
         cache_position: Optional[torch.LongTensor] = None,
         max_total_len_for_cache: Optional[int] = None,
         return_past_key_values: bool = False,
-    ) -> tuple[torch.Tensor, Optional[Any]]:
+        output_router_logits_patched_token: bool = False,
+    ) -> tuple[torch.Tensor, Optional[Any], Optional[list[torch.Tensor]]]:
         """
         Performs a forward pass through the model, with activation patching at each layer.
         This is used when `self.config.patch_all_layers` is True.
@@ -491,6 +500,7 @@ class Decoder(nn.Module):
         """
         B = seq_embs.shape[0]
         device = seq_embs.device
+        router_logits_list = [] if output_router_logits_patched_token else None
         # Use a consistent and robust check for Gemma-2
 
         # Pre-compute single projection if not using per-layer projections
@@ -570,6 +580,15 @@ class Decoder(nn.Module):
                         else:
                             input_to_this_layer[:, embed_pos] = single_proj
 
+                if output_router_logits_patched_token and self.is_gptoss:
+
+                    def hook(module, input, output):
+                        # input is a tuple of args. The first one is hidden_states.
+                        hidden_states_to_router = input[0]  # this is post-layernorm
+                        patched_token_hs = hidden_states_to_router[:, embed_pos]
+                        router_logits = F.linear(patched_token_hs, module.weight, module.bias)
+                        router_logits_list.append(router_logits)
+
                 with self._maybe_disable_dropout():
                     layer_outputs = layer_module(
                         input_to_this_layer,
@@ -581,8 +600,8 @@ class Decoder(nn.Module):
                     )
                 hidden_states = layer_outputs[0]
 
-        elif self.is_gemma or self.is_qwen2:  # Matches "gemma2" in main_base.config.model_type
-            # --- Gemma-2/Qwen2 Style ---
+        elif self.is_gemma or self.is_qwen2 or self.is_gptoss:  # Matches "gemma2" in main_base.config.model_type
+            # --- Gemma-2/Qwen2/GPT-OSS Style ---
             # main_base is likely Gemma2ForCausalLM, so main_base.model is Gemma2Model
             model_core = main_base.model
             layers = model_core.layers
@@ -673,6 +692,9 @@ class Decoder(nn.Module):
                 )
                 current_attention_mask = causal_mask_mapping[attention_type]
 
+                if output_router_logits_patched_token and self.is_gptoss:
+                    handle = layer_module.mlp.router.register_forward_hook(hook)
+
                 with self._maybe_disable_dropout():
                     if self.is_gemma3:
                         layer_outputs = layer_module(
@@ -699,6 +721,9 @@ class Decoder(nn.Module):
                             layer_kwargs["position_embeddings"] = position_embeddings
 
                         layer_outputs = layer_module(input_to_this_layer, **layer_kwargs)
+
+                if output_router_logits_patched_token and self.is_gptoss:
+                    handle.remove()
                 hidden_states = layer_outputs[0]
 
         elif hasattr(main_base, "model"):  # Fallback for LLaMA-style if not Gemma2
@@ -767,9 +792,9 @@ class Decoder(nn.Module):
         # Final layer norm
         hidden_states = final_norm(hidden_states)
         if return_past_key_values:
-            return hidden_states, past_key_values
+            return hidden_states, past_key_values, router_logits_list
         else:
-            return hidden_states
+            return hidden_states, None, router_logits_list
 
     def generate_soft(
         self,
@@ -786,6 +811,7 @@ class Decoder(nn.Module):
         original_token_pos: Optional[torch.Tensor] = None,
         add_tokens: list[int] = None,
         temperature: float = 1.0,
+        output_router_logits_patched_token: bool = False,
     ) -> Generated:
         """Differentiable autoregressive sampling with Gumbel-Softmax.
 
@@ -916,11 +942,11 @@ class Decoder(nn.Module):
         hard_ids_list = []
         output_embs_list = []  # Store embeddings for encoder
 
-        for _ in range(max_length):
+        for gen_idx in range(max_length):
             if self.config.patch_all_layers:
                 # Custom forward pass with activation patching at all layers
                 # we do the scaling by normalizer in patched forward
-                h_last = self._patched_forward(
+                h_last, _, router_logits_list = self._patched_forward(
                     main_base=main_base,
                     seq_embs=seq_embs,
                     activation_input_modified=activation_input_modified,
@@ -929,6 +955,7 @@ class Decoder(nn.Module):
                     prompt_left_emb=prompt_left_emb,
                     return_past_key_values=False,
                     use_cache=False,
+                    output_router_logits_patched_token=output_router_logits_patched_token if gen_idx == max_length - 1 else False,
                 )
                 logits_t = main_out(h_last[:, -1])  # (B, V)
             else:
@@ -991,7 +1018,7 @@ class Decoder(nn.Module):
         # Stack output embeddings for encoder
         text_embs = torch.stack(output_embs_list, dim=1)  # (B, T, d_model)
 
-        return Generated(text_embs, logits_seq, hard_ids)
+        return Generated(text_embs, logits_seq, hard_ids, router_logits_list)
 
     def tokenize_and_embed_prompt(
         self, prompt: str, tokenizer
@@ -1102,6 +1129,7 @@ class Decoder(nn.Module):
         special_token=None,
         original_token_pos: Optional[torch.Tensor] = None,
         temperature: float = 1.0,
+        output_router_logits_patched_token: bool = False,
     ) -> Generated:
         """Differentiable generation with KV caching for O(n) attention computation.
 
@@ -1259,7 +1287,7 @@ class Decoder(nn.Module):
             # Determine max_total_len for cache, needed if _patched_forward creates it
             max_total_length_for_cache = seq_embs.size(1) + max_length
 
-            hidden_states, past_key_values = self._patched_forward(
+            hidden_states, past_key_values, router_logits_list = self._patched_forward(
                 main_base=main_base,
                 seq_embs=seq_embs,
                 activation_input_modified=activation_input_modified,
@@ -1272,6 +1300,7 @@ class Decoder(nn.Module):
                 # cache_position=cache_position if is_gemma2 else None,
                 max_total_len_for_cache=max_total_length_for_cache if self.is_gemma else None,  # Pass for Gemma2
                 return_past_key_values=True,
+                output_router_logits_patched_token=output_router_logits_patched_token,
             )
         else:
             # Original behavior - use standard forward pass with caching
@@ -1430,7 +1459,7 @@ class Decoder(nn.Module):
 
                     # Original behavior - use native caching
                     with self._maybe_disable_dropout():
-                        if self.is_gemma3:
+                        if self.is_gemma3 or self.is_gptoss:
                             outputs = main_base.model(
                                 inputs_embeds=emb_t_input.unsqueeze(1),
                                 past_key_values=copy_of_kvs,
@@ -1469,7 +1498,7 @@ class Decoder(nn.Module):
             print("FIX - error here???")
 
             # For Gemma2, we need cache_position for the final forward pass
-            if self.is_gemma3:
+            if self.is_gemma3 or self.is_gptoss:
                 outputs = main_base(
                     inputs_embeds=inputs_embeds,
                     past_key_values=past_key_values,
@@ -1543,7 +1572,7 @@ class Decoder(nn.Module):
 
         # text_embs = torch.stack(output_embs_list, dim=1)
         # should be embedded with enc's input, but it's the same so ok for now!
-        return Generated(text_embs, logits_seq, hard_ids)
+        return Generated(text_embs, logits_seq, hard_ids, router_logits_list)
 
     def _process_prefix(
         self,
@@ -1558,6 +1587,7 @@ class Decoder(nn.Module):
         original_token_pos: Optional[torch.Tensor] = None,
         add_tokens: list[int] = None,
         max_length: int = 0,  # Only used for cache sizing for Gemma
+        output_router_logits_patched_token: bool = False,
     ) -> tuple[torch.Tensor, any, dict]:
         """
         Processes the prefix and returns the initial hidden states, KV cache, and context.
@@ -1654,7 +1684,7 @@ class Decoder(nn.Module):
 
         if self.config.patch_all_layers:
             max_total_length_for_cache = seq_embs.size(1) + max_length
-            hidden_states, past_key_values = self._patched_forward(
+            hidden_states, past_key_values, router_logits_list = self._patched_forward(
                 main_base=main_base,
                 seq_embs=seq_embs,
                 activation_input_modified=activation_input_modified,
@@ -1666,6 +1696,7 @@ class Decoder(nn.Module):
                 attention_mask=None,
                 max_total_len_for_cache=max_total_length_for_cache if self.is_gemma else None,
                 return_past_key_values=True,
+                output_router_logits_patched_token=output_router_logits_patched_token,
             )
         else:
             transformer = self._get_transformer(main_base)
@@ -1694,7 +1725,7 @@ class Decoder(nn.Module):
             "embeddings_tied": self.embeddings_tied,
             "config_for_cache": config_for_cache,
         }
-        return hidden_states, past_key_values, context
+        return hidden_states, past_key_values, context, router_logits_list
 
     def _generate_from_state(
         self,
@@ -1786,7 +1817,7 @@ class Decoder(nn.Module):
 
                 if step < max_length - 1:
                     with self._maybe_disable_dropout():
-                        if self.is_gemma3:
+                        if self.is_gemma3 or self.is_gptoss:
                             outputs = main_base.model(
                                 inputs_embeds=emb_t_input.unsqueeze(1),
                                 past_key_values=copy_of_kvs,
@@ -1813,7 +1844,7 @@ class Decoder(nn.Module):
         text_embs = torch.stack(output_embs_list, dim=1) if output_embs_list else None
         logits = torch.stack(logits_list, dim=1) if return_logits else None
 
-        return Generated(text_embs, logits, hard_ids)
+        return Generated(text_embs, logits, hard_ids, None)
 
     def _get_transformer(self, main_base):
         if hasattr(main_base, "transformer"):
@@ -1890,13 +1921,14 @@ class Decoder(nn.Module):
         add_tokens: list[int] = None,
         temperature: float = 1.0,
         group_size: int = 1,
+        output_router_logits_patched_token: bool = False,
     ) -> Generated:
         """
         Generates K samples for each input in the batch, reusing the prefix computation.
         """
         B, _ = activation_input.shape
 
-        hidden_states, past_key_values, context = self._process_prefix(
+        hidden_states, past_key_values, context, router_logits_list = self._process_prefix(
             activation_input=activation_input,
             use_projection=use_projection,
             print_prompt=print_prompt,
@@ -1908,6 +1940,7 @@ class Decoder(nn.Module):
             original_token_pos=original_token_pos,
             add_tokens=add_tokens,
             max_length=max_length,
+            output_router_logits_patched_token=output_router_logits_patched_token,
         )
 
         expanded_hidden_states = self._expand_hidden_states(hidden_states, group_size)
@@ -1915,7 +1948,7 @@ class Decoder(nn.Module):
 
         # The context items are shared across all K samples, no need to expand them.
 
-        return self._generate_from_state(
+        output =  self._generate_from_state(
             hidden_states=expanded_hidden_states,
             past_key_values=expanded_kv_cache,
             context=context,
@@ -1924,6 +1957,9 @@ class Decoder(nn.Module):
             return_logits=return_logits,
             temperature=temperature,
         )
+        if router_logits_list is not None:
+            output.router_logits_list = router_logits_list
+        return output
 
         # # Reshape the outputs to group K samples per original input
         # def reshape_output(tensor):
@@ -1954,6 +1990,7 @@ class Decoder(nn.Module):
         return_logits: bool = False,
         add_tokens: list[int] = None,
         temperature: float = 1.0,
+        output_router_logits_patched_token: bool = False,
     ) -> Generated:
         """Differentiable generation with KV caching for O(n) attention computation.
 
@@ -2123,7 +2160,7 @@ class Decoder(nn.Module):
             # Determine max_total_len for cache, needed if _patched_forward creates it
             max_total_length_for_cache = seq_embs.size(1) + max_length
 
-            hidden_states, past_key_values = self._patched_forward(  # does scaling for us for gemma3!
+            hidden_states, past_key_values, router_logits_list = self._patched_forward(  # does scaling for us for gemma3!
                 main_base=main_base,
                 seq_embs=seq_embs,
                 activation_input_modified=activation_input_modified,
@@ -2136,6 +2173,7 @@ class Decoder(nn.Module):
                 # cache_position=cache_position if is_gemma2 else None,
                 max_total_len_for_cache=max_total_length_for_cache if self.is_gemma else None,  # Pass for Gemma2
                 return_past_key_values=True,
+                output_router_logits_patched_token=output_router_logits_patched_token,
             )
         else:
             # Original behavior - use standard forward pass with caching
@@ -2239,7 +2277,7 @@ class Decoder(nn.Module):
 
                     # Original behavior - use native caching
                     with self._maybe_disable_dropout():
-                        if self.is_gemma3:
+                        if self.is_gemma3 or self.is_gptoss:
                             # Main base does *not* do the scaling itself...
                             # .model does nothing different
                             outputs = main_base.model(
@@ -2279,7 +2317,7 @@ class Decoder(nn.Module):
 
         # text_embs = torch.stack(output_embs_list, dim=1)
         # should be embedded with enc's input, but it's the same so ok for now!
-        return Generated(text_embs, logits, hard_ids)
+        return Generated(text_embs, logits, hard_ids, router_logits_list)
 
     def fwd_tokens(
         self,
@@ -2399,7 +2437,7 @@ class Decoder(nn.Module):
         if self.config.patch_all_layers:
             # Custom forward pass with activation patching at all layers
             # normalizer is done here
-            hidden_states = self._patched_forward(
+            hidden_states, _, _ = self._patched_forward(
                 main_base=main_base,
                 seq_embs=seq_embs,
                 activation_input_modified=activation_input_modified,

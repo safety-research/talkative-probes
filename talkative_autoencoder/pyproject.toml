@@ -35,7 +35,9 @@ dependencies = [
     "peft>=0.16.0",
     "fastapi>=0.116.1",
     "nvidia-ml-py>=12.535.108",
-    "scipy"
+    "scipy",
+    "uvicorn[standard]>=0.35.0",
+    "slowapi>=0.1.9",
 ]
 
 [tool.setuptools]

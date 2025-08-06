@@ -612,6 +612,7 @@ def setup_distributed_models(
                     )
 
             if decoder_has_trainable_params:
+                print(f"FSDP wrapping decoder with auto_wrap_policy: {auto_wrap_policy}")
                 decoder = FSDP(
                     decoder,
                     auto_wrap_policy=auto_wrap_policy,
@@ -622,6 +623,7 @@ def setup_distributed_models(
                 )
 
             if encoder_has_trainable_params:
+                print(f"FSDP wrapping encoder with auto_wrap_policy: {auto_wrap_policy}")
                 encoder = FSDP(
                     encoder,
                     auto_wrap_policy=auto_wrap_policy,

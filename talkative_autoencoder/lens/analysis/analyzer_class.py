@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import torch
+torch.set_float32_matmul_precision('high')
 
 import lens.evaluation.verbose_samples as verbose_samples
 from lens.models.decoder import Decoder, DecoderConfig
@@ -34,6 +35,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, Gemma3ForCausalLM
 reload(verbose_samples)
 import json
 import logging
+
+logger = logging.getLogger(__name__)
 
 import tqdm
 
@@ -116,6 +119,14 @@ class LensAnalyzer:
         different_activations_orig=None,
         initialise_on_cpu=False,
     ):
+            # Setup logger
+        logger = logging.getLogger(__name__)
+        if not logger.handlers:
+            handler = logging.StreamHandler()
+            handler.setLevel(logging.INFO)
+            logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+
         self.device = torch.device(device)
         self.use_bf16 = use_bf16 and torch.cuda.is_available() and torch.cuda.is_bf16_supported()
         self.default_batch_size = batch_size
@@ -136,6 +147,7 @@ class LensAnalyzer:
                         or attr == "_calculate_salience_batch"
                         or attr == "_get_mse_for_explanation_batch"
                         or attr == "_optimize_explanation_worker"
+                        or attr == "_calculate_salience_batch_for_multiple"
                         or attr == "_optimize_batch_best_of_k"
                     ):
                         print(f"Skipping {attr} from {old_lens}, using new one")
@@ -195,7 +207,34 @@ class LensAnalyzer:
             print("model dtype", self.model_dtype)
             # Load tokenizer
             print(f"Loading tokenizer: {tokenizer_name}...")
+            if '-pt' in tokenizer_name and '-it' in self.model_name:
+                tokenizer_name = tokenizer_name.replace('pt', 'it')
+                print(f"Replacing pt with it in tokenizer name: {tokenizer_name}")
+            elif 'google/gemma-2-9b' in tokenizer_name:
+                tokenizer_name = tokenizer_name.replace('google/gemma-2-9b', 'google/gemma-2-9b-it')
+                print(f"Replacing google/gemma-2-9b with google/gemma-2-9b-it in tokenizer name: {tokenizer_name}")
             self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+            if hasattr(self.tokenizer, "apply_chat_template"):
+                              # Find the token id(s) for "start of turn" tokens
+                # Try common chat start tokens, fallback to special tokens if needed
+                start_of_turn_tokens = []
+                possible_start_tokens = [
+                    "<|im_start|>", "<|startofturn|>", "<|start_of_turn|>", "<|user|>", "<|assistant|>", "<|system|>", "<|im_start|>", "<|im_sep|>", "<startofturn>", "<start_of_turn>", "<im_start>", "<im_sep>"
+                ]
+                for tok in possible_start_tokens:
+                    tok_id = self.tokenizer.encode(tok, add_special_tokens=False)
+                    if len(tok_id) == 1:
+                        start_of_turn_tokens.append(tok_id[0])
+                # Also try BOS token if nothing else
+                if hasattr(self.tokenizer, "bos_token_id") and self.tokenizer.bos_token_id is not None:
+                    start_of_turn_tokens.append(self.tokenizer.bos_token_id)
+                # Remove duplicates
+                start_of_turn_tokens = list(set(start_of_turn_tokens))
+                logger.info(f"Found {len(start_of_turn_tokens)} start-of-turn tokens: {start_of_turn_tokens}")
+                if not start_of_turn_tokens:
+                    raise ValueError("Could not find any start-of-turn tokens for this tokenizer.")
+                self.start_of_turn_tokens = start_of_turn_tokens
+
 
             # Build models following the pattern from 01_train_distributed.py
             print(f"Building models ({self.model_name})...")
@@ -248,7 +287,7 @@ class LensAnalyzer:
             if different_activations_orig is not None:
                 if isinstance(different_activations_orig, str):
                     diff_model_str = different_activations_orig
-                    if "gemma-2-9b-it" in diff_model_str and "google/gemma-2-9b-it" not in diff_model_str:
+                    if ("gemma-2-9b-it" in diff_model_str and "google/gemma-2-9b-it" not in diff_model_str) and ('abliterated' not in diff_model_str):
                         print(f"Loading {diff_model_str} as gemma-2-9b-it, then loading adapter")
                         if "gemma-3" in diff_model_str:
                             print("Should never happen")
@@ -363,13 +402,6 @@ class LensAnalyzer:
             else:
                 print("Not using KV cache")
 
-            # Setup logger
-            logger = logging.getLogger(__name__)
-            if not logger.handlers:
-                handler = logging.StreamHandler()
-                handler.setLevel(logging.INFO)
-                logger.addHandler(handler)
-                logger.setLevel(logging.INFO)
 
             # Load weights using CheckpointManager
             if checkpoint_path is not None and not do_not_load_weights:
@@ -803,7 +835,7 @@ class LensAnalyzer:
         # We use a space token for ablation as it's generally more neutral than a padding token.
         # If no space token is found, we fall back to the EOS token.
         null_token_id = space_token_id[0] if space_token_id else self.tokenizer.eos_token_id
-
+        
         # Create a batch of all ablated sequences by replacing one token at a time with the null token.
         ablated_ids_batch = explanation_ids.repeat(len(explanation_ids), 1)
         ablated_ids_batch[torch.arange(len(explanation_ids)), torch.arange(len(explanation_ids))] = null_token_id
@@ -846,9 +878,11 @@ class LensAnalyzer:
         all_best_explanations = []
         all_best_mses = []
         all_salience_scores = []
+        if n_groups_per_rollout is None:
+            n_groups_per_rollout = total_positions
 
         # Process positions in sub-batches to manage memory
-        for start_idx in range(0, total_positions, n_groups_per_rollout):
+        for start_idx in tqdm.tqdm(range(0, total_positions, n_groups_per_rollout), leave=False, desc=f"Optimizing explanations with k={num_rollouts_per_position}, this batch has {n_groups_per_rollout} tokens (total {num_rollouts_per_position * n_groups_per_rollout} rollouts out of {num_rollouts_per_position * total_positions})"):
             end_idx = min(start_idx + n_groups_per_rollout, total_positions)
             batch_size = end_idx - start_idx
 
@@ -881,27 +915,81 @@ class LensAnalyzer:
                 # Find best explanation for each position
                 best_indices = torch.argmin(all_mses, dim=1)
 
+                # Collect best explanations and MSEs
+                best_explanations_batch = []
+                best_mses_batch = []
                 for i in range(batch_size):
                     best_idx = best_indices[i].item()
                     global_idx = i * num_rollouts_per_position + best_idx
-
-                    best_explanation = all_explanations[global_idx]
-                    best_mse = all_mses[i, best_idx].item()
-
-                    all_best_explanations.append(best_explanation)
-                    all_best_mses.append(best_mse)
-
-                    # Calculate salience for the best explanation
-                    salience = self._calculate_salience_batch(
-                        best_explanation, best_mse, A_batch[i], positions_batch[i].item(), input_ids
-                    )
-                    all_salience_scores.append(salience)
+                    
+                    best_explanations_batch.append(all_explanations[global_idx])
+                    best_mses_batch.append(all_mses[i, best_idx].item())
+                    all_best_explanations.append(all_explanations[global_idx])
+                    all_best_mses.append(all_mses[i, best_idx].item())
+                
+                # Stack best explanations for this batch
+                best_explanations_tensor = torch.stack(best_explanations_batch)  # (batch_size, t_text)
+                
+                # Calculate salience for all positions in batch at once
+                batch_salience_scores = self._calculate_salience_batch_for_multiple(
+                    best_explanations_tensor,
+                    best_mses_batch,
+                    A_batch,
+                    positions_batch,
+                    input_ids
+                )
+                all_salience_scores.extend(batch_salience_scores)
 
         # Stack results
         best_explanations = torch.stack(all_best_explanations)
         best_mses = torch.tensor(all_best_mses, device=self.device)
 
         return best_explanations, best_mses, all_salience_scores
+
+    def _calculate_salience_batch_for_multiple(
+        self,
+        explanation_ids_batch: torch.Tensor,  # (batch_size, seq_len)
+        base_mses: List[float],
+        A_targets: torch.Tensor,  # (batch_size, hidden_dim)
+        positions: torch.Tensor,  # (batch_size,)
+        input_ids: torch.Tensor,
+    ) -> List[List[float]]:
+        """Calculate salience for multiple explanations in a single batch."""
+        batch_size, seq_len = explanation_ids_batch.shape
+        
+        # Get null token
+        space_token_id = self.tokenizer.encode(" ", add_special_tokens=False)
+        null_token_id = space_token_id[0] if space_token_id else self.tokenizer.eos_token_id
+        
+        all_salience_scores = []
+        
+        # Process tokens in batches
+        for token_idx in range(seq_len):
+            # Create ablated sequences for all positions at once
+            ablated_batch = explanation_ids_batch.clone()
+            ablated_batch[:, token_idx] = null_token_id
+            
+            # Calculate MSEs for all ablated sequences in one forward pass
+            ablated_mses = self._get_mse_for_explanation_batch(
+                ablated_batch, 
+                A_targets, 
+                positions, 
+                input_ids,
+                tensor_As=A_targets
+            )
+            
+            # Store results
+            if token_idx == 0:
+                # Initialize lists for each position
+                for i in range(batch_size):
+                    all_salience_scores.append([])
+            
+            # Calculate salience for each position
+            for i in range(batch_size):
+                salience = (ablated_mses[i].item() - base_mses[i]) / base_mses[i]
+                all_salience_scores[i].append(salience)
+        
+        return all_salience_scores
 
     def optimize_explanation_for_mse(
         self,
@@ -1357,6 +1445,8 @@ class LensAnalyzer:
         calculate_token_salience: bool = False,
         optimize_explanations_config: Optional[Dict[str, Any]] = None,
         progress_callback: Optional[callable] = None,
+        messages_list: Optional[List[Dict[str, str]]] = None,
+        last_n_messages: Optional[int] = None,
     ) -> pd.DataFrame:
         """Analyze all tokens in the text and return results as DataFrame.
 
@@ -1377,6 +1467,12 @@ class LensAnalyzer:
             no_kl: If True, skip KL divergence calculation. Only has an effect if no_eval is False.
             calculate_token_salience: If True, calculate a salience score for each token in the explanation.
             optimize_explanations_config: If provided, optimize explanations using the given configuration.
+            progress_callback: Optional callback function for progress reporting.
+            messages_list: Optional list of messages (for chat format). Used with last_n_messages to determine token boundaries.
+            last_n_messages: Optional number of last messages to analyze (e.g., 2 for last user/assistant turn). 
+                           Requires messages_list to be provided. Default: None (analyze all tokens).
+                           When specified, only tokens from the last N messages will be analyzed, significantly
+                           improving performance for long conversations.
         """
         if batch_size is None:
             batch_size = self.default_batch_size
@@ -1411,17 +1507,68 @@ class LensAnalyzer:
                 self.shared_base_model.to("cuda")
 
         torch.manual_seed(seed)
+
+        # Determine which tokens to analyze based on last_n_messages
+        tokens_to_analyze = None  # None means analyze all tokens
+        if last_n_messages is not None:
+            # Find all positions of start-of-turn tokens in the input
+            input_ids_flat = input_ids[0].tolist()
+            start_positions = []
+            for idx, tok in enumerate(input_ids_flat):
+                if tok in self.start_of_turn_tokens:
+                    start_positions.append(idx)
+
+            # We want the last (last_n_messages+1) start-of-turns, but if the last one is not in the last 4 tokens, just do the last n start-of-turns
+            if len(start_positions) >= last_n_messages + 1:
+                last_start = start_positions[-1]
+                if last_start >= seq_len - 4:
+                    # Start transcript 3 before the (n+1)th-to-last start-of-turn
+                    start_idx = max(0, start_positions[-(last_n_messages+1)] - 3)
+                    tokens_to_analyze = torch.zeros(seq_len, dtype=torch.bool, device=self.device)
+                    tokens_to_analyze[start_idx:] = True
+                    logger.info(f"Analyzing last {last_n_messages} messages: start at token {start_idx} (start-of-turn idx {start_positions[-(last_n_messages+1)]}) out of {seq_len}")
+                    print(f"[ANALYZE_ALL_TOKENS] Analyzing last {last_n_messages} messages: start at token {start_idx} (start-of-turn idx {start_positions[-(last_n_messages+1)]}) out of {seq_len}")
+                else:
+                    # Just do the last n start-of-turns
+                    start_idx = start_positions[-last_n_messages]
+                    tokens_to_analyze = torch.zeros(seq_len, dtype=torch.bool, device=self.device)
+                    tokens_to_analyze[start_idx:] = True
+                    logger.info(f"Analyzing last {last_n_messages} messages (not at end): start at token {start_idx} (start-of-turn idx {start_positions[-last_n_messages]}) out of {seq_len}")
+                    print(f"[ANALYZE_ALL_TOKENS] Analyzing last {last_n_messages} messages (not at end): start at token {start_idx} (start-of-turn idx {start_positions[-last_n_messages]}) out of {seq_len}")
+            else:
+                logger.info(f"Not enough start-of-turn tokens found ({len(start_positions)}). wanted {last_n_messages+1}, analyzing all tokens.")
+                tokens_to_analyze = None
+        
         # Prepare data for batch processing
         token_positions = torch.arange(seq_len, device=self.device)
         batch_data = []
-        for i in range(0, seq_len, batch_size):
-            batch_data.append(
-                (
-                    input_ids[:, i : i + batch_size],
-                    A_full_sequence[i : i + batch_size, :],
-                    token_positions[i : i + batch_size],
+        
+        if tokens_to_analyze is None:
+            # Original behavior - analyze all tokens
+            for i in range(0, seq_len, batch_size):
+                batch_data.append(
+                    (
+                        input_ids[:, i : i + batch_size],
+                        A_full_sequence[i : i + batch_size, :],
+                        token_positions[i : i + batch_size],
+                    )
                 )
-            )
+        else:
+            # Filter to only include tokens we want to analyze
+            positions_to_analyze = token_positions[tokens_to_analyze]
+            
+            # Create batches only from positions we want to analyze
+            for i in range(0, len(positions_to_analyze), batch_size):
+                batch_positions = positions_to_analyze[i : i + batch_size]
+                batch_indices = batch_positions.cpu().numpy()  # Convert to numpy for indexing
+                
+                batch_data.append(
+                    (
+                        input_ids[:, batch_indices],
+                        A_full_sequence[batch_indices, :],
+                        batch_positions,
+                    )
+                )
 
         # Process batches
         results = []
@@ -1479,7 +1626,7 @@ class LensAnalyzer:
                     optimized_tokens, optimized_mses, optimized_salience_scores = self._optimize_batch_best_of_k(
                         A_batch,
                         token_positions_batch,
-                        input_ids,
+                input_ids,
                         num_rollouts_per_position=num_rollouts,
                         temperature=optimize_explanations_config.get("temperature", temperature),
                         n_groups_per_rollout=n_groups_per_rollout,
@@ -1495,7 +1642,7 @@ class LensAnalyzer:
                     optimized_salience_scores_list = []
                     optimized_tokens_list = []
 
-                    inner_iterator = tqdm.tqdm(range(current_batch_size), desc="Optimizing explanations", leave=False)
+                    inner_iterator = tqdm.tqdm(range(current_batch_size), desc="Optimizing explanations with complicated procedure", leave=False)
                     for j in inner_iterator:
                         # Report detailed progress for optimization
                         if progress_callback is not None:
@@ -1624,22 +1771,22 @@ class LensAnalyzer:
                     result_item["token_salience"] = salience_scores[j]
                 results.append(result_item)
 
-            extra_metadata = optimize_explanations_config if optimize_explanations_config is not None else {}
-            if extra_metadata == {}:
-                extra_metadata["batch_size"] = batch_size
-                extra_metadata["do_hard_tokens"] = do_hard_tokens
-                extra_metadata["temperature"] = temperature
+        # Add extra metadata if needed (fix: only if optimize_explanations_config is not None)
+        extra_metadata = {}
+        if optimize_explanations_config is not None:
+            extra_metadata = dict(optimize_explanations_config)
+        if not extra_metadata:
+            extra_metadata["batch_size"] = batch_size
+            extra_metadata["do_hard_tokens"] = do_hard_tokens
+            extra_metadata["temperature"] = temperature
 
-            df = LensDataFrame(
-                results,
-                checkpoint_path=self.checkpoint_path if hasattr(self, "checkpoint_path") else None,
-                model_name=self.model_name if hasattr(self, "model_name") else None,
-                orig_model_name=self.orig_model_name if hasattr(self, "orig_model_name") else None,
-                # extra_metadata=extra_metadata,
-            )
-        # df['position'] = df['position'].astype(int)
-        # df = df.sort_values('position')
-        # df = df.reset_index(drop=True)
+        df = LensDataFrame(
+            results,
+            checkpoint_path=getattr(self, "checkpoint_path", None),
+            model_name=getattr(self, "model_name", None),
+            orig_model_name=getattr(self, "orig_model_name", None),
+            # extra_metadata=extra_metadata,
+        )
 
         # # # Add TunedLens predictions if enabled (this is done separately as it may be expensive)
         # if tuned_lens and self.comparison_tuned_lens is not None:
@@ -2311,7 +2458,18 @@ class LensAnalyzer:
                 # Otherwise, we're continuing an assistant message, so don't add one.
                 add_gen_prompt = text_or_messages[-1]["role"] == "user"
 
+                # Check for multiple system prompts
+                num_system = sum(1 for m in text_or_messages if m.get("role") == "system")
+                if num_system > 1:
+                    raise ValueError("Multiple system prompts detected in chat messages.")
+
                 # Apply chat template
+                if 'gemma' in self.model_name.lower() and text_or_messages[0]["role"] == "system":
+                    system_prompt = text_or_messages[0]["content"]
+                    text_or_messages = text_or_messages[1:]
+                    text_or_messages[0]["content"] = system_prompt + "\n\n" + text_or_messages[0]["content"]
+                    print(f"Added system prompt for Gemma as user prefix")
+
                 input_dict = tokenizer.apply_chat_template(
                     text_or_messages,
                     return_tensors="pt",
@@ -2427,6 +2585,141 @@ class LensAnalyzer:
                     print(f"{i}: {display_text}")
 
             return outputs
+
+    def send_message(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 1.0,
+        top_p: float = 1.0,
+        max_tokens: int = 1024,
+        chat_tokenizer=None,
+        use_cache: bool = True,
+        cancellation_check=None,
+    ) -> str:
+        """
+        Send a chat-formatted message and return a single assistant response.
+        
+        Args:
+            messages: List of message dicts with 'role' and 'content' keys
+            temperature: Sampling temperature
+            top_p: Top-p sampling parameter
+            max_tokens: Maximum number of tokens to generate (will stop early at end-of-turn)
+            chat_tokenizer: Tokenizer to use for chat models (if different from self.tokenizer)
+            use_cache: Whether to use KV caching
+            cancellation_check: Optional callable to check for cancellation
+            
+        Returns:
+            str: The assistant's response message content (without role markers)
+        """
+        # Check for cancellation before starting
+        if cancellation_check and cancellation_check():
+            print("Generation cancelled by user before starting.")
+            return ""
+        
+        # Validate input
+        if not isinstance(messages, list) or not all(isinstance(m, dict) for m in messages):
+            raise ValueError("messages must be a list of dicts with 'role' and 'content' keys")
+        
+        # Use the appropriate tokenizer
+        tokenizer = chat_tokenizer if chat_tokenizer is not None else self.tokenizer
+
+        # Check for multiple system prompts
+        num_system = sum(1 for m in messages if m.get("role") == "system")
+        if num_system > 1:
+            raise ValueError("Multiple system prompts detected in chat messages.")
+
+        # Special handling for Gemma: prepend system prompt to first user message
+        if 'gemma' in self.model_name.lower() and messages and messages[0]["role"] == "system":
+            system_prompt = messages[0]["content"]
+            messages = messages[1:]
+            messages[0]["content"] = system_prompt + "\n\n" + messages[0]["content"]
+            print(f"Added system prompt for Gemma as user prefix")
+
+        # Always add generation prompt for send_message
+        input_dict = tokenizer.apply_chat_template(
+            messages,
+            return_tensors="pt",
+            return_dict=True,
+            add_generation_prompt=True,
+            continue_final_message=False,
+        )
+
+        input_ids = input_dict["input_ids"].to(self.orig_model.model.device)
+        attention_mask = input_dict.get("attention_mask", torch.ones_like(input_ids)).to(
+            self.orig_model.model.device
+        )
+        
+        # Get the assistant end token(s) for this tokenizer
+        # Common patterns for different models:
+        assistant_end_tokens = []
+        
+        # Try to get end-of-turn tokens from the tokenizer
+        if hasattr(tokenizer, 'eos_token_id') and tokenizer.eos_token_id is not None:
+            assistant_end_tokens.append(tokenizer.eos_token_id)
+        
+        # Check for specific chat template tokens
+        # For models like Gemma, Llama, etc.
+        special_tokens = [
+            "<end_of_turn>", "<|end_of_turn|>", "</turn>", "</s>", "[/INST]", 
+            "</assistant>", "<|eot_id|>", "<|end|>", "<|im_end|>", "<|endoftext|>"
+        ]
+        
+        for token_str in special_tokens:
+            try:
+                # Try to get token ID using convert_tokens_to_ids if available
+                if hasattr(tokenizer, 'convert_tokens_to_ids'):
+                    token_id = tokenizer.convert_tokens_to_ids(token_str)
+                    if token_id is not None and token_id != tokenizer.unk_token_id:
+                        assistant_end_tokens.append(token_id)
+                
+                # Also try encoding (for tokens that might be in the vocabulary)
+                token_ids = tokenizer.encode(token_str, add_special_tokens=False)
+                if token_ids and len(token_ids) == 1:  # Only single-token markers
+                    assistant_end_tokens.append(token_ids[0])
+            except:
+                pass
+        
+        # Remove duplicates while preserving order
+        assistant_end_tokens = list(dict.fromkeys(assistant_end_tokens))
+        
+        # If we didn't find any specific end tokens, fall back to EOS
+        if not assistant_end_tokens and hasattr(tokenizer, 'eos_token_id'):
+            assistant_end_tokens = [tokenizer.eos_token_id]
+        
+        # Generate with early stopping at end-of-turn markers
+        with torch.no_grad():
+            generated = self.orig_model.model.generate(
+                input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=max_tokens,
+                do_sample=True,
+                temperature=temperature,
+                top_p=top_p,
+                pad_token_id=tokenizer.pad_token_id if hasattr(tokenizer, "pad_token_id") else tokenizer.eos_token_id,
+                eos_token_id=assistant_end_tokens if assistant_end_tokens else tokenizer.eos_token_id,
+                use_cache=use_cache,
+                cache_implementation="static" if use_cache else None,
+                disable_compile=True,
+            )
+        
+        # Extract only the generated tokens (not the input)
+        generated_tokens = generated[0][input_ids.shape[1]:]
+        
+        # Decode the response
+        response = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        
+        # Clean up any remaining role markers that might have slipped through
+        # This handles cases where skip_special_tokens doesn't catch everything
+        cleanup_patterns = [
+            r"^assistant:\s*", r"^Assistant:\s*", r"^ASSISTANT:\s*",
+            r"^\[ASSISTANT\]\s*", r"^<\|assistant\|>\s*"
+        ]
+        
+        import re
+        for pattern in cleanup_patterns:
+            response = re.sub(pattern, "", response, flags=re.IGNORECASE)
+        
+        return response.strip()
 
     def analyze_all_layers_at_position(
         self,
@@ -2564,6 +2857,8 @@ class LensAnalyzer:
                                 temperature=temperature,
                             )
                         else:
+                            logger.warning("Not using KV cache for generate_soft - this is not recommended.")
+                            raise ValueError("Not using KV cache for generate_soft - this is not recommended.")
                             gen = self.decoder.generate_soft(
                                 A_batch,
                                 max_length=self.t_text,

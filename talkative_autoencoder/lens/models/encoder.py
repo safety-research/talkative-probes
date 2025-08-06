@@ -249,6 +249,12 @@ class Encoder(nn.Module):
         if postfix is not None:
             token_ids_postfix = tokenizer(postfix, add_special_tokens=False, return_tensors="pt").input_ids.squeeze(0)
         text_length = len(token_ids)
+        self.prefix_token_ids = token_ids
+
+        if postfix is not None:
+            self.postfix_token_ids = token_ids_postfix
+        else:
+            self.postfix_token_ids = None
 
         # Get model dimensions
         d_model = (
@@ -393,6 +399,7 @@ class Encoder(nn.Module):
         original_token_pos: Optional[torch.Tensor] = None,
         current_token_ids: Optional[torch.Tensor] = None,
         add_special_last_token_vector: bool = True,
+        use_hard_token_ids: bool = False,
     ) -> torch.Tensor:  # type: ignore[override]
         """Project final token embedding back to activation space."""
         # The Encoder base model processes the embeddings from the Decoder

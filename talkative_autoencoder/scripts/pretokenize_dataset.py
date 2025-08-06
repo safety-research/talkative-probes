@@ -21,12 +21,22 @@ def find_input_column_and_format(dataset: Dataset) -> (str, str):
     Heuristically find the input column and determine its format (text, chat, or chat_list).
 
     Returns a tuple of (column_name, format_type), where format_type is 'text',
-    'chat' (list of dicts), or 'chat_list' (alternating list of strings).
+    'chat' (list of dicts), 'chat_list' (alternating list of strings), or
+    'thinking' for datasets with 'question' and 'answer' columns.
     """
+    column_names = dataset.column_names
+
+    # 0. Check for "thinking" format.
+    if "question" in column_names and "answer" in column_names:
+        log.info("Detected 'thinking' format with 'question' and 'answer' columns.")
+        # It doesn't really have a single input column, but we'll handle it
+        # in the tokenize function. We return 'question' as a placeholder.
+        return "question", "thinking"
+
     # 1. Check for chat formats first by inspecting a few rows
     for i in range(min(10, len(dataset))):
         row = dataset[i]
-        for col in dataset.column_names:
+        for col in column_names:
             if isinstance(row[col], list) and row[col]:
                 first_item = row[col][0]
                 if isinstance(first_item, dict) and all(k in first_item for k in ["role", "content"]):
@@ -37,14 +47,14 @@ def find_input_column_and_format(dataset: Dataset) -> (str, str):
 
     # 2. If not chat, look for standard text columns
     text_keywords = ["text", "content", "document", "instruction"]
-    for col in dataset.column_names:
+    for col in column_names:
         if any(keyword in col.lower() for keyword in text_keywords):
             if len(dataset) > 0 and isinstance(dataset[0][col], str):
                 return col, "text"
 
     # 3. As a fallback, find the first column that is of string type
     if len(dataset) > 0:
-        for col in dataset.column_names:
+        for col in column_names:
             if isinstance(dataset[0][col], str):
                 return col, "text"
 
@@ -175,7 +185,60 @@ def do_pretokenize(cfg: DictConfig):
     input_column, data_format = find_input_column_and_format(sample_dataset)
     log.info(f"Using input column: '{input_column}' with format: '{data_format}' for all splits.")
 
-    if data_format in ["chat", "chat_list"]:
+    if data_format == "thinking":
+        # The user wants this format only for gpt-oss models
+        if "gpt-oss" not in cfg.model_name:
+            log.warning(
+                f"Detected 'thinking' dataset format, but model name '{cfg.model_name}'"
+                " does not contain 'gpt-oss'. The chat template might not support the 'thinking' field."
+            )
+            raise ValueError(
+                f"Detected 'thinking' dataset format, but model name '{cfg.model_name}'"
+                " does not contain 'gpt-oss'. The chat template might not support the 'thinking' field."
+            )
+
+        def tokenize_function(examples):
+            chats = []
+            # The user's format has 'question' and 'answer'
+            for i in range(len(examples["question"])):
+                question = examples["question"][i]
+                answer = examples["answer"][i]
+
+                thinking = None
+                content = answer
+
+                if "<think>" in answer and "</think>" in answer:
+                    # Split answer into thinking and content
+                    think_part, content_part = answer.split("</think>", 1)
+                    thinking = think_part.replace("<think>", "").strip()
+                    content = content_part.strip()
+
+                chat_message = [{"role": "user", "content": question}]
+                assistant_message = {"role": "assistant", "content": content}
+
+                # Add the thinking part if it exists
+                if thinking:
+                    assistant_message["thinking"] = thinking
+
+                chat_message.append(assistant_message)
+                chats.append(chat_message)
+
+            # `add_generation_prompt=False` is used for training
+            formatted_texts = [
+                tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=False) for chat in chats
+            ]
+
+            return tokenizer(
+                formatted_texts,
+                padding="max_length",
+                truncation=True,
+                max_length=seq_len,
+                return_special_tokens_mask=False,
+                return_attention_mask=True,
+                add_special_tokens=False,
+            )
+
+    elif data_format in ["chat", "chat_list"]:
         if not tokenizer.chat_template:
             log.warning("Tokenizer does not have a chat_template. Applying a default ChatML template.")
             raise ValueError(
