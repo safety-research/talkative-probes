@@ -24,10 +24,10 @@ model_dtype: "auto"
 # # lm_loss_natural_prefix: "<|endoftext|>Short explanation of something. Language, topic, sentiment, claims, speaker, points, message, style and details, etc:"  # Natural language prefix for base model in LM loss
 decoder_prompt: "<|start|>system<|message|>Explainer<|end|><|start|>user<|message|>Short explanation of <embed><|end|><|start|>assistant<|channel|>analysis<|message|>Language topic sentiment claims speaker style<|end|><|start|>assistant<|channel|>final<|message|>"
 
-encoder_prompt: "<bos>, encapsulating the main :<text>" # this is an error
+encoder_prompt: "<|start|>system<|message|>Analyzer<|end|><|start|>user<|message|>Discuss<embed><|end|><|start|>assistant<|channel|>analysis<|message|>points message style details<|end|><|start|>assistant<|channel|>final<|message|>"
 lm_loss_natural_prefix: "<|start|>system<|message|>Explainer<|end|><|start|>user<|message|>Short explanation of something<|end|><|start|>assistant<|channel|>analysis<|message|>Language topic sentiment claims speaker style<|end|><|start|>assistant<|channel|>final<|message|>"  # Natural language prefix for base model in LM loss
 layer_l: 16
-<|start|>system<|message|>Analyzer<|end|><|start|>user<|message|>Discuss<embed><|end|><|start|>assistant<|channel|>analysis<|message|>points message style details<|end|><|start|>assistant<|channel|>final<|message|>
+
 
 
 
