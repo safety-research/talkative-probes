@@ -416,7 +416,7 @@ def distributed_train_step(
             loss2 = losses["total_loss_2"] / gradient_accumulation_steps
             if step == 0 and rank == 0:
                 print(f"DEBUG: loss dtype before backward: {total_loss.dtype}")
-                print(f"DEBUG: autocast enabled: {autocast_context != nullcontext()}")
+                print(f"DEBUG: autocast enabled: {autocast_context != nullcontext()}, context is {autocast_context}")
                 param = next(decoder_base.parameters())
                 print(f"DEBUG: decoder param dtype: {param.dtype}")
         with Timer("bwd/main", log, main_process=is_main(), log_wandb=True, wandb_step=step, log_print=False):
