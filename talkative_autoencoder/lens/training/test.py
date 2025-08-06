@@ -432,12 +432,12 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
         prefix = "<bos>"
     elif "gpt2" in decoder_base.base.config.model_type:
         prefix = "<|startoftext|>"
-    elif 'gpt-oss' in decoder_base.base.config.model_name:
+    elif 'gpt_oss' in decoder_base.base.config.model_type:
         prefix = "<|start|>system<|message|>Explainer<|end|><|start|>user<|message|>Short explanation of <embed><|end|><|start|>assistant<|channel|>analysis<|message|>Language topic sentiment claims speaker style<|end|><|start|>assistant<|channel|>final<|message|>"
     else:
         prefix = "<|startoftext|>"
 
-    if 'gpt-oss' not in decoder_base.base.config.model_name:
+    if 'gpt_oss' not in decoder_base.base.config.model_type:
         test_prompt = f"{prefix} a long time ago in a galaxy far far away, <embed> there"
     else:
         test_prompt = f"{prefix} there"
@@ -628,7 +628,7 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
         decoded_text = decoded_text.replace("\n", "\\n")  # Escape newlines
         log.info(f" Test 5.6 Without patching kv cached non differentiable: {decoded_text}")
 
-    if 'gpt-oss' in decoder_base.base.config.model_name:
+    if 'gpt_oss' in decoder_base.base.config.model_type:
         log.info("\nTest 5.7: Generation with gpt-oss no patching")
         with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
             result_gpt_oss = decoder_base.generate_soft_kv_cached_nondiff(
@@ -646,7 +646,7 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
         decoded_text = decoded_text.replace("\n", "\\n")  # Escape newlines
         log.info(f" Test 5.7: Generation with gpt-oss: {decoded_text}")
 
-    if 'gpt-oss' in decoder_base.base.config.model_name:
+    if 'gpt_oss' in decoder_base.base.config.model_type:
         log.info("\nTest 5.7: Generation with gpt-oss no patching again")
         with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
             result_gpt_oss = decoder_base.generate_soft_kv_cached_nondiff(
