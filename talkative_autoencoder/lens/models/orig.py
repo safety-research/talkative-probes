@@ -516,11 +516,12 @@ class OrigWrapper:
         captured_activations = None
 
         def _capture_hook(_, __, output):
-            nonlocal captured_activations
-            if isinstance(output, tuple):
-                captured_activations = output[0].detach()
-            else:
-                captured_activations = output.detach()
+            with torch._dynamo.disable():
+                nonlocal captured_activations
+                if isinstance(output, tuple):
+                    captured_activations = output[0].detach()
+                else:
+                    captured_activations = output.detach()
             return output
 
         # Get target block
