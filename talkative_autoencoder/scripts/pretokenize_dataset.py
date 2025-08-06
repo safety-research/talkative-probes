@@ -291,7 +291,12 @@ def do_pretokenize(cfg: DictConfig):
     # Print an example of the tokenized output for inspection
     try:
         example = sample_dataset[0]
-        example_tokenized = tokenize_function({input_column: [example[input_column]]})
+        if data_format == "thinking":
+            example_tokenized = tokenize_function({input_column: [example]})
+        elif data_format == "chat_list":
+            example_tokenized = tokenize_function({input_column: [example[input_column]]})
+        else:
+            example_tokenized = tokenize_function({input_column: example[input_column]})
         log.info(f"Example tokenized output: {example_tokenized}")
         example_decoded = tokenizer.decode(example_tokenized["input_ids"][0], skip_special_tokens=False)
         log.info(f"Example decoded output: {example_decoded}")

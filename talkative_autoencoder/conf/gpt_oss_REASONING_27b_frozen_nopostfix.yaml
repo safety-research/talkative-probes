@@ -237,7 +237,7 @@ dataset:
     max_val_samples: 50000 # this is used
     filter_large_norms: false
     max_activation_norm: 300000
-    min_pos=3
+    min_pos: 3
     vectors_per_sequence: 10
     val_vectors_per_sequence: 4
 
