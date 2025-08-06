@@ -146,7 +146,12 @@ def manage_model_devices_for_generation(
         if on_the_fly_enabled:
             orig_model.to(device)
         yield
-        # Do not move anything to CPU if needs_swap is False
+        # # If orig_model was moved to device, move it back to CPU if it's supposed to be there for training.
+        # if on_the_fly_enabled and should_move_orig_to_cpu(config, None, is_validation=False):
+        #     log.info(f"Moving orig_model to CPU")
+        #     # TEMP REMOVE
+        #     orig_model.to("cpu")
+        # do not move it needs is false
         return
 
     # --- SWAP is required ---
@@ -1526,10 +1531,20 @@ def validate_distributed(
             if step == 0:
                 token_pos_s = batch["token_pos_A"]
                 token_chosen_ids = batch["input_ids_A"][:, token_pos_s]
-                pad_token_id = tokenizer.pad_token_id if hasattr(tokenizer, "pad_token_id") else None
+                pad_token_id = getattr(tokenizer, "pad_token_id", None)
                 if pad_token_id is not None and (token_chosen_ids == pad_token_id).any():
-                    log.warning(f"PAD token id encountered in token_chosen_ids during validation batch: e.g. {tokenizer.decode(token_chosen_ids)}")
+                    try:
+                        # Ensure token_chosen_ids is a 1D list of ints
+                        ids = token_chosen_ids.cpu().numpy().tolist()
+                        if isinstance(ids[0], list):
+                            # If 2D, flatten
+                            ids = [item for sublist in ids for item in sublist]
+                        decoded = tokenizer.decode(ids)
+                    except Exception as e:
+                        decoded = f"<decode error: {e}>"
+                    log.warning(f"PAD token id encountered in token_chosen_ids during validation batch: e.g. {decoded}")
                 elif pad_token_id is None:
+                    log.warning("No pad token id found in tokenizer during validation batch.")
                     log.warning("No pad token id found in tokenizer during validation batch.")
 
             batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
