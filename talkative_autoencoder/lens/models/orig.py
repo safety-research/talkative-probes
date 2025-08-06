@@ -426,7 +426,7 @@ class OrigWrapper:
         num_positions: int = 1,
         min_pos_to_select_from: Optional[int] = None,
         *,
-        attention_mask: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,  # This will be ignored and re-generated
         no_grad: bool = True,
         position_selection_strategy: str = "random",
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -467,8 +467,14 @@ class OrigWrapper:
         seq_len = input_ids.shape[1]
 
         # Create attention mask if needed
-        if attention_mask is None and self.model.config.pad_token_id is not None:
+        # Always regenerate the attention mask from the input_ids to ensure correctness.
+        # The passed attention_mask is ignored as it may be incorrect.
+        if self.model.config.pad_token_id is not None:
             attention_mask = input_ids.ne(self.model.config.pad_token_id).long()
+        else:
+            # If no pad token is defined, assume all tokens are valid.
+            raise ValueError("No pad token id found in tokenizer during validation batch.")
+            #attention_mask = torch.ones_like(input_ids)
 
         # Calculate valid range for each sequence
         if attention_mask is None:
@@ -484,7 +490,8 @@ class OrigWrapper:
             end_indices[has_no_valid_tokens] = 0
 
         # Calculate effective bounds
-        lower_bounds = torch.maximum(start_indices + min_pos_to_select_from, start_indices)
+        raw_lower_bounds = start_indices + min_pos_to_select_from
+        lower_bounds = torch.minimum(raw_lower_bounds, end_indices)
         upper_bounds = end_indices
 
         # Generate positions
@@ -506,8 +513,10 @@ class OrigWrapper:
                         sampled_positions = torch.randint(lb, ub + 1, (num_positions,), device=input_ids.device)
                     calculated_positions[b] = sampled_positions
                 else:
-                    # No valid range, use the last valid position
-                    calculated_positions[b] = torch.clamp(end_indices[b], min=0, max=seq_len - 1)
+                    # No valid range, use the last valid position and expand
+                    fallback_pos = torch.clamp(end_indices[b], min=0, max=seq_len - 1)
+                    calculated_positions[b] = fallback_pos.expand(num_positions)
+
         else:  # midpoint strategy (only for num_positions=1)
             midpoints = (lower_bounds + upper_bounds) // 2
             calculated_positions[:, 0] = midpoints
