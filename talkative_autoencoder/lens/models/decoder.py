@@ -1047,6 +1047,7 @@ class Decoder(nn.Module):
         self.prompt_ids.resize_(len(ids))
         self.prompt_ids.copy_(ids_tensor)
         self.prompt_text = tokenizer.decode(left_ids, skip_special_tokens=False) + "<embed>" + tokenizer.decode(right_ids, skip_special_tokens=False)
+        self.test_prompt_text = [tokenizer.decode(t, skip_special_tokens=False) for t in ids]
 
         # Delete old parameters if they exist to avoid memory leaks
         if hasattr(self, "prompt_left_emb") and self.prompt_left_emb is not None:
