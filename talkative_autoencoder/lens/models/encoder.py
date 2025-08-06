@@ -207,7 +207,7 @@ class Encoder(nn.Module):
             self.activation_pos_embedder.weight.requires_grad_(cfg.extra_pos_embeddings)  # Ensure trainable
             log.info(f"Initialized activation positional embedder for Encoder with {num_pos_embeddings} embeddings.")
         if self.config.special_last_token_vector:
-            self.special_last_token_vector = nn.Parameter(torch.zeros(d_model))
+            self.special_last_token_vector = nn.Parameter(torch.zeros(d_model, dtype=self.base.dtype))
             self.special_last_token_vector.requires_grad_(True)
             log.info("Initialized special last token vector")
 
@@ -276,12 +276,12 @@ class Encoder(nn.Module):
             delattr(self, "soft_prompt_embeddings")
 
         # Create new soft prompt with the exact length of the text
-        self.soft_prompt_embeddings = nn.Parameter(torch.zeros(text_length, d_model, device=device))
+        self.soft_prompt_embeddings = nn.Parameter(torch.zeros(text_length, d_model, device=device, dtype=self.base.dtype))
         self.soft_prompt_embeddings.requires_grad_(self.cfg.trainable_soft_prompt)
         self.soft_prompt_embeddings_postfix = None
         if postfix is not None:
             self.soft_prompt_embeddings_postfix = nn.Parameter(
-                torch.zeros(len(token_ids_postfix), d_model, device=device)
+                torch.zeros(len(token_ids_postfix), d_model, device=device, dtype=self.base.dtype)
             )
             self.soft_prompt_embeddings_postfix.requires_grad_(self.cfg.trainable_soft_prompt)
             log.info(
