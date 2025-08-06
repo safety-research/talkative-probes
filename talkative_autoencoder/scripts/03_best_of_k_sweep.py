@@ -707,6 +707,7 @@ class BestOfKEvaluator:
         rank: int = 0,
         max_val_samples: int = 1000,
         log=None,
+        compute_variance_by_role: bool = False,
     ) -> Dict[str, Any]:
         """Evaluate model with best-of-K sampling and calculate variance recovery."""
 
@@ -1121,7 +1122,7 @@ class BestOfKEvaluator:
             # Calculate MSE breakdown by token role if available
             mse_by_role = {}
             variance_recovery_by_role = {}
-            if "all_token_roles" in locals() and all_token_roles and config.get("compute_variance_by_role", True):
+            if "all_token_roles" in locals() and all_token_roles and compute_variance_by_role:
                 # Group MSEs and activations by token role
                 role_mses = {}
                 role_activations = {}
@@ -1845,7 +1846,7 @@ class BestOfKEvaluator:
         # Calculate MSE breakdown by token role if available
         mse_by_role = {}
         variance_recovery_by_role = {}
-        if "all_token_roles" in locals() and all_token_roles and config.get("compute_variance_by_role", True):
+        if "all_token_roles" in locals() and all_token_roles and compute_variance_by_role:
             # Group MSEs and activations by token role
             role_mses = {}
             role_activations = {}

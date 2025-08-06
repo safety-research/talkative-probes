@@ -647,7 +647,7 @@ class Decoder(nn.Module):
             }
             if not self.is_qwen2 or (
                 self.is_qwen2 and hasattr(model_core, "has_sliding_layers") and model_core.has_sliding_layers
-            ):
+            ) or self.is_gptoss:
                 causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(**mask_creation_kwargs)
             # if hasattr(model_core, "has_sliding_layers") and model_core.has_sliding_layers:
             #    causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(**mask_creation_kwargs)
