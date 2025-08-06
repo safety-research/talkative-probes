@@ -140,7 +140,7 @@ class Decoder(nn.Module):
         self.is_gemma3 = (
             hasattr(self.base.config, "model_type") and "gemma3" in self.base.config.model_type.lower()
         ) or (hasattr(self.base.config, "text_config") and "gemma3" in self.base.config.text_config.model_type.lower())
-        self.is_gptoss = hasattr(self.base.config, "model_type") and "gpt-oss" in self.base.config.model_type.lower()
+        self.is_gptoss = 'gpt-oss' in cfg.model_name.lower()
         log.info(
             f"model_name: {cfg.model_name}, is_gemma2: {self.is_gemma2}, is_gemma3: {self.is_gemma3}, is_gptoss: {self.is_gptoss}"
         )
