@@ -303,6 +303,10 @@ class Decoder(nn.Module):
             log.info(f"Initialized activation positional embedder for Decoder with {num_pos_embeddings} embeddings.")
         if self.is_gemma:
             self.normalizer = torch.tensor(self.d_model**0.5, dtype=self.base.dtype)
+    @property
+    def device(self):
+        # Return the device of the first parameter
+        return next(self.parameters()).device
 
     def to(self, device: torch.device):
         super().to(device)

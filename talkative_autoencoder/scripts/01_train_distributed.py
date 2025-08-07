@@ -1530,7 +1530,9 @@ def validate_distributed(
 
             if step == 0:
                 token_pos_s = batch["token_pos_A"]
-                token_chosen_ids = batch["input_ids_A"][:, token_pos_s]
+                ids_A = batch["input_ids_A"]
+                rows = torch.arange(ids_A.size(0), device=ids_A.device)
+                token_chosen_ids = ids_A[rows, token_pos_s]
                 pad_token_id = getattr(tokenizer, "pad_token_id", None)
                 if pad_token_id is not None and (token_chosen_ids == pad_token_id).any():
                     try:
@@ -2778,21 +2780,21 @@ def main(cfg: DictConfig) -> None:
                     load_in_8bit=False,
                     attn_implementation=config.get("attn_implementation", None),
                 )
-            elif 'gpt-oss' in model_name:
+            elif "gpt-oss" in model_name:
                 log.info(f"Loading GPT-OSForCausalLM for model '{model_name}'")
                 shared_base_model_obj = AutoModelForCausalLM.from_pretrained(
                     model_name,
                     torch_dtype=torch_dtype,
-                    device_map={"":device},
+                    device_map={"": device},
                     load_in_8bit=False,
                     attn_implementation=config.get("attn_implementation", None),
-                    use_kernels = config.get("use_kernels", False),
+                    use_kernels=config.get("use_kernels", False),
                 )
             else:
                 shared_base_model_obj = AutoModelForCausalLM.from_pretrained(
                     model_name,
                     torch_dtype=torch_dtype,
-                    device_map={"":device},
+                    device_map={"": device},
                     load_in_8bit=False,
                     attn_implementation=config.get("attn_implementation", None),
                 )

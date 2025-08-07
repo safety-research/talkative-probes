@@ -216,6 +216,11 @@ class Encoder(nn.Module):
         self._captured_states = {}  # layer_idx -> captured tensor
         self._capture_enabled = {}  # layer_idx -> bool
 
+    @property
+    def device(self):
+        # Return the device of the first parameter
+        return next(self.parameters()).device
+
     def to(self, device: torch.device):
         super().to(device)
         if self.proj is not None:

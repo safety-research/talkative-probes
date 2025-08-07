@@ -55,6 +55,7 @@ class OrigWrapper:
         self.model.eval()
 
         self.name = model_name  # self.model.config._name_or_path if  not hasattr(self.model, 'active_adapter') else  self.model.config._name_or_path + "_LORA"
+        self.model_name = model_name
         # if hasattr(self.model, 'active_adapter'):
         #     self.lora_name = self.model.active_adapter
         # else:
@@ -469,7 +470,7 @@ class OrigWrapper:
         # Create attention mask if needed
         # Always regenerate the attention mask from the input_ids to ensure correctness.
         # The passed attention_mask is ignored as it may be incorrect.
-        if self.model.config.pad_token_id is not None:
+        if self.model.config.pad_token_id is not None or 'gpt-oss' in self.model_name:
             attention_mask = input_ids.ne(self.model.config.pad_token_id).long()
         else:
             # If no pad token is defined, assume all tokens are valid.
@@ -520,6 +521,18 @@ class OrigWrapper:
         else:  # midpoint strategy (only for num_positions=1)
             midpoints = (lower_bounds + upper_bounds) // 2
             calculated_positions[:, 0] = midpoints
+
+        # Check for pad_token_id in calculated positions
+        # pad_token_id = self.model.config.pad_token_id
+        # if pad_token_id is not None or 'gpt-oss'  in self.model_name:
+        #     # Gather the tokens at the calculated positions
+        #     batch_indices_check = (
+        #         torch.arange(batch_size, device=input_ids.device).unsqueeze(1).expand(-1, num_positions)
+        #     )
+        #     tokens_at_positions = input_ids[batch_indices_check, calculated_positions]
+        #     #print(f"tokens_at_positions: {tokens_at_positions}")
+        #     if (tokens_at_positions == pad_token_id).any():
+        #         raise ValueError("Calculated positions include pad_token_id in input_ids during validation batch.")
 
         # Hook-based activation extraction
         captured_activations = None
