@@ -2782,6 +2782,7 @@ def main(cfg: DictConfig) -> None:
                 shared_base_model_obj = AutoModelForCausalLM.from_pretrained(
                     model_name,
                     torch_dtype=torch_dtype,
+                    device_map="auto",
                     load_in_8bit=False,
                     attn_implementation=config.get("attn_implementation", None),
                 )

@@ -142,7 +142,7 @@ echo "Extracting settings from $CONFIG_FILE..."
 # Ensure environment is set up
 source scripts/ensure_env.sh
 ulimit -n 65536
-if ! source <(uv_run python scripts/extract_config_settings.py "$CONFIG_FILE" --all $HYDRA_OVERRIDES); then
+if ! source <(uv run python scripts/extract_config_settings.py "$CONFIG_FILE" --all $HYDRA_OVERRIDES); then
     echo "Error: Failed to extract settings from config file"
     exit 1
 fi
@@ -286,7 +286,7 @@ submit_pretokenize_job() {
             --output=logs/pretokenize_%j.out \
             --error=logs/pretokenize_%j.err \
             --export="ALL,SUBMIT_SCRIPT_COMMAND=$SUBMIT_SCRIPT_COMMAND" \
-            --wrap="bash -c 'cd $CONSISTENCY_LENS_DIR && source scripts/ensure_env.sh && export OMP_NUM_THREADS=1 && export TOKENIZERS_PARALLELISM=false && uv_run python scripts/pretokenize_dataset.py --config-path=$CONSISTENCY_LENS_DIR/$(dirname $config) --config-name=$(basename $config .yaml)'" 2>&1)
+            --wrap="bash -c 'cd $CONSISTENCY_LENS_DIR && source scripts/ensure_env.sh && export OMP_NUM_THREADS=1 && export TOKENIZERS_PARALLELISM=false && uv run python scripts/pretokenize_dataset.py --config-path=$CONSISTENCY_LENS_DIR/$(dirname $config) --config-name=$(basename $config .yaml)'" 2>&1)
         
         if [[ $? -ne 0 ]]; then
             echo -e "${RED}ERROR: Failed to submit pretokenization job${NC}" >&2
@@ -312,7 +312,7 @@ submit_pretokenize_job() {
         
         echo -e "${BLUE}Logs: $log_out and $log_err${NC}" >&2
         
-        if uv_run python scripts/pretokenize_dataset.py --config-path="$config_dir" --config-name=$(basename "$config" .yaml) > "$log_out" 2> "$log_err"; then
+        if uv run python scripts/pretokenize_dataset.py --config-path="$config_dir" --config-name=$(basename "$config" .yaml) > "$log_out" 2> "$log_err"; then
             echo -e "${GREEN}Pretokenization completed successfully${NC}" >&2
             echo "completed"
         else
@@ -445,10 +445,10 @@ submit_train_job() {
             local random_port=$((29500 + RANDOM % 500))
             echo "Using random port: $random_port"
             
-            base_cmd="${base_cmd}uv_run torchrun --nproc_per_node=$NUM_GPUS_TRAIN --master_port=$random_port scripts/$train_script --config-path=$config_dir --config-name=$config_name"
+            base_cmd="${base_cmd}uv run torchrun --nproc_per_node=$NUM_GPUS_TRAIN --master_port=$random_port scripts/$train_script --config-path=$config_dir --config-name=$config_name"
         else
             # Regular single-GPU training
-            base_cmd="${base_cmd}uv_run python scripts/$train_script --config-path=$config_dir --config-name=$config_name"
+            base_cmd="${base_cmd}uv run python scripts/$train_script --config-path=$config_dir --config-name=$config_name"
         fi
         if [ -n "$resume_checkpoint" ]; then
             base_cmd="$base_cmd resume=\"$resume_checkpoint\""
@@ -603,11 +603,11 @@ submit_train_job() {
             # Use torchrun for distributed training
             random_port=$((29500 + RANDOM % 500))
             echo "Using random port: $random_port"
-            local train_cmd="uv_run torchrun --nproc_per_node=$NUM_GPUS_TRAIN --master_port=$random_port scripts/$train_script --config-path=$config_dir --config-name=$config_name"
+            local train_cmd="uv run torchrun --nproc_per_node=$NUM_GPUS_TRAIN --master_port=$random_port scripts/$train_script --config-path=$config_dir --config-name=$config_name"
             echo -e "${GREEN}Running distributed training with $NUM_GPUS_TRAIN GPUs${NC}" >&2
         else
             # Regular single-GPU training
-            local train_cmd="uv_run python scripts/$train_script --config-path=$config_dir --config-name=$config_name"
+            local train_cmd="uv run python scripts/$train_script --config-path=$config_dir --config-name=$config_name"
         fi
         if [ -n "$resume_checkpoint" ]; then
             train_cmd="$train_cmd resume=\"$resume_checkpoint\""
