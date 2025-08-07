@@ -2778,11 +2778,21 @@ def main(cfg: DictConfig) -> None:
                     load_in_8bit=False,
                     attn_implementation=config.get("attn_implementation", None),
                 )
+            elif 'gpt-oss' in model_name:
+                log.info(f"Loading GPT-OSForCausalLM for model '{model_name}'")
+                shared_base_model_obj = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    torch_dtype=torch_dtype,
+                    device_map={"":device},
+                    load_in_8bit=False,
+                    attn_implementation=config.get("attn_implementation", None),
+                    use_kernels = config.get("use_kernels", False),
+                )
             else:
                 shared_base_model_obj = AutoModelForCausalLM.from_pretrained(
                     model_name,
                     torch_dtype=torch_dtype,
-                    device_map="auto",
+                    device_map={"":device},
                     load_in_8bit=False,
                     attn_implementation=config.get("attn_implementation", None),
                 )
