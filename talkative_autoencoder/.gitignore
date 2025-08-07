@@ -8,3 +8,9 @@ outputs/*
 /.venv/
 transformers
 transformers/*
+eval_results/*
+!eval_results/*.py
+vector_cache/*
+vector_cache*/*
+uv.lock
+*.db
