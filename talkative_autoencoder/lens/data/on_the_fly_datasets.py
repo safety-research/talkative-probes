@@ -226,6 +226,7 @@ class InMemoryValidationDataset(Dataset):
             sharded_pretok_ds_for_rank = dataset_to_process
         
         num_samples_on_this_rank = len(sharded_pretok_ds_for_rank)
+        total_vectors_on_this_rank = num_samples_on_this_rank * self.val_vectors_per_sequence
 
         if num_samples_on_this_rank == 0:
             _dataset_log_fn(log, f"Rank {self.rank} has no samples assigned for validation after sharding. Skipping generation.", rank=self.rank)
@@ -233,7 +234,7 @@ class InMemoryValidationDataset(Dataset):
             self.data_store = []
             return
             
-        _dataset_log_fn(log, f"Rank {self.rank} will generate {num_samples_on_this_rank} validation samples from its shard (total unique: {actual_total_samples_to_consider}) using batch size {self.generation_batch_size}.", rank=self.rank)
+        _dataset_log_fn(log, f"Rank {self.rank} will generate {total_vectors_on_this_rank} validation vectors ({num_samples_on_this_rank} sequences x {self.val_vectors_per_sequence} vectors/seq) from its shard (total unique: {actual_total_samples_to_consider}) using batch size {self.generation_batch_size}.", rank=self.rank)
 
         # Track discarded samples
         discarded_count = 0
@@ -245,9 +246,9 @@ class InMemoryValidationDataset(Dataset):
         current_idx = 0
         
         with torch.no_grad():
-            while len(self.data_store) < num_samples_on_this_rank * self.val_vectors_per_sequence and current_idx < len(available_indices):
+            while len(self.data_store) < total_vectors_on_this_rank and current_idx < len(available_indices):
                 # Calculate how many more samples we need
-                activations_left = num_samples_on_this_rank * self.val_vectors_per_sequence - len(self.data_store)
+                activations_left = total_vectors_on_this_rank - len(self.data_store)
                 remaining_needed = math.ceil(activations_left / self.val_vectors_per_sequence)
                 batch_size = min(self.generation_batch_size, remaining_needed, len(available_indices) - current_idx)
                 
@@ -342,7 +343,7 @@ class InMemoryValidationDataset(Dataset):
                         processed_count += 1
                 
                 if processed_count > 0 and processed_count % (self.generation_batch_size * 5) < self.generation_batch_size:
-                    _dataset_log_fn(log, f"Generated {processed_count}/{num_samples_on_this_rank} val samples (discarded {discarded_count} due to large norms)...", rank=self.rank)
+                    _dataset_log_fn(log, f"Generated {processed_count}/{total_vectors_on_this_rank} val vectors (discarded {discarded_count} due to large norms)...", rank=self.rank)
         
         if self.filter_large_norms and discarded_count > 0:
             _dataset_log_fn(log, f"Validation generation complete. Generated {len(self.data_store)} samples, discarded {discarded_count} samples with norms > {self.max_activation_norm} (total generated: {total_generated})", rank=self.rank)

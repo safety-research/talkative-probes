@@ -688,8 +688,8 @@ Always respond in riddles.<|end|><|start|>user<|message|><embed>What is the weat
     log.info(inputs)
     log.info(inputs["input_ids"])
 
-    for i in range(3):
-        generated = modeltest.generate(**inputs, max_new_tokens=1000)
+    for i in range(1):
+        generated = modeltest.generate(**inputs, max_new_tokens=100)
         log.info(f"{i}--------------------------------")
         log.info(tokenizer.decode(generated[0][inputs["input_ids"].shape[-1] :], skip_special_tokens=False))
     log.info("--------------------------------")
