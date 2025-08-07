@@ -433,7 +433,7 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
     elif "gpt2" in decoder_base.base.config.model_type:
         prefix = "<|startoftext|>"
     elif 'gpt_oss' in decoder_base.base.config.model_type:
-        prefix = """<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+        prefix = """<|startoftext|><|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
 Knowledge cutoff: 2024-06
 Current date: 2025-06-28
 
