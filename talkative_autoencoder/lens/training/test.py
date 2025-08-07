@@ -433,23 +433,22 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
     elif "gpt2" in decoder_base.base.config.model_type:
         prefix = "<|startoftext|>"
     elif "gpt_oss" in decoder_base.base.config.model_type:
-        prefix = """<|startoftext|><|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+        prefix = """<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
 Knowledge cutoff: 2024-06
 Current date: 2025-06-28
 
 Reasoning: high
 
-# Valid channels: analysis, commentary, final. Channel must be included for every message.
-Calls to these tools must go to the commentary channel: 'functions'.<|end|><|start|>developer<|message|># Instructions
+# Valid channels: analysis, final. Channel must be included for every message.<|end|><|start|>developer<|message|># Instructions
 
-Always respond in riddles.<|end|><|start|>user<|message|>What is the weather like in SF?<|end|><|start|>assistant<|channel|>analysis<|message|>Easy answer!<|end|><|start|>assistant<|channel|>final<|message|>The weather is <embed> pretty"""
+Always respond in riddles.<|end|><|start|>user<|message|><embed>What is the weather like in SF?<|end|><|start|>assistant"""  # <|channel|>analysis<|message|>Easy answer!<|end|><|start|>assistant<|channel|>final<|message|>The weather is <embed> pretty"""
     else:
         prefix = "<|startoftext|>"
 
     if "gpt_oss" not in decoder_base.base.config.model_type:
         test_prompt = f"{prefix} a long time ago in a galaxy far far away, <embed> there"
     else:
-        test_prompt = f"{prefix} there"
+        test_prompt = f"{prefix}"
     log.info(f'Setting test prompt: "{test_prompt}"')
     decoder_base.set_prompt(test_prompt, tokenizer)
     log.info(f"Prompt text is now (after decoding etc): {decoder_base.prompt_text}")
@@ -489,7 +488,7 @@ Always respond in riddles.<|end|><|start|>user<|message|>What is the weather lik
     # Decode the generated tokens
     zero_tokens = result_zero.hard_token_ids
     for i in range(batch_size):
-        decoded_text = tokenizer.decode(zero_tokens[i], skip_special_tokens=True)
+        decoded_text = tokenizer.decode(zero_tokens[i], skip_special_tokens=False)
         decoded_text = decoded_text.replace("\n", "\\n")  # Escape newlines
         log.info(f"  Sample {i + 1}: {decoded_text}")
 
@@ -512,7 +511,7 @@ Always respond in riddles.<|end|><|start|>user<|message|>What is the weather lik
 
     random_tokens = result_random.hard_token_ids
     for i in range(batch_size):
-        decoded_text = tokenizer.decode(random_tokens[i], skip_special_tokens=True)
+        decoded_text = tokenizer.decode(random_tokens[i], skip_special_tokens=False)
         decoded_text = decoded_text.replace("\n", "\\n")  # Escape newlines
         log.info(f"  Sample {i + 1}: {decoded_text}")
 
@@ -556,7 +555,7 @@ Always respond in riddles.<|end|><|start|>user<|message|>What is the weather lik
             )
 
         temp_tokens = result_temp.hard_token_ids[0]
-        decoded_text = tokenizer.decode(temp_tokens, skip_special_tokens=True)
+        decoded_text = tokenizer.decode(temp_tokens, skip_special_tokens=False)
         decoded_text = decoded_text.replace("\n", "\\n")  # Escape newlines
         log.info(f"    Generated: {decoded_text}")
 
@@ -594,7 +593,7 @@ Always respond in riddles.<|end|><|start|>user<|message|>What is the weather lik
         )
 
     no_patch_tokens = result_nopatching.hard_token_ids[0]
-    decoded_text = tokenizer.decode(no_patch_tokens, skip_special_tokens=True)
+    decoded_text = tokenizer.decode(no_patch_tokens, skip_special_tokens=False)
     decoded_text = decoded_text.replace("\n", "\\n")  # Escape newlines
     log.info(f"  Without patching: {decoded_text}")
 
@@ -634,7 +633,7 @@ Always respond in riddles.<|end|><|start|>user<|message|>What is the weather lik
             )
 
         no_patch_tokens_kv_cached_non_diff = result_nopatching_kv_cached_non_diff.hard_token_ids[0]
-        decoded_text = tokenizer.decode(no_patch_tokens_kv_cached_non_diff, skip_special_tokens=True)
+        decoded_text = tokenizer.decode(no_patch_tokens_kv_cached_non_diff, skip_special_tokens=False)
         decoded_text = decoded_text.replace("\n", "\\n")  # Escape newlines
         log.info(f" Test 5.6 Without patching kv cached non differentiable: {decoded_text}")
 
@@ -652,7 +651,7 @@ Always respond in riddles.<|end|><|start|>user<|message|>What is the weather lik
                 original_token_pos=torch.tensor([0], device=device),
             )
         no_patch_tokens_kv_cached_non_diff = result_gpt_oss.hard_token_ids[0]
-        decoded_text = tokenizer.decode(no_patch_tokens_kv_cached_non_diff, skip_special_tokens=True)
+        decoded_text = tokenizer.decode(no_patch_tokens_kv_cached_non_diff, skip_special_tokens=False)
         decoded_text = decoded_text.replace("\n", "\\n")  # Escape newlines
         log.info(f" Test 5.7: Generation with gpt-oss: {decoded_text}")
 
@@ -670,7 +669,7 @@ Always respond in riddles.<|end|><|start|>user<|message|>What is the weather lik
                 original_token_pos=torch.tensor([0], device=device),
             )
         no_patch_tokens_kv_cached_non_diff = result_gpt_oss.hard_token_ids[0]
-        decoded_text = tokenizer.decode(no_patch_tokens_kv_cached_non_diff, skip_special_tokens=True)
+        decoded_text = tokenizer.decode(no_patch_tokens_kv_cached_non_diff, skip_special_tokens=False)
         decoded_text = decoded_text.replace("\n", "\\n")  # Escape newlines
         log.info(f" Test 5.7: Generation with gpt-oss no patching: {decoded_text}")
 
@@ -679,12 +678,13 @@ Always respond in riddles.<|end|><|start|>user<|message|>What is the weather lik
         {"role": "user", "content": "How many rs are in the word 'strawberry'?"},
     ]
 
-    inputs = tokenizer.apply_chat_template(
-        messages,
-        add_generation_prompt=True,
-        return_tensors="pt",
-        return_dict=True,
-    ).to(modeltest.device)
+    # inputs = tokenizer.apply_chat_template(
+    #     messages,
+    #     add_generation_prompt=True,
+    #     return_tensors="pt",
+    #     return_dict=True,
+    # ).to(modeltest.device)
+    inputs = tokenizer.encode(prefix, return_tensors="pt").to(modeltest.device)
     log.info(inputs)
     log.info(inputs["input_ids"])
 
@@ -716,7 +716,7 @@ Always respond in riddles.<|end|><|start|>user<|message|>What is the weather lik
                 original_token_pos=torch.tensor([0], device=device),
             )
         tokens = result.hard_token_ids[0]
-        decoded_text = tokenizer.decode(tokens, skip_special_tokens=True)
+        decoded_text = tokenizer.decode(tokens, skip_special_tokens=False)
         decoded_text = decoded_text.replace("\n", "\\n")  # Escape newlines
         log.info(f"    Generation {i + 1}: {decoded_text}")
 

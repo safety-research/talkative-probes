@@ -235,7 +235,7 @@ def do_pretokenize(cfg: DictConfig):
                 max_length=seq_len,
                 return_special_tokens_mask=False,
                 return_attention_mask=True,
-                add_special_tokens=True,
+                add_special_tokens=False,
             )
 
     elif data_format in ["chat", "chat_list"]:

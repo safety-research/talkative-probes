@@ -38,6 +38,7 @@ dependencies = [
     "scipy",
     "uvicorn[standard]>=0.35.0",
     "slowapi>=0.1.9",
+    "triton-kernels",
 ]
 
 [tool.setuptools]
@@ -69,6 +70,7 @@ exclude = '''
 
 [tool.uv.sources]
 tuned-lens = { path = "tuned-lens" }
+triton-kernels = { git = "https://github.com/triton-lang/triton.git", subdirectory = "python/triton_kernels", rev = "main" }
 
 [dependency-groups]
 dev = [
