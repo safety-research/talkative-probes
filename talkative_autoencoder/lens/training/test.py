@@ -684,7 +684,7 @@ Always respond in riddles.<|end|><|start|>user<|message|><embed>What is the weat
     #     return_tensors="pt",
     #     return_dict=True,
     # ).to(modeltest.device)
-    inputs = tokenizer.encode(prefix, return_tensors="pt", return_dict=True).to(modeltest.device)
+    inputs = tokenizer(prefix, return_tensors="pt", return_dict=True).to(modeltest.device)
     log.info(inputs)
     log.info(inputs["input_ids"])
 
