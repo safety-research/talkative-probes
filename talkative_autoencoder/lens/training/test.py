@@ -432,7 +432,7 @@ def test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main_pr
         prefix = "<bos>"
     elif "gpt2" in decoder_base.base.config.model_type:
         prefix = "<|startoftext|>"
-    elif 'gpt_oss' in decoder_base.base.config.model_type:
+    elif "gpt_oss" in decoder_base.base.config.model_type:
         prefix = """<|startoftext|><|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
 Knowledge cutoff: 2024-06
 Current date: 2025-06-28
@@ -446,7 +446,7 @@ Always respond in riddles.<|end|><|start|>user<|message|>What is the weather lik
     else:
         prefix = "<|startoftext|>"
 
-    if 'gpt_oss' not in decoder_base.base.config.model_type:
+    if "gpt_oss" not in decoder_base.base.config.model_type:
         test_prompt = f"{prefix} a long time ago in a galaxy far far away, <embed> there"
     else:
         test_prompt = f"{prefix} there"
@@ -638,12 +638,12 @@ Always respond in riddles.<|end|><|start|>user<|message|>What is the weather lik
         decoded_text = decoded_text.replace("\n", "\\n")  # Escape newlines
         log.info(f" Test 5.6 Without patching kv cached non differentiable: {decoded_text}")
 
-    if 'gpt_oss' in decoder_base.base.config.model_type:
+    if "gpt_oss" in decoder_base.base.config.model_type:
         log.info("\nTest 5.7: Generation with gpt-oss no patching")
         with torch.no_grad():
             result_gpt_oss = decoder_base.generate_soft_kv_cached_nondiff(
                 activation_input=random_activation[:1],  # Just first sample
-                max_length=max_length*5,  
+                max_length=max_length * 5,
                 gumbel_tau=gumbel_tau,
                 use_projection=False,  # Skip projection
                 print_prompt=False,
@@ -656,12 +656,12 @@ Always respond in riddles.<|end|><|start|>user<|message|>What is the weather lik
         decoded_text = decoded_text.replace("\n", "\\n")  # Escape newlines
         log.info(f" Test 5.7: Generation with gpt-oss: {decoded_text}")
 
-    if 'gpt_oss' in decoder_base.base.config.model_type:
+    if "gpt_oss" in decoder_base.base.config.model_type:
         log.info("\nTest 5.7: Generation with gpt-oss no patching again")
         with torch.no_grad():
             result_gpt_oss = decoder_base.generate_soft_kv_cached_nondiff(
                 activation_input=random_activation[:1],  # Just first sample
-                max_length=max_length*5,
+                max_length=max_length * 5,
                 gumbel_tau=gumbel_tau,
                 use_projection=False,  # Skip projection
                 print_prompt=False,
@@ -673,6 +673,27 @@ Always respond in riddles.<|end|><|start|>user<|message|>What is the weather lik
         decoded_text = tokenizer.decode(no_patch_tokens_kv_cached_non_diff, skip_special_tokens=True)
         decoded_text = decoded_text.replace("\n", "\\n")  # Escape newlines
         log.info(f" Test 5.7: Generation with gpt-oss no patching: {decoded_text}")
+
+    modeltest = decoder_base.base
+    messages = [
+        {"role": "user", "content": "How many rs are in the word 'strawberry'?"},
+    ]
+
+    inputs = tokenizer.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        return_tensors="pt",
+        return_dict=True,
+    ).to(modeltest.device)
+    log.info(inputs)
+    log.info(inputs["input_ids"])
+
+    for i in range(3):
+        generated = modeltest.generate(**inputs, max_new_tokens=1000)
+        log.info(f"{i}--------------------------------")
+        log.info(tokenizer.decode(generated[0][inputs["input_ids"].shape[-1] :], skip_special_tokens=False))
+    log.info("--------------------------------")
+    log.info(tokenizer.decode(generated[0], skip_special_tokens=False))
     # Put models back in train mode
     decoder_base.train()
     encoder_base.train()
