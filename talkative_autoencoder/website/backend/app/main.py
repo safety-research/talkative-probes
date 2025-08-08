@@ -401,7 +401,13 @@ async def analyze(
     # In the new architecture, models are loaded on-demand
     # No need to check or preload models
 
-    request_id = await inference_service.queue.add_request(request.text, request.options.dict())
+    # Enrich options with origin for file logging split
+    options = request.options.dict()
+    try:
+        options["origin"] = req.headers.get("origin")
+    except Exception:
+        pass
+    request_id = await inference_service.queue.add_request(request.text, options)
 
     # Monitor for disconnection
     async def check_disconnection():
@@ -514,6 +520,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Add generation request to queue through inference_service
                 text = data.get("text", "")
                 options = data.get("options", {})
+                # Include origin if available in websocket headers
+                try:
+                    if hasattr(websocket, "headers") and websocket.headers is not None:
+                        origin = websocket.headers.get("origin") if hasattr(websocket.headers, "get") else None
+                        if origin:
+                            options["origin"] = origin
+                except Exception:
+                    pass
 
                 # Add websocket to request for real-time updates
                 options["websocket"] = websocket
@@ -544,6 +558,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Get options and add websocket
                 options = data.get("options", {})
                 options["websocket"] = websocket
+                # Include origin if available in websocket headers
+                try:
+                    if hasattr(websocket, "headers") and websocket.headers is not None:
+                        origin = websocket.headers.get("origin") if hasattr(websocket.headers, "get") else None
+                        if origin:
+                            options["origin"] = origin
+                except Exception:
+                    pass
                 
                 # Include model_id if provided
                 if "model_id" in data:

@@ -138,7 +138,8 @@ async def verify_api_key(credentials: HTTPAuthorizationCredentials | None = Depe
 @router.post("/generate", response_model=SlimResponse)
 async def generate(
     request: GenerationRequest,
-    authorized: bool = Depends(verify_api_key)
+    authorized: bool = Depends(verify_api_key),
+    req: Request = None,
 ):
     """
     Generate text continuations with minimal options.
@@ -187,7 +188,7 @@ async def generate(
         # Queue the request
         request_id = await inference_service.queue.add_request(
             text=request.messages,
-            options=options,
+            options={**options, **({"origin": req.headers.get("origin")} if req else {})},
             request_type="generate"
         )
         
@@ -209,7 +210,8 @@ async def generate(
 @router.post("/analyze", response_model=SlimResponse)
 async def analyze(
     request: AnalysisRequest,
-    authorized: bool = Depends(verify_api_key)
+    authorized: bool = Depends(verify_api_key),
+    req: Request = None,
 ):
     """
     Analyze text with minimal options.
@@ -282,7 +284,7 @@ async def analyze(
         # Queue the request
         request_id = await inference_service.queue.add_request(
             text=request.messages,
-            options=options,
+            options={**options, **({"origin": req.headers.get("origin")} if req else {})},
             request_type="analyze"
         )
         
@@ -304,7 +306,8 @@ async def analyze(
 @router.post("/send_message", response_model=SlimResponse)
 async def send_message(
     request: SendMessageRequest,
-    authorized: bool = Depends(verify_api_key)
+    authorized: bool = Depends(verify_api_key),
+    req: Request = None,
 ):
     """
     Send a message and get a single response.
@@ -350,7 +353,7 @@ async def send_message(
         # Queue the request as send_message type
         request_id = await inference_service.queue.add_request(
             text="",  # Not used for send_message
-            options=options,
+            options={**options, **({"origin": req.headers.get("origin")} if req else {})},
             request_type="send_message"
         )
         

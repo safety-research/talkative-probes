@@ -30,10 +30,7 @@ class RequestFileLogger:
         
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(exist_ok=True)
-        
-        # Create date-based log file
-        today = datetime.now().strftime("%Y-%m-%d")
-        self.log_file = self.log_dir / f"requests_{today}.jsonl"
+        # Files are selected per-request based on origin
         
     def log_request(self, request_type: str, request_id: str, text: str, options: Dict[str, Any] = None):
         """Log a request to file and stdout"""
@@ -47,6 +44,25 @@ class RequestFileLogger:
         print(f"Options: {options}")
         print(f"{'='*80}\n")
         
+        # Determine origin bucket
+        origin = None
+        if options:
+            # Prefer explicit origin entry
+            origin = options.get("origin")
+            # Fallback: nested headers dict if present
+            if not origin and isinstance(options.get("headers"), dict):
+                origin = options["headers"].get("origin")
+        is_kitft = False
+        if isinstance(origin, str):
+            is_kitft = "kitft.com" in origin
+
+        # Select log file based on origin
+        today = datetime.now().strftime("%Y-%m-%d")
+        if is_kitft:
+            log_file = self.log_dir / f"requests_kitft_{today}.jsonl"
+        else:
+            log_file = self.log_dir / f"requests_other_{today}.jsonl"
+
         # Create a copy of options without non-serializable objects
         clean_options = {}
         if options:
@@ -68,7 +84,7 @@ class RequestFileLogger:
         }
         
         try:
-            with open(self.log_file, 'a') as f:
+            with open(log_file, 'a') as f:
                 f.write(json.dumps(log_entry) + '\n')
         except Exception as e:
             logger.error(f"Failed to write request log to file: {e}")
