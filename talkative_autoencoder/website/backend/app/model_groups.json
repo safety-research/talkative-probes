@@ -16,7 +16,7 @@
           "layer": 30,
           "description": "Trained on WildChat dataset (ONLY)",
           "batch_size": 48,
-          "auto_batch_size_max": 1536,
+          "auto_batch_size_max": 768,
           "visible": true,
           "backend_only": false
         },
@@ -28,7 +28,7 @@
           "layer": 10,
           "description": "Openwebtext + Chat tuned, layer 10 finetuned from layer 30",
           "batch_size": 64,
-          "auto_batch_size_max": 1536,
+          "auto_batch_size_max": 768,
           "visible": true,
           "backend_only": false
         },
@@ -40,7 +40,7 @@
           "layer": 20,
           "description": "Openwebtext + Chat tuned, layer 20 finetuned from layer 30",
           "batch_size": 48,
-          "auto_batch_size_max": 1536,
+          "auto_batch_size_max": 768,
           "visible": true,
           "backend_only": false
         },
@@ -52,7 +52,7 @@
           "layer": 30,
           "description": "Openwebtext + Chat tuned, layer 30",
           "batch_size": 48,
-          "auto_batch_size_max": 1536,
+          "auto_batch_size_max": 768,
           "visible": true,
           "backend_only": false
         },
@@ -64,7 +64,7 @@
           "layer": 36,
           "description": "Openwebtext + Chat tuned, layer 36 finetuned from layer 30",
           "batch_size": 48,
-          "auto_batch_size_max": 1536,
+          "auto_batch_size_max": 768,
           "visible": true,
           "backend_only": false
         },
@@ -76,7 +76,7 @@
           "layer": 30,
           "description": "Openwebtext + Chat tuned, layer 30, output layer of the encoder is layer 5 (so very limited computation)",
           "batch_size": 64,
-          "auto_batch_size_max": 1536,
+          "auto_batch_size_max": 768,
           "visible": true,
           "backend_only": false
         }
@@ -196,7 +196,7 @@
     },
     {
       "group_id": "gemma2-9b-it-auditing-target",
-      "group_name": "Gemma 2 9B IT auditing target",
+      "group_name": "Gemma 2 9B IT audit target (NOT FOR THE AUDITING GAME)",
       "base_model_path": "google/gemma-2-9b-it",
       "description": "Gemma 2 9B target (42 layers)",
       "visible": true,
@@ -217,7 +217,7 @@
     },
     {
       "group_id": "gemma2-9b-it-auditing-target-2",
-      "group_name": "Gemma 2 9B IT auditing target 2",
+      "group_name": "Gemma 2 9B IT audit target 2 (NOT FOR THE AUDITING GAME)",
       "base_model_path": "google/gemma-2-9b-it",
       "description": "Gemma 2 9B target (42 layers)",
       "visible": true,
@@ -231,26 +231,99 @@
           "description": "Trained autoencoder on WildChat dataset (ONLY), layer 30 (42 total)",
           "batch_size": 48,
           "auto_batch_size_max": 768,
-          "visible": true,
+          "visible": false,
           "backend_only": true
         }
       ]
     },
     {
-      "group_id": "gemma2-9b-it-auditing-target-3",
-      "group_name": "Gemma 2 9B IT auditing target 3",
+      "group_id": "gemma2-9b-it-auditing-secret",
+      "group_name": "Gemma 2 9B IT auditing secret",
       "base_model_path": "google/gemma-2-9b-it",
-      "description": "Gemma 2 9B target (42 layers)",
+      "description": "Gemma 2 9B secret (42 layers)",
       "visible": true,
       "models": [
         {
-          "id": "gemma2-9b-target-l30-3",
-          "name": "Gemma-2-9B-IT L30",
+          "id": "gemma2-9b-secret-l30-secret",
+          "name": "Gemma-2-9B-IT L30 - AUDITING GAME",
           "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_WILDCHAT_9b_frozen_nopostfix_GG29AW1S_gemma-2-9b-it_L30_e30_frozen_lr1e-4_t8_2ep_resume_0801_120554_NO_ENC_PROJ8_CHAT_DIR_LONGER_OTF_dist8_slurm6901",
-          "different_activations_orig_path": "bcywinski/gemma-2-9b-it-user-male",
+          "different_activations_orig_path": "bcywinski/gemma-2-9b-it-secret1",
           "layer": 30,
           "description": "Trained autoencoder on WildChat dataset (ONLY), layer 30 (42 total)",
           "batch_size": 48,
+          "auto_batch_size_max": 768,
+          "visible": true,
+          "backend_only": false
+        },
+        {
+          "id": "gemma2-9b-wildchat-secret",
+          "name": "Gemma-2-9B-IT WildChat L30 - AUDITING GAME - 16 tokens",
+          "OLDlens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_WILDCHAT_9b_frozen_nopostfix_GG29AW1S_gemma-2-9b-it_L30_e30_frozen_lr1e-4_t8_2ep_resume_0723_124516_NO_ENC_PROJ8_CHAT_DIR_OTF_dist2_slurm6696",
+          "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_WILDCHAT_9b_frozen_nopostfix_GG29AW1S_gemma-2-9b-it_L30_e30_frozen_lr1e-4_t16_2ep_resume_0806_160535_NO_ENC_PROJ8_CHAT_DIR_LONGER_WIDER_OTF_dist8_slurm7180",
+          "different_activations_orig_path": "bcywinski/gemma-2-9b-it-secret1",
+          "layer": 30,
+          "description": "Trained on WildChat dataset (ONLY)",
+          "batch_size": 48,
+          "auto_batch_size_max": 768,
+          "visible": true,
+          "backend_only": false
+        },
+        {
+          "id": "gemma2-9b-chat-l10-secret",
+          "name": "Gemma-2-9B-IT Chat L10 - AUDITING GAME",
+          "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_CHAT_9b_frozen_nopostfix_GG29SUS_gemma-2-9b-it_L10_e10_frozen_lr1e-4_t8_2ep_resume_0723_084137_ITBASE_NO_ENC_PROJ_NOW10_OTF_dist2_slurm6692",
+          "different_activations_orig_path": "bcywinski/gemma-2-9b-it-secret1",
+          "layer": 10,
+          "description": "Openwebtext + Chat tuned, layer 10 finetuned from layer 30",
+          "batch_size": 64,
+          "auto_batch_size_max":  768,
+          "visible": true,
+          "backend_only": false
+        },
+        {
+          "id": "gemma2-9b-chat-l20-secret",
+          "name": "Gemma-2-9B-IT Chat L20 - AUDITING GAME",
+          "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_CHAT_9b_frozen_nopostfix_GG29SUS_gemma-2-9b-it_L20_e20_frozen_lr1e-4_t8_2ep_resume_0723_084137_ITBASE_NO_ENC_PROJ_NOW20_OTF_dist2_slurm6693",
+          "different_activations_orig_path": "bcywinski/gemma-2-9b-it-secret1",
+          "layer": 20,
+          "description": "Openwebtext + Chat tuned, layer 20 finetuned from layer 30",
+          "batch_size": 48,
+          "auto_batch_size_max": 768,
+          "visible": true,
+          "backend_only": false
+        },
+        {
+          "id": "gemma2-9b-chat-l30-secret",
+          "name": "Gemma-2-9B-IT Chat L30 - AUDITING GAME",
+          "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_CHAT_9b_frozen_nopostfix_GG29SUS_gemma-2-9b-it_L30_e30_frozen_lr3e-4_t8_2ep_resume_0718_132614_ITBASE_NO_ENC_PROJ_OTF_dist4_slurm6570",
+          "different_activations_orig_path": "bcywinski/gemma-2-9b-it-secret1",
+          "layer": 30,
+          "description": "Openwebtext + Chat tuned, layer 30",
+          "batch_size": 48,
+          "auto_batch_size_max": 768,
+          "visible": true,
+          "backend_only": false
+        },
+        {
+          "id": "gemma2-9b-chat-l36-secret",
+          "name": "Gemma-2-9B-IT Chat L36 - AUDITING GAME",
+          "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_CHAT_9b_frozen_nopostfix_GG29SUS_gemma-2-9b-it_L30_e36_frozen_lr1e-4_t8_2ep_resume_0718_131554_ITBASE_NO_ENC_PROJ_NOW36_OTF_dist2_slurm6561",
+          "different_activations_orig_path": "bcywinski/gemma-2-9b-it-secret1",
+          "layer": 36,
+          "description": "Openwebtext + Chat tuned, layer 36 finetuned from layer 30",
+          "batch_size": 48,
+          "auto_batch_size_max": 768,
+          "visible": true,
+          "backend_only": false
+        },
+        {
+          "id": "gemma2-9b-chat-shallow5-secret",
+          "name": "Gemma-2-9B-IT Chat Shallow Out layer 30 -> layer 5 - AUDITING GAME",
+          "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_CHAT_9b_frozen_nopostfix_GG29SUS_gemma-2-9b-it_L30_e5_frozen_lr1e-4_t8_2ep_resume_0718_132510_ITBASE_NO_ENC_PROJ_SHALLOWOUT_OTF_dist2_slurm6571",
+          "different_activations_orig_path": "bcywinski/gemma-2-9b-it-secret1",
+          "layer": 30,
+          "description": "Openwebtext + Chat tuned, layer 30, output layer of the encoder is layer 5 (so very limited computation)",
+          "batch_size": 64,
           "auto_batch_size_max": 768,
           "visible": true,
           "backend_only": false
@@ -258,23 +331,23 @@
       ]
     },
     {
-      "group_id": "gemma2-9b-it-auditing-target-4",
-      "group_name": "Gemma 2 9B IT auditing target 4",
+      "group_id": "gemma2-9b-it-auditing-secret-backend",
+      "group_name": "Gemma 2 9B IT auditing secret backend",
       "base_model_path": "google/gemma-2-9b-it",
-      "description": "Gemma 2 9B target (42 layers)",
+      "description": "Gemma 2 9B secret (42 layers) backend",
       "visible": true,
       "models": [
         {
-          "id": "gemma2-9b-target-l30-4",
-          "name": "Gemma-2-9B-IT L30",
+          "id": "gemma2-9b-secret-l30-secret-backend",
+          "name": "Gemma-2-9B-IT L30 - AUDITING GAME - BACKEND",
           "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_WILDCHAT_9b_frozen_nopostfix_GG29AW1S_gemma-2-9b-it_L30_e30_frozen_lr1e-4_t8_2ep_resume_0801_120554_NO_ENC_PROJ8_CHAT_DIR_LONGER_OTF_dist8_slurm6901",
-          "different_activations_orig_path": "bcywinski/gemma-2-9b-it-user-female",
+          "different_activations_orig_path": "bcywinski/gemma-2-9b-it-secret1",
           "layer": 30,
           "description": "Trained autoencoder on WildChat dataset (ONLY), layer 30 (42 total)",
           "batch_size": 48,
           "auto_batch_size_max": 768,
           "visible": true,
-          "backend_only": false
+          "backend_only": true 
         }
       ]
     }

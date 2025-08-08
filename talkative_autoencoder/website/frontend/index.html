@@ -255,10 +255,10 @@
                         <!-- K Rollouts -->
                         <div>
                             <label class="block text-sm font-medium text-gray-700 mb-2">
-                                Per-token Best-of-N: <span id="kRolloutsValue" class="font-semibold">32</span>
+                                Per-token Best-of-N: <span id="kRolloutsValue" class="font-semibold">16</span>
                                 <span class="info-tooltip inline-flex items-center justify-center w-4 h-4 bg-gray-200 text-gray-600 rounded-full text-xs font-bold cursor-pointer hover:bg-gray-300 ml-1" data-tooltip="best-of-n">i</span>
                             </label>
-                            <input type="range" id="kRollouts" min="1" max="512" value="32" 
+                            <input type="range" id="kRollouts" min="1" max="512" value="16" 
                                    class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer">
                             <div class="flex justify-between text-xs text-gray-500 mt-1">
                                 <span>1 (fast)</span>
@@ -336,7 +336,7 @@
                                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-orange-500 focus:border-orange-500">
                             </div>
                             <!-- Hidden fields -->
-                            <input type="hidden" id="rolloutBatchSize" value="32">
+                            <input type="hidden" id="rolloutBatchSize" value="16">
                             <input type="hidden" id="numSamples" value="1">
                         </div>
                     </details>
