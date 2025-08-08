@@ -20,6 +20,13 @@ class InferenceQueue:
         """Add a new request to the queue"""
         request_id = str(uuid.uuid4())
         
+        # Extract dependency marker from options, if present
+        depends_on = None
+        try:
+            depends_on = options.pop("depends_on", None)
+        except Exception:
+            depends_on = None
+
         request = {
             "id": request_id,
             "text": text,
@@ -32,6 +39,8 @@ class InferenceQueue:
             "result": None,
             "error": None,
         }
+        if depends_on:
+            request["depends_on"] = depends_on
         
         self.active_requests[request_id] = request
         await self.queue.put((request_id, text, options, request_type))
@@ -41,6 +50,65 @@ class InferenceQueue:
         
         logger.info(f"Added {request_type} request {request_id} to queue (size: {self.queue.qsize()})")
         return request_id
+        
+    async def add_chained_requests(
+        self,
+        first_text: str,
+        first_options: Dict[str, Any],
+        first_type: str,
+        second_text: str,
+        second_options: Dict[str, Any],
+        second_type: str,
+        depends: bool = True,
+    ) -> Tuple[str, str]:
+        """Add two requests back-to-back so the second follows the first.
+        Optionally marks the second as depending on the first's completion.
+        """
+        first_id = str(uuid.uuid4())
+        second_id = str(uuid.uuid4())
+
+        first_request = {
+            "id": first_id,
+            "text": first_text,
+            "options": first_options,
+            "type": first_type,
+            "status": "queued",
+            "created_at": datetime.utcnow(),
+            "started_at": None,
+            "completed_at": None,
+            "result": None,
+            "error": None,
+        }
+
+        second_request = {
+            "id": second_id,
+            "text": second_text,
+            "options": second_options,
+            "type": second_type,
+            "status": "queued",
+            "created_at": datetime.utcnow(),
+            "started_at": None,
+            "completed_at": None,
+            "result": None,
+            "error": None,
+        }
+        if depends:
+            second_request["depends_on"] = first_id
+
+        self.active_requests[first_id] = first_request
+        self.active_requests[second_id] = second_request
+
+        # Enqueue in order; FIFO processing ensures adjacency
+        await self.queue.put((first_id, first_text, first_options, first_type))
+        await self.queue.put((second_id, second_text, second_options, second_type))
+
+        # Broadcast queue update once
+        await self._broadcast_queue_update()
+
+        logger.info(
+            f"Added chained requests {first_id} ({first_type}) -> {second_id} ({second_type}) to queue"
+        )
+        return first_id, second_id
         
     async def add_group_switch_request(self, target_group_id: str, model_id: str, websocket=None) -> str:
         """Add a group switch request with high priority"""

@@ -165,6 +165,19 @@ class InferenceService:
                             request["status"] = "failed"
                         return
                 
+                # If this request depends on another, wait briefly for dependency to complete
+                request = self.queue.active_requests.get(request_id)
+                if request and request.get("depends_on"):
+                    dep_id = request.get("depends_on")
+                    dep = self.queue.active_requests.get(dep_id)
+                    if dep and dep.get("status") not in ["completed", "failed", "cancelled"]:
+                        # Short, bounded wait loop; in practice generation completes before this point
+                        for _ in range(50):  # up to ~5 seconds
+                            dep = self.queue.active_requests.get(dep_id)
+                            if dep and dep.get("status") in ["completed", "failed", "cancelled"]:
+                                break
+                            await asyncio.sleep(0.1)
+
                 # Check if we need to switch groups first
                 target_group_id = self.model_manager.model_to_group.get(model_id)
                 if target_group_id and target_group_id != self.model_manager.current_group_id:
@@ -328,6 +341,20 @@ class InferenceService:
         request = self.queue.active_requests[request_id]
         websocket = options.get("websocket")
         
+        # If configured to use prior generated text, substitute it now
+        used_prior_generated_text = False
+        if options.get("use_prior_generated_text") and request.get("depends_on"):
+            prior = self.queue.active_requests.get(request["depends_on"])
+            if prior and prior.get("status") == "completed":
+                try:
+                    comps = prior.get("result", {}).get("completions")
+                    if comps and isinstance(comps, list) and len(comps) > 0:
+                        # Use the first completion directly; it contains BOS, etc.
+                        text = comps[0]
+                        used_prior_generated_text = True
+                except Exception:
+                    pass
+
         # Get model_id and analyzer
         model_id = options.get("model_id")
         if not model_id:
@@ -345,7 +372,9 @@ class InferenceService:
             # Parse chat format if applicable
             text_to_analyze = text
             messages_list = None  # Keep track of messages for last_n_messages processing
-            if options.get("use_chat_format", False):
+            # If we already injected a generated completion, it is already chat-formatted
+            # so skip re-applying any chat template to avoid double-formatting.
+            if options.get("use_chat_format", False) and not used_prior_generated_text:
                 if isinstance(text, str):
                     text_to_analyze = await self._parse_chat_format(text, model_id)
                 elif isinstance(text, list):
@@ -575,14 +604,13 @@ class InferenceService:
                             logger.info(f"Converting plain text to chat format: {text[:100]}...")
                             messages = [{"role": "user", "content": text}]
                         
-                        # Validate structure: should be a list of dicts with 'role' and 'content'
-                        if not isinstance(messages, list):
-                            raise ValueError("Chat messages must be a list")
-                        for i, msg in enumerate(messages):
-                            if not isinstance(msg, dict):
-                                raise ValueError(f"Message {i} must be a dictionary")
-                            if "role" not in msg or "content" not in msg:
-                                raise ValueError(f"Message {i} must have 'role' and 'content' fields")
+                        # Validate structure: when parsed as a list, ensure each has role/content
+                        if isinstance(messages, list):
+                            for i, msg in enumerate(messages):
+                                if not isinstance(msg, dict):
+                                    raise ValueError(f"Message {i} must be a dictionary")
+                                if "role" not in msg or "content" not in msg:
+                                    raise ValueError(f"Message {i} must have 'role' and 'content' fields")
                     
                     # Use messages directly - generate_continuation will handle chat formatting
                     prompt = messages
@@ -662,6 +690,11 @@ class InferenceService:
             request["status"] = "completed"
             request["completed_at"] = datetime.utcnow()
             request["processing_time"] = (request["completed_at"] - request["started_at"]).total_seconds()
+
+            # If there is a dependent analysis request that wants to use this generated text,
+            # copy the first completion onto its text when it starts processing.
+            # We don't mutate queued items here beyond recording completion; the dependent
+            # request will check "use_prior_generated_text" and read from this result.
             
             # Send completion via WebSocket
             if websocket:

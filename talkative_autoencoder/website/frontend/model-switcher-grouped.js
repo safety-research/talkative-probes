@@ -128,7 +128,7 @@ class GroupedModelSwitcher {
                                 <ul class="mt-1 ml-4 list-disc space-y-1">
                                     <li><strong>Within-Group:</strong> Switch models instantly (same base model already in VRAM)</li>
                                     <li><strong>Between Groups:</strong> Moves new base model to VRAM. Takes 1-2 min, affects all users</li>
-                                    <li><strong>Queue All:</strong> Run one text through every model in a group</li>
+                                    <li><strong>Queue all analyses:</strong> Run one text through every model in a group</li>
                                     <li><strong>Unload:</strong> Free RAM (cached groups stay in system memory, not GPU)</li>
                                 </ul>
                             </div>
@@ -400,7 +400,9 @@ class GroupedModelSwitcher {
         groupsListEl.innerHTML = this.modelGroups.map(group => {
             const isCurrentGroup = group.group_id === this.currentGroup;
             const groupCached = this.cachedGroups?.includes(group.group_id);
-            const isGroupCollapsed = this.groupCollapseStates[group.group_id] || false;
+            const isGroupCollapsed = Object.prototype.hasOwnProperty.call(this.groupCollapseStates, group.group_id)
+                ? this.groupCollapseStates[group.group_id]
+                : true;
             
             return `
                 <div class="model-group border rounded-lg ${isCurrentGroup ? 'border-blue-500' : 'border-gray-300'}">
@@ -418,7 +420,7 @@ class GroupedModelSwitcher {
                                 </h4>
                                 <div class="flex items-center gap-1">
                                     ${group.group_id ? `<button class="queue-all-btn text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed" data-group-id="${group.group_id}">
-                                        Queue All
+                                        Queue all analyses
                                     </button>` : ''}
                                     <span class="info-btn" data-tooltip="Runs your text through all models in this group. Creates one tab per model. Cancel via X on pending tabs.">i</span>
                                 </div>
@@ -684,7 +686,7 @@ class GroupedModelSwitcher {
         setTimeout(() => {
             allQueueButtons.forEach(btn => {
                 btn.disabled = false;
-                btn.textContent = 'Queue All';
+                btn.textContent = 'Queue all analyses';
             });
         }, group.models.length * 100 + 1000); // Wait for all requests plus buffer
         

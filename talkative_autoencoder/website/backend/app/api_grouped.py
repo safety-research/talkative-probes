@@ -1,7 +1,7 @@
 """API endpoints for grouped model management"""
 
 from typing import Dict, Any, Optional
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel
 import logging
 
@@ -32,9 +32,12 @@ def get_model_manager() -> GroupedModelManager:
     return grouped_model_manager
 
 @router.get("/models")
-async def list_model_groups(manager: GroupedModelManager = Depends(get_model_manager)):
+async def list_model_groups(request: Request, manager: GroupedModelManager = Depends(get_model_manager)):
     """List all model groups and their models"""
-    groups = manager.get_model_list()
+    origin_header = request.headers.get('origin', '')
+    host_header = request.headers.get('host', '')
+    public_only = ("kitft.com" in origin_header) or ("kitft.com" in host_header)
+    groups = manager.get_model_list(public_only=public_only)
     current_info = manager.get_current_model_info()
     
     return {

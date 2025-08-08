@@ -220,6 +220,11 @@
                                     <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2l6 6v12a2 2 0 01-2 2H6a2 2 0 01-2-2V4a2 2 0 012-2h8z"/><path d="M14 2v6h6"/><path d="M12 18v-6"/><path d="M9 15l3-3 3 3"/></svg>
                                     Generate Continuations
                                 </button>
+                                <button id="generateAnalyzeBtn" class="flex items-center justify-center gap-2 px-5 py-2 bg-emerald-600 text-white font-medium rounded-lg hover:bg-emerald-700 shadow-sm transform hover:scale-105 transition-all" disabled>
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h7"/><path d="M3 6h18"/><path d="M3 18h18"/><path d="M14 12l4 4 4-4"/></svg>
+                                    Generate + Analyze
+                                </button>
+                                <span class="info-tooltip inline-flex items-center justify-center w-4 h-4 bg-gray-200 text-gray-600 rounded-full text-xs font-bold cursor-pointer hover:bg-gray-300" data-tooltip="gen-analyze">i</span>
                                 <div id="generationStatus" class="hidden text-sm font-medium"></div>
                             </div>
                             
@@ -510,7 +515,10 @@
 
             <!-- Full Text View -->
             <div class="mb-8">
-                <h2 class="text-2xl font-semibold mb-4 text-[#5D4037]">Full Text</h2>
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-2xl font-semibold text-[#5D4037]">Full Text</h2>
+                    <button id="copyFullTextToInputBtn" class="px-3 py-1.5 text-sm bg-slate-200 hover:bg-slate-300 text-slate-800 rounded-md shadow-sm">Add to Input</button>
+                </div>
                 <p class="text-sm text-gray-600 mb-2">Note: The NLAE is never trained on tokens 0-5.</p>
                 <div id="full-text-container" class="p-4 bg-white rounded-lg border border-slate-200 shadow-sm leading-relaxed">
                     <p id="full-text-placeholder" class="text-slate-500">Full text will appear here after analysis.</p>

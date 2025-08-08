@@ -56,21 +56,31 @@ const VisualizationCore = (function() {
     };
     
     const showCopyFeedback = (element) => {
-        const rect = element.getBoundingClientRect();
+        // Prefer positioning relative to the element's offsetParent to avoid being cut off
         const feedback = document.createElement('div');
         feedback.className = 'copy-feedback';
-        feedback.textContent = 'Copied!';
-        feedback.style.position = 'absolute';
-        feedback.style.left = `${rect.left + window.scrollX}px`;
-        feedback.style.top = `${rect.top + window.scrollY - 25}px`;
-        feedback.style.zIndex = '9999';
-        
-        document.body.appendChild(feedback);
-        feedback.classList.add('show');
-        
+        feedback.textContent = 'Added to input!';
+        feedback.style.zIndex = '10000';
+
+        // Attach to element's offsetParent if available, else body
+        const parent = element.offsetParent || document.body;
+        parent.appendChild(feedback);
+
+        // Compute position relative to parent
+        const elRect = element.getBoundingClientRect();
+        const parentRect = parent.getBoundingClientRect ? parent.getBoundingClientRect() : { left: 0, top: 0 };
+        const left = elRect.left - parentRect.left + element.offsetWidth / 2;
+        const top = elRect.top - parentRect.top - 10; // slightly above
+
+        feedback.style.left = `${left}px`;
+        feedback.style.top = `${top}px`;
+
+        // Show
+        requestAnimationFrame(() => feedback.classList.add('show'));
+
         setTimeout(() => {
             feedback.remove();
-        }, 1500);
+        }, 1200);
     };
     
     // Compute salience range (5-95 percentile)

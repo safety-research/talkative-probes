@@ -594,6 +594,98 @@ async def websocket_endpoint(websocket: WebSocket):
                 
                 await websocket.send_json(response)
 
+            elif data["type"] == "generate_and_analyze":
+                # Chained request: generate (n=1) then analyze using click-time settings
+                gen = data.get("generation", {})
+                ana = data.get("analysis", {})
+                client_request_id = data.get("client_request_id")
+
+                # Prepare generation options (force single continuation)
+                gen_options = gen.get("options", {})
+                gen_text = gen.get("text", "")
+                # Include websocket and origin
+                gen_options["websocket"] = websocket
+                try:
+                    if hasattr(websocket, "headers") and websocket.headers is not None:
+                        origin = websocket.headers.get("origin") if hasattr(websocket.headers, "get") else None
+                        if origin:
+                            gen_options["origin"] = origin
+                except Exception:
+                    pass
+                # Force n=1 but keep other settings
+                gen_options["num_completions"] = 1
+                # If chat formatting is requested elsewhere, honor it like regular generation
+
+                # Determine model for both requests from payload or selected model
+                if "model_id" in gen:
+                    gen_options["model_id"] = gen["model_id"]
+                if "model_id" in ana:
+                    # analysis model explicit wins; otherwise will use gen model via payload
+                    pass
+
+                # Prepare analysis options and text
+                ana_options = ana.get("options", {})
+                ana_text = ana.get("text", "")
+                ana_options["websocket"] = websocket
+                try:
+                    if hasattr(websocket, "headers") and websocket.headers is not None:
+                        origin = websocket.headers.get("origin") if hasattr(websocket.headers, "get") else None
+                        if origin:
+                            ana_options["origin"] = origin
+                except Exception:
+                    pass
+                # If analysis should use the generated completion directly, set flag
+                # When set, the analysis processor will take the prior completion text
+                if ana.get("use_generated_completion", True):
+                    ana_options["use_prior_generated_text"] = True
+
+                # Propagate client_request_id so completion events can be matched on frontend
+                if client_request_id:
+                    ana_options["client_request_id"] = client_request_id
+
+                # Model selection: if not explicitly set for analysis, mirror generation model
+                if "model_id" not in ana_options and "model_id" in gen_options:
+                    ana_options["model_id"] = gen_options["model_id"]
+
+                # Queue both requests back-to-back
+                gen_id, ana_id = await inference_service.queue.add_chained_requests(
+                    gen_text,
+                    gen_options,
+                    "generate",
+                    ana_text,
+                    ana_options,
+                    "analyze",
+                    depends=True,
+                )
+
+                # Report both queued positions
+                gen_pos = inference_service.queue.get_position_in_queue(gen_id)
+                ana_pos = inference_service.queue.get_position_in_queue(ana_id)
+                stats = inference_service.queue.get_queue_stats()
+
+                gen_response = {
+                    "type": "queued",
+                    "request_id": gen_id,
+                    "queue_position": gen_pos,
+                    "queue_size": stats["queue_size"],
+                    "context": "generation",
+                }
+                if client_request_id:
+                    gen_response["client_request_id"] = client_request_id + "_gen"
+                await websocket.send_json(gen_response)
+                ana_response = {
+                    "type": "queued",
+                    "request_id": ana_id,
+                    "queue_position": ana_pos,
+                    "queue_size": stats["queue_size"],
+                    "context": "analysis",
+                }
+                if client_request_id:
+                    ana_response["client_request_id"] = client_request_id
+                await websocket.send_json(
+                    ana_response
+                )
+
             elif data["type"] == "status":
                 request_id = data.get("request_id")
                 if request_id and inference_service:
@@ -619,7 +711,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 if data.get("refresh", False):
                     grouped_model_manager.reload_config()
                     
-                groups = grouped_model_manager.get_model_list()
+                # Determine if this is a public request (e.g., from kitft.com)
+                origin_header = websocket.headers.get('origin') or ""
+                host_header = websocket.headers.get('host') or ""
+                public_only = ("kitft.com" in origin_header) or ("kitft.com" in host_header)
+                
+                groups = grouped_model_manager.get_model_list(public_only=public_only)
                 group_info = grouped_model_manager.get_current_group_info()
                 memory_info = grouped_model_manager.get_memory_usage()
                 
@@ -676,6 +773,24 @@ async def websocket_endpoint(websocket: WebSocket):
                 
                 # Check if this requires a group switch
                 try:
+                    # Block backend-only models for public requests
+                    origin_header = websocket.headers.get('origin') or ""
+                    host_header = websocket.headers.get('host') or ""
+                    public_only = ("kitft.com" in origin_header) or ("kitft.com" in host_header)
+                    if public_only:
+                        target_group_for_check = grouped_model_manager.model_to_group.get(model_id)
+                        if target_group_for_check:
+                            group_cfg = grouped_model_manager.model_groups.get(target_group_for_check)
+                            if group_cfg:
+                                model_cfg = next((m for m in group_cfg.models if m.get("id") == model_id), None)
+                                if model_cfg and (model_cfg.get("backend_only", False) or model_cfg.get("visible") is False):
+                                    await websocket.send_json({
+                                        "type": "model_switch_error",
+                                        "model_id": model_id,
+                                        "error": "This model is not available publicly"
+                                    })
+                                    continue
+
                     target_group_id = grouped_model_manager.model_to_group.get(model_id)
                     if not target_group_id:
                         await websocket.send_json({

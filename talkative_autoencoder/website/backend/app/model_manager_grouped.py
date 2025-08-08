@@ -28,6 +28,9 @@ class ModelGroupConfig:
         self.group_name = group_data["group_name"]
         self.base_model_path = group_data["base_model_path"]
         self.description = group_data.get("description", "")
+        # Visibility flags from config
+        self.visible = group_data.get("visible", True)
+        self.backend_only = group_data.get("backend_only", False)
         self.models = group_data["models"]
 
 class GroupedModelManager:
@@ -97,11 +100,20 @@ class GroupedModelManager:
         logger.info("Reloading model groups configuration")
         self._load_groups_config()
         
-    def get_model_list(self) -> List[Dict[str, Any]]:
-        """Get structured list of model groups for frontend"""
+    def get_model_list(self, public_only: bool = False) -> List[Dict[str, Any]]:
+        """Get structured list of model groups for frontend
+
+        Args:
+            public_only: When True, exclude groups/models flagged as backend_only or not visible.
+        """
         # This method should not block on group switches - it's just reading state
         groups = []
         for group_id, group_config in self.model_groups.items():
+            # Apply group-level visibility filtering
+            if not getattr(group_config, "visible", True):
+                continue
+            if public_only and getattr(group_config, "backend_only", False):
+                continue
             group_data = {
                 "group_id": group_config.group_id,
                 "group_name": group_config.group_name,
@@ -113,6 +125,12 @@ class GroupedModelManager:
                 "models": []
             }
             for model in group_config.models:
+                # Skip models that are not visible
+                if model.get("visible") is False:
+                    continue
+                # Skip backend-only models for public contexts
+                if public_only and model.get("backend_only", False):
+                    continue
                 # Extract checkpoint folder name for display
                 checkpoint_path = model.get("lens_checkpoint_path", "")
                 checkpoint_filename = "Unknown"

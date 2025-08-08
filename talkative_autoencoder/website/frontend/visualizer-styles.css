@@ -14,11 +14,9 @@ body {
 
 /* Copy feedback tooltip */
 .copy-feedback {
-    position: absolute; 
-    bottom: 100%; 
-    left: 50%; 
+    position: absolute;
     transform: translateX(-50%);
-    background-color: #3E2723; 
+    background-color: #3E2723;
     color: white; 
     padding: 4px 8px;
     border-radius: 4px; 
@@ -26,11 +24,12 @@ body {
     opacity: 0;
     transition: opacity 0.3s, transform 0.3s; 
     pointer-events: none;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.2);
 }
 
 .copy-feedback.show { 
     opacity: 1; 
-    transform: translateX(-50%) translateY(-5px); 
+    transform: translateX(-50%) translateY(-8px); 
 }
 
 /* Token box styling */

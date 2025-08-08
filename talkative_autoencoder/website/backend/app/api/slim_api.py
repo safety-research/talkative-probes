@@ -166,7 +166,10 @@ async def generate(
         else:
             model_id = None
             if grouped_model_manager:
-                groups = grouped_model_manager.get_model_list()
+                origin_header = req.headers.get('origin', '') if req else ''
+                host_header = req.headers.get('host', '') if req else ''
+                public_only = ("kitft.com" in origin_header) or ("kitft.com" in host_header)
+                groups = grouped_model_manager.get_model_list(public_only=public_only)
                 for group in groups:
                     if group['group_id'] == request.model_group:
                         if group['models']:
@@ -238,7 +241,10 @@ async def analyze(
         else:
             model_id = None
             if grouped_model_manager:
-                groups = grouped_model_manager.get_model_list()
+                origin_header = req.headers.get('origin', '') if req else ''
+                host_header = req.headers.get('host', '') if req else ''
+                public_only = ("kitft.com" in origin_header) or ("kitft.com" in host_header)
+                groups = grouped_model_manager.get_model_list(public_only=public_only)
                 for group in groups:
                     if group['group_id'] == request.model_group:
                         if group['models']:
@@ -331,7 +337,10 @@ async def send_message(
         else:
             model_id = None
             if grouped_model_manager:
-                groups = grouped_model_manager.get_model_list()
+                origin_header = req.headers.get('origin', '') if req else ''
+                host_header = req.headers.get('host', '') if req else ''
+                public_only = ("kitft.com" in origin_header) or ("kitft.com" in host_header)
+                groups = grouped_model_manager.get_model_list(public_only=public_only)
                 for group in groups:
                     if group['group_id'] == request.model_group:
                         if group['models']:
@@ -398,12 +407,16 @@ async def get_status(request_id: str, authorized: bool = Depends(verify_api_key)
 
 
 @router.get("/models")
-async def list_model_groups():
+async def list_model_groups(req: Request):
     """List available model groups for the slim API."""
     if not grouped_model_manager:
         return {"model_groups": []}
         
-    groups = grouped_model_manager.get_model_list()
+    origin_header = req.headers.get('origin', '')
+    host_header = req.headers.get('host', '')
+    public_only = ("kitft.com" in origin_header) or ("kitft.com" in host_header)
+
+    groups = grouped_model_manager.get_model_list(public_only=public_only)
     
     # Get current loaded model info
     current_model_id = None
@@ -427,12 +440,15 @@ async def list_model_groups():
 
 
 @router.get("/models/{group_id}/layers")
-async def list_model_layers(group_id: str):
+async def list_model_layers(group_id: str, req: Request):
     """List available layers/sub-models for a specific model group."""
     if not grouped_model_manager:
         raise HTTPException(404, "Model manager not initialized")
         
-    groups = grouped_model_manager.get_model_list()
+    origin_header = req.headers.get('origin', '')
+    host_header = req.headers.get('host', '')
+    public_only = ("kitft.com" in origin_header) or ("kitft.com" in host_header)
+    groups = grouped_model_manager.get_model_list(public_only=public_only)
     
     # Debug: Log available groups
     available_groups = [g['group_id'] for g in groups]

@@ -382,6 +382,7 @@ const elements = {
     
     // Continuation generation
     generateBtn: document.getElementById('generateBtn'),
+    generateAnalyzeBtn: document.getElementById('generateAnalyzeBtn'),
     numTokens: document.getElementById('numTokens'),
     numCompletions: document.getElementById('numCompletions'),
     genTemperature: document.getElementById('genTemperature'),
@@ -952,6 +953,7 @@ const connectWebSocket = () => {
         updateConnectionStatus();
         elements.analyzeBtn.disabled = false;
         elements.generateBtn.disabled = false;
+        if (elements.generateAnalyzeBtn) elements.generateAnalyzeBtn.disabled = false;
         
         // Update model switcher WebSocket
         if (state.modelSwitcher) {
@@ -983,6 +985,7 @@ const connectWebSocket = () => {
         elements.connectionStatus.classList.add('bg-red-100');
         elements.analyzeBtn.disabled = true;
         elements.generateBtn.disabled = true;
+        if (elements.generateAnalyzeBtn) elements.generateAnalyzeBtn.disabled = true;
         
         // Stop GPU stats polling when disconnected
         stopGPUStatsPolling();
@@ -2518,6 +2521,151 @@ const initializeEventListeners = () => {
     
     // Generation
     elements.generateBtn.addEventListener('click', generate);
+    // Copy Full Text -> Input
+    const copyBtn = document.getElementById('copyFullTextToInputBtn');
+    if (copyBtn) {
+        copyBtn.addEventListener('click', (e) => {
+            // Build analyzed text by concatenating token stream from the current transcript
+            const current = state.allTranscripts && state.allTranscripts[state.currentTranscriptIndex];
+            if (!current || !Array.isArray(current.data) || current.data.length === 0) {
+                showError('No analyzed text available to copy');
+                return;
+            }
+            const text = current.data
+                .map(row => {
+                    const v = row && (row.token !== undefined ? row.token : row.target);
+                    return v == null ? '' : String(v);
+                })
+                .join('');
+            if (!text) {
+                showError('No analyzed text available to copy');
+                return;
+            }
+            elements.inputText.value = text;
+            elements.inputText.scrollTop = 0;
+            // Mirror behavior of "Add to Input" from generated continuations
+            if (elements.isChatFormatted) elements.isChatFormatted.checked = false;
+            if (elements.chatWarning) elements.chatWarning.classList.add('hidden');
+            if (typeof checkForChatFormat === 'function') {
+                checkForChatFormat();
+            }
+            if (typeof checkForModelTokens === 'function') {
+                checkForModelTokens();
+            }
+            showGenerationStatus('Analyzed text copied to input', 'success');
+
+            // Visual click feedback near the button
+            if (typeof VisualizationCore !== 'undefined' && VisualizationCore.showCopyFeedback) {
+                VisualizationCore.showCopyFeedback(e.currentTarget);
+            }
+        });
+    }
+    if (elements.generateAnalyzeBtn) {
+        elements.generateAnalyzeBtn.addEventListener('click', () => {
+            const text = elements.inputText.value.trim();
+            if (!text) {
+                showError('Please enter text to generate/analyze');
+                return;
+            }
+            if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+                showError('Not connected to server');
+                return;
+            }
+
+            // Create a pending generation entry so numbering/order stays consistent
+            const clientRequestId = `client_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            const pendingGeneration = {
+                transcripts: [],
+                timestamp: new Date(),
+                status: 'pending',
+                text: text.substring(0, 50) + (text.length > 50 ? '...' : ''),
+                client_request_id: clientRequestId
+            };
+            state.generations.push(pendingGeneration);
+            createGenerationTabs();
+
+            // Build generation options forcing n=1, otherwise from UI
+            const genOptions = {
+                num_tokens: parseInt(elements.numTokens.value),
+                num_completions: 1,
+                temperature: parseFloat(elements.genTemperature.value),
+                is_chat: elements.isChatFormatted.checked,
+                return_full_text: true
+            };
+            if (elements.isChatFormatted.checked) genOptions.use_chat_format = true;
+
+            // Build analysis options from UI (same logic as analyze())
+            const anaOptions = {
+                temperature: parseFloat(elements.temperature.value),
+                optimize_explanations_config: {
+                    best_of_k: parseInt(elements.kRollouts.value),
+                    n_groups_per_rollout: elements.autoBatchSize.checked 
+                        ? Math.max(1, Math.floor(state.autoBatchSizeMax / parseInt(elements.kRollouts.value)))
+                        : parseInt(elements.batchSize.value),
+                    use_batched: true,
+                    temperature: parseFloat(elements.temperature.value)
+                },
+                calculate_salience: elements.calculateSalience.checked,
+                use_tuned_lens: elements.tunedLens.checked,
+                logit_lens_analysis: elements.logitLens.checked,
+                no_eval: elements.noEval.checked,
+                no_kl: true,
+                do_hard_tokens: elements.doHardTokens.checked
+            };
+            if (elements.seed.value) anaOptions.seed = parseInt(elements.seed.value);
+            const calculatedBatchSize = elements.autoBatchSize.checked 
+                ? Math.max(1, Math.floor(state.autoBatchSizeMax / parseInt(elements.kRollouts.value)))
+                : parseInt(elements.batchSize.value);
+            anaOptions.optimize_explanations_config.rollout_batch_size = calculatedBatchSize;
+            if (elements.numSamples.value && elements.numSamples.value !== '1') {
+                anaOptions.optimize_explanations_config.num_samples = parseInt(elements.numSamples.value);
+            }
+            if (elements.isChatFormatted.checked) {
+                anaOptions.is_chat = true;
+                anaOptions.use_chat_format = true;
+            }
+
+            // Auto-convert handling mirrors generate/analyze behavior; let backend handle chat templating
+            let genText = text;
+            let anaText = text;
+            if (elements.autoConvertToChat.checked && !elements.isChatFormatted.checked) {
+                const isJsonChat = text.startsWith('[') && text.includes('"role"') && text.includes('"content"');
+                if (!isJsonChat) {
+                    genOptions.use_chat_format = true;
+                    genOptions.is_chat = true;
+                    anaOptions.use_chat_format = true;
+                    anaOptions.is_chat = true;
+                }
+            }
+
+            // Prepare message
+            const payload = {
+                type: 'generate_and_analyze',
+                generation: {
+                    text: genText,
+                    options: genOptions
+                },
+                analysis: {
+                    text: anaText,
+                    options: anaOptions,
+                    use_generated_completion: true
+                },
+                client_request_id: clientRequestId
+            };
+            if (state.modelSwitcher && state.modelSwitcher.currentModel) {
+                payload.generation.model_id = state.modelSwitcher.currentModel;
+                // analysis will mirror generation model server-side if not set
+            }
+
+            // UI feedback
+            if (elements.generateAnalyzeBtn) elements.generateAnalyzeBtn.disabled = true;
+            showLoading(true, 'Queuing generation and analysis...', null, 'generation');
+            showLoading(true, 'Preparing analysis...', null, 'analysis');
+            state.ws.send(JSON.stringify(payload));
+            // Re-enable after a small delay; final enabling happens on ws events
+            setTimeout(() => { if (elements.generateAnalyzeBtn) elements.generateAnalyzeBtn.disabled = false; }, 800);
+        });
+    }
     
     // Parameters
     elements.kRollouts.addEventListener('input', (e) => {
@@ -2979,6 +3127,11 @@ const initializeTooltips = () => {
             Generates N explanations per token,<br>
             picks the best. Higher = better quality,<br>
             but slower processing.
+        `,
+        'gen-analyze': `
+            <strong>Generate + Analyze:</strong><br>
+            Queues a 1-shot generation and immediately queues analysis<br>
+            using your current settings and selected model.
         `
     };
     
