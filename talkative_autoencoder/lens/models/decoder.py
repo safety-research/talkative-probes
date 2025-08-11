@@ -2477,8 +2477,11 @@ class Decoder(nn.Module):
                 f"Logits for input tokens have shape {logits_for_input_tokens.shape} but input tokens have shape {input_tokens.shape}, originally  logits shape {logits.shape}"
             )
 
-        # Calculate probabilities over the vocabulary
-        probs = torch.nn.functional.softmax(logits_for_input_tokens, dim=-1)
+        # Calculate probabilities over the vocabulary in float32
+        with torch.amp.autocast("cuda", enabled=False):
+            probs = torch.nn.functional.softmax(
+                logits_for_input_tokens.float(), dim=-1
+            ).to(logits_for_input_tokens.dtype)
 
         # Gather the probabilities of the actual `input_tokens` that occurred.
         probs_of_interest = probs.gather(dim=2, index=input_tokens.unsqueeze(-1)).squeeze(-1)
@@ -2488,7 +2491,10 @@ class Decoder(nn.Module):
         if calculate_entropy:
             context = torch.no_grad() if detach_entropy else nullcontext()
             with context:
-                log_probs = torch.nn.functional.log_softmax(logits_for_input_tokens, dim=-1)
+                with torch.amp.autocast("cuda", enabled=False):
+                    log_probs = torch.nn.functional.log_softmax(
+                        logits_for_input_tokens.float(), dim=-1
+                    ).to(logits_for_input_tokens.dtype)
                 entropies = (-probs * log_probs).sum(dim=-1)
         else:
             entropies = None
@@ -2497,7 +2503,6 @@ class Decoder(nn.Module):
             return probs_of_interest, entropies  # , logits_for_input_tokens
         else:
             return probs_of_interest, entropies
-
 
 class DynamicCacheEnableDisable(DynamicCache):
     """
