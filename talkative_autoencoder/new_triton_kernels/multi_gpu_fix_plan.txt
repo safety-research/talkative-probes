@@ -1,0 +1,362 @@
+TRITON KERNELS MULTI-GPU FIX PLAN
+=====================================
+
+PROBLEM SUMMARY:
+When using quantized kernels from this triton_kernels directory in a multi-GPU torchrun setup, 
+rank 0 produces correct text generation while other ranks (1, 2, etc.) produce corrupted output 
+like "that there can. that no you there, if for many or, no for many: (no). with, it are not, or."
+
+ROOT CAUSE ANALYSIS:
+The kernels contain multiple global state issues that cause interference between ranks in 
+multi-process distributed training. Each rank runs in a separate process with its own GPU, 
+but they share global caches and state that leads to race conditions and incorrect device contexts.
+
+DETAILED ISSUES FOUND:
+======================
+
+1. GLOBAL KERNEL CACHE ISSUE (matmul_ogs.py)
+Location: /root/.cache/uv/envs/consistency-lens/lib/python3.11/site-packages/triton_kernels/matmul_ogs.py
+Lines: 57, 61-65, 84
+
+Problem Code:
+```python
+_kernels = dict()  # Line 57 - Global cache shared across all processes
+
+def get_kernels(epilogue: FnSpecs = FnSpecs.default(), fused_activation: FnSpecs = FnSpecs.default()):
+    global _kernels  # Line 61
+    key = (fused_activation.name, epilogue.name)
+    if key in _kernels:  # Line 63 - Race condition risk
+        return _kernels[key]  # Line 64
+    # ... kernel creation ...
+    _kernels[key] = module  # Line 84 - Race condition during write
+```
+
+Impact: Multiple processes simultaneously accessing/modifying this cache causes race conditions 
+during kernel compilation and retrieval.
+
+2. DEVICE CONTEXT PROBLEMS (target_info.py)
+Location: /root/.cache/uv/envs/consistency-lens/lib/python3.11/site-packages/triton_kernels/target_info.py
+Lines: 4, 8-11, 44-49, 77
+
+Problem Code:
+```python
+cached_capabilities = {}  # Line 4 - Global cache, no device isolation
+
+def is_cuda():
+    if "is_cuda" not in cached_capabilities:  # Line 8
+        target = triton.runtime.driver.active.get_current_target()
+        cached_capabilities["is_cuda"] = target.backend == "cuda"  # Line 10 - Wrong for other ranks
+    return cached_capabilities["is_cuda"]
+
+def cuda_capability_geq(major, minor=0):
+    if "cuda" not in cached_capabilities:  # Line 44
+        cached_capabilities["cuda"] = torch.cuda.get_device_capability()  # Line 46 - Uses current device but caches globally
+    return cached_capabilities["cuda"] >= (major, minor)
+
+def num_sms():
+    return torch.cuda.get_device_properties(0).multi_processor_count  # Line 77 - HARDCODED DEVICE 0!
+```
+
+Impact: 
+- Device capabilities cached globally but may differ between GPUs
+- num_sms() always returns GPU 0's SM count, even for ranks using GPU 1, 2, etc.
+- Cache pollution between different device contexts
+
+3. GLOBAL OPTIMIZATION FLAGS (opt_flags.py)
+Location: /root/.cache/uv/envs/consistency-lens/lib/python3.11/site-packages/triton_kernels/matmul_ogs_details/opt_flags.py
+Lines: 250-251, 254-265
+
+Problem Code:
+```python
+_opt_flags_constraints: dict = dict()  # Line 250 - Global constraints
+_opt_flags: OptFlags | None = None     # Line 251 - Global flags
+
+def update_opt_flags_constraints(constraints: dict[str, int]):
+    global _opt_flags_constraints  # Line 254
+    _opt_flags_constraints.update(constraints)  # Race condition risk
+
+def set_opt_flags(opt_flags: OptFlags):
+    global _opt_flags  # Line 262
+    _opt_flags = opt_flags  # Line 265 - One rank's flags affect all others
+```
+
+Impact: Different ranks may need different optimization settings, but global state causes conflicts.
+
+4. MODULE REGISTRY MANIPULATION (matmul_ogs.py)
+Location: /root/.cache/uv/envs/consistency-lens/lib/python3.11/site-packages/triton_kernels/matmul_ogs.py
+Line: 77
+
+Problem Code:
+```python
+sys.modules[module.__name__] = module  # Line 77 - Dangerous global registry modification
+```
+
+Impact: Multiple processes registering modules with same name causes conflicts.
+
+5. GLOBAL LAUNCH METADATA (proton_opts.py)
+Location: /root/.cache/uv/envs/consistency-lens/lib/python3.11/site-packages/triton_kernels/proton_opts.py
+Lines: 5, 9-12, 16-17
+
+Problem Code:
+```python
+_launch_metadata_allow_sync = None  # Line 5 - Global state
+
+def launch_metadata_allow_sync():
+    global _launch_metadata_allow_sync  # Line 9
+    if _launch_metadata_allow_sync is None:
+        _launch_metadata_allow_sync = not (os.getenv("PROTON_LAUNCH_METADATA_NOSYNC") == "1")  # Line 11
+    return _launch_metadata_allow_sync
+
+def set_launch_metadata_allow_sync(allow_sync: bool):
+    global _launch_metadata_allow_sync  # Line 16
+    _launch_metadata_allow_sync = allow_sync  # Line 17
+```
+
+Impact: Global setting affects kernel launch behavior and causes inconsistencies across ranks.
+
+6. ENVIRONMENT VARIABLE ASSUMPTIONS (testing.py)
+Location: /root/.cache/uv/envs/consistency-lens/lib/python3.11/site-packages/triton_kernels/testing.py
+Lines: 126-127
+
+Problem Code:
+```python
+if "CUDA_VISIBLE_DEVICES" in os.environ:  # Line 126
+    env["CUDA_VISIBLE_DEVICES"] = os.environ["CUDA_VISIBLE_DEVICES"]  # Line 127
+```
+
+Impact: Assumes same CUDA_VISIBLE_DEVICES for all processes, incorrect in multi-GPU distributed setups.
+
+COMPREHENSIVE FIX PLAN:
+=======================
+
+FIX 1: DEVICE-AWARE CACHING (target_info.py)
+--------------------------------------------
+Replace global caches with device-aware versions:
+
+Current:
+```python
+cached_capabilities = {}
+```
+
+Fix:
+```python
+cached_capabilities = {}
+
+def _get_device_key():
+    """Get current device ID for cache key"""
+    if torch.cuda.is_available():
+        return f"cuda_{torch.cuda.current_device()}"
+    return "cpu"
+
+def is_cuda():
+    device_key = _get_device_key()
+    cache_key = f"{device_key}_is_cuda"
+    if cache_key not in cached_capabilities:
+        target = triton.runtime.driver.active.get_current_target()
+        cached_capabilities[cache_key] = False if target is None else target.backend == "cuda"
+    return cached_capabilities[cache_key]
+
+def cuda_capability_geq(major, minor=0):
+    device_key = _get_device_key()
+    cache_key = f"{device_key}_cuda_capability"
+    if cache_key not in cached_capabilities:
+        if torch.cuda.is_available():
+            cached_capabilities[cache_key] = torch.cuda.get_device_capability()
+        else:
+            cached_capabilities[cache_key] = (0, 0)
+    return cached_capabilities[cache_key] >= (major, minor)
+
+def num_sms():
+    # CRITICAL FIX: Use current device instead of hardcoded 0
+    device_id = torch.cuda.current_device() if torch.cuda.is_available() else 0
+    return torch.cuda.get_device_properties(device_id).multi_processor_count
+```
+
+FIX 2: DEVICE-AWARE KERNEL CACHE (matmul_ogs.py)
+------------------------------------------------
+Make kernel cache per-device:
+
+Current:
+```python
+_kernels = dict()
+```
+
+Fix:
+```python
+_kernels = dict()
+
+def _get_kernel_cache_key(fused_activation_name, epilogue_name):
+    """Create device-aware cache key"""
+    device_id = torch.cuda.current_device() if torch.cuda.is_available() else 0
+    return (device_id, fused_activation_name, epilogue_name)
+
+def get_kernels(epilogue: FnSpecs = FnSpecs.default(), fused_activation: FnSpecs = FnSpecs.default()):
+    global _kernels
+    key = _get_kernel_cache_key(fused_activation.name, epilogue.name)
+    if key in _kernels:
+        return _kernels[key]
+    
+    # ... existing kernel creation code ...
+    
+    # SAFER MODULE REGISTRATION: Use device-specific name
+    device_id = torch.cuda.current_device() if torch.cuda.is_available() else 0
+    module_name = f"{module.__name__}_device_{device_id}_{hash(key) & 0xFFFF}"
+    module.__name__ = module_name
+    sys.modules[module_name] = module
+    
+    _kernels[key] = module
+    return module
+```
+
+FIX 3: DEVICE-AWARE OPTIMIZATION FLAGS (opt_flags.py)
+----------------------------------------------------
+Make optimization flags per-device:
+
+Current:
+```python
+_opt_flags_constraints: dict = dict()
+_opt_flags: OptFlags | None = None
+```
+
+Fix:
+```python
+_opt_flags_constraints: dict = dict()  # Now keyed by device
+_opt_flags: dict = dict()  # Now per-device
+
+def _get_device_key():
+    """Get current device for flags key"""
+    return torch.cuda.current_device() if torch.cuda.is_available() else 0
+
+def update_opt_flags_constraints(constraints: dict[str, int]):
+    global _opt_flags_constraints
+    device_key = _get_device_key()
+    if device_key not in _opt_flags_constraints:
+        _opt_flags_constraints[device_key] = dict()
+    _opt_flags_constraints[device_key].update(constraints)
+
+def reset_opt_flags_constraints():
+    global _opt_flags_constraints
+    device_key = _get_device_key()
+    if device_key in _opt_flags_constraints:
+        _opt_flags_constraints[device_key] = dict()
+
+def set_opt_flags(opt_flags: OptFlags):
+    global _opt_flags, _opt_flags_constraints
+    device_key = _get_device_key()
+    
+    device_constraints = _opt_flags_constraints.get(device_key, {})
+    assert not device_constraints, "setting constraints is incompatible with manual flags override"
+    
+    current_flags = _opt_flags.get(device_key)
+    assert not current_flags, "opt_flags already set for this device; please reset to None first"
+    
+    _opt_flags[device_key] = opt_flags
+
+def get_opt_flags():
+    """Get optimization flags for current device"""
+    device_key = _get_device_key()
+    return _opt_flags.get(device_key)
+```
+
+FIX 4: DEVICE-AWARE LAUNCH METADATA (proton_opts.py)
+---------------------------------------------------
+Make launch metadata per-device:
+
+Current:
+```python
+_launch_metadata_allow_sync = None
+```
+
+Fix:
+```python
+_launch_metadata_allow_sync = dict()  # Now per-device
+
+def _get_device_key():
+    """Get current device for launch metadata key"""
+    return torch.cuda.current_device() if torch.cuda.is_available() else 0
+
+def launch_metadata_allow_sync():
+    global _launch_metadata_allow_sync
+    device_key = _get_device_key()
+    
+    if device_key not in _launch_metadata_allow_sync:
+        _launch_metadata_allow_sync[device_key] = not (os.getenv("PROTON_LAUNCH_METADATA_NOSYNC") == "1")
+    
+    return _launch_metadata_allow_sync[device_key]
+
+def set_launch_metadata_allow_sync(allow_sync: bool):
+    global _launch_metadata_allow_sync
+    device_key = _get_device_key()
+    _launch_metadata_allow_sync[device_key] = allow_sync
+```
+
+FIX 5: THREAD-SAFE INITIALIZATION
+---------------------------------
+Add thread-safe initialization to prevent race conditions:
+
+```python
+import threading
+
+# Add to each file that has global state
+_init_lock = threading.Lock()
+
+# Wrap cache initialization in locks:
+def _thread_safe_cache_init(cache_dict, cache_key, init_func):
+    if cache_key not in cache_dict:
+        with _init_lock:
+            if cache_key not in cache_dict:  # Double-check pattern
+                cache_dict[cache_key] = init_func()
+    return cache_dict[cache_key]
+```
+
+FIX 6: ROUTING KERNEL DEVICE CONTEXT (routing.py)
+------------------------------------------------
+Ensure routing computations respect current device context:
+
+Add device context checks in critical functions:
+```python
+def sort_tokens(expt_scal, expt_indx, n_expts_tot, bitmatrix):
+    # Ensure all tensors are on the same device as current context
+    current_device = torch.cuda.current_device()
+    expected_device = f"cuda:{current_device}"
+    
+    assert expt_scal.device.type == 'cuda', f"Expected CUDA tensor, got {expt_scal.device}"
+    assert expt_scal.device == torch.device(expected_device), f"Tensor on wrong device: {expt_scal.device} vs {expected_device}"
+    
+    return SortTokens.apply(expt_scal, expt_indx, n_expts_tot, bitmatrix)
+```
+
+IMPLEMENTATION PRIORITY:
+=======================
+
+CRITICAL (Must Fix):
+1. Fix hardcoded device=0 in num_sms() - this is likely the primary cause
+2. Make kernel cache device-aware 
+3. Fix device capability caching
+
+HIGH PRIORITY:
+4. Device-aware optimization flags
+5. Thread-safe initialization
+
+MEDIUM PRIORITY:
+6. Launch metadata per-device
+7. Safer module registration
+
+TESTING VERIFICATION:
+====================
+After implementing fixes, verify:
+
+1. Each rank uses correct device for num_sms()
+2. Kernel caches are isolated per device
+3. No race conditions during initialization
+4. All ranks produce coherent text generation
+5. Performance is not significantly impacted
+
+EXPECTED OUTCOME:
+================
+With these fixes, all ranks should produce coherent text generation similar to rank 0, 
+eliminating the corrupted output currently seen in ranks 1+.
+
+The root cause is that rank 0 initializes global caches first and gets correct values,
+while other ranks either get wrong cached values or experience race conditions during
+cache population, leading to incorrect kernel behavior and corrupted model outputs.
