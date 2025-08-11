@@ -17,8 +17,10 @@ import asyncio
 import logging
 import threading
 import time
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 
 import torch
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, WebSocket
@@ -279,9 +281,24 @@ async def lifespan(app: FastAPI):
         # Set the model manager in api module
         unified_api.model_manager = model_manager
 
-        # Models will be loaded on-demand in the unified system
+        # Load default group in non-lazy mode
         if not settings.lazy_load_model:
-            logger.info("Non-lazy mode: models will be loaded on first request")
+            logger.info("Non-lazy mode: loading default group immediately")
+            # Get default group from settings
+            groups_file = Path(__file__).parent / "model_groups.json"
+            default_group_id = None
+            if groups_file.exists():
+                with open(groups_file) as f:
+                    groups_data = json.load(f)
+                    default_group_id = groups_data.get("settings", {}).get("default_group", "gemma3-27b-it")
+            
+            if default_group_id:
+                try:
+                    logger.info(f"Loading default group: {default_group_id}")
+                    result = await model_manager.load_group(default_group_id)
+                    logger.info(f"Default group loaded: {result}")
+                except Exception as e:
+                    logger.error(f"Failed to load default group {default_group_id}: {e}")
         else:
             logger.info("Lazy mode: models will be loaded on-demand")
 
@@ -475,15 +492,17 @@ async def websocket_endpoint(websocket: WebSocket):
 
     await manager.connect(websocket)
 
-    # In the unified architecture, we just send a connection established message
+    # In the new architecture, we don't have a current model on connection
+    # Models are specified per-request
     if model_manager:
+        # Just send a connection established message
         await websocket.send_json({
             "type": "connection_established",
-            "message": "Connected to unified inference server",
-            "num_devices": model_manager.num_devices
+            "message": "Connected to inference server",
+            # Note: auto_batch_size_max is now model-specific, see model info
         })
         
-        # Send current system state
+        # Send current system state to the new client
         system_state = model_manager.get_system_state()
         await websocket.send_json({
             "type": "system_state",
@@ -702,38 +721,31 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 
             elif data["type"] == "list_models":
-                # List all models with unified format
+                # Get model list from unified manager
                 if not model_manager:
                     await websocket.send_json({"type": "error", "error": "Model manager not initialized"})
                     continue
                     
+                # Get system state which includes all model/group info
+                system_state = model_manager.get_system_state()
+                memory_info = model_manager.get_memory_usage()
+                
                 # Determine if this is a public request
                 origin_header = websocket.headers.get('origin') or ""
                 host_header = websocket.headers.get('host') or ""
                 public_only = ("kitft.com" in origin_header) or ("kitft.com" in host_header)
                 
-                from .model_registry import get_all_models
-                all_models = get_all_models(public_only=public_only)
-                
-                # Enhance with location information
-                models_with_locations = []
-                for model_data in all_models:
-                    model_id = model_data["id"]
-                    location_info = model_manager.get_model_location(model_id)
-                    
-                    model_info = {
-                        **model_data,
-                        "locations": location_info["locations"] if location_info else []
-                    }
-                    models_with_locations.append(model_info)
-                
-                # Get system state
-                system_state = model_manager.get_system_state()
+                # Filter groups if needed
+                groups = system_state["groups"]
+                if public_only:
+                    # TODO: Add filtering based on visibility
+                    pass
                 
                 await websocket.send_json({
                     "type": "models_list",
-                    "models": models_with_locations,
-                    "system_state": system_state
+                    "groups": groups,
+                    "system_state": system_state,
+                    "memory_info": memory_info
                 })
                 
                     

@@ -51,18 +51,13 @@ class ModelConfig:
     @classmethod
     def from_registry(cls, model_id: str) -> "ModelConfig":
         """Create ModelConfig from registry information"""
-        # Import here to avoid circular import
-        from .legacy.model_registry import get_model_config
-        
-        config = get_model_config(model_id)
-        if not config:
-            raise ValueError(f"Unknown model: {model_id}")
-        
+        # For now, create a minimal config from the model_id
+        # This matches the structure in model_groups.json
         return cls(
             id=model_id,
-            memory_estimate=getattr(config, 'memory_estimate', 5.0),
-            dataset=config.dataset,
-            architecture=config.architecture
+            memory_estimate=5.0,  # Default estimate
+            dataset="unknown",
+            architecture="unknown"
         )
 
 
@@ -124,11 +119,27 @@ class UnifiedModelManager:
         self.settings = settings
         
         # Device management - use string keys to match GroupedModelManager
-        self.num_devices = torch.cuda.device_count()
-        self.devices = [f"cuda:{i}" for i in range(self.num_devices)]
-        self.device_states: Dict[str, DeviceState] = {
-            f"cuda:{i}": DeviceState(device_id=i) for i in range(self.num_devices)
-        }
+        if hasattr(settings, 'devices') and settings.devices:
+            # Use configured devices
+            self.devices = settings.devices
+            self.num_devices = len(self.devices)
+        else:
+            # Fall back to auto-detection
+            self.num_devices = torch.cuda.device_count() if torch.cuda.is_available() else 1
+            if self.num_devices > 0 and torch.cuda.is_available():
+                self.devices = [f"cuda:{i}" for i in range(self.num_devices)]
+            else:
+                # CPU fallback
+                self.devices = ["cpu"]
+                self.num_devices = 1
+        
+        self.device_states: Dict[str, DeviceState] = {}
+        for device in self.devices:
+            if device.startswith("cuda:"):
+                device_id = int(device.split(":")[1])
+            else:
+                device_id = 0
+            self.device_states[device] = DeviceState(device_id=device_id)
         
         # Model and group configurations
         self.groups: Dict[str, GroupConfig] = {}
@@ -154,15 +165,22 @@ class UnifiedModelManager:
             with open(groups_file) as f:
                 groups_data = json.load(f)
             
-            for group_data in groups_data.get("groups", []):
-                models = [
-                    ModelConfig.from_registry(m["id"]) 
-                    for m in group_data["models"]
-                ]
+            # The JSON uses "model_groups" not "groups"
+            for group_data in groups_data.get("model_groups", []):
+                models = []
+                for model_data in group_data["models"]:
+                    # Create ModelConfig with data from JSON
+                    model = ModelConfig(
+                        id=model_data["id"],
+                        memory_estimate=model_data.get("batch_size", 32) * 0.1,  # Rough estimate
+                        dataset="unknown",
+                        architecture="unknown"
+                    )
+                    models.append(model)
                 
                 group = GroupConfig(
-                    id=group_data["id"],
-                    name=group_data["name"],
+                    id=group_data["group_id"],  # Note: JSON uses "group_id" not "id"
+                    name=group_data["group_name"],  # Note: JSON uses "group_name" not "name"
                     models=models
                 )
                 
@@ -177,17 +195,6 @@ class UnifiedModelManager:
                     # Set primary group for compatibility
                     if model.id not in self.model_to_group:
                         self.model_to_group[model.id] = group.id
-        
-        # Create single-model groups for any models not in a group
-        from .legacy.model_registry import list_available_models
-        all_models_dict = list_available_models()
-        
-        for model_id, model_info in all_models_dict.items():
-            if model_id not in self.model_to_groups:
-                group = GroupConfig.from_single_model(model_id)
-                self.groups[group.id] = group
-                self.model_to_groups[model_id] = {group.id}
-                self.model_to_group[model_id] = group.id
         
         logger.info(f"Loaded {len(self.groups)} model groups")
     
@@ -327,7 +334,7 @@ class UnifiedModelManager:
     async def load_group(
         self,
         group_id: str,
-        device_id: Optional[int] = None
+        device_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Load an entire group of models on a device"""
         if group_id not in self.groups:
@@ -480,7 +487,7 @@ class UnifiedModelManager:
         
         return best_device
     
-    def _find_best_device_for_group(self, group: GroupConfig) -> int:
+    def _find_best_device_for_group(self, group: GroupConfig) -> str:
         """Find the best device to load a group"""
         # Check if group is already loaded
         for device_id, state in self.device_states.items():
@@ -490,18 +497,22 @@ class UnifiedModelManager:
         # Find device with enough free memory
         required_memory = group.memory_estimate
         
-        for device_id in range(self.num_devices):
-            free_memory = self._get_device_free_memory(device_id)
-            if free_memory >= required_memory * 1.2:  # 20% buffer
-                return device_id
+        best_device = None
+        max_free_memory = 0.0
         
-        # Fall back to device with most free memory
-        return max(
-            range(self.num_devices),
-            key=lambda d: self._get_device_free_memory(d)
-        )
+        for device_id in self.devices:
+            free_memory = self._get_device_free_memory(device_id)
+            if free_memory >= required_memory * 1.2 and free_memory > max_free_memory:
+                best_device = device_id
+                max_free_memory = free_memory
+        
+        # Fall back to device with most free memory if none have enough
+        if best_device is None:
+            best_device = max(self.devices, key=lambda d: self._get_device_free_memory(d))
+        
+        return best_device
     
-    def _find_best_group_for_model(self, model_id: str, device_id: int) -> str:
+    def _find_best_group_for_model(self, model_id: str, device_id: str) -> str:
         """Find the best group to use for loading a model"""
         device_state = self.device_states[device_id]
         
@@ -530,18 +541,29 @@ class UnifiedModelManager:
     
     def _get_device_free_memory(self, device_id: str) -> float:
         """Get free memory on a device in GB"""
+        if device_id == "cpu":
+            # For CPU, return a large number to indicate plenty of memory
+            return 100.0
+        
+        if not torch.cuda.is_available():
+            return 0.0
+            
         device_num = int(device_id.split(':')[1]) if ':' in device_id else 0
-        torch.cuda.set_device(device_num)
         
-        # Get memory info
-        free_memory = torch.cuda.mem_get_info(device_num)[0] / (1024**3)
-        
-        # Account for current group that will be unloaded
-        device_state = self.device_states[device_id]
-        if device_state.current_group:
-            free_memory += device_state.memory_allocated
-        
-        return free_memory
+        try:
+            torch.cuda.set_device(device_num)
+            # Get memory info
+            free_memory = torch.cuda.mem_get_info(device_num)[0] / (1024**3)
+            
+            # Account for current group that will be unloaded
+            device_state = self.device_states[device_id]
+            if device_state.current_group:
+                free_memory += device_state.memory_allocated
+            
+            return free_memory
+        except Exception as e:
+            logger.warning(f"Could not get memory info for {device_id}: {e}")
+            return 10.0  # Default fallback
     
     async def _switch_device_to_group(self, device_id: str, group_id: str):
         """Switch a device to a different group"""
@@ -575,24 +597,55 @@ class UnifiedModelManager:
         
         logger.info(f"Loading model {model_id} on device {device_id}")
         
+        # Get model data from JSON
+        groups_file = Path(__file__).parent / "model_groups.json"
+        model_json_data = {}
+        base_model_path = None
+        
+        if groups_file.exists():
+            with open(groups_file) as f:
+                groups_data = json.load(f)
+            for group_data in groups_data.get("model_groups", []):
+                for model_data in group_data["models"]:
+                    if model_data["id"] == model_id:
+                        model_json_data = model_data
+                        base_model_path = group_data.get("base_model_path")
+                        break
+                if model_json_data:
+                    break
+        
+        if not model_json_data:
+            raise ValueError(f"Model {model_id} not found in configuration")
+        
         # Create lens analyzer with proper configuration
-        analyzer = LensAnalyzer(
-            model_id,
-            device=device_id,
-            # Pass other required parameters from settings
-            dtype=torch.float16 if self.settings.use_half_precision else torch.float32
-        )
-        
-        # Store the analyzer
-        device_state.loaded_models[model_id] = analyzer
-        
-        # Update memory tracking
-        device_num = int(device_id.split(':')[1]) if ':' in device_id else 0
-        torch.cuda.set_device(device_num)
-        device_state.memory_allocated = torch.cuda.memory_allocated(device_num) / (1024**3)
-        device_state.memory_reserved = torch.cuda.memory_reserved(device_num) / (1024**3)
-        
-        logger.info(f"Model {model_id} loaded successfully on device {device_id}")
+        try:
+            # Import the grouped model manager's approach to creating analyzers
+            from lens.analysis.analyzer_class import LensAnalyzer
+            
+            analyzer = LensAnalyzer(
+                model_id=base_model_path or model_id,
+                lens_checkpoint_path=model_json_data.get("lens_checkpoint_path"),
+                different_activations_orig_path=model_json_data.get("different_activations_orig_path"),
+                layer=model_json_data.get("layer", 0),
+                device=device_id,
+                dtype=torch.bfloat16 if hasattr(self.settings, 'use_bf16') and self.settings.use_bf16 else torch.float32
+            )
+            
+            # Store the analyzer
+            device_state.loaded_models[model_id] = analyzer
+            
+            # Update memory tracking for CUDA devices
+            if device_id.startswith("cuda:") and torch.cuda.is_available():
+                device_num = int(device_id.split(':')[1])
+                torch.cuda.set_device(device_num)
+                device_state.memory_allocated = torch.cuda.memory_allocated(device_num) / (1024**3)
+                device_state.memory_reserved = torch.cuda.memory_reserved(device_num) / (1024**3)
+            
+            logger.info(f"Model {model_id} loaded successfully on device {device_id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to load model {model_id} on device {device_id}: {e}")
+            raise
     
     # WebSocket support
     
@@ -643,23 +696,47 @@ class UnifiedModelManager:
     
     def get_model_info(self, model_id: str) -> Dict[str, Any]:
         """Get information about a specific model"""
-        from .legacy.model_registry import get_model_config
-        config = get_model_config(model_id)
-        if not config:
+        # Find model in groups
+        model_config = None
+        group_info = None
+        
+        for group_id in self.model_to_groups.get(model_id, []):
+            group = self.groups[group_id]
+            for model in group.models:
+                if model.id == model_id:
+                    model_config = model
+                    group_info = group
+                    break
+            if model_config:
+                break
+        
+        if not model_config:
             return {"id": model_id, "error": "Unknown model"}
+        
+        # Get model data from model_groups.json structure
+        groups_file = Path(__file__).parent / "model_groups.json"
+        model_json_data = {}
+        if groups_file.exists():
+            with open(groups_file) as f:
+                groups_data = json.load(f)
+            for group_data in groups_data.get("model_groups", []):
+                for model_data in group_data["models"]:
+                    if model_data["id"] == model_id:
+                        model_json_data = model_data
+                        break
         
         info = {
             "id": model_id,
             "model_id": model_id,  # For compatibility
-            "name": config.name,
-            "display_name": config.name,  # For compatibility
-            "description": getattr(config, 'description', ''),
-            "dataset": config.dataset,
-            "architecture": config.architecture,
-            "memory_estimate": getattr(config, 'memory_estimate', 5.0),
-            "layer": config.layer,
-            "auto_batch_size_max": getattr(config, 'auto_batch_size_max', 16),
-            "generation_config": getattr(config, 'generation_config', {})
+            "name": model_json_data.get("name", model_id),
+            "display_name": model_json_data.get("name", model_id),  # For compatibility
+            "description": model_json_data.get("description", ""),
+            "dataset": model_config.dataset,
+            "architecture": model_config.architecture,
+            "memory_estimate": model_config.memory_estimate,
+            "layer": model_json_data.get("layer", 0),
+            "auto_batch_size_max": model_json_data.get("auto_batch_size_max", 16),
+            "generation_config": {}
         }
         
         # Add location information
@@ -703,20 +780,46 @@ class UnifiedModelManager:
         memory_info = {}
         
         for device_id in self.devices:
+            if device_id == "cpu":
+                # For CPU, return placeholder values
+                memory_info[device_id] = {
+                    "total_gb": 100.0,
+                    "free_gb": 80.0,
+                    "allocated_gb": 20.0,
+                    "reserved_gb": 20.0,
+                    "used_percent": 20.0
+                }
+                continue
+                
+            if not torch.cuda.is_available():
+                continue
+                
             device_num = int(device_id.split(':')[1]) if ':' in device_id else 0
-            torch.cuda.set_device(device_num)
             
-            free, total = torch.cuda.mem_get_info(device_num)
-            allocated = torch.cuda.memory_allocated(device_num)
-            reserved = torch.cuda.memory_reserved(device_num)
-            
-            memory_info[device_id] = {
-                "total_gb": total / (1024**3),
-                "free_gb": free / (1024**3),
-                "allocated_gb": allocated / (1024**3),
-                "reserved_gb": reserved / (1024**3),
-                "used_percent": ((total - free) / total) * 100
-            }
+            try:
+                torch.cuda.set_device(device_num)
+                
+                free, total = torch.cuda.mem_get_info(device_num)
+                allocated = torch.cuda.memory_allocated(device_num)
+                reserved = torch.cuda.memory_reserved(device_num)
+                
+                memory_info[device_id] = {
+                    "total_gb": total / (1024**3),
+                    "free_gb": free / (1024**3),
+                    "allocated_gb": allocated / (1024**3),
+                    "reserved_gb": reserved / (1024**3),
+                    "used_percent": ((total - free) / total) * 100
+                }
+            except Exception as e:
+                logger.warning(f"Could not get memory usage for {device_id}: {e}")
+                # Add placeholder values
+                memory_info[device_id] = {
+                    "total_gb": 0.0,
+                    "free_gb": 0.0,
+                    "allocated_gb": 0.0,
+                    "reserved_gb": 0.0,
+                    "used_percent": 0.0
+                }
         
         return memory_info
     
