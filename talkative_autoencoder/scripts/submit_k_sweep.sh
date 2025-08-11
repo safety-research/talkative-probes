@@ -154,6 +154,7 @@ if [ "$USE_SLURM" = true ]; then
     cat > "$TEMP_SCRIPT" << EOF
 #!/bin/bash
 cd $PROJECT_ROOT
+pwd
 source scripts/ensure_env.sh
 ulimit -n 65536
 
@@ -175,6 +176,7 @@ else
 fi
 EOF
     chmod +x "$TEMP_SCRIPT"
+    echo $TEMP_SCRIPT
     
     # Submit job with the script file
     JOB_ID=$(sbatch --parsable "${SBATCH_ARGS[@]}" "$TEMP_SCRIPT")

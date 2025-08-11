@@ -1485,10 +1485,9 @@ def process_and_print_verbose_batch_samples(
 
 #     return BaseGenerated(hard_token_ids=hard_ids, raw_lm_logits=logits_seq)
 
-
 def project_embeddings_to_text(
     embeddings: torch.Tensor, embedding_table: torch.Tensor, tok: PreTrainedTokenizerBase, top_k: int = 3
-) -> List[Tuple[str, List[Tuple[str, float]]]]:
+) -> List[Tuple[str, List[Tuple[str, float]], float]]:
     """Project embedding vectors back to text by finding nearest neighbors in embedding space.
 
     Args:
@@ -1498,7 +1497,7 @@ def project_embeddings_to_text(
         top_k: Number of nearest neighbors to return
 
     Returns:
-        List of (top1_token, [(token, distance), ...]) for each embedding
+        List of (top1_token, [(token, distance), ...], orig_norm) for each embedding
     """
     results = []
 
@@ -1522,7 +1521,8 @@ def project_embeddings_to_text(
 
         # The top-1 token is the primary result
         top1_token = top_tokens[0][0] if top_tokens else ""
-        results.append((top1_token, top_tokens))
+        orig_norm = torch.norm(embeddings[i]).item()
+        results.append((top1_token, top_tokens, orig_norm))
 
     return results
 
@@ -1610,17 +1610,17 @@ def format_soft_prompt_projections(projections: Dict[str, Any]) -> str:
 
             lines.append("  Left prompt:")
             # Show as a single line with <embed> marker
-            input_text = "".join([t for t, _ in left_input])
-            output_text = "".join([t for t, _ in left_output]) if left_output else ""
+            input_text = "".join([t for t, _, _ in left_input])
+            output_text = "".join([t for t, _, _ in left_output]) if left_output else ""
 
             lines.append(f'    Input emb:  "{input_text}<embed>"')
             lines.append(f'    Output emb: "{output_text}<embed>"')
 
-            # Show top-3 for each token
+            # Show top-3 for each token and print norm
             lines.append("    Per-token top-3 (input emb):")
-            for i, (_, top_tokens) in enumerate(left_input):
+            for i, (_, top_tokens, orig_norm) in enumerate(left_input):
                 token_strs = [f"'{t}'({s:.3f})" for t, s in top_tokens[:3]]
-                lines.append(f"      Token {i}: {', '.join(token_strs)}")
+                lines.append(f"      Token {i}: {', '.join(token_strs)} | norm={orig_norm:.4f}")
 
         # Format right prompt
         if "right_input" in dec_proj:
@@ -1628,16 +1628,16 @@ def format_soft_prompt_projections(projections: Dict[str, Any]) -> str:
             right_output = dec_proj.get("right_output", [])
 
             lines.append("  Right prompt:")
-            input_text = "".join([t for t, _ in right_input])
-            output_text = "".join([t for t, _ in right_output]) if right_output else ""
+            input_text = "".join([t for t, _, _ in right_input])
+            output_text = "".join([t for t, _, _ in right_output]) if right_output else ""
 
             lines.append(f'    Input emb:  "<embed>{input_text}"')
             lines.append(f'    Output emb: "<embed>{output_text}"')
 
             lines.append("    Per-token top-3 (input emb):")
-            for i, (_, top_tokens) in enumerate(right_input):
+            for i, (_, top_tokens, orig_norm) in enumerate(right_input):
                 token_strs = [f"'{t}'({s:.3f})" for t, s in top_tokens[:3]]
-                lines.append(f"      Token {i}: {', '.join(token_strs)}")
+                lines.append(f"      Token {i}: {', '.join(token_strs)} | norm={orig_norm:.4f}")
 
     # Encoder projections
     if "encoder" in projections:
@@ -1649,25 +1649,25 @@ def format_soft_prompt_projections(projections: Dict[str, Any]) -> str:
         postfix_proj = enc_proj.get("postfix")
 
         # Show as a single line with <text> marker if postfix exists
-        prefix_text = "".join([t for t, _ in prefix_proj])
+        prefix_text = "".join([t for t, _, _ in prefix_proj])
         if postfix_proj:
-            postfix_text = "".join([t for t, _ in postfix_proj])
+            postfix_text = "".join([t for t, _, _ in postfix_proj])
             lines.append(f'  Text: "{prefix_text}<text>{postfix_text}"')
         else:
             lines.append(f'  Text: "{prefix_text}"')
 
-        # Show top-3 for each token in prefix
+        # Show top-3 for each token in prefix and print norm
         lines.append("  Prefix per-token top-3:")
-        for i, (_, top_tokens) in enumerate(prefix_proj):
+        for i, (_, top_tokens, orig_norm) in enumerate(prefix_proj):
             token_strs = [f"'{t}'({s:.3f})" for t, s in top_tokens[:3]]
-            lines.append(f"    Token {i}: {', '.join(token_strs)}")
+            lines.append(f"    Token {i}: {', '.join(token_strs)} | norm={orig_norm:.4f}")
 
         # Show top-3 for each token in postfix if it exists
         if postfix_proj:
             lines.append("  Postfix per-token top-3:")
-            for i, (_, top_tokens) in enumerate(postfix_proj):
+            for i, (_, top_tokens, orig_norm) in enumerate(postfix_proj):
                 token_strs = [f"'{t}'({s:.3f})" for t, s in top_tokens[:3]]
-                lines.append(f"    Token {i}: {', '.join(token_strs)}")
+                lines.append(f"    Token {i}: {', '.join(token_strs)} | norm={orig_norm:.4f}")
 
     if not projections:
         lines.append("  (No soft prompts configured)")
