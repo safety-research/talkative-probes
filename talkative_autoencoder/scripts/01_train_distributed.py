@@ -3112,7 +3112,7 @@ def main(cfg: DictConfig) -> None:
             ).to(orig_model.model.device)
 
             generated = orig_model.model.generate(**inputs, max_new_tokens=300)
-            print(
+            log.info(
                 f"\n-----------------------------------------------------\n rank {rank}: {tokenizer.decode(generated[0][inputs['input_ids'].shape[-1] :])}"
             )
 
