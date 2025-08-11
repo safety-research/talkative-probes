@@ -36,6 +36,7 @@ class Settings(BaseModel):
     
     # Model management settings (defaults that can be overridden)
     max_cpu_cached_models: int = Field(default=5)
+    default_group: Optional[str] = Field(default=None)  # Default model group to load
     
     # Tuned lens settings
     tuned_lens_dir: Optional[str] = Field(default=None)
@@ -156,6 +157,7 @@ def load_settings():
         "REQUEST_TIMEOUT": "request_timeout",
         "RATE_LIMIT_PER_MINUTE": "rate_limit_per_minute",
         "MAX_CPU_CACHED_MODELS": "max_cpu_cached_models",
+        "DEFAULT_GROUP": "default_group",
         "TUNED_LENS_DIR": "tuned_lens_dir",
         "LAZY_LOAD_MODEL": "lazy_load_model",
         

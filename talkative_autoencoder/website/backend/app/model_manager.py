@@ -94,6 +94,17 @@ class DeviceState:
     switch_start_time: Optional[datetime] = None
     memory_allocated: float = 0.0
     memory_reserved: float = 0.0
+    shared_base_model: Optional[Any] = None  # For compatibility with grouped model manager
+    
+    @property
+    def current_group_id(self) -> Optional[str]:
+        """Get current group ID for compatibility"""
+        return self.current_group.id if self.current_group else None
+    
+    @property
+    def lens_cache(self) -> Dict[str, LensAnalyzer]:
+        """Alias for loaded_models for backward compatibility"""
+        return self.loaded_models
     
     @property
     def available_models(self) -> Set[str]:
@@ -134,12 +145,14 @@ class UnifiedModelManager:
                 self.num_devices = 1
         
         self.device_states: Dict[str, DeviceState] = {}
+        self.device_locks: Dict[str, asyncio.Lock] = {}  # Add device-level locks
         for device in self.devices:
             if device.startswith("cuda:"):
                 device_id = int(device.split(":")[1])
             else:
                 device_id = 0
             self.device_states[device] = DeviceState(device_id=device_id)
+            self.device_locks[device] = asyncio.Lock()  # Create lock for each device
         
         # Model and group configurations
         self.groups: Dict[str, GroupConfig] = {}
@@ -567,26 +580,33 @@ class UnifiedModelManager:
     
     async def _switch_device_to_group(self, device_id: str, group_id: str):
         """Switch a device to a different group"""
-        device_state = self.device_states[device_id]
-        group = self.groups[group_id]
-        
-        # Mark as switching
-        device_state.is_switching = True
-        device_state.switch_start_time = datetime.utcnow()
-        
-        try:
-            # Clear current models if switching groups
-            if device_state.current_group and device_state.current_group.id != group_id:
-                await self.clear_device(device_id)
+        # Use device lock to prevent concurrent switches
+        async with self.device_locks[device_id]:
+            device_state = self.device_states[device_id]
+            group = self.groups[group_id]
             
-            # Set new group
-            device_state.current_group = group
+            # Check if already on this group
+            if device_state.current_group and device_state.current_group.id == group_id:
+                logger.info(f"Device {device_id} already on group {group_id}, skipping switch")
+                return
             
-            logger.info(f"Device {device_id} switched to group {group_id}")
+            # Mark as switching
+            device_state.is_switching = True
+            device_state.switch_start_time = datetime.utcnow()
             
-        finally:
-            device_state.is_switching = False
-            device_state.switch_start_time = None
+            try:
+                # Clear current models if switching groups
+                if device_state.current_group and device_state.current_group.id != group_id:
+                    await self.clear_device(device_id)
+                
+                # Set new group
+                device_state.current_group = group
+                
+                logger.info(f"Device {device_id} switched to group {group_id}")
+                
+            finally:
+                device_state.is_switching = False
+                device_state.switch_start_time = None
     
     async def _load_model_on_device(self, model_id: str, device_id: str):
         """Load a specific model on a device"""
@@ -601,6 +621,7 @@ class UnifiedModelManager:
         groups_file = Path(__file__).parent / "model_groups.json"
         model_json_data = {}
         base_model_path = None
+        groups_data = {}
         
         if groups_file.exists():
             with open(groups_file) as f:
@@ -622,13 +643,30 @@ class UnifiedModelManager:
             # Import the grouped model manager's approach to creating analyzers
             from lens.analysis.analyzer_class import LensAnalyzer
             
+            # Get settings from JSON
+            settings = groups_data.get("settings", {})
+            use_bf16 = settings.get("use_bf16", True)
+            batch_size = model_json_data.get("batch_size", 32)
+            no_orig = settings.get("no_orig", True)
+            comparison_tl = settings.get("comparison_tl_checkpoint", False)
+            
+            # Get different_activations_orig if specified
+            different_activations_orig = None
+            if model_json_data.get("different_activations_orig_path"):
+                # This would need to be loaded separately if needed
+                different_activations_orig = model_json_data.get("different_activations_orig_path")
+            
+            # Create analyzer with correct arguments matching LensAnalyzer.__init__
             analyzer = LensAnalyzer(
-                model_id=base_model_path or model_id,
-                lens_checkpoint_path=model_json_data.get("lens_checkpoint_path"),
-                different_activations_orig_path=model_json_data.get("different_activations_orig_path"),
-                layer=model_json_data.get("layer", 0),
+                checkpoint_path=model_json_data.get("lens_checkpoint_path"),
                 device=device_id,
-                dtype=torch.bfloat16 if hasattr(self.settings, 'use_bf16') and self.settings.use_bf16 else torch.float32
+                batch_size=batch_size,
+                use_bf16=use_bf16,
+                strict_load=False,
+                no_orig=no_orig,
+                comparison_tl_checkpoint=comparison_tl,
+                shared_base_model=device_state.shared_base_model if hasattr(device_state, 'shared_base_model') else None,
+                different_activations_orig=different_activations_orig
             )
             
             # Store the analyzer
@@ -642,6 +680,7 @@ class UnifiedModelManager:
                 device_state.memory_reserved = torch.cuda.memory_reserved(device_num) / (1024**3)
             
             logger.info(f"Model {model_id} loaded successfully on device {device_id}")
+            logger.info(f"Device {device_id} now has models: {list(device_state.loaded_models.keys())}")
             
         except Exception as e:
             logger.error(f"Failed to load model {model_id} on device {device_id}: {e}")

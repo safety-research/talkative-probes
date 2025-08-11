@@ -13,6 +13,9 @@ DEVICES=cuda:0,cuda:1,cuda:2
 # Number of workers per GPU (default: 1)
 NUM_WORKERS_PER_GPU=2
 
+# Default model group to preload on startup (overrides model_groups.json)
+DEFAULT_GROUP=gemma3-27b-it
+
 # Backward compatibility - single device
 DEVICE=cuda:0  # Still supported, will be converted to DEVICES=["cuda:0"]
 ```
@@ -25,6 +28,7 @@ DEVICES=cuda:0,cuda:1,cuda:2,cuda:3
 NUM_WORKERS_PER_GPU=1
 
 # Other settings
+DEFAULT_GROUP=gemma3-27b-it  # Default model group to preload (overrides JSON config)
 MAX_CPU_CACHED_MODELS=4
 LAZY_LOAD_MODEL=true
 ```

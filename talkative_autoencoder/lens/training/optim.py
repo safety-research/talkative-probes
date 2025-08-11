@@ -95,6 +95,15 @@ def param_groups(
                 print(f"Overall encoder LR multiplier: {overall_encoder_lr_mult}")
                 lr_scale = overall_encoder_lr_mult*lr_scale
 
-            groups.append({"params": [p], "weight_decay": decay, "lr": lr * lr_scale})
+            # Attach category for downstream logic (e.g., per-category schedulers)
+            # Extra keys are supported by torch.optim param groups
+            groups.append(
+                {
+                    "params": [p],
+                    "weight_decay": decay,
+                    "lr": lr * lr_scale,
+                    "category": category,
+                }
+            )
 
     return groups

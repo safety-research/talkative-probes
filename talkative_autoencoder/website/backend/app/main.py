@@ -284,19 +284,33 @@ async def lifespan(app: FastAPI):
         # Load default group in non-lazy mode
         if not settings.lazy_load_model:
             logger.info("Non-lazy mode: loading default group immediately")
-            # Get default group from settings
-            groups_file = Path(__file__).parent / "model_groups.json"
-            default_group_id = None
-            if groups_file.exists():
-                with open(groups_file) as f:
-                    groups_data = json.load(f)
-                    default_group_id = groups_data.get("settings", {}).get("default_group", "gemma3-27b-it")
+            
+            # Get default group - environment variable takes precedence over JSON
+            default_group_id = settings.default_group  # From DEFAULT_GROUP env var if set
+            
+            if not default_group_id:
+                # Fall back to JSON configuration
+                groups_file = Path(__file__).parent / "model_groups.json"
+                if groups_file.exists():
+                    with open(groups_file) as f:
+                        groups_data = json.load(f)
+                        default_group_id = groups_data.get("settings", {}).get("default_group", "gemma3-27b-it")
             
             if default_group_id:
                 try:
                     logger.info(f"Loading default group: {default_group_id}")
                     result = await model_manager.load_group(default_group_id)
                     logger.info(f"Default group loaded: {result}")
+                    
+                    # Broadcast to any connected WebSocket clients that models are loaded
+                    if result.get("loaded_models"):
+                        system_state = model_manager.get_system_state()
+                        await manager.broadcast({
+                            "type": "group_loaded",
+                            "group_id": default_group_id,
+                            "loaded_models": result.get("loaded_models", []),
+                            "system_state": system_state
+                        })
                 except Exception as e:
                     logger.error(f"Failed to load default group {default_group_id}: {e}")
         else:
@@ -368,12 +382,28 @@ if os.getenv("ENABLE_TRUSTED_HOST", "true").lower() == "true":
     )
 
 # CORS configuration
+# Add localhost with various ports to allowed origins
+allowed_origins = settings.allowed_origins.copy()
+# Ensure common localhost ports are allowed
+for port in [3000, 3001, 8000, 8001]:
+    for protocol in ["http", "https"]:
+        origin = f"{protocol}://localhost:{port}"
+        if origin not in allowed_origins:
+            allowed_origins.append(origin)
+        # Also add 127.0.0.1 variant
+        origin_ip = f"{protocol}://127.0.0.1:{port}"
+        if origin_ip not in allowed_origins:
+            allowed_origins.append(origin_ip)
+
+logger.info(f"CORS allowed origins: {allowed_origins}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins,
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],  # Added OPTIONS for preflight
+    allow_methods=["GET", "POST", "OPTIONS", "PUT", "DELETE"],  # Allow all methods
     allow_headers=["*"],  # Allow all headers for WebSocket compatibility
+    expose_headers=["*"],  # Expose all headers to the client
 )
 
 # Include unified API routes
@@ -495,15 +525,40 @@ async def websocket_endpoint(websocket: WebSocket):
     # In the new architecture, we don't have a current model on connection
     # Models are specified per-request
     if model_manager:
-        # Just send a connection established message
-        await websocket.send_json({
-            "type": "connection_established",
-            "message": "Connected to inference server",
-            # Note: auto_batch_size_max is now model-specific, see model info
-        })
-        
-        # Send current system state to the new client
+        # Send connection established with current model info for backward compatibility
         system_state = model_manager.get_system_state()
+        
+        # Get the first loaded model if any
+        current_model_id = None
+        current_model_info = None
+        if system_state["devices"]:
+            first_device = system_state["devices"][0]
+            if first_device["current_group"] and first_device["loaded_models"]:
+                current_model_id = first_device["loaded_models"][0] if first_device["loaded_models"] else None
+                if current_model_id:
+                    current_model_info = model_manager.get_model_info(current_model_id)
+        
+        if current_model_info:
+            # Send connection with model info for backward compatibility
+            await websocket.send_json({
+                "type": "connection_established",
+                "message": "Connected to inference server",
+                "model_id": current_model_id,
+                "model_name": current_model_info.get("name", current_model_id),
+                "auto_batch_size_max": current_model_info.get("auto_batch_size_max", 16),
+                "generation_config": current_model_info.get("generation_config", {})
+            })
+        else:
+            # No model loaded yet
+            await websocket.send_json({
+                "type": "connection_established",
+                "message": "Connected to inference server",
+                "model_id": None,
+                "model_name": None,
+                "auto_batch_size_max": 16
+            })
+        
+        # Also send system state
         await websocket.send_json({
             "type": "system_state",
             "data": system_state
@@ -721,6 +776,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 
             elif data["type"] == "list_models":
+                logger.info("Received list_models request")
                 # Get model list from unified manager
                 if not model_manager:
                     await websocket.send_json({"type": "error", "error": "Model manager not initialized"})
@@ -729,24 +785,82 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Get system state which includes all model/group info
                 system_state = model_manager.get_system_state()
                 memory_info = model_manager.get_memory_usage()
+                logger.info(f"System state has {len(system_state.get('groups', []))} groups")
                 
                 # Determine if this is a public request
                 origin_header = websocket.headers.get('origin') or ""
                 host_header = websocket.headers.get('host') or ""
                 public_only = ("kitft.com" in origin_header) or ("kitft.com" in host_header)
                 
-                # Filter groups if needed
-                groups = system_state["groups"]
-                if public_only:
-                    # TODO: Add filtering based on visibility
-                    pass
+                # Convert to old format for frontend compatibility
+                # Load JSON data once
+                groups_file = Path(__file__).parent / "model_groups.json"
+                json_groups_map = {}
+                if groups_file.exists():
+                    with open(groups_file) as f:
+                        json_data = json.load(f)
+                        for json_group in json_data.get("model_groups", []):
+                            json_groups_map[json_group["group_id"]] = json_group
                 
-                await websocket.send_json({
+                model_groups = []
+                for group in system_state["groups"]:
+                    # Get device info for this group
+                    device_info = []
+                    for device in system_state["devices"]:
+                        device_info.append({
+                            "device": device["device"],
+                            "has_group": device["current_group"] and device["current_group"]["id"] == group["id"],
+                            "is_current": device["current_group"] and device["current_group"]["id"] == group["id"],
+                            "is_switching": device["is_switching"]
+                        })
+                    
+                    # Get model details from cached JSON data
+                    models_data = []
+                    json_group = json_groups_map.get(group["id"], {})
+                    if json_group:
+                        for model in json_group.get("models", []):
+                            models_data.append({
+                                "id": model["id"],
+                                "name": model.get("name", model["id"]),
+                                "description": model.get("description", ""),
+                                "layer": model.get("layer", 0),
+                                "auto_batch_size_max": model.get("auto_batch_size_max", 16),
+                                "visible": model.get("visible", True),
+                                "backend_only": model.get("backend_only", False)
+                            })
+                    
+                    model_groups.append({
+                        "group_id": group["id"],
+                        "group_name": group["name"],
+                        "description": json_group.get("description", ""),
+                        "base_model": json_group.get("base_model_path", ""),
+                        "device_info": device_info,
+                        "is_cpu_cached": False,
+                        "models": models_data,
+                        "visible": json_group.get("visible", True)
+                    })
+                
+                # Get current group info for first device
+                current_group_info = None
+                if system_state["devices"]:
+                    first_device = system_state["devices"][0]
+                    if first_device["current_group"]:
+                        current_group_info = {
+                            "current_group_id": first_device["current_group"]["id"],
+                            "groups_loaded": [first_device["current_group"]["id"]],
+                            "is_switching": first_device["is_switching"]
+                        }
+                
+                response = {
                     "type": "models_list",
-                    "groups": groups,
-                    "system_state": system_state,
+                    "model_groups": model_groups,
+                    "current_group_info": current_group_info,
                     "memory_info": memory_info
-                })
+                }
+                logger.info(f"Sending models_list response with {len(model_groups)} groups")
+                if model_groups:
+                    logger.info(f"First group: {model_groups[0]['group_id']} with {len(model_groups[0]['models'])} models")
+                await websocket.send_json(response)
                 
                     
             elif data["type"] == "load_model":
@@ -769,8 +883,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     public_only = ("kitft.com" in origin_header) or ("kitft.com" in host_header)
                     
                     if public_only:
-                        from .model_registry import get_model_info
-                        model_info = get_model_info(model_id)
+                        from .legacy.model_registry import get_model_config
+                        model_config = get_model_config(model_id)
+                        model_info = model_config.__dict__ if model_config else None
                         if model_info and (model_info.get("backend_only", False) or model_info.get("visible") is False):
                             await websocket.send_json({
                                 "type": "model_load_error",
@@ -783,8 +898,9 @@ async def websocket_endpoint(websocket: WebSocket):
                     result = await model_manager.load_model(model_id, device_id)
                     
                     # Get model info
-                    from .model_registry import get_model_info
-                    model_info = get_model_info(model_id)
+                    from .legacy.model_registry import get_model_config
+                    model_config = get_model_config(model_id)
+                    model_info = model_config.__dict__ if model_config else {}
                     
                     await websocket.send_json({
                         "type": "model_loaded",
@@ -870,8 +986,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 model_id = data.get("model_id")
                 
                 if model_manager and model_id:
-                    from .model_registry import get_model_info
-                    model_info = get_model_info(model_id)
+                    from .legacy.model_registry import get_model_config
+                    model_config = get_model_config(model_id)
+                    model_info = model_config.__dict__ if model_config else None
                     
                     if model_info:
                         # Check if model is loaded

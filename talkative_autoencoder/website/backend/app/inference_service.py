@@ -361,14 +361,35 @@ class InferenceService:
                 target_group_id = self.model_manager.model_to_group.get(model_id)
                 device_state = self.model_manager.device_states.get(device)
                 
+                # Check if this request is already waiting for a group switch
+                request = self.queue.active_requests.get(request_id)
+                already_waiting = request and request.get("status") == "waiting_for_group_switch"
+                
                 if (target_group_id and device_state and 
-                    target_group_id != device_state.current_group_id):
+                    target_group_id != device_state.current_group_id and
+                    not already_waiting):
                     # Need to switch groups on this device
                     await self._handle_group_switch_for_request(
                         request_id, text, options, request_type, 
                         target_group_id, model_id, device
                     )
                     return
+                
+                # If we're waiting for a group switch, wait for it to complete
+                if already_waiting:
+                    # Check if the group is now loaded
+                    if device_state and device_state.current_group_id == target_group_id:
+                        # Group is now loaded, proceed with request
+                        logger.info(f"Group {target_group_id} now loaded on {device}, proceeding with request {request_id}")
+                        request["status"] = "processing"
+                    else:
+                        # Still waiting, re-queue with delay
+                        await asyncio.sleep(0.5)
+                        worker_name = f"{device}_worker_0"
+                        worker = self.workers.get(worker_name)
+                        if worker:
+                            await worker.queue.put((request_id, text, options, request_type))
+                        return
                 
                 # Get the analyzer for the specific model on this device
                 try:
@@ -484,17 +505,19 @@ class InferenceService:
         # Mark this request as waiting
         request = self.queue.active_requests.get(request_id)
         if request:
-            request["status"] = "waiting_for_group_switch"
-            request["target_group"] = target_group_id
-            request["device"] = device
-            if not request.get("started_at"):
-                request["started_at"] = datetime.utcnow()
-        
-        # Re-queue this request to the same worker
-        worker_name = f"{device}_worker_0"  # Use first worker on device
-        worker = self.workers.get(worker_name)
-        if worker:
-            await worker.queue.put((request_id, text, options, request_type))
+            # Only mark as waiting and re-queue if not already waiting
+            if request.get("status") != "waiting_for_group_switch":
+                request["status"] = "waiting_for_group_switch"
+                request["target_group"] = target_group_id
+                request["device"] = device
+                if not request.get("started_at"):
+                    request["started_at"] = datetime.utcnow()
+                
+                # Re-queue this request to the same worker
+                worker_name = f"{device}_worker_0"  # Use first worker on device
+                worker = self.workers.get(worker_name)
+                if worker:
+                    await worker.queue.put((request_id, text, options, request_type))
     
     async def _process_group_switch_request(self, request_id: str, target_group_id: str, options: Dict[str, Any]):
         """Process a group switch request on a specific device"""
@@ -628,12 +651,29 @@ class InferenceService:
             
             # Determine batch size
             batch_size = options.get("batch_size")
-            if batch_size is None:
-                optimize_config = options.get("optimize_explanations_config", {})
-                k_rollouts = optimize_config.get("best_of_k", 8)
+            optimize_config = options.get("optimize_explanations_config", {})
+            k_rollouts = optimize_config.get("best_of_k", 8)
+            
+            # Debug logging
+            logger.info(f"Request {request_id}: options.batch_size={batch_size}, optimize_config={optimize_config}")
+            
+            if batch_size is not None:
+                # Respect the explicitly provided batch_size
+                logger.info(f"Using provided batch_size: {batch_size} for request {request_id}")
+            else:
+                # Auto-calculate batch size based on model config
                 model_info = self.model_manager.get_model_info(model_id)
-                auto_batch_max = model_info.get("auto_batch_size_max", self.settings.auto_batch_size_max)
+                auto_batch_max = model_info.get("auto_batch_size_max")
+                
+                logger.info(f"Model {model_id} info: auto_batch_size_max={auto_batch_max}")
+                
+                # Fallback to default if not specified
+                if auto_batch_max is None:
+                    auto_batch_max = 16  # Default value
+                    logger.info(f"No auto_batch_size_max found, using default: {auto_batch_max}")
+                    
                 batch_size = max(1, auto_batch_max // k_rollouts)
+                logger.info(f"Auto-calculated batch_size: {batch_size} (auto_batch_max={auto_batch_max}, k_rollouts={k_rollouts}) for request {request_id}")
             
             # Create progress callback
             loop = asyncio.get_event_loop()
@@ -663,7 +703,7 @@ class InferenceService:
                 return True
             
             # Run analysis in executor
-            logger.info(f"Starting analysis in executor for request {request_id} on {device}")
+            logger.info(f"Starting analysis in executor for request {request_id} on {device} with batch_size={batch_size}, k_rollouts={k_rollouts}")
             df = await loop.run_in_executor(
                 None,
                 lambda: analyzer.analyze_all_tokens(
