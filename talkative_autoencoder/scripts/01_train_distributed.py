@@ -3099,6 +3099,30 @@ def main(cfg: DictConfig) -> None:
                 log=log,
             )
 
+        if "gpt-oss" in model_name:
+            messages = [
+                {"role": "user", "content": "How many rs are in the word 'strawberry'?"},
+            ]
+
+            inputs = tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                return_tensors="pt",
+                return_dict=True,
+            ).to(orig_model.model.device)
+
+            generated = orig_model.model.generate(**inputs, max_new_tokens=300)
+            print(
+                f"\n-----------------------------------------------------\n rank {rank}: {tokenizer.decode(generated[0][inputs['input_ids'].shape[-1] :])}"
+            )
+
+        if "openai/gpt-oss-20b" in model_name:
+            if is_main():
+                log.info("Running decoder generation tests (new training run)")
+                original_prompt_text = config.get("decoder_prompt", "")  # Use a different var name
+                # Pass the DDP-wrapped decoder to test_decoder_generation
+                test_decoder_generation(decoder, encoder, tokenizer, device, log, is_main(), original_prompt_text)
+
         if is_main():
             decoder_base_timer = decoder.module if hasattr(decoder, "module") else decoder
             encoder_base_timer = encoder.module if hasattr(encoder, "module") else encoder

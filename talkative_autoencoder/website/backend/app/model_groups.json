@@ -238,14 +238,14 @@
     },
     {
       "group_id": "gemma2-9b-it-auditing-secret",
-      "group_name": "Gemma 2 9B IT auditing secret",
+      "group_name": "Gemma 2 9B IT auditing game",
       "base_model_path": "google/gemma-2-9b-it",
       "description": "Gemma 2 9B secret (42 layers)",
       "visible": true,
       "models": [
         {
           "id": "gemma2-9b-secret-l30-secret",
-          "name": "Gemma-2-9B-IT L30 - AUDITING GAME",
+          "name": "Gemma-2-9B-IT L30 - AUDITING GAME - RECOMMENDED",
           "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_WILDCHAT_9b_frozen_nopostfix_GG29AW1S_gemma-2-9b-it_L30_e30_frozen_lr1e-4_t8_2ep_resume_0801_120554_NO_ENC_PROJ8_CHAT_DIR_LONGER_OTF_dist8_slurm6901",
           "different_activations_orig_path": "bcywinski/gemma-2-9b-it-secret1",
           "layer": 30,
