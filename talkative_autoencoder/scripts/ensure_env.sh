@@ -5,9 +5,34 @@
 
 #set -e
 
-# Get the directory where this script is located (POSIX compatible)
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# Determine PROJECT_ROOT in a POSIX-compatible way (works when sourced by /bin/sh)
+if [ -n "${BASH_VERSION:-}" ] && [ -n "${BASH_SOURCE:-}" ]; then
+    SOURCE_PATH="${BASH_SOURCE[0]}"
+    while [ -h "$SOURCE_PATH" ]; do
+        DIR="$(cd -P "$(dirname "$SOURCE_PATH")" >/dev/null 2>&1 && pwd)"
+        LINK="$(readlink "$SOURCE_PATH")"
+        case "$LINK" in
+            /*) SOURCE_PATH="$LINK" ;;
+            *) SOURCE_PATH="$DIR/$LINK" ;;
+        esac
+    done
+    SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE_PATH")" >/dev/null 2>&1 && pwd)"
+elif [ -f "./scripts/ensure_env.sh" ]; then
+    SCRIPT_DIR="$(cd -P "./scripts" >/dev/null 2>&1 && pwd)"
+else
+    SCRIPT_DIR="$(cd -P "$(dirname "$0")" >/dev/null 2>&1 && pwd)"
+fi
 PROJECT_ROOT=$(dirname "$SCRIPT_DIR")
+
+# Ensure a stable symlink named 'consistency-lens'
+SYMLINK_PATH_DEFAULT="$(dirname "$PROJECT_ROOT")/consistency-lens"
+SYMLINK_PATH="${SYMLINK_PATH:-$SYMLINK_PATH_DEFAULT}"
+if [ -e "$SYMLINK_PATH" ] && [ ! -L "$SYMLINK_PATH" ]; then
+    echo "[ensure_env] Error: $SYMLINK_PATH exists and is not a symlink"
+    return 1 2>/dev/null || exit 1
+fi
+ln -sfn "$PROJECT_ROOT" "$SYMLINK_PATH"
+echo "[ensure_env] Symlink ready: $SYMLINK_PATH -> $PROJECT_ROOT"
 
 # Ensure uv is installed
 if ! command -v uv >/dev/null 2>&1; then
@@ -38,7 +63,7 @@ fi
 
 # Check if environment exists, create it if not
 if [ ! -d "$UV_PROJECT_ENVIRONMENT" ] || [ ! -f "$UV_PROJECT_ENVIRONMENT/pyvenv.cfg" ]; then
-    echo "[ensure_env] Environment not found, creating it..."
+    echo "[ensure_env] Environment not found, creating it... from $UV_PROJECT_ROOT"
     cd "$UV_PROJECT_ROOT" && PATH="$HOME/.local/bin:$PATH" UV_CACHE_DIR="$UV_CACHE_DIR" UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" uv sync --frozen
     echo "[ensure_env] Environment created successfully!"
 else

@@ -4,7 +4,37 @@ from typing import List, Sequence, Union
 
 from torch import nn
 
-__all__ = ["param_groups"]
+__all__ = ["param_groups", "get_param_category"]
+
+
+def get_param_category(param_name: str) -> str:
+    """Categorize a parameter name into a semantic group.
+
+    Returns one of: "proj", "prompt", "embedding", "base", "other".
+    """
+    is_adapter = (("proj" in param_name) or (".out" in param_name)) and not ("c_proj" in param_name)
+    is_embedding = (
+        ("embed" in param_name)
+        or ("wte" in param_name)
+        or ("wpe" in param_name)
+        or ("lm_head" in param_name and "weight" in param_name)
+    )
+    is_prompt = (
+        ("prompt_left_emb" in param_name)
+        or ("prompt_right_emb" in param_name)
+        or ("soft_prompt_embeddings" in param_name)
+    )
+    is_base_model = ("base" in param_name)
+
+    if is_adapter:
+        return "proj"
+    if is_prompt:
+        return "prompt"
+    if is_embedding:
+        return "embedding"
+    if is_base_model:
+        return "base"
+    return "other"
 
 
 def param_groups(
@@ -21,13 +51,14 @@ def param_groups(
 
     Behaviour:
         • All parameters get the base ``lr``.
-        • Parameters whose *name* contains ``.proj`` **or** ``.out`` get
-          ``lr * proj_lr_mult`` — these are the lightweight adapters / heads.
-        • Parameters whose *name* contains ``embed``, ``prompt_left_emb``, 
-          ``prompt_right_emb``, or ``soft_prompt_embeddings`` get
-          ``lr * embedding_lr_mult`` — these are the embedding layers and soft prompts.
-        • Parameters whose *name* contains ``base`` get
-          ``lr * base_model_lr_mult`` — these are the base model parameters.
+        • ``proj`` category: names containing ``.proj`` or ``.out`` (but not ``c_proj``)
+          get ``lr * proj_lr_mult`` — lightweight adapters / heads.
+        • ``embedding`` category: names containing ``embed``, ``wte``, ``wpe``, or
+          ``lm_head`` weight get ``lr * embedding_lr_mult`` — token/pos embeddings and LM head weight.
+        • ``prompt`` category: names containing ``prompt_left_emb``, ``prompt_right_emb``,
+          or ``soft_prompt_embeddings`` get ``lr * prompt_lr_mult`` — soft prompt embeddings.
+        • ``base`` category: names containing ``base`` get ``lr * base_model_lr_mult`` — base model weights.
+        • The overall encoder multiplier ``overall_encoder_lr_mult`` is applied to all encoder params.
         • Weight-decay is 0.01 for matrix weights, 0.0 for biases / LayerNorm.
 
     The function accepts either a single ``nn.Module`` or a sequence. Only
@@ -44,29 +75,15 @@ def param_groups(
                 continue
 
             decay = 0.0 if p.ndim == 1 else weight_decay
-            
-            # Check parameter type for learning rate scaling
-            is_adapter = (("proj" in n) or (".out" in n)) and not ("c_proj" in n)
-            is_embedding = (
-                ("embed" in n) or 
-                ("wte" in n) or 
-                ("wpe" in n) or 
-                ("lm_head" in n and "weight" in n) 
-            )
-            is_prompt = (
-                ("prompt_left_emb" in n) or 
-                ("prompt_right_emb" in n) or 
-                ("soft_prompt_embeddings" in n)
-            )
-            is_base_model = ("base" in n)
-            
-            if is_adapter:
+
+            category = get_param_category(n)
+            if category == "proj":
                 lr_scale = proj_lr_mult
-            elif is_embedding:
+            elif category == "embedding":
                 lr_scale = embedding_lr_mult
-            elif is_prompt: 
+            elif category == "prompt":
                 lr_scale = prompt_lr_mult
-            elif is_base_model:
+            elif category == "base":
                 lr_scale = base_model_lr_mult
             else:
                 lr_scale = 1.0

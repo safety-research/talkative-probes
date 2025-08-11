@@ -67,6 +67,13 @@ wandb_log_interval: "1s"      # WandB log interval - Examples: "1s", "0.01e", "1
 grad_clip: 1.0
 grad_clip_enc: null
 
+# Optional per-type gradient clipping overrides.
+# If provided, these override grad_clip for that category.
+# Categories: proj (adapters/heads), prompt (soft prompt embeddings), other (everything else)
+grad_clip_proj: null
+grad_clip_prompt: null
+grad_clip_other: null
+
 # Update norm calculation (for distributed training)
 compute_update_norm: true     # Whether to compute parameter update norms at optimizer steps
 
@@ -177,10 +184,13 @@ freeze_schedule:
   # unfreeze_at_step: 1000     # Step at which to unfreeze (converted to "1000s")
   # unfreeze_at_epoch: 2       # Epoch at which to unfreeze (converted to "2e")
 
-# Learning rate multiplier for specific parameter groups.
-# These multipliers are applied to the base learning_rate from above.
-# The training script will need to create parameter groups accordingly.
-# Example: projection_layers refers to decoder.proj, decoder.out, and encoder.proj.
+# Learning rate multipliers (applied on top of learning_rate).
+# Categories align with optimizer grouping and grad clipping buckets:
+#   projection_layers -> "proj" (adapters/heads)
+#   embedding_layers  -> "embedding" (token/pos emb, lm_head weight)
+#   prompt_layers     -> "prompt" (soft prompt embeddings)
+#   base_models       -> "base" (base model weights)
+#   overall_encoder   -> global multiplier applied to encoder params
 custom_lr_multipliers:
   projection_layers: 1.0 # Set > 1.0 to use a higher LR for these layers.
   embedding_layers: 1.0  # Set different LR for embedding heads (input/output embeddings)
@@ -440,7 +450,7 @@ dataset:
     val_vectors_per_sequence: 1 # Number of activation vectors to extract per validation sequence (default: 1) 
     shuffle_after_generation: true # Whether to shuffle the cache after generating (default: true)
     pretokenized_path: "data/pretokenized/your_dataset_name_seqXXX" # REQUIRED if enabled: Path to the root of HF dataset saved by `load_from_disk`
-    layer_l: {layer_l} # Layer from which to extract activations (e.g., 0 for first layer after embeddings)
+    layer_l: ${layer_l} # Reference top-level layer_l
     min_pos: 8 # Minimum token position (0-indexed) to consider for activation extraction
     # seq_len will be taken from activation_dumper.seq_len or a global seq_len if defined
     max_val_samples: 50000

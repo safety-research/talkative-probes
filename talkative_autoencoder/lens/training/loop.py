@@ -390,12 +390,16 @@ def train_step(  # noqa: D401
         else:
             A_train = A_hat # this is the default
 
-        # loss_mse - just for monitoring! We do not train on this, as we need to allow the resample ablation to work
+        # loss_mse – normalized by ||A||^2/D (per-sample), mean over batch
         if mse_w > 0:
-            loss_mse = torch.nn.functional.mse_loss(A_train, A) #this reduces as mean?
+            per_sample_mse = (A_train - A).pow(2).mean(dim=-1)
+            denom = A.pow(2).mean(dim=-1).clamp_min(1e-12)
+            loss_mse = (per_sample_mse / denom).mean()
         else:
             with torch.no_grad():
-                loss_mse = torch.nn.functional.mse_loss(A_train, A)
+                per_sample_mse = (A_train - A).pow(2).mean(dim=-1)
+                denom = A.pow(2).mean(dim=-1).clamp_min(1e-12)
+                loss_mse = (per_sample_mse / denom).mean()
         if A.dim() == 2 and A.shape[0]!=1:
             A_variance = torch.var(A, dim=0).mean() # var over batch, mean over features
             residual_variance = torch.var(A_train.detach()-A, dim=0).mean()

@@ -73,6 +73,7 @@ from lens.training.distributed import (
 from lens.training.fast_distributed_sampler import FastDistributedSampler
 from lens.training.loop import train_step as original_train_step
 from lens.training.optim import param_groups
+from lens.training.grad_clip import clip_grads_per_type
 from lens.training.schedules import (
     SmoothTransitionScheduler,
     get_autocast_context,
@@ -451,21 +452,43 @@ def distributed_train_step(
                 scaler.unscale_(optimizer)
             grad_clip = config["grad_clip"]
             grad_clip_enc = config.get("grad_clip_enc", None)
+            # Optional per-parameter-type clipping
+            grad_clip_proj = config.get("grad_clip_proj")
+            grad_clip_prompt = config.get("grad_clip_prompt")
+            grad_clip_other = config.get("grad_clip_other")
+
             decoder_params = list(decoder_base.parameters())
             encoder_params = list(encoder_base.parameters())
+
             grad_norm_dec = None
             grad_norm_enc = None
             grad_norm = None
-            if grad_clip_enc is not None:
-                trainable_decoder_params = [p for p in decoder_params if p.requires_grad]
-                trainable_encoder_params = [p for p in encoder_params if p.requires_grad]
-                grad_norm_dec = torch.nn.utils.clip_grad_norm_(trainable_decoder_params, grad_clip)
-                grad_norm_enc = torch.nn.utils.clip_grad_norm_(trainable_encoder_params, grad_clip_enc)
-                grad_norm = (grad_norm_dec, grad_norm_enc)
-                all_params = trainable_decoder_params + trainable_encoder_params
+
+            per_type_clip_enabled = (grad_clip_proj is not None) or (grad_clip_prompt is not None) or (grad_clip_other is not None)
+
+            if per_type_clip_enabled:
+                proj_clip_val = grad_clip_proj if grad_clip_proj is not None else grad_clip
+                prompt_clip_val = grad_clip_prompt if grad_clip_prompt is not None else grad_clip
+                other_clip_val = grad_clip_other if grad_clip_other is not None else grad_clip
+
+                all_params, grad_norm, dec_type_norms, enc_type_norms = clip_grads_per_type(
+                    decoder_base,
+                    encoder_base,
+                    proj_clip_val,
+                    prompt_clip_val,
+                    other_clip_val,
+                )
             else:
-                all_params = [p for p in decoder_params + encoder_params if p.requires_grad]
-                grad_norm = torch.nn.utils.clip_grad_norm_(all_params, grad_clip)
+                if grad_clip_enc is not None:
+                    trainable_decoder_params = [p for p in decoder_params if p.requires_grad]
+                    trainable_encoder_params = [p for p in encoder_params if p.requires_grad]
+                    grad_norm_dec = torch.nn.utils.clip_grad_norm_(trainable_decoder_params, grad_clip)
+                    grad_norm_enc = torch.nn.utils.clip_grad_norm_(trainable_encoder_params, grad_clip_enc)
+                    grad_norm = (grad_norm_dec, grad_norm_enc)
+                    all_params = trainable_decoder_params + trainable_encoder_params
+                else:
+                    all_params = [p for p in decoder_params + encoder_params if p.requires_grad]
+                    grad_norm = torch.nn.utils.clip_grad_norm_(all_params, grad_clip)
             compute_update_norm = config.get("compute_update_norm", True)
             if compute_update_norm:
                 trainable_params = all_params
@@ -502,7 +525,17 @@ def distributed_train_step(
         param_norm = 0.0
         update_ratio = 0.0
 
-    # Add separate grad norm tracking if grad_clip_enc is not None
+    # Derive scalar grad_norm for logging (if not tuple/dict)
+    if grad_norm is None:
+        grad_norm_scalar = 0.0
+    elif isinstance(grad_norm, dict) or isinstance(grad_norm, tuple):
+        grad_norm_scalar = 0.0
+    elif hasattr(grad_norm, "item"):
+        grad_norm_scalar = grad_norm.item()
+    else:
+        grad_norm_scalar = float(grad_norm)
+
+    # Add loss and gradient statistics
     metrics = {
         "loss": losses["total"].item(),
         "loss_1": losses["total_loss_1"].item(),
@@ -520,11 +553,32 @@ def distributed_train_step(
         "fraction_variance_explained": losses["fraction_variance_explained"].item(),
         "mean_normalised_rmse": losses["mean_normalised_rmse"].item(),
         "zero_advantages_proportion": losses["zero_advantages_proportion"].item(),
-        "grad_norm": grad_norm.item() if grad_norm is not None and not isinstance(grad_norm, tuple) else 0.0,
+        "grad_norm": grad_norm_scalar,
         "update_norm": update_norm,
         "param_norm": param_norm,
         "update_ratio": update_ratio,
     }
+    if isinstance(grad_norm, dict):
+        metrics.update(
+            {
+                "grad_norm_proj": float(grad_norm.get("proj", 0.0)),
+                "grad_norm_prompt": float(grad_norm.get("prompt", 0.0)),
+                "grad_norm_other": float(grad_norm.get("other", 0.0)),
+            }
+        )
+        # Also add per-module per-type norms for wandb logging
+        if 'dec_type_norms' in locals():
+            metrics.update({
+                "grad_norm_dec_proj": float(dec_type_norms.get("proj", 0.0)),
+                "grad_norm_dec_prompt": float(dec_type_norms.get("prompt", 0.0)),
+                "grad_norm_dec_other": float(dec_type_norms.get("other", 0.0)),
+            })
+        if 'enc_type_norms' in locals():
+            metrics.update({
+                "grad_norm_enc_proj": float(enc_type_norms.get("proj", 0.0)),
+                "grad_norm_enc_prompt": float(enc_type_norms.get("prompt", 0.0)),
+                "grad_norm_enc_other": float(enc_type_norms.get("other", 0.0)),
+            })
     if config.get("grad_clip_enc", None) is not None:
         metrics["grad_norm_dec"] = grad_norm_dec.item() if grad_norm_dec is not None else 0.0
         metrics["grad_norm_enc"] = grad_norm_enc.item() if grad_norm_enc is not None else 0.0
@@ -1041,7 +1095,15 @@ class MetricsAccumulator:
         for k in heavy_keys + self.intervention_keys:
             self._heavy_metrics[k] = 0.0
 
-        act_stat_keys = ["act_sum", "act_sum_sq", "recon_sum", "recon_sum_sq", "act_recon_sum_prod", "mse_sum"]
+        act_stat_keys = [
+            "act_sum",
+            "act_sum_sq",
+            "recon_sum",
+            "recon_sum_sq",
+            "act_recon_sum_prod",
+            "mse_sum",
+            "normalized_mse_sum",
+        ]
         for k in act_stat_keys:
             self._act_stats[k] = torch.tensor(0.0, device=self.device)
         self._act_stats["act_n"] = 0
@@ -1101,6 +1163,12 @@ class MetricsAccumulator:
 
         self._act_stats["act_recon_sum_prod"] += (activations * reconstructions).sum()
         self._act_stats["mse_sum"] += (residuals**2).sum()
+
+        # Per-sample normalized MSE (mean over features, then normalize by per-sample ||A||^2/D)
+        if num_vectors > 0:
+            per_sample_mse = (residuals_2d**2).mean(dim=1)
+            denom = (activations_2d**2).mean(dim=1).clamp_min(1e-12)
+            self._act_stats["normalized_mse_sum"] += (per_sample_mse / denom).sum()
 
         # --- Heavy Metrics ---
         if is_heavy_batch:
@@ -1225,6 +1293,7 @@ class MetricsAccumulator:
         recon_sum_sq = _get_item(self._act_stats["recon_sum_sq"])
         act_recon_sum_prod = _get_item(self._act_stats["act_recon_sum_prod"])
         mse_sum = _get_item(self._act_stats["mse_sum"])
+        normalized_mse_sum = _get_item(self._act_stats["normalized_mse_sum"])
         N_vectors = int(_get_item(self._act_stats["act_vectors_n"]))
 
         new_variance_recovered = 0.0
@@ -1265,6 +1334,9 @@ class MetricsAccumulator:
         zero_mse = act_sum_sq / n
         mean_mse = act_var
         reconstruction_mse = mse_sum / n
+        normalized_reconstruction_mse = (
+            normalized_mse_sum / N_vectors if N_vectors > 0 else 0.0
+        )
 
         return {
             "act_mean": act_mean,
@@ -1278,6 +1350,7 @@ class MetricsAccumulator:
             "zero_mse": zero_mse,
             "mean_mse": mean_mse,
             "reconstruction_mse": reconstruction_mse,
+            "normalized_reconstruction_mse": normalized_reconstruction_mse,
             "correlation": correlation,
             "improvement_over_zero": (zero_mse - reconstruction_mse) / zero_mse * 100 if zero_mse > 0 else 0.0,
             "improvement_over_mean": (mean_mse - reconstruction_mse) / mean_mse * 100 if mean_mse > 0 else 0.0,
@@ -1323,7 +1396,7 @@ class MetricsAccumulator:
                 )
                 log.info("  Reconstruction Quality:")
                 log.info(
-                    f"    MSE: {act_stats['reconstruction_mse']:.4f} (vs Zero: {act_stats['zero_mse']:.4f}, Mean: {act_stats['mean_mse']:.4f})"
+                    f"    MSE: {act_stats['reconstruction_mse']:.4f} (normalized: {act_stats['normalized_reconstruction_mse']:.4f}) (vs Zero: {act_stats['zero_mse']:.4f}, Mean: {act_stats['mean_mse']:.4f})"
                 )
                 log.info(
                     f"    Improvement - vs Zero: {act_stats['improvement_over_zero']:.1f}%, vs Mean: {act_stats['improvement_over_mean']:.1f}%"
@@ -1379,6 +1452,7 @@ class MetricsAccumulator:
                         "val/baseline_zero_mse": act_stats["zero_mse"],
                         "val/baseline_mean_mse": act_stats["mean_mse"],
                         "val/reconstruction_mse": act_stats["reconstruction_mse"],
+                        "val/reconstruction_mse_normalized": act_stats["normalized_reconstruction_mse"],
                         "val/improvement_over_zero": act_stats["improvement_over_zero"],
                         "val/improvement_over_mean": act_stats["improvement_over_mean"],
                         "val/correlation": act_stats["correlation"],
@@ -4079,6 +4153,67 @@ def main(cfg: DictConfig) -> None:
                 last_grad_norm = metrics["grad_norm"]
             else:
                 last_grad_norm = 0.0
+
+            # Track per-type grad norms if available, persist across steps like last_grad_norm
+            # Initialize once if not set
+            try:
+                last_grad_norm_proj
+            except Exception:
+                last_grad_norm_proj = 0.0
+            try:
+                last_grad_norm_prompt
+            except Exception:
+                last_grad_norm_prompt = 0.0
+            try:
+                last_grad_norm_other
+            except Exception:
+                last_grad_norm_other = 0.0
+
+            if metrics.get("grad_norm_proj", 0) > 0:
+                last_grad_norm_proj = metrics["grad_norm_proj"]
+            if metrics.get("grad_norm_prompt", 0) > 0:
+                last_grad_norm_prompt = metrics["grad_norm_prompt"]
+            if metrics.get("grad_norm_other", 0) > 0:
+                last_grad_norm_other = metrics["grad_norm_other"]
+
+            # Track per-module per-type norms if available
+            try:
+                last_grad_norm_dec_proj
+            except Exception:
+                last_grad_norm_dec_proj = 0.0
+            try:
+                last_grad_norm_dec_prompt
+            except Exception:
+                last_grad_norm_dec_prompt = 0.0
+            try:
+                last_grad_norm_dec_other
+            except Exception:
+                last_grad_norm_dec_other = 0.0
+            try:
+                last_grad_norm_enc_proj
+            except Exception:
+                last_grad_norm_enc_proj = 0.0
+            try:
+                last_grad_norm_enc_prompt
+            except Exception:
+                last_grad_norm_enc_prompt = 0.0
+            try:
+                last_grad_norm_enc_other
+            except Exception:
+                last_grad_norm_enc_other = 0.0
+
+            if metrics.get("grad_norm_dec_proj", 0) > 0:
+                last_grad_norm_dec_proj = metrics["grad_norm_dec_proj"]
+            if metrics.get("grad_norm_dec_prompt", 0) > 0:
+                last_grad_norm_dec_prompt = metrics["grad_norm_dec_prompt"]
+            if metrics.get("grad_norm_dec_other", 0) > 0:
+                last_grad_norm_dec_other = metrics["grad_norm_dec_other"]
+            if metrics.get("grad_norm_enc_proj", 0) > 0:
+                last_grad_norm_enc_proj = metrics["grad_norm_enc_proj"]
+            if metrics.get("grad_norm_enc_prompt", 0) > 0:
+                last_grad_norm_enc_prompt = metrics["grad_norm_enc_prompt"]
+            if metrics.get("grad_norm_enc_other", 0) > 0:
+                last_grad_norm_enc_other = metrics["grad_norm_enc_other"]
             if metrics["update_norm"] > 0:
                 last_update_norm = metrics["update_norm"]
                 last_update_ratio = metrics["update_ratio"]
@@ -4234,6 +4369,18 @@ def main(cfg: DictConfig) -> None:
                     else 0,  # Fractional epoch (e.g., 1.5 = halfway through 2nd epoch)
                     "progress/epoch": current_epoch,  # Integer epoch number
                 }
+
+                # Include per-type gradient norms if tracked
+                wandb_metrics["grads/norm_proj"] = last_grad_norm_proj if 'last_grad_norm_proj' in locals() else 0.0
+                wandb_metrics["grads/norm_prompt"] = last_grad_norm_prompt if 'last_grad_norm_prompt' in locals() else 0.0
+                wandb_metrics["grads/norm_other"] = last_grad_norm_other if 'last_grad_norm_other' in locals() else 0.0
+                # Per-module per-type gradient norms
+                wandb_metrics["grads/dec_norm_proj"] = last_grad_norm_dec_proj if 'last_grad_norm_dec_proj' in locals() else 0.0
+                wandb_metrics["grads/dec_norm_prompt"] = last_grad_norm_dec_prompt if 'last_grad_norm_dec_prompt' in locals() else 0.0
+                wandb_metrics["grads/dec_norm_other"] = last_grad_norm_dec_other if 'last_grad_norm_dec_other' in locals() else 0.0
+                wandb_metrics["grads/enc_norm_proj"] = last_grad_norm_enc_proj if 'last_grad_norm_enc_proj' in locals() else 0.0
+                wandb_metrics["grads/enc_norm_prompt"] = last_grad_norm_enc_prompt if 'last_grad_norm_enc_prompt' in locals() else 0.0
+                wandb_metrics["grads/enc_norm_other"] = last_grad_norm_enc_other if 'last_grad_norm_enc_other' in locals() else 0.0
                 wandb_metrics = {k: _get_item(v) for k, v in wandb_metrics.items()}
 
                 if on_the_fly_generation_enabled and pretokenized_dataset_size > 0:

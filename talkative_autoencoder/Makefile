@@ -13,10 +13,13 @@
 #   make          - Initial setup (install uv, create env, sync dependencies)
 #   uv run python scripts/01_train.py  - Run any Python command
 
-.PHONY: all setup help flash-attention sync-env wandb-login check-b200
+.PHONY: all setup help flash-attention sync-env wandb-login check-b200 link-consistency-lens
 
 # Default target
 all: setup
+
+# Where to place the symlink (override with: make SYMLINK_PATH=/path/consistency-lens link-consistency-lens)
+SYMLINK_PATH ?= $(abspath $(CURDIR)/../consistency-lens)
 
 # Help target
 help:
@@ -25,6 +28,7 @@ help:
 	@echo "  make sync-env     - Sync/update the environment with latest dependencies"
 	@echo "  make wandb-login  - Login to Weights & Biases (requires WANDB_API_KEY env var)"
 	@echo "  make flash-attention - Install Flash Attention 2 (optional, for performance)"
+	@echo "  make link-consistency-lens - Create symlink 'consistency-lens' to this dir"
 	@echo ""
 	@echo "After setup, use 'uv run' for all Python commands:"
 	@echo "  uv run python scripts/01_train.py"
@@ -68,6 +72,7 @@ setup:
 	@. ./scripts/ensure_env.sh && \
 	echo "Creating/syncing uv environment..." && \
 	uv sync --frozen
+	@$(MAKE) link-consistency-lens
 	@# Check if on B200 node and remove packages if needed
 	@if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q "B200"; then \
 		echo "Detected B200 node - removing incompatible packages..."; \
@@ -123,3 +128,14 @@ wandb-login:
 # Install Flash Attention 2 (optional)
 flash-attention:
 	@./scripts/install_flash_attention.sh
+
+# Create/update symlink to this project directory as 'consistency-lens'
+link-consistency-lens:
+	@echo "Symlink: $(SYMLINK_PATH) -> $(abspath $(CURDIR))"
+	@mkdir -p "$(dir $(SYMLINK_PATH))"
+	@if [ -e "$(SYMLINK_PATH)" ] && [ ! -L "$(SYMLINK_PATH)" ]; then \
+		echo "Error: $(SYMLINK_PATH) exists and is not a symlink"; \
+		exit 1; \
+	fi
+	@ln -sfn "$(abspath $(CURDIR))" "$(SYMLINK_PATH)"
+	@echo "✓ Symlink ready"

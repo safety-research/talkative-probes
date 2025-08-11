@@ -30,11 +30,11 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from .config import load_settings
-from .model_manager_grouped import GroupedModelManager
+from .model_manager import UnifiedModelManager
 from .inference_service import InferenceService
 from .models import AnalyzeRequest
 from .websocket import manager
-from . import api_grouped
+from . import unified_api
 
 
 # Custom logging filter to suppress GPU stats access logs
@@ -68,22 +68,34 @@ logger.info(f"Loaded parent .env from {parent_dotenv_location}")
 
 # GPU Stats Monitor Class
 class GPUStatsMonitor:
-    def __init__(self, update_interval: float = 0.5):
+    def __init__(self, devices=None, update_interval: float = 0.5):
         self.update_interval = update_interval
+        self.devices = devices or ["cuda:0"]
+        
+        # Initialize stats for each device
         self.stats = {
             "available": torch.cuda.is_available(),
-            "utilization": 0,
-            "memory_used": 0,
-            "memory_total": 0,
-            "memory_percent": 0,
-            "peak_utilization": 0,
             "last_update": None,
-            "is_computing": False,
+            "devices": {}
         }
+        
+        # Initialize per-device stats
+        for device in self.devices:
+            device_num = int(device.split(':')[1]) if ':' in device else 0
+            self.stats["devices"][device] = {
+                "utilization": 0,
+                "memory_used": 0,
+                "memory_total": 0,
+                "memory_percent": 0,
+                "peak_utilization": 0,
+                "is_computing": False,
+                "device_num": device_num
+            }
+        
         self.lock = threading.Lock()
         self.running = False
         self.thread = None
-        self._last_reset_time = time.time()
+        self._last_reset_times = {device: time.time() for device in self.devices}
 
     def start(self):
         """Start the monitoring thread"""
@@ -92,7 +104,7 @@ class GPUStatsMonitor:
         self.running = True
         self.thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.thread.start()
-        logger.info("GPU stats monitor started")
+        logger.info(f"GPU stats monitor started for devices: {self.devices}")
 
     def stop(self):
         """Stop the monitoring thread"""
@@ -115,47 +127,75 @@ class GPUStatsMonitor:
 
         while self.running:
             try:
-                stats = {"available": torch.cuda.is_available(), "last_update": datetime.utcnow().isoformat()}
+                stats = {
+                    "available": torch.cuda.is_available(), 
+                    "last_update": datetime.utcnow().isoformat(),
+                    "devices": {}
+                }
 
                 if torch.cuda.is_available():
-                    # Always get memory stats from PyTorch
-                    memory_used = torch.cuda.memory_allocated() / 1024**3  # Convert to GB
-                    memory_total = torch.cuda.get_device_properties(0).total_memory / 1024**3
-                    stats["memory_used"] = round(memory_used, 2)
-                    stats["memory_total"] = round(memory_total, 2)
-                    stats["memory_percent"] = round((memory_used / memory_total) * 100, 1)
-
-                    # Try to get GPU utilization from pynvml
-                    if pynvml_available:
+                    # Monitor each device
+                    for device in self.devices:
+                        device_num = int(device.split(':')[1]) if ':' in device else 0
+                        device_stats = {"device_num": device_num}
+                        
                         try:
-                            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-                            utilization = pynvml.nvmlDeviceGetUtilizationRates(handle)
-                            stats["utilization"] = utilization.gpu
+                            # Get memory stats from PyTorch
+                            with torch.cuda.device(device_num):
+                                memory_used = torch.cuda.memory_allocated() / 1024**3  # Convert to GB
+                                memory_total = torch.cuda.get_device_properties(device_num).total_memory / 1024**3
+                                device_stats["memory_used"] = round(memory_used, 2)
+                                device_stats["memory_total"] = round(memory_total, 2)
+                                device_stats["memory_percent"] = round((memory_used / memory_total) * 100, 1)
 
-                            # Track peak utilization
+                            # Try to get GPU utilization from pynvml
+                            if pynvml_available:
+                                try:
+                                    handle = pynvml.nvmlDeviceGetHandleByIndex(device_num)
+                                    utilization = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                                    device_stats["utilization"] = utilization.gpu
+
+                                    # Track peak utilization
+                                    with self.lock:
+                                        prev_peak = self.stats["devices"].get(device, {}).get("peak_utilization", 0)
+                                        if utilization.gpu > prev_peak:
+                                            device_stats["peak_utilization"] = utilization.gpu
+                                        else:
+                                            device_stats["peak_utilization"] = prev_peak
+
+                                except Exception as e:
+                                    logger.debug(f"Failed to get GPU utilization for device {device}: {e}")
+                                    device_stats["utilization"] = 0
+                                    device_stats["peak_utilization"] = self.stats["devices"].get(device, {}).get("peak_utilization", 0)
+                            else:
+                                device_stats["utilization"] = 0
+                                device_stats["peak_utilization"] = self.stats["devices"].get(device, {}).get("peak_utilization", 0)
+
+                            # Detect if we're computing based on memory usage changes
                             with self.lock:
-                                if utilization.gpu > self.stats.get("peak_utilization", 0):
-                                    self.stats["peak_utilization"] = utilization.gpu
-
+                                prev_memory = self.stats["devices"].get(device, {}).get("memory_used", 0)
+                                device_stats["is_computing"] = abs(memory_used - prev_memory) > 0.1  # Changed by >100MB
+                                
                         except Exception as e:
-                            logger.debug(f"Failed to get GPU utilization: {e}")
-                            stats["utilization"] = 0
-                    else:
-                        stats["utilization"] = 0
-
-                    # Detect if we're computing based on memory usage changes
-                    with self.lock:
-                        prev_memory = self.stats.get("memory_used", 0)
-                        stats["is_computing"] = abs(memory_used - prev_memory) > 0.1  # Changed by >100MB
+                            logger.error(f"Error monitoring device {device}: {e}")
+                            # Keep previous stats if available
+                            if device in self.stats["devices"]:
+                                device_stats = self.stats["devices"][device].copy()
+                            
+                        stats["devices"][device] = device_stats
 
                 # Update shared stats
                 with self.lock:
                     self.stats.update(stats)
 
                     # Reset peak utilization every 30 seconds if not computing
-                    if time.time() - self._last_reset_time > 30 and not stats.get("is_computing", False):
-                        self.stats["peak_utilization"] = stats.get("utilization", 0)
-                        self._last_reset_time = time.time()
+                    current_time = time.time()
+                    for device in self.devices:
+                        if (current_time - self._last_reset_times.get(device, 0) > 30 and 
+                            not stats["devices"].get(device, {}).get("is_computing", False)):
+                            if device in self.stats["devices"]:
+                                self.stats["devices"][device]["peak_utilization"] = stats["devices"].get(device, {}).get("utilization", 0)
+                            self._last_reset_times[device] = current_time
 
             except Exception as e:
                 logger.error(f"GPU monitoring error: {e}")
@@ -168,16 +208,18 @@ class GPUStatsMonitor:
             return self.stats.copy()
 
 
+# Load settings first
+settings = load_settings()
+
 # Global instances
-grouped_model_manager: GroupedModelManager | None = None  # New grouped manager
+model_manager: UnifiedModelManager | None = None
 inference_service: InferenceService | None = None
-gpu_monitor = GPUStatsMonitor()
+gpu_monitor = GPUStatsMonitor(devices=settings.devices)  # Pass configured devices
 queue_broadcast_task = None
 cleanup_task = None
 
 # Rate limiter
 limiter = Limiter(key_func=get_remote_address)
-settings = load_settings()
 
 
 async def broadcast_queue_status_periodically():
@@ -221,54 +263,27 @@ async def cleanup_old_requests_periodically():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    global grouped_model_manager, inference_service
+    global model_manager, inference_service
 
     # Start GPU monitoring
     gpu_monitor.start()
 
     try:
-        # Initialize grouped model manager
-        grouped_model_manager = GroupedModelManager(settings)
-        grouped_model_manager.websocket_manager = manager
+        # Initialize unified model manager
+        model_manager = UnifiedModelManager(settings)
+        await model_manager.start()
         
-        # Initialize inference service with grouped model manager
-        # (can switch to use grouped_model_manager as primary)
-        inference_service = InferenceService(grouped_model_manager, settings, manager)
+        # Initialize inference service with unified model manager
+        inference_service = InferenceService(model_manager, settings, manager)
         
-        # Set the instances in slim_api module after they're created
-        from .api import slim_api
-        slim_api.inference_service = inference_service
-        slim_api.grouped_model_manager = grouped_model_manager
-        slim_api.settings = settings
+        # Set the model manager in api module
+        unified_api.model_manager = model_manager
 
-        # Optionally preload groups on startup
-        if not settings.lazy_load_model and grouped_model_manager:
-            # Check if we should preload all groups from the config with env overrides
-            from .config import Settings
-            config_with_overrides = Settings.get_model_config_with_overrides(
-                {"settings": grouped_model_manager.config_settings}
-            )
-            preload_all = config_with_overrides.get('preload_groups', False)
-            default_group = config_with_overrides.get('default_group', 'gemma3-27b-it')
-            
-            if preload_all:
-                logger.info("Preloading all groups on startup")
-                try:
-                    await grouped_model_manager.preload_all_groups(default_group)
-                except Exception as e:
-                    logger.warning(f"Failed to preload all groups: {e}")
-            else:
-                logger.info("Preloading default group on startup")
-                try:
-                    # Always load the default group first
-                    if default_group in grouped_model_manager.model_groups:
-                        await grouped_model_manager._switch_to_group(default_group)
-                    else:
-                        await grouped_model_manager.ensure_group_loaded()
-                except Exception as e:
-                    logger.warning(f"Failed to preload default group: {e}")
+        # Models will be loaded on-demand in the unified system
+        if not settings.lazy_load_model:
+            logger.info("Non-lazy mode: models will be loaded on first request")
         else:
-            logger.info("Groups will be loaded on-demand as needed")
+            logger.info("Lazy mode: models will be loaded on-demand")
 
         await inference_service.start_processing()
         
@@ -310,6 +325,9 @@ async def lifespan(app: FastAPI):
 
     if inference_service:
         await inference_service.stop_processing()
+    
+    if model_manager:
+        await model_manager.stop()
 
 
 app = FastAPI(
@@ -341,13 +359,8 @@ app.add_middleware(
     allow_headers=["*"],  # Allow all headers for WebSocket compatibility
 )
 
-# Include grouped model API routes
-api_grouped.grouped_model_manager = grouped_model_manager
-app.include_router(api_grouped.router)
-
-# Include slim API routes
-from .api import slim_api
-app.include_router(slim_api.router)
+# Include unified API routes
+app.include_router(unified_api.router)
 
 # API Key Security
 security = HTTPBearer(auto_error=False)
@@ -462,33 +475,20 @@ async def websocket_endpoint(websocket: WebSocket):
 
     await manager.connect(websocket)
 
-    # In the new architecture, we don't have a current model on connection
-    # Models are specified per-request
-    if grouped_model_manager:
-        # Just send a connection established message
+    # In the unified architecture, we just send a connection established message
+    if model_manager:
         await websocket.send_json({
             "type": "connection_established",
-            "message": "Connected to inference server",
-            # Note: auto_batch_size_max is now model-specific, see model info
+            "message": "Connected to unified inference server",
+            "num_devices": model_manager.num_devices
         })
         
-        # If a group switch is in progress, notify the new client
-        if grouped_model_manager.is_switching_group:
-            # Find which group we're switching to
-            target_group_id = None
-            if inference_service:
-                for req_id, req in inference_service.queue.active_requests.items():
-                    if req.get("type") == "group_switch" and req.get("status") == "processing":
-                        target_group_id = req.get("target_group_id")
-                        break
-            
-            await websocket.send_json({
-                "type": "group_switch_status",
-                "status": "starting",
-                "group_id": target_group_id or "unknown",
-                "timestamp": datetime.now().isoformat(),
-                "message": "A group switch is in progress. All requests are queued."
-            })
+        # Send current system state
+        system_state = model_manager.get_system_state()
+        await websocket.send_json({
+            "type": "system_state",
+            "data": system_state
+        })
 
     # Send initial queue status
     if inference_service:
@@ -701,241 +701,182 @@ async def websocket_endpoint(websocket: WebSocket):
                         )
 
                 
-            elif data["type"] == "list_model_groups":
-                # List model groups (new grouped format)
-                if not grouped_model_manager:
-                    await websocket.send_json({"type": "error", "error": "Grouped model manager not initialized"})
+            elif data["type"] == "list_models":
+                # List all models with unified format
+                if not model_manager:
+                    await websocket.send_json({"type": "error", "error": "Model manager not initialized"})
                     continue
-                
-                # Check if this is a refresh request
-                if data.get("refresh", False):
-                    grouped_model_manager.reload_config()
                     
-                # Determine if this is a public request (e.g., from kitft.com)
+                # Determine if this is a public request
                 origin_header = websocket.headers.get('origin') or ""
                 host_header = websocket.headers.get('host') or ""
                 public_only = ("kitft.com" in origin_header) or ("kitft.com" in host_header)
                 
-                groups = grouped_model_manager.get_model_list(public_only=public_only)
-                group_info = grouped_model_manager.get_current_group_info()
-                memory_info = grouped_model_manager.get_memory_usage()
+                from .model_registry import get_all_models
+                all_models = get_all_models(public_only=public_only)
                 
-                # Check if there's a queued group switch
-                queued_switch_info = None
-                if inference_service:
-                    for req_id, req in inference_service.queue.active_requests.items():
-                        if req.get("type") == "group_switch" and req.get("status") == "queued":
-                            queue_position = inference_service.queue.get_position_in_queue(req_id)
-                            active_count = len([r for r in inference_service.queue.active_requests.values() 
-                                              if r["status"] == "processing"])
-                            queued_switch_info = {
-                                "request_id": req_id,
-                                "target_group_id": req.get("target_group_id"),
-                                "model_id": req.get("model_id"),
-                                "queue_position": queue_position,
-                                "active_requests": active_count,
-                                "queued_ahead": queue_position - 1 if queue_position > 0 else 0
-                            }
-                            break
-                
-                response_data = {
-                    "type": "model_groups_list",
-                    "groups": groups,
-                    "current_group": group_info["current_group_id"],
-                    "is_switching": group_info["is_switching"],
-                    "model_status": {
-                        "cache_info": {
-                            "groups_loaded": group_info["groups_loaded"],
-                            "models_cached": list(grouped_model_manager.lens_cache.keys()),
-                            "base_locations": group_info["base_locations"]
-                        },
-                        "memory": memory_info
+                # Enhance with location information
+                models_with_locations = []
+                for model_data in all_models:
+                    model_id = model_data["id"]
+                    location_info = model_manager.get_model_location(model_id)
+                    
+                    model_info = {
+                        **model_data,
+                        "locations": location_info["locations"] if location_info else []
                     }
-                }
+                    models_with_locations.append(model_info)
                 
-                # Add queued switch info if present
-                if queued_switch_info:
-                    response_data["queued_switch"] = queued_switch_info
+                # Get system state
+                system_state = model_manager.get_system_state()
                 
-                await websocket.send_json(response_data)
+                await websocket.send_json({
+                    "type": "models_list",
+                    "models": models_with_locations,
+                    "system_state": system_state
+                })
                 
                     
-            elif data["type"] == "switch_model_grouped":
-                # Handle group switch request
-                if not grouped_model_manager:
-                    await websocket.send_json({"type": "error", "error": "Grouped model manager not initialized"})
+            elif data["type"] == "load_model":
+                # Load a model in the unified system
+                if not model_manager:
+                    await websocket.send_json({"type": "error", "error": "Model manager not initialized"})
                     continue
                     
                 model_id = data.get("model_id")
+                device_id = data.get("device_id")  # Optional
+                
                 if not model_id:
                     await websocket.send_json({"type": "error", "error": "No model_id provided"})
                     continue
                 
-                # Check if this requires a group switch
                 try:
-                    # Block backend-only models for public requests
+                    # Check if model is publicly available
                     origin_header = websocket.headers.get('origin') or ""
                     host_header = websocket.headers.get('host') or ""
                     public_only = ("kitft.com" in origin_header) or ("kitft.com" in host_header)
-                    if public_only:
-                        target_group_for_check = grouped_model_manager.model_to_group.get(model_id)
-                        if target_group_for_check:
-                            group_cfg = grouped_model_manager.model_groups.get(target_group_for_check)
-                            if group_cfg:
-                                model_cfg = next((m for m in group_cfg.models if m.get("id") == model_id), None)
-                                if model_cfg and (model_cfg.get("backend_only", False) or model_cfg.get("visible") is False):
-                                    await websocket.send_json({
-                                        "type": "model_switch_error",
-                                        "model_id": model_id,
-                                        "error": "This model is not available publicly"
-                                    })
-                                    continue
-
-                    target_group_id = grouped_model_manager.model_to_group.get(model_id)
-                    if not target_group_id:
-                        await websocket.send_json({
-                            "type": "model_switch_error",
-                            "model_id": model_id,
-                            "error": f"Unknown model ID: {model_id}"
-                        })
-                        continue
                     
-                    # Check if we need to switch groups
-                    if target_group_id != grouped_model_manager.current_group_id:
-                        # Queue the group switch instead of doing it immediately
-                        logger.info(f"Queueing group switch: {grouped_model_manager.current_group_id} -> {target_group_id}")
-                        
-                        # Add to the queue
-                        request_id = await inference_service.queue.add_group_switch_request(
-                            target_group_id, model_id, websocket
-                        )
-                        
-                        # Get actual queue position
-                        queue_position = inference_service.queue.get_position_in_queue(request_id)
-                        active_requests = len([r for r in inference_service.queue.active_requests.values() 
-                                             if r["status"] == "processing"])
-                        queued_ahead = queue_position - 1 if queue_position > 0 else 0
-                        
-                        await websocket.send_json({
-                            "type": "group_switch_queued",
-                            "request_id": request_id,
-                            "model_id": model_id,
-                            "target_group_id": target_group_id,
-                            "queue_position": queue_position,
-                            "active_requests": active_requests,
-                            "queued_ahead": queued_ahead,
-                            "message": f"Group switch queued at position {queue_position}. Will start after {active_requests + queued_ahead} request(s) complete."
-                        })
-                    else:
-                        # Same group - just return model info immediately
-                        model_info = grouped_model_manager.get_model_info(model_id)
-                        await websocket.send_json({
-                            "type": "model_switch_complete",
-                            "model_id": model_id,
-                            "message": "Model selected (within same group)",
-                            "model_info": model_info,
-                            "generation_config": model_info.get("generation_config", {})
-                        })
+                    if public_only:
+                        from .model_registry import get_model_info
+                        model_info = get_model_info(model_id)
+                        if model_info and (model_info.get("backend_only", False) or model_info.get("visible") is False):
+                            await websocket.send_json({
+                                "type": "model_load_error",
+                                "model_id": model_id,
+                                "error": "This model is not available publicly"
+                            })
+                            continue
+                    
+                    # Load the model
+                    result = await model_manager.load_model(model_id, device_id)
+                    
+                    # Get model info
+                    from .model_registry import get_model_info
+                    model_info = get_model_info(model_id)
+                    
+                    await websocket.send_json({
+                        "type": "model_loaded",
+                        "model_id": model_id,
+                        "device_id": result["device_id"],
+                        "group_id": result.get("group_id"),
+                        "model_info": model_info,
+                        "generation_config": model_info.get("generation_config", {})
+                    })
                     
                 except Exception as e:
-                    logger.error(f"Model switch error: {e}")
+                    logger.error(f"Model load error: {e}")
                     await websocket.send_json({
-                        "type": "model_switch_error",
+                        "type": "model_load_error",
                         "model_id": model_id,
                         "error": str(e)
                     })
                     
-            elif data["type"] == "preload_group":
-                # Preload all models in a group
-                if not grouped_model_manager:
-                    await websocket.send_json({"type": "error", "error": "Grouped model manager not initialized"})
+            elif data["type"] == "load_group":
+                # Load a group in the unified system
+                if not model_manager:
+                    await websocket.send_json({"type": "error", "error": "Model manager not initialized"})
                     continue
                     
                 group_id = data.get("group_id")
+                device_id = data.get("device_id")  # Optional
+                
                 if not group_id:
                     await websocket.send_json({"type": "error", "error": "No group_id provided"})
                     continue
                     
                 try:
-                    await grouped_model_manager.preload_group(group_id)
+                    result = await model_manager.load_group(group_id, device_id)
                     await websocket.send_json({
-                        "type": "group_preload_complete",
+                        "type": "group_loaded",
                         "group_id": group_id,
-                        "message": f"Successfully preloaded all models in group {group_id}"
+                        "device_id": result["device_id"],
+                        "loaded_models": result["loaded_models"],
+                        "message": f"Successfully loaded group {group_id} on device {result['device_id']}"
                     })
                 except Exception as e:
-                    logger.error(f"Group preload failed: {e}")
+                    logger.error(f"Group load failed: {e}")
                     await websocket.send_json({
                         "type": "error",
-                        "error": f"Failed to preload group: {str(e)}"
+                        "error": f"Failed to load group: {str(e)}"
                     })
                     
-            elif data["type"] == "unload_group":
-                # Unload a group from memory
-                if not grouped_model_manager:
-                    await websocket.send_json({"type": "error", "error": "Grouped model manager not initialized"})
+            elif data["type"] == "clear_device":
+                # Clear a device in the unified system
+                if not model_manager:
+                    await websocket.send_json({"type": "error", "error": "Model manager not initialized"})
                     continue
                     
-                group_id = data.get("group_id")
-                if not group_id:
-                    await websocket.send_json({"type": "error", "error": "No group_id provided"})
+                device_id = data.get("device_id")
+                if device_id is None:
+                    await websocket.send_json({"type": "error", "error": "No device_id provided"})
                     continue
                     
                 try:
-                    # Check if this is the current group
-                    if grouped_model_manager.current_group_id == group_id:
-                        await websocket.send_json({
-                            "type": "group_unload_error",
-                            "group_id": group_id,
-                            "error": "Cannot unload the currently active group"
-                        })
-                        continue
-                    
-                    # Unload the group
-                    result = await grouped_model_manager.unload_group(group_id)
-                    
-                    # Get group name for better message
-                    group_config = grouped_model_manager.model_groups.get(group_id)
-                    group_name = group_config.group_name if group_config else group_id
+                    result = await model_manager.clear_device(device_id)
                     
                     await websocket.send_json({
-                        "type": "group_unload_complete",
-                        "group_id": group_id,
-                        "group_name": group_name,
-                        "message": f"Successfully unloaded {group_name} from memory"
+                        "type": "device_cleared",
+                        "device_id": device_id,
+                        "message": f"Successfully cleared all models from device {device_id}"
                     })
                     
-                    # Broadcast to all clients that the group was unloaded
+                    # Broadcast to all clients
                     await manager.broadcast({
-                        "type": "group_unload_complete",
-                        "group_id": group_id,
-                        "group_name": group_name
+                        "type": "device_cleared",
+                        "device_id": device_id
                     })
                     
                 except Exception as e:
-                    logger.error(f"Group unload failed: {e}")
+                    logger.error(f"Device clear failed: {e}")
                     await websocket.send_json({
-                        "type": "group_unload_error",
-                        "group_id": group_id,
-                        "error": str(e)
+                        "type": "error",
+                        "error": f"Failed to clear device: {str(e)}"
                     })
                     
             elif data["type"] == "get_model_info":
                 # Get model info for a specific model
                 model_id = data.get("model_id")
                 
-                if grouped_model_manager and model_id:
-                    # Get info for specific model from grouped manager
-                    model_info = grouped_model_manager.get_model_info(model_id)
-                    await websocket.send_json({
-                        "type": "model_info",
-                        "model_id": model_info.get("model_id"),
-                        "display_name": model_info.get("display_name"),
-                        "layer": model_info.get("layer"),
-                        "auto_batch_size_max": model_info.get("auto_batch_size_max"),
-                        "generation_config": model_info.get("generation_config", {}),
-                        "loaded": model_info.get("is_loaded", False)
-                    })
+                if model_manager and model_id:
+                    from .model_registry import get_model_info
+                    model_info = get_model_info(model_id)
+                    
+                    if model_info:
+                        # Check if model is loaded
+                        location_info = model_manager.get_model_location(model_id)
+                        
+                        await websocket.send_json({
+                            "type": "model_info",
+                            "model_id": model_id,
+                            "display_name": model_info.get("name"),
+                            "layer": model_info.get("layer"),
+                            "auto_batch_size_max": model_info.get("auto_batch_size_max"),
+                            "generation_config": model_info.get("generation_config", {}),
+                            "loaded": location_info is not None,
+                            "locations": location_info["locations"] if location_info else []
+                        })
+                    else:
+                        await websocket.send_json({"type": "error", "error": f"Unknown model: {model_id}"})
                 else:
                     await websocket.send_json({"type": "error", "error": "Model manager not initialized"})
                 
@@ -1029,7 +970,7 @@ async def health_check():
     """Health check endpoint"""
     health_status = {
         "status": "healthy",
-        "model_loaded": grouped_model_manager is not None and grouped_model_manager.is_model_loaded(),
+        "model_loaded": model_manager is not None and any(state.loaded_models for state in model_manager.device_states.values()),
         "gpu_available": torch.cuda.is_available(),
         "gpu_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         "queue_size": inference_service.queue.queue.qsize() if inference_service else 0,
@@ -1070,7 +1011,7 @@ async def metrics():
 @app.post("/reset")
 async def reset_model():
     """Reset the model and clear memory"""
-    global grouped_model_manager, inference_service
+    global model_manager, inference_service
 
     try:
         if inference_service:
@@ -1082,8 +1023,8 @@ async def reset_model():
             inference_service.queue.active_requests.clear()
             logger.info("Cleared inference queue")
 
-        # Use grouped model manager
-        manager_to_use = grouped_model_manager
+        # Use unified model manager
+        manager_to_use = model_manager
 
         if manager_to_use:
             # Clear all models from memory through manager
@@ -1171,16 +1112,28 @@ async def get_gpu_stats():
     # Get cached stats from the monitor
     stats = gpu_monitor.get_stats()
 
-    # Remove internal fields that frontend doesn't need
-    stats.pop("is_computing", None)
-    stats.pop("last_update", None)
-
-    # Ensure all expected fields are present for backward compatibility
-    return {
+    # Format response with multi-GPU support
+    response = {
         "available": stats.get("available", False),
-        "utilization": stats.get("utilization", 0),
-        "memory_used": stats.get("memory_used", 0),
-        "memory_total": stats.get("memory_total", 0),
-        "memory_percent": stats.get("memory_percent", 0),
-        "peak_utilization": stats.get("peak_utilization", 0),
+        "devices": {}
     }
+    
+    # Add per-device stats
+    for device, device_stats in stats.get("devices", {}).items():
+        # Remove internal fields
+        cleaned_stats = {k: v for k, v in device_stats.items() if k not in ["is_computing", "device_num"]}
+        response["devices"][device] = cleaned_stats
+    
+    # For backward compatibility, also include stats for first device at top level
+    if settings.devices:
+        first_device = settings.devices[0]
+        first_stats = stats.get("devices", {}).get(first_device, {})
+        response.update({
+            "utilization": first_stats.get("utilization", 0),
+            "memory_used": first_stats.get("memory_used", 0),
+            "memory_total": first_stats.get("memory_total", 0),
+            "memory_percent": first_stats.get("memory_percent", 0),
+            "peak_utilization": first_stats.get("peak_utilization", 0),
+        })
+    
+    return response

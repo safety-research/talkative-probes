@@ -1,15 +1,16 @@
-"""Enhanced Model Manager with support for grouped models sharing base models"""
+"""Enhanced Model Manager with support for grouped models sharing base models across multiple GPUs"""
 
 import asyncio
 import torch
 import gc
 import json
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Set, Tuple
 from datetime import datetime
 from pathlib import Path
 import sys
 import os
+from dataclasses import dataclass, field
 
 # Add parent directory to path to import lens module
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
@@ -20,6 +21,27 @@ from lens.analysis.analyzer_class import LensAnalyzer
 from .config import Settings
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class DeviceState:
+    """Tracks the state of a single GPU device"""
+    device_id: str
+    current_group_id: Optional[str] = None
+    is_switching: bool = False
+    switch_start_time: Optional[datetime] = None
+    lens_cache: Dict[str, LensAnalyzer] = field(default_factory=dict)
+    shared_base_model: Optional[Any] = None
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    
+    def is_available_for_group(self, group_id: str) -> bool:
+        """Check if this device is available for a specific group"""
+        return not self.is_switching and (self.current_group_id == group_id or self.current_group_id is None)
+    
+    def has_group_loaded(self, group_id: str) -> bool:
+        """Check if this device has a specific group loaded"""
+        return self.current_group_id == group_id and self.shared_base_model is not None
+
 
 class ModelGroupConfig:
     """Configuration for a model group"""
@@ -33,12 +55,26 @@ class ModelGroupConfig:
         self.backend_only = group_data.get("backend_only", False)
         self.models = group_data["models"]
 
+
 class GroupedModelManager:
-    """Manages models grouped by shared base models for efficient switching"""
+    """
+    Manages models grouped by shared base models for efficient switching across multiple GPUs.
+    
+    This manager supports:
+    - Multiple GPU devices with independent model groups
+    - Efficient group switching on each device
+    - Smart request routing to minimize group switches
+    - Per-device caching and state management
+    - Thread-safe operations across devices
+    """
 
     def __init__(self, settings: Settings, groups_config_path: Optional[str] = None):
         self.settings = settings
         self.websocket_manager = None
+        
+        # Initialize devices from settings
+        self.devices = settings.devices if settings.devices else ["cuda:0"]
+        logger.info(f"Initializing model manager with devices: {self.devices}")
 
         # Load groups configuration
         if groups_config_path is None:
@@ -46,32 +82,31 @@ class GroupedModelManager:
         self.groups_config_path = Path(groups_config_path)
         self._load_groups_config()
 
-        # Current group state (global - only one group on GPU)
-        self.current_group_id: Optional[str] = None
-        self.is_switching_group = False
-        self.group_switch_lock = asyncio.Lock()
-        self.switch_start_time: Optional[datetime] = None
-        self.queued_requests: List[asyncio.Future] = []
-
-        # Thread-safe locks for model access
-        self.model_locks: Dict[str, asyncio.Lock] = {}  # model_id -> lock for loading
-        self.cache_lock = asyncio.Lock()  # Lock for accessing caches
+        # Per-device state tracking
+        self.device_states: Dict[str, DeviceState] = {
+            device: DeviceState(device_id=device) for device in self.devices
+        }
         
-        # Shared base model management
-        self.shared_base_models: Dict[str, Any] = {}  # group_id -> base model
+        # Global state tracking
+        self.model_to_group: Dict[str, str] = {}  # model_id -> group_id
+        self.model_locks: Dict[str, asyncio.Lock] = {}  # model_id -> lock for loading
+        self.global_cache_lock = asyncio.Lock()  # Lock for cross-device operations
+        
+        # Shared model caches (across all devices)
         self.shared_orig_models: Dict[str, Any] = {}  # model_path -> orig model wrapper
-        self.lens_cache: Dict[str, LensAnalyzer] = {}  # model_id -> LensAnalyzer
-        self.base_model_locations: Dict[str, str] = {}  # group_id -> 'cuda' or 'cpu'
         self.model_last_used: Dict[str, datetime] = {}  # model_id -> last used time
-
-        # Memory management - use setting with override support
+        
+        # CPU cache management
+        self.cpu_cached_groups: Dict[str, Dict[str, Any]] = {}  # group_id -> {"base_model": ..., "models": {...}}
+        self.group_usage_order: List[str] = []  # LRU tracking for CPU cache
+        
+        # Memory management settings
         from .config import Settings
         config_with_overrides = Settings.get_model_config_with_overrides({"settings": self.config_settings})
         self.max_cpu_groups = config_with_overrides.get('max_cpu_models', 
                                                         getattr(settings, 'max_cpu_cached_models', 2))
-        self.group_usage_order: List[str] = []  # LRU tracking
-
-        # Chat tokenizers
+        
+        # Chat tokenizers (shared across devices)
         self.chat_tokenizers: Dict[str, Any] = {}  # model_path -> tokenizer
 
     def _load_groups_config(self):
@@ -99,14 +134,45 @@ class GroupedModelManager:
         """Reload the model groups configuration from JSON file"""
         logger.info("Reloading model groups configuration")
         self._load_groups_config()
-        
-    def get_model_list(self, public_only: bool = False) -> List[Dict[str, Any]]:
-        """Get structured list of model groups for frontend
+    
+    @property
+    def is_switching_group(self) -> bool:
+        """Check if any device is currently switching groups"""
+        return any(state.is_switching for state in self.device_states.values())
+    
+    @property
+    def current_group_id(self) -> Optional[str]:
+        """
+        Get the current group ID for backward compatibility.
+        Returns the group ID from the first device, or None if no groups loaded.
+        """
+        if self.devices:
+            first_device_state = self.device_states.get(self.devices[0])
+            if first_device_state:
+                return first_device_state.current_group_id
+        return None
+    
+    @property
+    def lens_cache(self) -> Dict[str, Any]:
+        """
+        Get all lens analyzers across all devices for backward compatibility.
+        Returns a merged dictionary of all device caches.
+        """
+        merged_cache = {}
+        for device_state in self.device_states.values():
+            merged_cache.update(device_state.lens_cache)
+        return merged_cache
 
+    def get_model_list(self, public_only: bool = False) -> List[Dict[str, Any]]:
+        """
+        Get structured list of model groups for frontend.
+        
         Args:
             public_only: When True, exclude groups/models flagged as backend_only or not visible.
+            
+        Returns:
+            List of group dictionaries with model information and device status
         """
-        # This method should not block on group switches - it's just reading state
         groups = []
         for group_id, group_config in self.model_groups.items():
             # Apply group-level visibility filtering
@@ -114,16 +180,31 @@ class GroupedModelManager:
                 continue
             if public_only and getattr(group_config, "backend_only", False):
                 continue
+                
+            # Collect device information for this group
+            device_info = []
+            for device_id, device_state in self.device_states.items():
+                device_info.append({
+                    "device": device_id,
+                    "has_group": device_state.has_group_loaded(group_id),
+                    "is_current": device_state.current_group_id == group_id,
+                    "is_switching": device_state.is_switching
+                })
+            
+            # Check if group is in CPU cache
+            is_cpu_cached = group_id in self.cpu_cached_groups
+            
             group_data = {
                 "group_id": group_config.group_id,
                 "group_name": group_config.group_name,
                 "description": group_config.description,
                 "base_model": group_config.base_model_path,
-                "is_current": group_id == self.current_group_id,
-                "is_loaded": group_id in self.shared_base_models,
-                "location": self.base_model_locations.get(group_id, "not_loaded"),
+                "device_info": device_info,
+                "is_cpu_cached": is_cpu_cached,
                 "models": []
             }
+            
+            # Add model information
             for model in group_config.models:
                 # Skip models that are not visible
                 if model.get("visible") is False:
@@ -131,6 +212,7 @@ class GroupedModelManager:
                 # Skip backend-only models for public contexts
                 if public_only and model.get("backend_only", False):
                     continue
+                    
                 # Extract checkpoint folder name for display
                 checkpoint_path = model.get("lens_checkpoint_path", "")
                 checkpoint_filename = "Unknown"
@@ -138,39 +220,503 @@ class GroupedModelManager:
                 if checkpoint_path:
                     path_parts = checkpoint_path.split('/')
                     checkpoint_folder = path_parts[-1] if path_parts else ""
-                    checkpoint_full = checkpoint_folder  # Store full name for tooltip
+                    checkpoint_full = checkpoint_folder
                     if len(checkpoint_folder) > 40:
                         checkpoint_filename = f"{checkpoint_folder[:20]}...{checkpoint_folder[-15:]}"
                     else:
                         checkpoint_filename = checkpoint_folder
-                        
+                
+                # Check which devices have this model loaded
+                loaded_on_devices = []
+                for device_id, device_state in self.device_states.items():
+                    if model["id"] in device_state.lens_cache:
+                        loaded_on_devices.append(device_id)
+                
                 model_info = {
                     "id": model["id"],
                     "name": model["name"],
                     "description": model.get("description", ""),
                     "layer": model.get("layer", 30),
                     "checkpoint_filename": checkpoint_filename,
-                    "checkpoint_full": checkpoint_full,  # Full name for tooltip
-                    "is_loaded": model["id"] in self.lens_cache,
-                    "is_available": group_id == self.current_group_id,  # Can use without group switch
+                    "checkpoint_full": checkpoint_full,
+                    "loaded_on_devices": loaded_on_devices,
                     "last_used": self.model_last_used.get(model["id"], "").isoformat() if model["id"] in self.model_last_used else None
                 }
                 group_data["models"].append(model_info)
             groups.append(group_data)
         return groups
 
-    def get_current_group_info(self) -> Dict[str, Any]:
-        """Get information about the current group"""
+    def get_device_status(self) -> Dict[str, Any]:
+        """Get status information for all devices"""
+        device_status = {}
+        for device_id, device_state in self.device_states.items():
+            device_status[device_id] = {
+                "current_group": device_state.current_group_id,
+                "is_switching": device_state.is_switching,
+                "models_loaded": list(device_state.lens_cache.keys()),
+                "switch_start_time": device_state.switch_start_time.isoformat() if device_state.switch_start_time else None
+            }
         return {
-            "current_group_id": self.current_group_id,
-            "is_switching": self.is_switching_group,
-            "switch_start_time": self.switch_start_time.isoformat() if self.switch_start_time else None,
-            "groups_loaded": list(self.shared_base_models.keys()),
-            "base_locations": self.base_model_locations,
+            "devices": device_status,
+            "cpu_cached_groups": list(self.cpu_cached_groups.keys()),
+            "total_models_loaded": sum(len(state.lens_cache) for state in self.device_states.values())
         }
     
+    def get_current_group_info(self) -> Dict[str, Any]:
+        """Get information about current groups across all devices"""
+        # Find if any device is switching
+        is_switching = False
+        switch_start_time = None
+        for device_state in self.device_states.values():
+            if device_state.is_switching:
+                is_switching = True
+                if device_state.switch_start_time:
+                    switch_start_time = device_state.switch_start_time
+                    break
+        
+        # Get groups loaded on any device
+        groups_loaded = set()
+        for device_state in self.device_states.values():
+            if device_state.current_group_id:
+                groups_loaded.add(device_state.current_group_id)
+        
+        # Add CPU cached groups
+        groups_loaded.update(self.cpu_cached_groups.keys())
+        
+        # Build device location map
+        base_locations = {}
+        for device_id, device_state in self.device_states.items():
+            if device_state.current_group_id:
+                base_locations[device_state.current_group_id] = device_id
+        for group_id in self.cpu_cached_groups:
+            if group_id not in base_locations:
+                base_locations[group_id] = 'cpu'
+        
+        return {
+            "current_group_id": self.current_group_id,  # For backward compatibility
+            "is_switching": is_switching,
+            "switch_start_time": switch_start_time.isoformat() if switch_start_time else None,
+            "groups_loaded": list(groups_loaded),
+            "base_locations": base_locations,
+            "device_states": self.get_device_status()  # Include full device info
+        }
+
+    def find_best_device_for_model(self, model_id: str, preferred_device: Optional[str] = None) -> str:
+        """
+        Find the best device to run a model on.
+        
+        Priority order:
+        1. Preferred device if specified and available
+        2. Device with the model's group already loaded
+        3. Device with the model already in cache
+        4. Device with no group loaded (empty)
+        5. Device with fewest models loaded
+        
+        Args:
+            model_id: The model to find a device for
+            preferred_device: Optional preferred device to use
+            
+        Returns:
+            The best device ID to use
+        """
+        target_group_id = self.model_to_group.get(model_id)
+        if not target_group_id:
+            raise ValueError(f"Unknown model ID: {model_id}")
+        
+        # Check preferred device first
+        if preferred_device and preferred_device in self.device_states:
+            device_state = self.device_states[preferred_device]
+            if device_state.is_available_for_group(target_group_id):
+                return preferred_device
+        
+        # Find device with group already loaded
+        for device_id, device_state in self.device_states.items():
+            if device_state.has_group_loaded(target_group_id) and not device_state.is_switching:
+                logger.debug(f"Found device {device_id} with group {target_group_id} already loaded")
+                return device_id
+        
+        # Find device with model already cached
+        for device_id, device_state in self.device_states.items():
+            if model_id in device_state.lens_cache and not device_state.is_switching:
+                logger.debug(f"Found device {device_id} with model {model_id} already cached")
+                return device_id
+        
+        # Find empty device
+        for device_id, device_state in self.device_states.items():
+            if device_state.current_group_id is None and not device_state.is_switching:
+                logger.debug(f"Found empty device {device_id}")
+                return device_id
+        
+        # Find least loaded device
+        best_device = None
+        min_models = float('inf')
+        for device_id, device_state in self.device_states.items():
+            if not device_state.is_switching:
+                model_count = len(device_state.lens_cache)
+                if model_count < min_models:
+                    min_models = model_count
+                    best_device = device_id
+        
+        if best_device:
+            logger.debug(f"Using least loaded device {best_device} with {min_models} models")
+            return best_device
+        
+        # Fallback to first device if all are switching
+        return self.devices[0]
+
+    async def get_analyzer_for_model(self, model_id: str, device: Optional[str] = None) -> Tuple[LensAnalyzer, str]:
+        """
+        Get analyzer for a specific model, loading if necessary.
+        
+        Args:
+            model_id: The model to get analyzer for
+            device: Optional specific device to use
+            
+        Returns:
+            Tuple of (analyzer, device_id) where analyzer is ready to use on device_id
+        """
+        # Check if model exists
+        if model_id not in self.model_to_group:
+            raise ValueError(f"Unknown model ID: {model_id}")
+        
+        target_group_id = self.model_to_group[model_id]
+        
+        # Find best device if not specified
+        if device is None:
+            device = self.find_best_device_for_model(model_id)
+        elif device not in self.device_states:
+            raise ValueError(f"Unknown device: {device}")
+        
+        device_state = self.device_states[device]
+        
+        # Update last used time
+        self.model_last_used[model_id] = datetime.now()
+        
+        # Fast path: already loaded on this device
+        if model_id in device_state.lens_cache:
+            logger.debug(f"Model {model_id} already loaded on device {device}")
+            return device_state.lens_cache[model_id], device
+        
+        # Need to ensure group is loaded on device
+        if device_state.current_group_id != target_group_id:
+            await self._switch_device_to_group(device, target_group_id)
+        
+        # Load the model on this device
+        await self._load_model_on_device(model_id, device)
+        
+        return device_state.lens_cache[model_id], device
+
+    async def _switch_device_to_group(self, device: str, target_group_id: str):
+        """
+        Switch a specific device to a different group.
+        
+        This operation:
+        1. Moves current group to CPU cache if exists
+        2. Loads target group from CPU cache or fresh
+        3. Updates device state
+        
+        Args:
+            device: Device to switch
+            target_group_id: Group to switch to
+        """
+        device_state = self.device_states[device]
+        
+        async with device_state.lock:
+            if device_state.current_group_id == target_group_id:
+                return  # Already on target group
+            
+            try:
+                device_state.is_switching = True
+                device_state.switch_start_time = datetime.now()
+                
+                # Broadcast switch starting
+                await self._broadcast_group_switch_status("starting", target_group_id, device)
+                
+                # Move current group to CPU if exists
+                if device_state.current_group_id:
+                    logger.info(f"Moving group {device_state.current_group_id} from {device} to CPU cache")
+                    await self._move_group_to_cpu(device_state.current_group_id, device)
+                
+                # Load target group on this device
+                if target_group_id in self.cpu_cached_groups:
+                    logger.info(f"Loading group {target_group_id} from CPU cache to {device}")
+                    await self._load_group_from_cpu(target_group_id, device)
+                else:
+                    logger.info(f"Loading new group {target_group_id} on {device}")
+                    group_config = self.model_groups[target_group_id]
+                    first_model = group_config.models[0]
+                    await self._load_group_fresh(target_group_id, first_model["id"], first_model, device)
+                
+                # Update device state
+                device_state.current_group_id = target_group_id
+                
+                # Update LRU order
+                if target_group_id in self.group_usage_order:
+                    self.group_usage_order.remove(target_group_id)
+                self.group_usage_order.append(target_group_id)
+                
+                # Broadcast completion
+                await self._broadcast_group_switch_status("completed", target_group_id, device)
+                
+            except Exception as e:
+                logger.error(f"Group switch failed on {device}: {e}")
+                await self._broadcast_group_switch_status("failed", target_group_id, device, str(e))
+                raise
+                
+            finally:
+                device_state.is_switching = False
+                device_state.switch_start_time = None
+
+    async def _move_group_to_cpu(self, group_id: str, device: str):
+        """Move a group from a specific device to CPU cache"""
+        device_state = self.device_states[device]
+        
+        if group_id not in self.model_groups:
+            return
+        
+        # Manage CPU cache size
+        await self._manage_cpu_cache()
+        
+        # Move models to CPU
+        group_cache = {
+            "base_model": device_state.shared_base_model,
+            "models": {}
+        }
+        
+        group_config = self.model_groups[group_id]
+        for model in group_config.models:
+            if model["id"] in device_state.lens_cache:
+                analyzer = device_state.lens_cache[model["id"]]
+                analyzer.to('cpu')
+                group_cache["models"][model["id"]] = analyzer
+        
+        # Store in CPU cache
+        self.cpu_cached_groups[group_id] = group_cache
+        
+        # Clear device state
+        device_state.shared_base_model = None
+        device_state.lens_cache.clear()
+        
+        # Clear GPU memory
+        if torch.cuda.is_available():
+            with torch.cuda.device(device):
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+
+    async def _load_group_from_cpu(self, group_id: str, device: str):
+        """Load a group from CPU cache to a specific device"""
+        device_state = self.device_states[device]
+        
+        if group_id not in self.cpu_cached_groups:
+            raise ValueError(f"Group {group_id} not in CPU cache")
+        
+        group_cache = self.cpu_cached_groups[group_id]
+        loop = asyncio.get_event_loop()
+        
+        # Move base model to device
+        device_state.shared_base_model = group_cache["base_model"]
+        
+        # Move models to device
+        for model_id, analyzer in group_cache["models"].items():
+            await loop.run_in_executor(None, lambda: analyzer.to(device))
+            device_state.lens_cache[model_id] = analyzer
+        
+        logger.info(f"Loaded group {group_id} from CPU cache to {device}")
+
+    async def _load_group_fresh(self, group_id: str, target_model_id: str, target_model_config: Dict[str, Any], device: str):
+        """Load a group fresh on a specific device"""
+        device_state = self.device_states[device]
+        group_config = self.model_groups[group_id]
+        loop = asyncio.get_event_loop()
+        
+        def load_base():
+            # Handle donor model for the target model
+            orig_model_path = target_model_config.get("different_activations_orig_path")
+            logger.info(f"Loading model {target_model_id} on {device} with orig_model_path: {orig_model_path}")
+            
+            # Check if we already have this donor model cached
+            orig_model = None
+            if orig_model_path and orig_model_path in self.shared_orig_models:
+                logger.info(f"Using cached donor model: {orig_model_path}")
+                orig_model = self.shared_orig_models[orig_model_path]
+            else:
+                # Pass the path and let LensAnalyzer load it
+                orig_model = orig_model_path
+            
+            # Get configuration with environment variable overrides
+            from .config import Settings
+            config_with_overrides = Settings.get_model_config_with_overrides(
+                {"settings": self.config_settings},
+                model_id=target_model_id.replace('-', '_'),
+                group_id=group_id.replace('-', '_')
+            )
+            
+            # If we have a different donor model, we can't use no_orig
+            no_orig = config_with_overrides.get("no_orig", True) and not orig_model_path
+            
+            # Use model-specific batch_size if provided
+            batch_size = target_model_config.get("batch_size")
+            if batch_size is None:
+                batch_size = config_with_overrides.get("batch_size", 32)
+            
+            # Create analyzer on the specific device
+            with torch.cuda.device(device):
+                analyzer = LensAnalyzer(
+                    target_model_config["lens_checkpoint_path"],
+                    device=device,
+                    batch_size=batch_size,
+                    use_bf16=config_with_overrides.get("use_bf16", True),
+                    strict_load=False,
+                    comparison_tl_checkpoint=config_with_overrides.get("comparison_tl_checkpoint", False),
+                    do_not_load_weights=False,
+                    make_xl=False,
+                    no_orig=no_orig,
+                    different_activations_orig=orig_model,
+                    initialise_on_cpu=False,
+                )
+            return analyzer
+        
+        analyzer = await loop.run_in_executor(None, load_base)
+        
+        # Extract shared base model
+        if hasattr(analyzer, 'shared_base_model'):
+            device_state.shared_base_model = analyzer.shared_base_model
+        else:
+            logger.error(f"No shared_base_model found in analyzer for group {group_id}")
+            raise RuntimeError("Failed to extract shared base model")
+        
+        # Store analyzer
+        device_state.lens_cache[target_model_id] = analyzer
+        
+        # Cache the donor model if it was loaded
+        orig_model_path = target_model_config.get("different_activations_orig_path")
+        if (orig_model_path and 
+            hasattr(analyzer, 'orig_model') and 
+            analyzer.orig_model is not None and
+            orig_model_path not in self.shared_orig_models):
+            logger.info(f"Caching donor model: {orig_model_path}")
+            self.shared_orig_models[orig_model_path] = analyzer.orig_model
+
+    async def _load_model_on_device(self, model_id: str, device: str):
+        """Load a specific model on a device (group must already be loaded)"""
+        device_state = self.device_states[device]
+        
+        # Create lock for this model if needed
+        async with self.global_cache_lock:
+            if model_id not in self.model_locks:
+                self.model_locks[model_id] = asyncio.Lock()
+        
+        async with self.model_locks[model_id]:
+            # Double-check after acquiring lock
+            if model_id in device_state.lens_cache:
+                return
+            
+            # Get model configuration
+            group_id = self.model_to_group[model_id]
+            group_config = self.model_groups[group_id]
+            model_config = next((m for m in group_config.models if m["id"] == model_id), None)
+            
+            if not model_config:
+                raise ValueError(f"Model {model_id} not found in group {group_id}")
+            
+            # Create analyzer using shared base
+            logger.info(f"Loading model {model_id} on device {device}")
+            loop = asyncio.get_event_loop()
+            
+            def create_analyzer():
+                # Get donor model
+                orig_model_path = model_config.get("different_activations_orig_path")
+                orig_model = None
+                if orig_model_path:
+                    if orig_model_path in self.shared_orig_models:
+                        logger.info(f"Using cached donor model: {orig_model_path}")
+                        orig_model = self.shared_orig_models[orig_model_path]
+                    else:
+                        logger.info(f"Donor model not cached, will load: {orig_model_path}")
+                        orig_model = orig_model_path
+                
+                # Get configuration with overrides
+                from .config import Settings
+                config_with_overrides = Settings.get_model_config_with_overrides(
+                    {"settings": self.config_settings},
+                    model_id=model_id.replace('-', '_'),
+                    group_id=group_id.replace('-', '_')
+                )
+                
+                no_orig = config_with_overrides.get("no_orig", True) and not orig_model_path
+                batch_size = model_config.get("batch_size")
+                if batch_size is None:
+                    batch_size = config_with_overrides.get("batch_size", 32)
+                
+                # Create analyzer with shared base on specific device
+                with torch.cuda.device(device):
+                    return LensAnalyzer(
+                        model_config["lens_checkpoint_path"],
+                        device=device,
+                        batch_size=batch_size,
+                        use_bf16=config_with_overrides.get("use_bf16", True),
+                        strict_load=False,
+                        comparison_tl_checkpoint=config_with_overrides.get("comparison_tl_checkpoint", False),
+                        do_not_load_weights=False,
+                        make_xl=False,
+                        no_orig=no_orig,
+                        shared_base_model=device_state.shared_base_model,
+                        different_activations_orig=orig_model,
+                        initialise_on_cpu=False,
+                    )
+            
+            analyzer = await loop.run_in_executor(None, create_analyzer)
+            
+            # Store in device cache
+            device_state.lens_cache[model_id] = analyzer
+            
+            # Cache donor model if loaded
+            orig_model_path = model_config.get("different_activations_orig_path")
+            if (orig_model_path and 
+                hasattr(analyzer, 'orig_model') and 
+                analyzer.orig_model is not None and
+                orig_model_path not in self.shared_orig_models):
+                logger.info(f"Caching newly loaded donor model: {orig_model_path}")
+                self.shared_orig_models[orig_model_path] = analyzer.orig_model
+
+    async def _manage_cpu_cache(self):
+        """Manage CPU cache by evicting least recently used groups"""
+        if len(self.cpu_cached_groups) >= self.max_cpu_groups:
+            # Find LRU group in CPU cache
+            lru_group = None
+            for group_id in self.group_usage_order:
+                if group_id in self.cpu_cached_groups:
+                    # Check if this group is currently on any GPU
+                    on_gpu = any(state.current_group_id == group_id for state in self.device_states.values())
+                    if not on_gpu:
+                        lru_group = group_id
+                        break
+            
+            if lru_group:
+                logger.info(f"Evicting group {lru_group} from CPU cache")
+                del self.cpu_cached_groups[lru_group]
+                self.group_usage_order.remove(lru_group)
+                gc.collect()
+
+    async def _broadcast_group_switch_status(self, status: str, group_id: str, device: str, error: Optional[str] = None):
+        """Broadcast group switch status to all connected clients"""
+        message = {
+            "type": "group_switch_status",
+            "status": status,
+            "group_id": group_id,
+            "device": device,
+            "timestamp": datetime.now().isoformat(),
+        }
+        if error:
+            message["error"] = error
+        
+        logger.info(f"Broadcasting group switch status: {status} for group {group_id} on device {device}")
+        
+        if self.websocket_manager:
+            await self.websocket_manager.broadcast(message)
+
     def get_model_info(self, model_id: str) -> Dict[str, Any]:
-        """Get information about a specific model"""
+        """Get detailed information about a specific model"""
         group_id = self.model_to_group.get(model_id)
         if not group_id:
             return {"status": "invalid_model", "error": f"Unknown model ID: {model_id}"}
@@ -180,34 +726,31 @@ class GroupedModelManager:
         if not model_config:
             return {"status": "model_not_found", "error": f"Model {model_id} not found in group {group_id}"}
 
+        # Get checkpoint info
         checkpoint_path = model_config.get("lens_checkpoint_path", "")
-        # Extract folder name and checkpoint file from path
         if checkpoint_path:
             path_parts = checkpoint_path.split('/')
-            # Get the checkpoint folder name (last part of path)
             checkpoint_folder = path_parts[-1] if path_parts else ""
-            # For display, show shortened version if too long
             if len(checkpoint_folder) > 40:
-                # Show first 20 and last 15 characters for long names
                 checkpoint_filename = f"{checkpoint_folder[:20]}...{checkpoint_folder[-15:]}"
             else:
                 checkpoint_filename = checkpoint_folder
         else:
             checkpoint_filename = "Unknown"
-            
+        
         # Get donor model info
         donor_model_path = model_config.get("different_activations_orig_path")
         donor_model_name = "Same as base model"
         if donor_model_path:
-            # Extract a readable name from the path
             donor_model_name = donor_model_path.split('/')[-1] if '/' in donor_model_path else donor_model_path
         
-        # Get generation config if model is loaded
-        generation_config = {}
-        if model_id in self.lens_cache:
-            generation_config = self._get_generation_config_for_model(model_id)
+        # Get device information
+        loaded_on_devices = []
+        for device_id, device_state in self.device_states.items():
+            if model_id in device_state.lens_cache:
+                loaded_on_devices.append(device_id)
         
-        # Get configuration with environment variable overrides
+        # Get configuration with overrides
         from .config import Settings
         config_with_overrides = Settings.get_model_config_with_overrides(
             {"settings": self.config_settings},
@@ -215,11 +758,10 @@ class GroupedModelManager:
             group_id=group_id.replace('-', '_')
         )
         
-        # Get batch_size and auto_batch_size_max with override support
         batch_size = model_config.get("batch_size")
         if batch_size is None:
             batch_size = config_with_overrides.get("batch_size", 32)
-            
+        
         auto_batch_size_max = model_config.get("auto_batch_size_max")
         if auto_batch_size_max is None:
             auto_batch_size_max = config_with_overrides.get("auto_batch_size_max", 512)
@@ -238,132 +780,21 @@ class GroupedModelManager:
             "donor_model_path": donor_model_path,
             "checkpoint_path": checkpoint_path,
             "checkpoint_filename": checkpoint_filename,
-            "is_loaded": model_id in self.lens_cache,
+            "loaded_on_devices": loaded_on_devices,
             "last_used": self.model_last_used.get(model_id, "").isoformat() if model_id in self.model_last_used else None,
-            "cache_info": {
-                "groups_loaded": list(self.shared_base_models.keys()),
-                "models_cached": list(self.lens_cache.keys()),
-                "donor_models_cached": list(self.shared_orig_models.keys()),
-                "base_locations": self.base_model_locations,
-            },
-            "generation_config": generation_config,
+            "device_status": self.get_device_status()
         }
 
-    def _get_generation_config_for_model(self, model_id: str) -> Dict[str, Any]:
-        """Get generation config for a specific model"""
-        if model_id not in self.lens_cache:
-            logger.debug(f"Model {model_id} not loaded, no generation config available")
-            return {}
-            
-        analyzer = self.lens_cache[model_id]
+    async def preload_model(self, model_id: str, device: Optional[str] = None) -> Dict[str, Any]:
+        """Preload a model into memory"""
         try:
-            # First check if the analyzer has orig_model.model
-            if hasattr(analyzer, 'orig_model'):
-                logger.debug(f"Analyzer for {model_id} has orig_model: {type(analyzer.orig_model)}")
-                if hasattr(analyzer.orig_model, 'model'):
-                    model = analyzer.orig_model.model
-                    logger.debug(f"Found model object: {type(model)}")
-                    if hasattr(model, 'generation_config'):
-                        gen_config = model.generation_config
-                        temperature = getattr(gen_config, 'temperature', 1.0)
-                        top_p = getattr(gen_config, 'top_p', 1.0)
-                        # Log the generation config for debugging
-                        logger.info(f"Model {model_id} generation config: temperature={temperature}, top_p={top_p}")
-                        return {
-                            "temperature": temperature,
-                            "top_p": top_p,
-                            "top_k": getattr(gen_config, 'top_k', None),
-                            "do_sample": getattr(gen_config, 'do_sample', True),
-                            "repetition_penalty": getattr(gen_config, 'repetition_penalty', 1.0),
-                        }
-                    else:
-                        logger.debug("Model has no generation_config attribute")
-                else:
-                    logger.debug("orig_model has no model attribute")
-            else:
-                logger.debug("Analyzer has no orig_model attribute")
-        except Exception as e:
-            logger.warning(f"Failed to get generation config for {model_id}: {e}", exc_info=True)
-        
-        # Default values - just use standard defaults
-        logger.info(f"Using default generation config for {model_id}")
-        return {
-            "temperature": 1.0,
-            "top_p": 1.0,
-            "top_k": None,
-            "do_sample": True,
-            "repetition_penalty": 1.0,
-        }
-
-    async def get_analyzer_for_model(self, model_id: str) -> LensAnalyzer:
-        """Get analyzer for a specific model, loading if necessary"""
-        # Check if model exists
-        if model_id not in self.model_to_group:
-            raise ValueError(f"Unknown model ID: {model_id}")
-        
-        target_group_id = self.model_to_group[model_id]
-        
-        # Check if we're in the wrong group
-        if target_group_id != self.current_group_id:
-            # This should not happen anymore - group switches go through the queue
-            raise RuntimeError(f"Model {model_id} requires group {target_group_id} but current group is {self.current_group_id}. Group switch should have been queued.")
-        
-        # Wait if a group switch is in progress
-        while self.is_switching_group:
-            future = asyncio.Future()
-            async with self.group_switch_lock:
-                if self.is_switching_group:  # Double-check
-                    self.queued_requests.append(future)
-                else:
-                    break
-            try:
-                await asyncio.wait_for(future, timeout=300)  # 5-minute timeout
-            except asyncio.TimeoutError:
-                raise RuntimeError("Group switch timeout")
-            
-        # Update last used time
-        self.model_last_used[model_id] = datetime.now()
-        
-        # Fast path: already loaded
-        async with self.cache_lock:
-            if model_id in self.lens_cache:
-                return self.lens_cache[model_id]
-        
-        # Need to load the model within current group - fix lock creation race
-        async with self.cache_lock:
-            if model_id not in self.model_locks:
-                self.model_locks[model_id] = asyncio.Lock()
-            model_lock = self.model_locks[model_id]
-            
-        async with model_lock:
-            # Double-check after acquiring lock
-            async with self.cache_lock:
-                if model_id in self.lens_cache:
-                    return self.lens_cache[model_id]
-            
-            # Load the model
-            logger.info(f"Loading model {model_id} within group {self.current_group_id}")
-            group_config = self.model_groups[self.current_group_id]
-            model_config = next((m for m in group_config.models if m["id"] == model_id), None)
-            
-            if not model_config:
-                raise ValueError(f"Model {model_id} not found in group {self.current_group_id}")
-            
-            # Create analyzer for this specific model (group is already on GPU)
-            await self._create_model_analyzer(model_id, model_config, self.current_group_id)
-            
-            # Return the loaded analyzer
-            return self.lens_cache[model_id]
-
-    async def preload_model(self, model_id: str) -> Dict[str, Any]:
-        """Preload a model into memory (useful for warming up)"""
-        try:
-            analyzer = await self.get_analyzer_for_model(model_id)
+            analyzer, device_used = await self.get_analyzer_for_model(model_id, device)
             model_info = self.get_model_info(model_id)
             return {
                 "status": "success",
                 "model_id": model_id,
-                "message": f"Model {model_info['display_name']} loaded successfully"
+                "device": device_used,
+                "message": f"Model {model_info['display_name']} loaded successfully on {device_used}"
             }
         except Exception as e:
             logger.error(f"Failed to preload model {model_id}: {e}")
@@ -373,459 +804,74 @@ class GroupedModelManager:
                 "error": str(e)
             }
 
-    async def _create_model_analyzer(self, model_id: str, model_config: Dict[str, Any], group_id: str):
-        """Create analyzer for a specific model within a group"""
-        logger.info(f"Creating new lens analyzer for {model_id} with shared base")
-        loop = asyncio.get_event_loop()
-        shared_base = self.shared_base_models[group_id]
-        
-        # Handle donor model
-        orig_model_path = model_config.get("different_activations_orig_path")
-        logger.info(f"Model {model_id} requires donor model: {orig_model_path}")
-        
-        orig_model = None
-        if orig_model_path:
-            if orig_model_path in self.shared_orig_models:
-                logger.info(f"Using cached donor model: {orig_model_path}")
-                orig_model = self.shared_orig_models[orig_model_path]
-            else:
-                logger.info(f"Donor model not cached, will load: {orig_model_path}")
-                orig_model = orig_model_path
-        
-        def create_analyzer():
-            logger.info(f"Creating LensAnalyzer for {model_id}")
-            logger.info(f"  - lens_checkpoint: {model_config['lens_checkpoint_path']}")
-            logger.info(f"  - shared_base_model: {type(shared_base)}")
-            logger.info(f"  - different_activations_orig: {orig_model_path} (type: {type(orig_model)})")
-            
-            # Get configuration with environment variable overrides
-            from .config import Settings
-            config_with_overrides = Settings.get_model_config_with_overrides(
-                {"settings": self.config_settings}, 
-                model_id=model_id.replace('-', '_'),  # Convert hyphens to underscores for env vars
-                group_id=group_id.replace('-', '_')
-            )
-            
-            # If we have a different donor model, we can't use no_orig
-            no_orig = config_with_overrides.get("no_orig", True) and not orig_model_path
-            
-            # Use model-specific batch_size if provided, otherwise use overrides or defaults
-            batch_size = model_config.get("batch_size")
-            if batch_size is None:
-                batch_size = config_with_overrides.get("batch_size", 32)
-            
-            return LensAnalyzer(
-                model_config["lens_checkpoint_path"],
-                device=self.settings.device,
-                batch_size=batch_size,
-                use_bf16=config_with_overrides.get("use_bf16", True),
-                strict_load=False,
-                comparison_tl_checkpoint=config_with_overrides.get("comparison_tl_checkpoint", False),
-                do_not_load_weights=False,
-                make_xl=False,
-                no_orig=no_orig,
-                shared_base_model=shared_base,
-                different_activations_orig=orig_model,
-                initialise_on_cpu=False,
-            )
-        
-        analyzer = await loop.run_in_executor(None, create_analyzer)
-        
-        # Store in cache
-        async with self.cache_lock:
-            self.lens_cache[model_id] = analyzer
-        
-        # Cache the donor model if it was loaded
-        if (orig_model_path and 
-            hasattr(analyzer, 'orig_model') and 
-            analyzer.orig_model is not None and
-            orig_model_path not in self.shared_orig_models):
-            logger.info(f"Caching newly loaded donor model: {orig_model_path}")
-            self.shared_orig_models[orig_model_path] = analyzer.orig_model
-
-    async def _switch_to_group(self, target_group_id: str):
-        """Switch to a different group (blocking operation)"""
-        async with self.group_switch_lock:
-            if self.current_group_id == target_group_id:
-                return  # Already in target group
-                
-            try:
-                self.is_switching_group = True
-                self.switch_start_time = datetime.now()
-                
-                # Broadcast switch starting
-                await self._broadcast_group_switch_status("starting", target_group_id)
-                
-                # Move current group to CPU if exists
-                if self.current_group_id and self.current_group_id in self.shared_base_models:
-                    logger.info(f"Moving group {self.current_group_id} to CPU")
-                    await self._move_group_to_cpu(self.current_group_id)
-                
-                # Load or move target group to GPU
-                if target_group_id in self.shared_base_models:
-                    logger.info(f"Moving group {target_group_id} from CPU to GPU")
-                    await self._move_group_to_gpu(target_group_id)
-                else:
-                    logger.info(f"Loading new group {target_group_id}")
-                    # Load first model in group to establish base
-                    group_config = self.model_groups[target_group_id]
-                    first_model = group_config.models[0]
-                    await self._load_group_base(target_group_id, first_model["id"], first_model)
-                
-                # Update current group
-                self.current_group_id = target_group_id
-                
-                # Update LRU order
-                if target_group_id in self.group_usage_order:
-                    self.group_usage_order.remove(target_group_id)
-                self.group_usage_order.append(target_group_id)
-                
-                # Broadcast completion
-                await self._broadcast_group_switch_status("completed", target_group_id)
-                
-            except Exception as e:
-                logger.error(f"Group switch failed: {e}")
-                # Try to restore previous state
-                self.current_group_id = self.current_group_id  # Keep old group
-                await self._broadcast_group_switch_status("failed", target_group_id, str(e))
-                raise
-                
-            finally:
-                self.is_switching_group = False
-                self.switch_start_time = None
-                
-                # Resume queued requests safely
-                queued = self.queued_requests[:]  # Copy list
-                self.queued_requests.clear()
-                for future in queued:
-                    if not future.done():
-                        future.set_result(None)
-
-    async def _load_group_base(self, group_id: str, target_model_id: str, target_model_config: Dict[str, Any]):
-        """Load a group's base model using the specified model"""
-        group_config = self.model_groups[group_id]
-        await self._manage_cpu_cache()
-        loop = asyncio.get_event_loop()
-        def load_base():
-            # Use the target model instead of always using the first model
-            model_config = target_model_config
-            model_id = target_model_id
-            
-            # Handle donor model for the target model
-            orig_model_path = model_config.get("different_activations_orig_path")
-            logger.info(f"Loading model {model_id} with orig_model_path: {orig_model_path}")
-            
-            # Check if we already have this donor model cached
-            orig_model = None
-            if orig_model_path and orig_model_path in self.shared_orig_models:
-                logger.info(f"Using cached donor model: {orig_model_path}")
-                orig_model = self.shared_orig_models[orig_model_path]
-            else:
-                # Pass the path and let LensAnalyzer load it
-                orig_model = orig_model_path
-            
-            # Get configuration with environment variable overrides
-            from .config import Settings
-            config_with_overrides = Settings.get_model_config_with_overrides(
-                {"settings": self.config_settings},
-                model_id=model_id.replace('-', '_'),
-                group_id=group_id.replace('-', '_')
-            )
-                
-            # If we have a different donor model, we can't use no_orig
-            no_orig = config_with_overrides.get("no_orig", True) and not orig_model_path
-            
-            # Use model-specific batch_size if provided, otherwise use overrides or defaults
-            batch_size = model_config.get("batch_size")
-            if batch_size is None:
-                batch_size = config_with_overrides.get("batch_size", 32)
-            
-            analyzer = LensAnalyzer(
-                model_config["lens_checkpoint_path"],
-                device=self.settings.device,
-                batch_size=batch_size,
-                use_bf16=config_with_overrides.get("use_bf16", True),
-                strict_load=False,
-                comparison_tl_checkpoint=config_with_overrides.get("comparison_tl_checkpoint", False),
-                do_not_load_weights=False,
-                make_xl=False,
-                no_orig=no_orig,
-                different_activations_orig=orig_model,  # Pass the donor model
-                initialise_on_cpu=False,
-            )
-            return analyzer
-        analyzer = await loop.run_in_executor(None, load_base)
-        
-        # Extract shared base model
-        if hasattr(analyzer, 'shared_base_model'):
-            shared_base_model = analyzer.shared_base_model
-        else:
-            logger.error(f"No shared_base_model found in analyzer for group {group_id}")
-            raise RuntimeError("Failed to extract shared base model")
-        
-        # Protect all writes to shared state with cache_lock
-        async with self.cache_lock:
-            self.shared_base_models[group_id] = shared_base_model
-            self.base_model_locations[group_id] = 'cuda'
-            self.lens_cache[target_model_id] = analyzer
-            
-            # Cache the donor model if it was loaded
-            orig_model_path = target_model_config.get("different_activations_orig_path")
-            if (orig_model_path and 
-                hasattr(analyzer, 'orig_model') and 
-                analyzer.orig_model is not None and
-                orig_model_path not in self.shared_orig_models):
-                logger.info(f"Caching donor model: {orig_model_path}")
-                self.shared_orig_models[orig_model_path] = analyzer.orig_model
-
-    async def _move_group_to_cpu(self, group_id: str):
-        """Move a group's base model to CPU"""
-        if group_id not in self.shared_base_models:
-            return
-        logger.info(f"Moving group {group_id} to CPU")
-        group_config = self.model_groups[group_id]
-        for model in group_config.models:
-            if model["id"] in self.lens_cache:
-                analyzer = self.lens_cache[model["id"]]
-                analyzer.to('cpu')
-        self.base_model_locations[group_id] = 'cpu'
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-
-    async def _move_group_to_gpu(self, group_id: str):
-        """Move a group's base model to GPU"""
-        if group_id not in self.shared_base_models:
-            return
-        logger.info(f"Moving group {group_id} to GPU")
-        loop = asyncio.get_event_loop()
-        group_config = self.model_groups[group_id]
-        for model in group_config.models:
-            if model["id"] in self.lens_cache:
-                analyzer = self.lens_cache[model["id"]]
-                await loop.run_in_executor(None, lambda: analyzer.to(self.settings.device))
-        self.base_model_locations[group_id] = 'cuda'
-
-    async def _manage_cpu_cache(self):
-        """Manage CPU cache by evicting least recently used groups"""
-        cpu_groups = [g for g, loc in self.base_model_locations.items() if loc == 'cpu']
-        if len(cpu_groups) >= self.max_cpu_groups:
-            lru_group = None
-            for group_id in self.group_usage_order:
-                if self.base_model_locations.get(group_id) == 'cpu':
-                    lru_group = group_id
-                    break
-            if lru_group:
-                logger.info(f"Evicting group {lru_group} from CPU cache")
-                group_config = self.model_groups[lru_group]
-                for model in group_config.models:
-                    if model["id"] in self.lens_cache:
-                        del self.lens_cache[model["id"]]
-                if lru_group in self.shared_base_models:
-                    del self.shared_base_models[lru_group]
-                del self.base_model_locations[lru_group]
-                self.group_usage_order.remove(lru_group)
-                gc.collect()
-
-    async def _broadcast_group_switch_status(self, status: str, group_id: str, error: Optional[str] = None):
-        """Broadcast group switch status to all connected clients"""
-        message = {
-            "type": "group_switch_status",
-            "status": status,
-            "group_id": group_id,
-            "timestamp": datetime.now().isoformat(),
-        }
-        if error:
-            message["error"] = error
-        
-        logger.info(f"Broadcasting group switch status: {status} for group {group_id}")
-        
-        if self.websocket_manager:
-            await self.websocket_manager.broadcast(message)
-            logger.info(f"Broadcast sent to {len(self.websocket_manager.active_connections)} connections")
-        else:
-            logger.warning(f"No websocket manager available for broadcast: {message}")
-
-    def is_model_loaded(self, model_id: str) -> bool:
-        """Check if a specific model is loaded"""
-        return model_id in self.lens_cache
-
-    async def get_default_model_id(self) -> Optional[str]:
-        """Get the ID of a default model to use"""
-        # If we have a current group, return first model from it
-        if self.current_group_id and self.current_group_id in self.model_groups:
-            group = self.model_groups[self.current_group_id]
-            if group.models:
-                return group.models[0]["id"]
-        
-        # Otherwise return first model from first group
-        if self.model_groups:
-            first_group = next(iter(self.model_groups.values()))
-            if first_group.models:
-                return first_group.models[0]["id"]
-        return None
-    
     async def clear_all_models(self):
-        """Clear all models from memory"""
+        """Clear all models from all devices"""
         logger.info("Clearing all models from memory")
         
-        # Clear current analyzer reference
-        self.current_analyzer = None
-        self.current_model_id = None
+        # Clear each device
+        for device_id, device_state in self.device_states.items():
+            device_state.lens_cache.clear()
+            device_state.shared_base_model = None
+            device_state.current_group_id = None
         
-        # Clear all lens cache entries
-        self.lens_cache.clear()
+        # Clear CPU cache
+        self.cpu_cached_groups.clear()
         
-        # Clear all shared base models
-        self.shared_base_models.clear()
-        
-        # Clear all shared orig models
+        # Clear shared caches
         self.shared_orig_models.clear()
-        
-        # Clear location tracking
-        self.base_model_locations.clear()
+        self.model_last_used.clear()
         self.group_usage_order.clear()
-        
-        # Reset current group
-        self.current_group_id = None
         
         # Force garbage collection
         for _ in range(3):
             gc.collect()
         
-        # Clear CUDA cache
+        # Clear CUDA cache on all devices
         if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
+            for device in self.devices:
+                with torch.cuda.device(device):
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
         
         logger.info("All models cleared from memory")
-    
+
     async def ensure_group_loaded(self):
-        """Ensure at least one group is loaded"""
-        if not self.current_group_id and self.model_groups:
-            # Load first group
+        """Ensure at least one group is loaded on the first device"""
+        if self.model_groups and not any(state.current_group_id for state in self.device_states.values()):
+            # Load first group on first device
             first_group_id = next(iter(self.model_groups.keys()))
-            await self._switch_to_group(first_group_id)
-
-    async def unload_group(self, group_id: str) -> Dict[str, Any]:
-        """Unload a group from memory (CPU/GPU cache)"""
-        if group_id == self.current_group_id:
-            raise ValueError("Cannot unload the currently active group")
-        
-        logger.info(f"Unloading group {group_id} from memory")
-        
-        # Remove base model from shared cache
-        if group_id in self.shared_base_models:
-            logger.info(f"Removing base model for group {group_id} from cache")
-            del self.shared_base_models[group_id]
-        
-        # Remove all analyzers for this group from lens cache
-        group_config = self.model_groups.get(group_id)
-        if group_config:
-            model_ids_to_remove = [m["id"] for m in group_config.models]
-            removed_count = 0
-            
-            async with self.cache_lock:
-                for model_id in model_ids_to_remove:
-                    if model_id in self.lens_cache:
-                        logger.info(f"Removing analyzer for model {model_id} from cache")
-                        del self.lens_cache[model_id]
-                        removed_count += 1
-                    
-                    # Also remove from model locks
-                    if model_id in self.model_locks:
-                        del self.model_locks[model_id]
-                    
-                    # Remove from last used tracking
-                    if model_id in self.model_last_used:
-                        del self.model_last_used[model_id]
-            
-            logger.info(f"Unloaded {removed_count} models from group {group_id}")
-            
-            # Force garbage collection to free memory
-            import gc
-            gc.collect()
-            
-            # Clear CUDA cache if using GPU
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            
-            return {
-                "status": "success",
-                "group_id": group_id,
-                "models_removed": removed_count,
-                "message": f"Successfully unloaded group {group_id}"
-            }
-        else:
-            raise ValueError(f"Group {group_id} not found")
-
-    async def preload_group(self, group_id: str):
-        """Preload all models in a group"""
-        if group_id not in self.model_groups:
-            raise ValueError(f"Unknown group ID: {group_id}")
-        group_config = self.model_groups[group_id]
-        
-        logger.info(f"Preloading all models in group {group_id}")
-        # Load each model in the group
-        for model_config in group_config.models:
-            model_id = model_config["id"]
-            if not self.is_model_loaded(model_id):
-                await self.get_analyzer_for_model(model_id)
-        
-        logger.info(f"Preloaded {len(group_config.models)} models in group {group_id}")
-    
-    async def preload_all_groups(self, default_group: Optional[str] = None):
-        """Preload all groups by cycling through them, ending with the default group"""
-        logger.info("Starting preload of all model groups")
-        
-        # Get default group from settings if not provided
-        if not default_group and hasattr(self, 'config_settings'):
-            default_group = self.config_settings.get('default_group', 'gemma3-27b-it')
-        elif not default_group:
-            default_group = 'gemma3-27b-it'
-        
-        # List of all groups except the default
-        all_groups = list(self.model_groups.keys())
-        other_groups = [g for g in all_groups if g != default_group]
-        
-        # First, cycle through all non-default groups
-        for group_id in other_groups:
-            logger.info(f"Preloading group {group_id} to CPU by loading to GPU first")
-            try:
-                # Switch to the group (loads to GPU)
-                await self._switch_to_group(group_id)
-                # The group will be moved to CPU when we switch to the next one
-            except Exception as e:
-                logger.error(f"Failed to preload group {group_id}: {e}")
-        
-        # Finally, switch to the default group
-        if default_group in self.model_groups:
-            logger.info(f"Loading default group {default_group} to GPU")
-            try:
-                await self._switch_to_group(default_group)
-            except Exception as e:
-                logger.error(f"Failed to load default group {default_group}: {e}")
-        
-        logger.info("Completed preloading all groups")
+            await self._switch_device_to_group(self.devices[0], first_group_id)
 
     def get_memory_usage(self) -> Dict[str, Any]:
-        """Get current GPU memory usage"""
+        """Get current GPU memory usage for all devices"""
         if not torch.cuda.is_available():
             return {"gpu_available": False}
+        
+        device_memory = {}
+        for device in self.devices:
+            device_num = int(device.split(':')[1]) if ':' in device else 0
+            with torch.cuda.device(device_num):
+                device_state = self.device_states[device]
+                device_memory[device] = {
+                    "allocated_memory_gb": torch.cuda.memory_allocated() / 1e9,
+                    "reserved_memory_gb": torch.cuda.memory_reserved() / 1e9,
+                    "max_memory_gb": torch.cuda.max_memory_allocated() / 1e9,
+                    "current_group": device_state.current_group_id,
+                    "models_loaded": len(device_state.lens_cache)
+                }
+        
         return {
             "gpu_available": True,
-            "allocated_memory_gb": torch.cuda.memory_allocated() / 1e9,
-            "reserved_memory_gb": torch.cuda.memory_reserved() / 1e9,
-            "max_memory_gb": torch.cuda.max_memory_allocated() / 1e9,
-            "groups_on_gpu": [g for g, loc in self.base_model_locations.items() if loc == 'cuda'],
-            "groups_on_cpu": [g for g, loc in self.base_model_locations.items() if loc == 'cpu'],
+            "devices": device_memory,
+            "cpu_cached_groups": list(self.cpu_cached_groups.keys()),
+            "total_models_in_memory": sum(len(state.lens_cache) for state in self.device_states.values())
         }
 
     def get_chat_tokenizer_for_model(self, model_id: str):
         """Get the chat tokenizer for a specific model if available"""
         if model_id not in self.model_to_group:
             return None
-            
+        
         group_id = self.model_to_group[model_id]
         group_config = self.model_groups[group_id]
         model_config = next((m for m in group_config.models if m["id"] == model_id), None)
@@ -847,3 +893,40 @@ class GroupedModelManager:
                     return None
             return self.chat_tokenizers.get(tokenizer_path)
         return None
+
+    async def get_default_model_id(self) -> Optional[str]:
+        """Get the ID of a default model to use"""
+        # Check if any device has a group loaded
+        for device_state in self.device_states.values():
+            if device_state.current_group_id and device_state.current_group_id in self.model_groups:
+                group = self.model_groups[device_state.current_group_id]
+                if group.models:
+                    return group.models[0]["id"]
+        
+        # Otherwise return first model from first group
+        if self.model_groups:
+            first_group = next(iter(self.model_groups.values()))
+            if first_group.models:
+                return first_group.models[0]["id"]
+        return None
+    
+    async def _unload_group(self, group_id: str):
+        """
+        Unload a group from the first device for backward compatibility.
+        This method is kept for compatibility with the old API.
+        """
+        if self.devices:
+            first_device = self.devices[0]
+            device_state = self.device_states[first_device]
+            if device_state.current_group_id == group_id:
+                await self._move_group_to_cpu(group_id, first_device)
+                device_state.current_group_id = None
+    
+    async def _switch_to_group(self, target_group_id: str):
+        """
+        Switch to a group on the first device for backward compatibility.
+        This method is kept for compatibility with the old API.
+        """
+        if self.devices:
+            first_device = self.devices[0]
+            await self._switch_device_to_group(first_device, target_group_id)

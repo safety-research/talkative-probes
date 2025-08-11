@@ -11,7 +11,9 @@ class Settings(BaseModel):
     """Application settings with environment variable support"""
     
     # Infrastructure settings (from env vars)
-    device: str = Field(default="cuda")
+    device: str = Field(default="cuda")  # Kept for backward compatibility
+    devices: List[str] = Field(default=["cuda:0"])  # List of available GPU devices
+    num_workers_per_gpu: int = Field(default=1)  # Number of workers per GPU
     allowed_origins: List[str] = Field(default=["http://localhost:3000", "http://localhost:3001"])
     api_key: Optional[str] = Field(default=None)
     max_queue_size: int = Field(default=100)
@@ -139,6 +141,8 @@ def load_settings():
     # Map environment variables to settings fields (infrastructure only)
     env_mapping = {
         "DEVICE": "device",
+        "DEVICES": "devices",  # Comma-separated list of devices
+        "NUM_WORKERS_PER_GPU": "num_workers_per_gpu",
         "ALLOWED_ORIGINS": "allowed_origins",
         "API_KEY": "api_key",
         "MAX_QUEUE_SIZE": "max_queue_size",
@@ -180,13 +184,13 @@ def load_settings():
             # Handle different types
             if field_name in ["batch_size", "port", "max_queue_size", "max_text_length", 
                               "cache_ttl", "request_timeout", "rate_limit_per_minute", 
-                              "auto_batch_size_max", "max_cpu_cached_models"]:
+                              "auto_batch_size_max", "max_cpu_cached_models", "num_workers_per_gpu"]:
                 settings_dict[field_name] = int(env_value)
             elif field_name in ["use_bf16", "load_in_8bit", "do_not_load_weights", 
                                 "make_xl", "strict_load", "no_orig", "no_kl", 
                                 "initialise_on_cpu", "lazy_load_model"]:
                 settings_dict[field_name] = env_value.lower() in ["true", "1", "yes"]
-            elif field_name == "allowed_origins":
+            elif field_name in ["allowed_origins", "devices"]:
                 settings_dict[field_name] = env_value.split(",")
             elif field_name == "comparison_tl_checkpoint":
                 # Handle both boolean and string values
@@ -204,5 +208,17 @@ def load_settings():
                                "T_TEXT", "STRICT_LOAD", "INITIALISE_ON_CPU", "LOAD_IN_8BIT",
                                "MODEL_NAME"]:
                 logger.info(f"Loaded {field_name} from environment: {env_value}")
+    
+    # Handle backward compatibility for single device
+    if "devices" not in settings_dict and "device" in settings_dict:
+        # Convert single device to list
+        device = settings_dict["device"]
+        if device == "cuda":
+            settings_dict["devices"] = ["cuda:0"]
+        elif device.startswith("cuda:"):
+            settings_dict["devices"] = [device]
+        else:
+            settings_dict["devices"] = [device]
+        logger.info(f"Converted single device '{device}' to devices list: {settings_dict['devices']}")
     
     return Settings(**settings_dict)
