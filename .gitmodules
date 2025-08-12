@@ -13,3 +13,9 @@
 [submodule "talkative_autoencoder/tuned-lens"]
 	path = talkative_autoencoder/tuned-lens
 	url = https://github.com/AlignmentResearch/tuned-lens
+[submodule "talkative_autoencoder/alignment-auditing-agent"]
+    path = talkative_autoencoder/alignment-auditing-agent
+    url = https://github.com/safety-research/alignment-auditing-agent.git
+[submodule "talkative_autoencoder/auditing-agents"]
+	path = talkative_autoencoder/auditing-agents
+	url = https://github.com/safety-research/auditing-agents/

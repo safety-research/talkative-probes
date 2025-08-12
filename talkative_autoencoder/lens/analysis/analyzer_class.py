@@ -2525,7 +2525,7 @@ class LensAnalyzer:
                 if 'gemma' in self.model_name.lower() and text_or_messages[0]["role"] == "system":
                     system_prompt = text_or_messages[0]["content"]
                     text_or_messages = text_or_messages[1:]
-                    text_or_messages[0]["content"] = system_prompt + "\n\n" + text_or_messages[0]["content"]
+                    text_or_messages[0]["content"] = system_prompt + ("\n\n" if text_or_messages[0]["content"] else "") + text_or_messages[0]["content"]
                     print(f"Added system prompt for Gemma as user prefix")
 
                 input_dict = tokenizer.apply_chat_template(
@@ -2553,7 +2553,7 @@ class LensAnalyzer:
                 prefix_text = text_or_messages
 
                 # Encode with special tokens to match what analyze_all_tokens expects
-                encoded = tokenizer(text_or_messages, return_tensors="pt", add_special_tokens=True)
+                encoded = tokenizer(text_or_messages, return_tensors="pt", add_special_tokens=True )
                 input_ids = encoded["input_ids"].to(self.orig_model.model.device)
                 attention_mask = encoded.get("attention_mask", torch.ones_like(input_ids)).to(
                     self.orig_model.model.device
@@ -2568,6 +2568,15 @@ class LensAnalyzer:
                 ):
                     input_ids = input_ids[:, 1:]
                     attention_mask = attention_mask[:, 1:]
+                
+                # Remove final EOS if present
+                if (
+                    hasattr(tokenizer, "eos_token_id")
+                    and input_ids.shape[1] >= 1
+                    and input_ids[0, -1].item() == tokenizer.eos_token_id
+                ):
+                    input_ids = input_ids[:, :-1]
+                    attention_mask = attention_mask[:, :-1]
             # Create batched input for multiple completions
             input_ids_batch = input_ids.repeat(num_completions, 1)
             attention_mask_batch = attention_mask.repeat(num_completions, 1)
@@ -2690,17 +2699,31 @@ class LensAnalyzer:
         if 'gemma' in self.model_name.lower() and messages and messages[0]["role"] == "system":
             system_prompt = messages[0]["content"]
             messages = messages[1:]
-            messages[0]["content"] = system_prompt + "\n\n" + messages[0]["content"]
+            messages[0]["content"] = system_prompt + ("\n\n" if messages[0]["content"] else "") + messages[0]["content"]
             print(f"Added system prompt for Gemma as user prefix")
 
-        # Always add generation prompt for send_message
-        input_dict = tokenizer.apply_chat_template(
-            messages,
-            return_tensors="pt",
-            return_dict=True,
-            add_generation_prompt=True,
-            continue_final_message=False,
-        )
+        # Check if last message is an assistant prefill
+        is_assistant_prefill = messages and messages[-1]["role"] == "assistant"
+        
+        # Apply chat template with appropriate settings
+        if is_assistant_prefill:
+            # For assistant prefill, don't add generation prompt and continue the final message
+            input_dict = tokenizer.apply_chat_template(
+                messages,
+                return_tensors="pt",
+                return_dict=True,
+                add_generation_prompt=False,
+                continue_final_message=True,
+            )
+        else:
+            # Normal case: add generation prompt for assistant response
+            input_dict = tokenizer.apply_chat_template(
+                messages,
+                return_tensors="pt",
+                return_dict=True,
+                add_generation_prompt=True,
+                continue_final_message=False,
+            )
 
         input_ids = input_dict["input_ids"].to(self.orig_model.model.device)
         attention_mask = input_dict.get("attention_mask", torch.ones_like(input_ids)).to(

@@ -1,5 +1,5 @@
 # Default target (running just 'make') is 'setup'
-.PHONY: setup clean
+.PHONY: setup clean lightweight lightweight-run
 
 # Define SHELL for compatibility and features
 SHELL := /bin/zsh
@@ -15,6 +15,18 @@ setup: $(VENV_DIR)/bin/activate # Depends on the venv being created
 	@uv pip install . # Install main project dependencies from pyproject.toml
 	@echo "--- Setup complete! ---"
 	@echo "To activate the virtual environment, run: source $(VENV_DIR)/bin/activate"
+
+# Lightweight install: only talkative_autoencoder and website
+lightweight:
+	@echo "--- Lightweight setup (talkative_autoencoder + website only) ---"
+	@$(MAKE) -C talkative_autoencoder setup
+	@$(MAKE) -C talkative_autoencoder/website setup
+	@echo "--- Lightweight setup complete ---"
+	@echo "Next: cd talkative_autoencoder/website && make run"
+
+# Lightweight setup and run website backend immediately
+lightweight-run: lightweight
+	@$(MAKE) -C talkative_autoencoder/website run
 
 $(VENV_DIR)/bin/activate: pyproject.toml # Depend on pyproject.toml instead of requirements.txt
 	@uv --version >/dev/null 2>&1 || { echo >&2 "Error: uv not found or not executable. Please install uv: https://github.com/astral-sh/uv"; exit 1; }

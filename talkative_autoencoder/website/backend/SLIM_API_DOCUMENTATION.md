@@ -65,7 +65,7 @@ Analyze text with token salience scores.
 
 **POST /api/slim/send_message**
 
-Send a message and get a single assistant response. Unlike generate, this endpoint returns only the assistant's response text, not the full conversation.
+Send a message and get a single assistant response. Unlike generate, this endpoint returns only the assistant's response text, not the full conversation. Supports prefill.
 
 **Request:**
 ```json

@@ -437,18 +437,21 @@ def compute_single_sample_losses(
     A_mean_sq_norm = per_sample_denom.mean().item()
 
     mse_A_vs_zero = torch.nn.functional.mse_loss(A_single, torch.zeros_like(A_single), reduction="none").mean(dim=-1)
-    mse_A_vs_zero = (mse_A_vs_zero / per_sample_denom).mean().item()
+    #mse_A_vs_zero = (mse_A_vs_zero / per_sample_denom).mean().item()
+    mse_A_vs_zero = mse_A_vs_zero.mean().item()
 
     if A_hat_A_single is not None:
         mse_A_vs_Ahat = torch.nn.functional.mse_loss(A_single, A_hat_A_single.to(A_single.device), reduction="none").mean(dim=-1)
-        mse_A_vs_Ahat = (mse_A_vs_Ahat / per_sample_denom).mean().item()
+        #mse_A_vs_Ahat = (mse_A_vs_Ahat / per_sample_denom).mean().item()
+        mse_A_vs_Ahat = mse_A_vs_Ahat.mean().item()
     else:
         mse_A_vs_Ahat = 0.0
 
     mse_A_vs_aprime = None
     if A_prime_single is not None and not torch.equal(A_prime_single, A_single):
         mse_A_vs_aprime = torch.nn.functional.mse_loss(A_single, A_prime_single, reduction="none").mean(dim=-1)
-        mse_A_vs_aprime = (mse_A_vs_aprime / per_sample_denom).mean().item()
+        mse_A_vs_aprime = mse_A_vs_aprime.mean().item()
+        #mse_A_vs_aprime = (mse_A_vs_aprime / per_sample_denom).mean().item()
 
     # Build loss dictionary matching the original format
     loss_dict = {

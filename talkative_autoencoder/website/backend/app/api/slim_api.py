@@ -465,8 +465,8 @@ async def list_model_groups(req: Request):
     if model_manager:
         # Get the current model from any loaded device
         for device_state in model_manager.device_states.values():
-            if device_state.loaded_models:
-                current_model_id = list(device_state.loaded_models.keys())[0]
+            if device_state.lens_cache:
+                current_model_id = list(device_state.lens_cache.keys())[0]
                 break
     
     # Simplify the response for slim API

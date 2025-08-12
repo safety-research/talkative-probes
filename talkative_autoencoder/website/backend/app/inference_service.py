@@ -698,7 +698,8 @@ class InferenceService:
                         text_to_analyze = chat_tokenizer.apply_chat_template(
                             messages,
                             tokenize=False,
-                            add_generation_prompt=True if messages[-1].get("role") == "user" else False
+                            add_generation_prompt=True if messages[-1].get("role") == "user" else False,
+                            continue_final_message=False if messages[-1].get("role") == "user" else True
                         )
                         logger.info(f"Chat template applied, output length: {len(text_to_analyze)}")
                     else:
@@ -1146,7 +1147,7 @@ class InferenceService:
                 if 'gemma' in model_id and messages[0]["role"] == "system":
                     system_prompt = messages[0]["content"]
                     messages = messages[1:]
-                    messages[0]["content"] = system_prompt + "\n\n" + messages[0]["content"]
+                    messages[0]["content"] = system_prompt + ("\n\n" if messages[0]["content"] else "") + messages[0]["content"]
                     logger.info(f"Added system prompt for Gemma as user prefix")
                 
                 logger.info(f"Applying chat template to {len(messages)} messages")

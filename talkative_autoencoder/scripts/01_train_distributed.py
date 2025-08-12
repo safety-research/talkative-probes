@@ -4101,7 +4101,7 @@ def main(cfg: DictConfig) -> None:
             if step == 0:
                 # log warning the first 10 tokens of the first element of the batch, on all gpus
                 log.warning(
-                    f"First 10 tokens of the first element of the batch for rank {rank}: {raw_batch['input_ids_A'][:10]}"
+                    f"First 10 examples of the first element of the batch for rank {rank}: {raw_batch['input_ids_A'][:10]}"
                 )
                 log.info(f"dtype of A in batch: {raw_batch['A'].dtype}")
 

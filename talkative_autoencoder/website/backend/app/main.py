@@ -23,7 +23,7 @@ from datetime import datetime
 from pathlib import Path
 
 import torch
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, WebSocket
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -1374,7 +1374,20 @@ async def websocket_endpoint(websocket: WebSocket):
                             }
                         )
 
+    except WebSocketDisconnect as e:
+        # Normal disconnection - don't log as error
+        disconnect_code = e.code if hasattr(e, 'code') else None
+        disconnect_reason = e.reason if hasattr(e, 'reason') else ""
+        
+        # 1000 = Normal closure, 1001 = Going away (browser closed/navigated away)
+        # These are normal disconnections
+        if disconnect_code in [1000, 1001]:
+            logger.info(f"Client disconnected normally (code: {disconnect_code})")
+        else:
+            # Abnormal disconnection
+            logger.warning(f"Client disconnected with code {disconnect_code}: {disconnect_reason}")
     except Exception as e:
+        # Actual errors
         import traceback
         logger.error(f"WebSocket error: {e}")
         logger.error(f"Traceback: {traceback.format_exc()}")
