@@ -64,7 +64,12 @@ fi
 # Check if environment exists, create it if not
 if [ ! -d "$UV_PROJECT_ENVIRONMENT" ] || [ ! -f "$UV_PROJECT_ENVIRONMENT/pyvenv.cfg" ]; then
     echo "[ensure_env] Environment not found, creating it... from $UV_PROJECT_ROOT"
-    cd "$UV_PROJECT_ROOT" && PATH="$HOME/.local/bin:$PATH" UV_CACHE_DIR="$UV_CACHE_DIR" UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" uv sync --frozen
+    if [ -f "$UV_PROJECT_ROOT/uv.lock" ]; then
+        cd "$UV_PROJECT_ROOT" && PATH="$HOME/.local/bin:$PATH" UV_CACHE_DIR="$UV_CACHE_DIR" UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" uv sync --frozen
+    else
+        echo "[ensure_env] No uv.lock found, running 'uv sync'"
+        cd "$UV_PROJECT_ROOT" && PATH="$HOME/.local/bin:$PATH" UV_CACHE_DIR="$UV_CACHE_DIR" UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" uv sync
+    fi
     echo "[ensure_env] Environment created successfully!"
 else
     echo "[ensure_env] Environment already exists at $UV_PROJECT_ENVIRONMENT"
