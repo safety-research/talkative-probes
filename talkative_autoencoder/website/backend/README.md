@@ -91,6 +91,10 @@ At startup in non-lazy mode, the default group is selected by:
 2. Otherwise `app/model_groups.json` → `settings.default_group`
 3. Otherwise no default is loaded
 
+#### CORS
+- `ALLOWED_ORIGINS` can be a comma-separated list or `*` to allow any origin.
+- If not `*`, common localhost origins are auto-added.
+
 ## API Documentation
 
 For comprehensive API documentation including all endpoints, parameters, request/response formats, and examples, see:

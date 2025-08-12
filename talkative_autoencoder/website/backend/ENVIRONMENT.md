@@ -7,6 +7,7 @@
 - Infrastructure settings (read by `load_settings()` into `Settings`):
   - Examples: `DEVICE`, `DEVICES`, `NUM_WORKERS_PER_GPU`, `ALLOWED_ORIGINS`, `API_KEY`, `MAX_QUEUE_SIZE`, `MAX_TEXT_LENGTH`, `HOST`, `PORT`, `REQUEST_TIMEOUT`, `RATE_LIMIT_PER_MINUTE`, `TUNED_LENS_DIR`, `LAZY_LOAD_MODEL`, `MAX_CPU_CACHED_MODELS`, `DEFAULT_GROUP`, etc.
   - Types: integers, booleans, comma lists handled in `config.load_settings()`.
+  - CORS: `ALLOWED_ORIGINS` can be a comma-separated list or `*` to allow any origin. When not `*`, localhost variants for common ports are auto-added.
   - Startup default group precedence (only this mechanism controls startup default):
     1) `DEFAULT_GROUP` env
     2) `model_groups.json` → `settings.default_group` (keep this in JSON for sensible defaults)

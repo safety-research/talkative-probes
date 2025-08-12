@@ -388,29 +388,44 @@ if os.getenv("ENABLE_TRUSTED_HOST", "true").lower() == "true":
     )
 
 # CORS configuration
-# Add localhost with various ports to allowed origins
-allowed_origins = settings.allowed_origins.copy()
-# Ensure common localhost ports are allowed
-for port in [3000, 3001, 8000, 8001]:
-    for protocol in ["http", "https"]:
-        origin = f"{protocol}://localhost:{port}"
-        if origin not in allowed_origins:
-            allowed_origins.append(origin)
-        # Also add 127.0.0.1 variant
-        origin_ip = f"{protocol}://127.0.0.1:{port}"
-        if origin_ip not in allowed_origins:
-            allowed_origins.append(origin_ip)
+# Support wildcard via env: ALLOWED_ORIGINS=*
+wildcard_origins = any((o or "").strip() == "*" for o in settings.allowed_origins)
 
-logger.info(f"CORS allowed origins: {allowed_origins}")
+allowed_origins = [] if wildcard_origins else settings.allowed_origins.copy()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=allowed_origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS", "PUT", "DELETE"],  # Allow all methods
-    allow_headers=["*"],  # Allow all headers for WebSocket compatibility
-    expose_headers=["*"],  # Expose all headers to the client
-)
+if not wildcard_origins:
+    # Ensure common localhost ports are allowed
+    for port in [3000, 3001, 8000, 8001]:
+        for protocol in ["http", "https"]:
+            origin = f"{protocol}://localhost:{port}"
+            if origin not in allowed_origins:
+                allowed_origins.append(origin)
+            # Also add 127.0.0.1 variant
+            origin_ip = f"{protocol}://127.0.0.1:{port}"
+            if origin_ip not in allowed_origins:
+                allowed_origins.append(origin_ip)
+
+if wildcard_origins:
+    logger.info("CORS allowed origins: * (all origins)")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_origin_regex=".*",
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS", "PUT", "DELETE"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+    )
+else:
+    logger.info(f"CORS allowed origins: {allowed_origins}")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "OPTIONS", "PUT", "DELETE"],  # Allow all methods
+        allow_headers=["*"],  # Allow all headers for WebSocket compatibility
+        expose_headers=["*"],  # Expose all headers to the client
+    )
 
 # Include unified API routes
 app.include_router(unified_api.router)
