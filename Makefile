@@ -19,7 +19,7 @@ setup: $(VENV_DIR)/bin/activate # Depends on the venv being created
 # Lightweight install: only talkative_autoencoder and website
 lightweight:
 	@echo "--- Lightweight setup (talkative_autoencoder + website only) ---"
-	@$(MAKE) -C talkative_autoencoder setup
+	@LIGHTWEIGHT=1 $(MAKE) -C talkative_autoencoder setup
 	@$(MAKE) -C talkative_autoencoder/website setup
 	@echo "--- Lightweight setup complete ---"
 	@echo "Next: cd talkative_autoencoder/website && make run"

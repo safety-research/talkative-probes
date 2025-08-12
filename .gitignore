@@ -33,3 +33,4 @@ sae_cache
 *.pt
 pgn_results
 consistency-lens
+uv.lock
