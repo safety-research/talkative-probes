@@ -79,7 +79,7 @@ class Settings(BaseModel):
         # Settings that can be overridden
         overridable_settings = [
             "use_bf16", "no_orig", "no_kl", "batch_size", "auto_batch_size_max",
-            "comparison_tl_checkpoint", "preload_groups", "default_group", "max_cpu_models"
+            "comparison_tl_checkpoint", "preload_groups", "max_cpu_models"
         ]
         
         # Apply overrides in priority order

@@ -54,46 +54,42 @@ uv run uvicorn website.backend.app.main:app \
 
 ### Environment Variables
 
-Create a `.env` file in the backend directory:
+Create a `.env` file in `website/backend/`. Backend `.env` overrides the repo root `.env` for overlapping keys.
 
+For complete details (keys, types, precedence) see `ENVIRONMENT.md`.
+
+Minimal example:
 ```env
-# Model Configuration
-CHECKPOINT_PATH=/path/to/checkpoint.pt
-DEVICE=cuda
-BATCH_SIZE=32
-USE_BF16=true
+# Startup default group (env overrides JSON settings.default_group)
+DEFAULT_GROUP=gemma3-27b-it
 
-# Tuned Lens Configuration (Optional - uncomment and set path to enable)
-# TUNED_LENS_DIR=/path/to/tuned/lens/directory
-
-# LensAnalyzer Configuration
-# COMPARISON_TL_CHECKPOINT=true  # Can be true, false, or a path to a checkpoint
-# DO_NOT_LOAD_WEIGHTS=false  # Skip loading weights (for debugging)
-# MAKE_XL=false  # Convert to XL model variant
-# T_TEXT=  # Optional text parameter
-# STRICT_LOAD=false  # Strict checkpoint loading (set to false to allow warnings)
-# NO_ORIG=false  # Disable original model
-# DIFFERENT_ACTIVATIONS_MODEL=  # Optional: model name for different activations
-# INITIALISE_ON_CPU=false  # Initialize models on CPU (for low memory situations)
-
-# API Configuration
-ALLOWED_ORIGINS=http://localhost:3000,https://kitft.github.io
-API_KEY=your-optional-api-key  # Optional API key for authentication
+# Infrastructure
+DEVICES=cuda:0
+NUM_WORKERS_PER_GPU=1
+ALLOWED_ORIGINS=http://localhost:3000
+API_KEY=
 MAX_QUEUE_SIZE=100
-MAX_TEXT_LENGTH=1000
-
-# Server Configuration
-MODEL_NAME=gpt2
+MAX_TEXT_LENGTH=20000
 HOST=0.0.0.0
 PORT=8000
 REQUEST_TIMEOUT=300
-LOAD_IN_8BIT=false
 RATE_LIMIT_PER_MINUTE=60
+LAZY_LOAD_MODEL=false
+TUNED_LENS_DIR=
+
+# Global model/group behavior overrides
+GLOBAL_USE_BF16=true
+GLOBAL_NO_ORIG=true
+GLOBAL_BATCH_SIZE=48
+GLOBAL_AUTO_BATCH_SIZE_MAX=768
 ```
 
 ### Model Loading
 
-The backend automatically loads the model specified in the environment variables or uses the default configuration from `config.py`.
+At startup in non-lazy mode, the default group is selected by:
+1. `DEFAULT_GROUP` env (if set)
+2. Otherwise `app/model_groups.json` → `settings.default_group`
+3. Otherwise no default is loaded
 
 ## API Documentation
 
