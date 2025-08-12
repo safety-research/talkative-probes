@@ -345,9 +345,11 @@ class Decoder(nn.Module):
             if layer_idx is None:
                 raise ValueError("layer_idx must be provided when using per_layer_projections")
             # Apply layer-specific projection
+            # Ensure activation_input is on the same device as the projection weights
             # activation_input: (B, d_model)
             # proj_weight[layer_idx]: (d_model, d_model)
             # proj_bias[layer_idx]: (d_model,)
+            activation_input = activation_input.to(self.proj_weight.device)
             return torch.nn.functional.linear(activation_input, self.proj_weight[layer_idx], self.proj_bias[layer_idx])
         else:
             # Use single projection layer

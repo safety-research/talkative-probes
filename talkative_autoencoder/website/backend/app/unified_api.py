@@ -154,7 +154,7 @@ async def list_models(
         locations = []
         if location_info:
             locations = [
-                ModelLocation(**loc) for loc in location_info["locations"]
+                ModelLocation(**loc) for loc in location_info
             ]
         
         model_info = ModelInfo(
@@ -369,12 +369,6 @@ async def switch_model_compat(
 
 def setup_model_manager(app, settings):
     """Setup function to be called from main.py"""
-    global model_manager
-    
-    # Create the unified model manager
-    model_manager = UnifiedModelManager(settings)
-    
+    # This function is not used anymore - model_manager is set directly from main.py
     # Include the router
     app.include_router(router)
-    
-    return model_manager

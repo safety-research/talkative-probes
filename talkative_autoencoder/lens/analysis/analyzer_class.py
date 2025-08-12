@@ -494,17 +494,50 @@ class LensAnalyzer:
     def to(self, device):
         """
         Move all relevant models and tensors to the specified device.
+        Ensures proper synchronization for multi-GPU setups.
         """
         self.device = torch.device(device)
+        
+        # Move decoder and its components
         if hasattr(self, "decoder") and self.decoder is not None:
             self.decoder.to(device)
+            # Note: decoder.device is a read-only property that returns the device of its parameters
+        
+        # Move encoder and its components  
         if hasattr(self, "encoder") and self.encoder is not None:
             self.encoder.to(device)
+            # Note: encoder.device is a read-only property if it exists
+        
+        # Move original model
         if hasattr(self, "orig_model") and self.orig_model is not None:
             self.orig_model.to(device)
+        
+        # Move comparison tuned lens if present
         if hasattr(self, "comparison_tuned_lens") and self.comparison_tuned_lens is not None:
             self.comparison_tuned_lens.to(device)
+        
+        # Note: shared_base_model is moved via encoder/decoder/orig_model's to() methods
+        # so we don't need to move it separately here
+        
+        # Clear CUDA cache if moving between CUDA devices
+        if str(device).startswith('cuda'):
+            torch.cuda.empty_cache()
+        
         return self
+    
+    def get_current_device(self):
+        """
+        Get the current device of the analyzer by checking the actual model parameters.
+        This is more reliable than self.device in multi-GPU setups.
+        """
+        if hasattr(self, "decoder") and self.decoder is not None:
+            return next(self.decoder.parameters()).device
+        elif hasattr(self, "encoder") and self.encoder is not None:
+            return next(self.encoder.parameters()).device
+        elif hasattr(self, "orig_model") and self.orig_model is not None:
+            return next(self.orig_model.model.parameters()).device
+        else:
+            return self.device
 
     def swap_orig_model(self, new_model: str):
         del self.orig_model
@@ -791,10 +824,13 @@ class LensAnalyzer:
             explanation_embeddings = self.encoder.base.get_input_embeddings()(explanation_ids)
 
             batch_size = explanation_ids.shape[0]
+            # CRITICAL FIX: Use the actual device of the tensor, not self.device
+            tensor_device = explanation_ids.device
             if isinstance(position_to_analyze, int):
-                original_token_pos = torch.full((batch_size,), position_to_analyze, device=self.device)
+                original_token_pos = torch.full((batch_size,), position_to_analyze, device=tensor_device)
             else:
-                original_token_pos = position_to_analyze
+                # Ensure position tensor is on the same device
+                original_token_pos = position_to_analyze.to(tensor_device)
             # The input_ids are expected to be of shape (1, seq_len)
             if isinstance(position_to_analyze, int):
                 current_token_id = (
@@ -815,9 +851,11 @@ class LensAnalyzer:
                 explanation_embeddings, original_token_pos=original_token_pos, current_token_ids=current_token_id
             )
             if tensor_As is not None:
-                A_target_expanded = tensor_As
+                # Ensure tensor_As is on the same device as A_hat
+                A_target_expanded = tensor_As.to(A_hat.device)
             else:
-                A_target_expanded = A_target.expand_as(A_hat)
+                # Ensure A_target is on the same device as A_hat
+                A_target_expanded = A_target.to(A_hat.device).expand_as(A_hat)
             mses = torch.nn.functional.mse_loss(A_target_expanded, A_hat, reduction="none").mean(dim=-1)
             return mses
 
@@ -880,6 +918,12 @@ class LensAnalyzer:
         all_salience_scores = []
         if n_groups_per_rollout is None:
             n_groups_per_rollout = total_positions
+        
+        # Ensure A_targets is on the same device as the decoder
+        decoder_device = next(self.decoder.parameters()).device
+        A_targets = A_targets.to(decoder_device)
+        positions = positions.to(decoder_device)
+        input_ids = input_ids.to(decoder_device)
 
         # Process positions in sub-batches to manage memory
         for start_idx in tqdm.tqdm(range(0, total_positions, n_groups_per_rollout), leave=False, desc=f"Optimizing explanations with k={num_rollouts_per_position}, this batch has {n_groups_per_rollout} tokens (total {num_rollouts_per_position * n_groups_per_rollout} rollouts out of {num_rollouts_per_position * total_positions})"):
@@ -942,7 +986,8 @@ class LensAnalyzer:
 
         # Stack results
         best_explanations = torch.stack(all_best_explanations)
-        best_mses = torch.tensor(all_best_mses, device=self.device)
+        # CRITICAL FIX: Use the device of the explanations tensor, not self.device
+        best_mses = torch.tensor(all_best_mses, device=best_explanations.device)
 
         return best_explanations, best_mses, all_salience_scores
 
@@ -1026,7 +1071,8 @@ class LensAnalyzer:
                 A_target, _ = self.orig_model.get_activations_at_positions(
                     input_ids=input_ids,
                     layer_idx=self.layer,
-                    token_positions=torch.tensor([position_to_analyze], device=self.device),
+                    # Use current device instead of self.device
+                    token_positions=torch.tensor([position_to_analyze], device=self.get_current_device()),
                 )
                 A_target = A_target.squeeze(0)
         temperature = kwargs.get("temperature", 1.0)
@@ -1054,7 +1100,8 @@ class LensAnalyzer:
 
                     if not duplicate_prefix:
                         A_batch = A_target.unsqueeze(0).repeat(current_batch_size, 1)
-                        token_pos_batch = torch.full((current_batch_size,), position_to_analyze, device=self.device)
+                        # Use current device instead of self.device
+                        token_pos_batch = torch.full((current_batch_size,), position_to_analyze, device=self.get_current_device())
                         gen_result = self.decoder.generate_soft_kv_cached_nondiff(
                             A_batch,
                             max_length=self.t_text,
@@ -1064,7 +1111,8 @@ class LensAnalyzer:
                         )
                     elif duplicate_prefix:
                         A_batch = A_target.unsqueeze(0)
-                        token_pos_batch = torch.full((1,), position_to_analyze, device=self.device)
+                        # Use current device instead of self.device
+                        token_pos_batch = torch.full((1,), position_to_analyze, device=self.get_current_device())
                         gen_result = self.decoder.generate_k(
                             A_batch,
                             max_length=self.t_text,
@@ -1104,7 +1152,8 @@ class LensAnalyzer:
                 print(f"Finding initial best explanation from {num_samples} rollouts...")
             with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=self.use_bf16):
                 A_batch = A_target.unsqueeze(0).repeat(num_samples, 1)
-                token_pos_batch = torch.full((num_samples,), position_to_analyze, device=self.device)
+                # Use current device instead of self.device
+                token_pos_batch = torch.full((num_samples,), position_to_analyze, device=self.get_current_device())
                 gen_func = self.decoder.generate_soft_kv_cached_nondiff
                 gen_result = gen_func(
                     A_batch,
@@ -1488,9 +1537,11 @@ class LensAnalyzer:
             )
             input_ids = input_ids[:, 1:].clone()
             attention_mask = attention_mask[:, 1:].clone()
-        input_ids = input_ids.to(self.device)
+        # Use actual current device instead of self.device
+        current_device = self.get_current_device()
+        input_ids = input_ids.to(current_device)
         seq_len = input_ids.shape[1]
-        attention_mask = attention_mask.to(self.device)
+        attention_mask = attention_mask.to(current_device)
 
         if move_devices and self.orig_model.model != self.shared_base_model:
             if self.shared_base_model is not None:
@@ -1524,14 +1575,14 @@ class LensAnalyzer:
                 if last_start >= seq_len - 4:
                     # Start transcript 3 before the (n+1)th-to-last start-of-turn
                     start_idx = max(0, start_positions[-(last_n_messages+1)] - 3)
-                    tokens_to_analyze = torch.zeros(seq_len, dtype=torch.bool, device=self.device)
+                    tokens_to_analyze = torch.zeros(seq_len, dtype=torch.bool, device=current_device)
                     tokens_to_analyze[start_idx:] = True
                     logger.info(f"Analyzing last {last_n_messages} messages: start at token {start_idx} (start-of-turn idx {start_positions[-(last_n_messages+1)]}) out of {seq_len}")
                     print(f"[ANALYZE_ALL_TOKENS] Analyzing last {last_n_messages} messages: start at token {start_idx} (start-of-turn idx {start_positions[-(last_n_messages+1)]}) out of {seq_len}")
                 else:
                     # Just do the last n start-of-turns
                     start_idx = start_positions[-last_n_messages]
-                    tokens_to_analyze = torch.zeros(seq_len, dtype=torch.bool, device=self.device)
+                    tokens_to_analyze = torch.zeros(seq_len, dtype=torch.bool, device=current_device)
                     tokens_to_analyze[start_idx:] = True
                     logger.info(f"Analyzing last {last_n_messages} messages (not at end): start at token {start_idx} (start-of-turn idx {start_positions[-last_n_messages]}) out of {seq_len}")
                     print(f"[ANALYZE_ALL_TOKENS] Analyzing last {last_n_messages} messages (not at end): start at token {start_idx} (start-of-turn idx {start_positions[-last_n_messages]}) out of {seq_len}")
@@ -1540,7 +1591,7 @@ class LensAnalyzer:
                 tokens_to_analyze = None
         
         # Prepare data for batch processing
-        token_positions = torch.arange(seq_len, device=self.device)
+        token_positions = torch.arange(seq_len, device=current_device)
         batch_data = []
         
         if tokens_to_analyze is None:
@@ -1609,7 +1660,8 @@ class LensAnalyzer:
                         temperature=temperature,
                     )
 
-            mse = torch.full((current_batch_size,), -1.0, device=self.device)
+            # CRITICAL FIX: Use the device of A_batch, not self.device
+            mse = torch.full((current_batch_size,), -1.0, device=A_batch.device)
             salience_scores = [[] for _ in range(current_batch_size)]
 
             # Optimize explanations if config is provided. This will also calculate MSE and salience.
@@ -1670,7 +1722,8 @@ class LensAnalyzer:
 
                     # Stack all optimized tokens into a batch tensor
                     optimized_hard_token_ids = torch.stack(optimized_tokens_list, dim=0)
-                    mse = torch.tensor(optimized_mses_list, device=self.device)
+                    # CRITICAL FIX: Use the device of A_batch for consistency
+                    mse = torch.tensor(optimized_mses_list, device=A_batch.device)
                     if calculate_token_salience:
                         salience_scores = optimized_salience_scores_list
 
@@ -1709,7 +1762,9 @@ class LensAnalyzer:
                             original_token_pos=token_positions_batch,
                             current_token_ids=input_ids_batch[0, :] if self.encoder.config.add_current_token else None,
                         )
-                        mse = torch.nn.functional.mse_loss(A_batch, A_hat, reduction="none").mean(dim=-1)
+                        # CRITICAL FIX: Ensure both tensors are on the same device
+                        A_batch_device = A_batch.to(A_hat.device)
+                        mse = torch.nn.functional.mse_loss(A_batch_device, A_hat, reduction="none").mean(dim=-1)
                 else:
                     mse.fill_(0.0)
 
@@ -1725,10 +1780,13 @@ class LensAnalyzer:
 
             # Calculate remaining metrics (relative RMSE, KL divergence)
             if no_eval:
-                relative_RMSE = torch.full((current_batch_size,), 0.0, device=self.device)
-                kl_div = torch.full((current_batch_size,), 0.0, device=self.device)
+                # CRITICAL FIX: Use mse.device to ensure consistency
+                relative_RMSE = torch.full((current_batch_size,), 0.0, device=mse.device)
+                kl_div = torch.full((current_batch_size,), 0.0, device=mse.device)
             else:
-                relative_RMSE = torch.sqrt(mse) / torch.sqrt(torch.mean(A_batch**2, dim=-1))
+                # CRITICAL FIX: Ensure A_batch is on the same device as mse
+                A_batch_for_rmse = A_batch.to(mse.device)
+                relative_RMSE = torch.sqrt(mse) / torch.sqrt(torch.mean(A_batch_for_rmse**2, dim=-1))
                 if not no_kl:
                     with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=self.use_bf16):
                         # This KL is between the explanation's predicted logits and the original model's logits
@@ -1738,7 +1796,7 @@ class LensAnalyzer:
                             torch.log_softmax(logits, dim=-1), torch.softmax(gen.logits, dim=-1), reduction="none"
                         ).sum(dim=-1)
                 else:
-                    kl_div = torch.full((current_batch_size,), -1.0, device=self.device)
+                    kl_div = torch.full((current_batch_size,), -1.0, device=mse.device)
 
             # Prepare results for the batch
             for j in range(current_batch_size):

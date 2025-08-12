@@ -71,9 +71,9 @@ from lens.training.distributed import (
     setup_for_distributed,
 )
 from lens.training.fast_distributed_sampler import FastDistributedSampler
+from lens.training.grad_clip import clip_grads_per_type
 from lens.training.loop import train_step as original_train_step
 from lens.training.optim import param_groups
-from lens.training.grad_clip import clip_grads_per_type
 from lens.training.schedules import (
     SmoothTransitionScheduler,
     get_autocast_context,
@@ -426,6 +426,10 @@ def distributed_train_step(
                 param = next(decoder_base.parameters())
                 print(f"DEBUG: decoder param dtype: {param.dtype}")
         with Timer("bwd/main", log, main_process=is_main(), log_wandb=True, wandb_step=step, log_print=False):
+            # Detect if encoder is currently trainable; if not, disable backward on loss2
+            encoder_is_trainable_now = any(p.requires_grad for p in encoder_base.parameters())
+            disable_loss2_backward = not encoder_is_trainable_now
+
             if loss_fns["GRPO_weight"] > 0:
                 if is_main() and step == 0:
                     print("Separate backward pass for loss1 and loss2")
@@ -433,19 +437,22 @@ def distributed_train_step(
                     scaler.scale(loss1).backward()
                 else:
                     loss1.backward()
-                if device.type == "cuda" and scaler is not None:
-                    scaler.scale(loss2).backward()
-                else:
-                    loss2.backward()
+
+                if not disable_loss2_backward:
+                    if device.type == "cuda" and scaler is not None:
+                        scaler.scale(loss2).backward()
+                    else:
+                        loss2.backward()
                 total_loss = loss1 + loss2
             else:
                 if is_main() and step == 0:
                     print("Merged backward pass for loss1 and loss2")
                 total_loss = loss1 + loss2
+                loss_for_backward = loss1 if disable_loss2_backward else total_loss
                 if device.type == "cuda" and scaler is not None:
-                    scaler.scale(total_loss).backward()
+                    scaler.scale(loss_for_backward).backward()
                 else:
-                    total_loss.backward()
+                    loss_for_backward.backward()
     if is_accumulation_end:
         with Timer("optim/step", log, main_process=is_main(), log_wandb=True, wandb_step=step, log_print=False):
             if device.type == "cuda" and scaler is not None:
@@ -464,7 +471,9 @@ def distributed_train_step(
             grad_norm_enc = None
             grad_norm = None
 
-            per_type_clip_enabled = (grad_clip_proj is not None) or (grad_clip_prompt is not None) or (grad_clip_other is not None)
+            per_type_clip_enabled = (
+                (grad_clip_proj is not None) or (grad_clip_prompt is not None) or (grad_clip_other is not None)
+            )
 
             if per_type_clip_enabled:
                 proj_clip_val = grad_clip_proj if grad_clip_proj is not None else grad_clip
@@ -567,18 +576,22 @@ def distributed_train_step(
             }
         )
         # Also add per-module per-type norms for wandb logging
-        if 'dec_type_norms' in locals():
-            metrics.update({
-                "grad_norm_dec_proj": float(dec_type_norms.get("proj", 0.0)),
-                "grad_norm_dec_prompt": float(dec_type_norms.get("prompt", 0.0)),
-                "grad_norm_dec_other": float(dec_type_norms.get("other", 0.0)),
-            })
-        if 'enc_type_norms' in locals():
-            metrics.update({
-                "grad_norm_enc_proj": float(enc_type_norms.get("proj", 0.0)),
-                "grad_norm_enc_prompt": float(enc_type_norms.get("prompt", 0.0)),
-                "grad_norm_enc_other": float(enc_type_norms.get("other", 0.0)),
-            })
+        if "dec_type_norms" in locals():
+            metrics.update(
+                {
+                    "grad_norm_dec_proj": float(dec_type_norms.get("proj", 0.0)),
+                    "grad_norm_dec_prompt": float(dec_type_norms.get("prompt", 0.0)),
+                    "grad_norm_dec_other": float(dec_type_norms.get("other", 0.0)),
+                }
+            )
+        if "enc_type_norms" in locals():
+            metrics.update(
+                {
+                    "grad_norm_enc_proj": float(enc_type_norms.get("proj", 0.0)),
+                    "grad_norm_enc_prompt": float(enc_type_norms.get("prompt", 0.0)),
+                    "grad_norm_enc_other": float(enc_type_norms.get("other", 0.0)),
+                }
+            )
     if config.get("grad_clip_enc", None) is not None:
         metrics["grad_norm_dec"] = grad_norm_dec.item() if grad_norm_dec is not None else 0.0
         metrics["grad_norm_enc"] = grad_norm_enc.item() if grad_norm_enc is not None else 0.0
@@ -1334,9 +1347,7 @@ class MetricsAccumulator:
         zero_mse = act_sum_sq / n
         mean_mse = act_var
         reconstruction_mse = mse_sum / n
-        normalized_reconstruction_mse = (
-            normalized_mse_sum / N_vectors if N_vectors > 0 else 0.0
-        )
+        normalized_reconstruction_mse = normalized_mse_sum / N_vectors if N_vectors > 0 else 0.0
 
         return {
             "act_mean": act_mean,
@@ -3093,6 +3104,21 @@ def main(cfg: DictConfig) -> None:
         #     elif hasattr(decoder, 'proj_bias') and isinstance(decoder.proj_bias, torch.Tensor):
         #         log.info(f"After init: sum of abs of bias: {decoder.proj_bias.abs().sum().item()}")
 
+        # Apply encoder freeze/unfreeze policy based on optional unfreezing feature
+        unfreeze_cfg = config.get("unfreeze_encoder", {}) or {}
+        if unfreeze_cfg.get("enabled", False):
+            # Start with encoder frozen; it will be unfrozen later by the scheduler
+            for p in encoder.parameters():
+                p.requires_grad = False
+            if is_main():
+                log.info("Encoder initially frozen (unfreeze_encoder.enabled=True). Will unfreeze later by schedule.")
+        else:
+            # Feature disabled: ensure encoder is fully trainable in the usual way
+            for p in encoder.parameters():
+                p.requires_grad = True
+            if is_main():
+                log.info("Unfreezing feature disabled. Encoder set to trainable from the start.")
+
         start_step, checkpoint_data, wandb_run_id_for_resumption, successful_preemption_checkpoint = (
             maybe_resume_from_checkpoint(
                 config,
@@ -3190,7 +3216,7 @@ def main(cfg: DictConfig) -> None:
                 f"\n-----------------------------------------------------\n rank {rank}: {tokenizer.decode(generated[0][inputs['input_ids'].shape[-1] :])}"
             )
 
-        if "openai/gpt-oss-20b" in model_name:
+        if "openai/gpt-oss-20b" in model_name and not config["resume"]:
             if is_main():
                 log.info("Running decoder generation tests (new training run)")
                 original_prompt_text = config.get("decoder_prompt", "")  # Use a different var name
@@ -3741,6 +3767,16 @@ def main(cfg: DictConfig) -> None:
     last_grad_norm = 0.0
     last_grad_norm_dec = 0.0
     last_grad_norm_enc = 0.0
+    # Initialize optional granular grad norm trackers to avoid NameError on first access
+    last_grad_norm_proj = 0.0
+    last_grad_norm_prompt = 0.0
+    last_grad_norm_other = 0.0
+    last_grad_norm_dec_proj = 0.0
+    last_grad_norm_dec_prompt = 0.0
+    last_grad_norm_dec_other = 0.0
+    last_grad_norm_enc_proj = 0.0
+    last_grad_norm_enc_prompt = 0.0
+    last_grad_norm_enc_other = 0.0
     last_update_norm = 0.0
     last_update_ratio = 0.0
 
@@ -3850,8 +3886,43 @@ def main(cfg: DictConfig) -> None:
 
     shutdown_signal = torch.tensor(0, dtype=torch.int, device=device)
 
+    # Encoder unfreezing option
+    from lens.training.unfreezing import should_unfreeze_encoder_now, unfreeze_encoder_and_rebuild_optim
+
+    already_unfrozen_encoder = False
+
     try:
         for step in pbar:
+            # Optional unfreeze encoder at scheduled step
+            if (not already_unfrozen_encoder) and should_unfreeze_encoder_now(
+                step=step,
+                current_epoch=(step // steps_per_epoch if steps_per_epoch > 0 else 0),
+                config=config,
+                steps_per_epoch=steps_per_epoch,
+                grad_accum_steps=gradient_accumulation_steps,
+            ):
+                if is_main():
+                    log.info(f"Unfreezing encoder at step {step}")
+                optimizer, lr_scheduler = unfreeze_encoder_and_rebuild_optim(
+                    step=step,
+                    config=config,
+                    decoder=decoder,
+                    encoder=encoder,
+                    optimizer=optimizer,
+                    lr_scheduler=lr_scheduler,
+                    gradient_accumulation_steps=gradient_accumulation_steps,
+                    max_optimizer_steps=max_optimizer_steps,
+                    learning_rate=learning_rate,
+                    projection_lr_multiplier=projection_lr_multiplier,
+                    embedding_lr_multiplier=embedding_lr_multiplier,
+                    prompt_lr_multiplier=prompt_lr_multiplier,
+                    base_model_lr_multiplier=base_model_lr_multiplier,
+                    overall_encoder_lr_multiplier=overall_encoder_lr_multiplier,
+                    weight_decay=weight_decay,
+                    beta1=beta1,
+                    beta2=beta2,
+                )
+                already_unfrozen_encoder = True
             if world_size > 1:
                 if is_main():
                     if _preemption_requested:
@@ -4155,20 +4226,6 @@ def main(cfg: DictConfig) -> None:
                 last_grad_norm = 0.0
 
             # Track per-type grad norms if available, persist across steps like last_grad_norm
-            # Initialize once if not set
-            try:
-                last_grad_norm_proj
-            except Exception:
-                last_grad_norm_proj = 0.0
-            try:
-                last_grad_norm_prompt
-            except Exception:
-                last_grad_norm_prompt = 0.0
-            try:
-                last_grad_norm_other
-            except Exception:
-                last_grad_norm_other = 0.0
-
             if metrics.get("grad_norm_proj", 0) > 0:
                 last_grad_norm_proj = metrics["grad_norm_proj"]
             if metrics.get("grad_norm_prompt", 0) > 0:
@@ -4177,30 +4234,6 @@ def main(cfg: DictConfig) -> None:
                 last_grad_norm_other = metrics["grad_norm_other"]
 
             # Track per-module per-type norms if available
-            try:
-                last_grad_norm_dec_proj
-            except Exception:
-                last_grad_norm_dec_proj = 0.0
-            try:
-                last_grad_norm_dec_prompt
-            except Exception:
-                last_grad_norm_dec_prompt = 0.0
-            try:
-                last_grad_norm_dec_other
-            except Exception:
-                last_grad_norm_dec_other = 0.0
-            try:
-                last_grad_norm_enc_proj
-            except Exception:
-                last_grad_norm_enc_proj = 0.0
-            try:
-                last_grad_norm_enc_prompt
-            except Exception:
-                last_grad_norm_enc_prompt = 0.0
-            try:
-                last_grad_norm_enc_other
-            except Exception:
-                last_grad_norm_enc_other = 0.0
 
             if metrics.get("grad_norm_dec_proj", 0) > 0:
                 last_grad_norm_dec_proj = metrics["grad_norm_dec_proj"]
@@ -4371,16 +4404,30 @@ def main(cfg: DictConfig) -> None:
                 }
 
                 # Include per-type gradient norms if tracked
-                wandb_metrics["grads/norm_proj"] = last_grad_norm_proj if 'last_grad_norm_proj' in locals() else 0.0
-                wandb_metrics["grads/norm_prompt"] = last_grad_norm_prompt if 'last_grad_norm_prompt' in locals() else 0.0
-                wandb_metrics["grads/norm_other"] = last_grad_norm_other if 'last_grad_norm_other' in locals() else 0.0
+                wandb_metrics["grads/norm_proj"] = last_grad_norm_proj if "last_grad_norm_proj" in locals() else 0.0
+                wandb_metrics["grads/norm_prompt"] = (
+                    last_grad_norm_prompt if "last_grad_norm_prompt" in locals() else 0.0
+                )
+                wandb_metrics["grads/norm_other"] = last_grad_norm_other if "last_grad_norm_other" in locals() else 0.0
                 # Per-module per-type gradient norms
-                wandb_metrics["grads/dec_norm_proj"] = last_grad_norm_dec_proj if 'last_grad_norm_dec_proj' in locals() else 0.0
-                wandb_metrics["grads/dec_norm_prompt"] = last_grad_norm_dec_prompt if 'last_grad_norm_dec_prompt' in locals() else 0.0
-                wandb_metrics["grads/dec_norm_other"] = last_grad_norm_dec_other if 'last_grad_norm_dec_other' in locals() else 0.0
-                wandb_metrics["grads/enc_norm_proj"] = last_grad_norm_enc_proj if 'last_grad_norm_enc_proj' in locals() else 0.0
-                wandb_metrics["grads/enc_norm_prompt"] = last_grad_norm_enc_prompt if 'last_grad_norm_enc_prompt' in locals() else 0.0
-                wandb_metrics["grads/enc_norm_other"] = last_grad_norm_enc_other if 'last_grad_norm_enc_other' in locals() else 0.0
+                wandb_metrics["grads/dec_norm_proj"] = (
+                    last_grad_norm_dec_proj if "last_grad_norm_dec_proj" in locals() else 0.0
+                )
+                wandb_metrics["grads/dec_norm_prompt"] = (
+                    last_grad_norm_dec_prompt if "last_grad_norm_dec_prompt" in locals() else 0.0
+                )
+                wandb_metrics["grads/dec_norm_other"] = (
+                    last_grad_norm_dec_other if "last_grad_norm_dec_other" in locals() else 0.0
+                )
+                wandb_metrics["grads/enc_norm_proj"] = (
+                    last_grad_norm_enc_proj if "last_grad_norm_enc_proj" in locals() else 0.0
+                )
+                wandb_metrics["grads/enc_norm_prompt"] = (
+                    last_grad_norm_enc_prompt if "last_grad_norm_enc_prompt" in locals() else 0.0
+                )
+                wandb_metrics["grads/enc_norm_other"] = (
+                    last_grad_norm_enc_other if "last_grad_norm_enc_other" in locals() else 0.0
+                )
                 wandb_metrics = {k: _get_item(v) for k, v in wandb_metrics.items()}
 
                 if on_the_fly_generation_enabled and pretokenized_dataset_size > 0:

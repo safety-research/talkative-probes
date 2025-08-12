@@ -275,11 +275,17 @@ async def lifespan(app: FastAPI):
         model_manager = UnifiedModelManager(settings)
         await model_manager.start()
         
+        # Set the WebSocket manager so model_manager can broadcast updates
+        model_manager.set_websocket_manager(manager)
+        
         # Initialize inference service with unified model manager
         inference_service = InferenceService(model_manager, settings, manager)
         
-        # Set the model manager in api module
+        # Set the model manager and inference service in api modules
         unified_api.model_manager = model_manager
+        slim_api.model_manager = model_manager
+        slim_api.inference_service = inference_service
+        slim_api.settings = settings
 
         # Load default group in non-lazy mode
         if not settings.lazy_load_model:
@@ -408,6 +414,10 @@ app.add_middleware(
 
 # Include unified API routes
 app.include_router(unified_api.router)
+
+# Include slim API routes
+from .api import slim_api
+app.include_router(slim_api.router)
 
 # API Key Security
 security = HTTPBearer(auto_error=False)
@@ -563,6 +573,183 @@ async def websocket_endpoint(websocket: WebSocket):
             "type": "system_state",
             "data": system_state
         })
+        
+        # Check if any device is currently switching and notify the new user
+        for device in system_state["devices"]:
+            if device.get("is_switching"):
+                # Find which group is being switched to
+                switch_group_id = device.get("current_group", {}).get("id") if device.get("current_group") else None
+                if switch_group_id:
+                    logger.info(f"New user connected during switch on {device['device']}, sending switch status")
+                    await websocket.send_json({
+                        "type": "group_switch_status",
+                        "status": "progress",
+                        "group_id": switch_group_id,
+                        "device": device["device"],
+                        "message": "Group switch in progress (joined during switch)",
+                        "timestamp": datetime.now().isoformat()
+                    })
+                    break  # Only send one notification even if multiple devices are switching
+        
+        # Send models list automatically on connection (frontend expects this)
+        logger.info("Sending initial models_list on connection")
+        
+        # Get memory info
+        memory_info = model_manager.get_memory_usage()
+        
+        # Determine if this is a public request
+        origin_header = websocket.headers.get('origin') or ""
+        host_header = websocket.headers.get('host') or ""
+        public_only = ("kitft.com" in origin_header) or ("kitft.com" in host_header)
+        
+        # Convert to old format for frontend compatibility
+        # Load JSON data once
+        groups_file = Path(__file__).parent / "model_groups.json"
+        json_groups_map = {}
+        if groups_file.exists():
+            with open(groups_file) as f:
+                json_data = json.load(f)
+                for json_group in json_data.get("model_groups", []):
+                    json_groups_map[json_group["group_id"]] = json_group
+        
+        model_groups = []
+        for group in system_state["groups"]:
+            # Get device info for this group
+            device_info = []
+            for device in system_state["devices"]:
+                device_info.append({
+                    "device": device["device"],
+                    "has_group": device["current_group"] and device["current_group"]["id"] == group["id"],
+                    "is_current": device["current_group"] and device["current_group"]["id"] == group["id"],
+                    "is_switching": device["is_switching"]
+                })
+            
+            # Get model details from cached JSON data
+            models_data = []
+            json_group = json_groups_map.get(group["id"], {})
+            
+            # Get current model for this group (if any device has it loaded)
+            current_model_id = None
+            for device in system_state["devices"]:
+                if device["current_group"] and device["current_group"]["id"] == group["id"]:
+                    # Get the first loaded model from this device
+                    if device.get("loaded_models"):
+                        current_model_id = device["loaded_models"][0] if device["loaded_models"] else None
+                    break
+            
+            if json_group:
+                for model in json_group.get("models", []):
+                    checkpoint_path = model.get("lens_checkpoint_path", "")
+                    checkpoint_filename = checkpoint_path.split("/")[-1] if checkpoint_path else None
+                    
+                    # Check if model is loaded on GPU or cached on CPU
+                    model_locations = model_manager.get_model_location(model["id"]) if model_manager else None
+                    is_gpu_loaded = False
+                    is_cpu_cached = False
+                    
+                    if model_locations:
+                        for loc in model_locations:
+                            if loc.get("device_id") == "cpu":
+                                is_cpu_cached = True
+                            elif loc.get("device_id", "").startswith("cuda"):
+                                is_gpu_loaded = True
+                    
+                    is_current = model["id"] == current_model_id
+                    
+                    models_data.append({
+                        "id": model["id"],
+                        "name": model.get("name", model["id"]),
+                        "description": model.get("description", ""),
+                        "layer": model.get("layer", 0),
+                        "auto_batch_size_max": model.get("auto_batch_size_max", 16),
+                        "visible": model.get("visible", True),
+                        "backend_only": model.get("backend_only", False),
+                        "checkpoint_filename": checkpoint_filename,
+                        "checkpoint_full": checkpoint_path,
+                        "is_loaded": is_gpu_loaded,  # Keep for backward compatibility
+                        "is_gpu_loaded": is_gpu_loaded,
+                        "is_cpu_cached": is_cpu_cached,
+                        "is_current": is_current
+                    })
+            
+            # Check if group is in CPU cache
+            is_cpu_cached = group["id"] in model_manager.cpu_cached_groups if model_manager else False
+            
+            model_groups.append({
+                "group_id": group["id"],
+                "group_name": group["name"],
+                "description": json_group.get("description", ""),
+                "base_model": json_group.get("base_model_path", ""),
+                "device_info": device_info,
+                "is_cpu_cached": is_cpu_cached,
+                "models": models_data,
+                "visible": json_group.get("visible", True)
+            })
+        
+        # Get current group info for first device
+        current_group_info = None
+        if system_state["devices"]:
+            first_device = system_state["devices"][0]
+            if first_device["current_group"]:
+                current_group_info = {
+                    "current_group_id": first_device["current_group"]["id"],
+                    "groups_loaded": [first_device["current_group"]["id"]],
+                    "is_switching": first_device["is_switching"]
+                }
+        
+        # Build model_status object for frontend
+        model_status = {
+            "cache_info": {
+                "groups_loaded": [],
+                "models_cached": [],
+                "base_locations": {}
+            }
+        }
+        
+        # Collect loaded groups and their locations
+        for device in system_state["devices"]:
+            if device["current_group"]:
+                group_id = device["current_group"]["id"]
+                model_status["cache_info"]["groups_loaded"].append(group_id)
+                model_status["cache_info"]["base_locations"][group_id] = device["device"]
+                
+                # Add loaded models to cached list
+                if device.get("loaded_models"):
+                    model_status["cache_info"]["models_cached"].extend(device["loaded_models"])
+        
+        # Add CPU cached groups
+        if model_manager:
+            for group_id in model_manager.cpu_cached_groups:
+                if group_id not in model_status["cache_info"]["groups_loaded"]:
+                    model_status["cache_info"]["groups_loaded"].append(group_id)
+                model_status["cache_info"]["base_locations"][group_id] = "cpu"
+                
+                # Add CPU cached models
+                group_cache = model_manager.cpu_cached_groups.get(group_id, {})
+                if isinstance(group_cache, dict) and "models" in group_cache:
+                    model_status["cache_info"]["models_cached"].extend(group_cache["models"].keys())
+        
+        # Get current model (from first device with a loaded group)
+        current_model = None
+        for device in system_state["devices"]:
+            if device.get("loaded_models"):
+                current_model = device["loaded_models"][0] if device["loaded_models"] else None
+                break
+        
+        # Send model_groups_list (for v2 API compatibility)
+        # Frontend expects 'groups' not 'model_groups', and 'current_group' not 'current_group_info'
+        models_list_response = {
+            "type": "model_groups_list",
+            "groups": model_groups,
+            "current_group": current_group_info["current_group_id"] if current_group_info else None,
+            "current_model": current_model,
+            "memory_info": memory_info,
+            "model_status": model_status
+        }
+        logger.info(f"Sending initial model_groups_list with {len(model_groups)} groups")
+        if model_groups:
+            logger.info(f"First group: {model_groups[0]['group_id']} with {len(model_groups[0]['models'])} models")
+        await websocket.send_json(models_list_response)
 
     # Send initial queue status
     if inference_service:
@@ -605,6 +792,10 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 # Add websocket to request for real-time updates
                 options["websocket"] = websocket
+                
+                # Include model_id if provided
+                if "model_id" in data:
+                    options["model_id"] = data["model_id"]
 
                 # Add to queue with type 'generate'
                 request_id = await inference_service.queue.add_request(text, options, request_type="generate")
@@ -775,8 +966,8 @@ async def websocket_endpoint(websocket: WebSocket):
                         )
 
                 
-            elif data["type"] == "list_models":
-                logger.info("Received list_models request")
+            elif data["type"] == "list_model_groups":
+                logger.info(f"Received {data['type']} request")
                 # Get model list from unified manager
                 if not model_manager:
                     await websocket.send_json({"type": "error", "error": "Model manager not initialized"})
@@ -817,8 +1008,35 @@ async def websocket_endpoint(websocket: WebSocket):
                     # Get model details from cached JSON data
                     models_data = []
                     json_group = json_groups_map.get(group["id"], {})
+                    
+                    # Get current model for this group (if any device has it loaded)
+                    current_model_id = None
+                    for device in system_state["devices"]:
+                        if device["current_group"] and device["current_group"]["id"] == group["id"]:
+                            # Get the first loaded model from this device
+                            if device.get("loaded_models"):
+                                current_model_id = device["loaded_models"][0] if device["loaded_models"] else None
+                            break
+                    
                     if json_group:
                         for model in json_group.get("models", []):
+                            checkpoint_path = model.get("lens_checkpoint_path", "")
+                            checkpoint_filename = checkpoint_path.split("/")[-1] if checkpoint_path else None
+                            
+                            # Check if model is loaded on GPU or cached on CPU
+                            model_locations = model_manager.get_model_location(model["id"]) if model_manager else None
+                            is_gpu_loaded = False
+                            is_cpu_cached = False
+                            
+                            if model_locations:
+                                for loc in model_locations:
+                                    if loc.get("device_id") == "cpu":
+                                        is_cpu_cached = True
+                                    elif loc.get("device_id", "").startswith("cuda"):
+                                        is_gpu_loaded = True
+                            
+                            is_current = model["id"] == current_model_id
+                            
                             models_data.append({
                                 "id": model["id"],
                                 "name": model.get("name", model["id"]),
@@ -826,8 +1044,17 @@ async def websocket_endpoint(websocket: WebSocket):
                                 "layer": model.get("layer", 0),
                                 "auto_batch_size_max": model.get("auto_batch_size_max", 16),
                                 "visible": model.get("visible", True),
-                                "backend_only": model.get("backend_only", False)
+                                "backend_only": model.get("backend_only", False),
+                                "checkpoint_filename": checkpoint_filename,
+                                "checkpoint_full": checkpoint_path,
+                                "is_loaded": is_gpu_loaded,  # Keep for backward compatibility
+                                "is_gpu_loaded": is_gpu_loaded,
+                                "is_cpu_cached": is_cpu_cached,
+                                "is_current": is_current
                             })
+                    
+                    # Check if group is in CPU cache
+                    is_cpu_cached = group["id"] in model_manager.cpu_cached_groups if model_manager else False
                     
                     model_groups.append({
                         "group_id": group["id"],
@@ -835,7 +1062,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         "description": json_group.get("description", ""),
                         "base_model": json_group.get("base_model_path", ""),
                         "device_info": device_info,
-                        "is_cpu_cached": False,
+                        "is_cpu_cached": is_cpu_cached,
                         "models": models_data,
                         "visible": json_group.get("visible", True)
                     })
@@ -851,17 +1078,91 @@ async def websocket_endpoint(websocket: WebSocket):
                             "is_switching": first_device["is_switching"]
                         }
                 
-                response = {
-                    "type": "models_list",
-                    "model_groups": model_groups,
-                    "current_group_info": current_group_info,
-                    "memory_info": memory_info
+                # Build model_status object for frontend
+                model_status = {
+                    "cache_info": {
+                        "groups_loaded": [],
+                        "models_cached": [],
+                        "base_locations": {}
+                    }
                 }
-                logger.info(f"Sending models_list response with {len(model_groups)} groups")
+                
+                # Collect loaded groups and their locations
+                for device in system_state["devices"]:
+                    if device["current_group"]:
+                        group_id = device["current_group"]["id"]
+                        model_status["cache_info"]["groups_loaded"].append(group_id)
+                        model_status["cache_info"]["base_locations"][group_id] = device["device"]
+                        
+                        # Add loaded models to cached list
+                        if device.get("loaded_models"):
+                            model_status["cache_info"]["models_cached"].extend(device["loaded_models"])
+                
+                # Add CPU cached groups
+                if model_manager:
+                    for group_id in model_manager.cpu_cached_groups:
+                        if group_id not in model_status["cache_info"]["groups_loaded"]:
+                            model_status["cache_info"]["groups_loaded"].append(group_id)
+                        model_status["cache_info"]["base_locations"][group_id] = "cpu"
+                        
+                        # Add CPU cached models
+                        group_cache = model_manager.cpu_cached_groups.get(group_id, {})
+                        if isinstance(group_cache, dict) and "models" in group_cache:
+                            model_status["cache_info"]["models_cached"].extend(group_cache["models"].keys())
+                
+                # Get current model (from first device with a loaded group)
+                current_model = None
+                for device in system_state["devices"]:
+                    if device.get("loaded_models"):
+                        current_model = device["loaded_models"][0] if device["loaded_models"] else None
+                        break
+                
+                # Standardized response format
+                response = {
+                    "type": "model_groups_list",
+                    "groups": model_groups,
+                    "current_group": current_group_info["current_group_id"] if current_group_info else None,
+                    "current_model": current_model,
+                    "memory_info": memory_info,
+                    "model_status": model_status
+                }
+                logger.info(f"Sending {response['type']} response with {len(model_groups)} groups")
                 if model_groups:
                     logger.info(f"First group: {model_groups[0]['group_id']} with {len(model_groups[0]['models'])} models")
                 await websocket.send_json(response)
                 
+                    
+            elif data["type"] in ["switch_model", "switch_model_grouped"]:
+                # Handle model/group switch request
+                if not model_manager:
+                    await websocket.send_json({"type": "error", "error": "Model manager not initialized"})
+                    continue
+                    
+                model_id = data.get("model_id")
+                if not model_id:
+                    await websocket.send_json({"type": "error", "error": "No model_id provided"})
+                    continue
+                
+                try:
+                    # Load the model (which will handle group switching if needed)
+                    result = await model_manager.load_model(model_id)
+                    
+                    # The load_model method now handles broadcasting, but send direct response too
+                    await websocket.send_json({
+                        "type": "model_switch_complete",
+                        "model_id": model_id,
+                        "device_id": result.get("device"),
+                        "group_id": result.get("group_id"),
+                        "message": result.get("message", "Model loaded successfully")
+                    })
+                    
+                except Exception as e:
+                    logger.error(f"Model switch failed: {e}")
+                    await websocket.send_json({
+                        "type": "model_switch_error",
+                        "model_id": model_id,
+                        "error": str(e)
+                    })
                     
             elif data["type"] == "load_model":
                 # Load a model in the unified system
@@ -986,23 +1287,24 @@ async def websocket_endpoint(websocket: WebSocket):
                 model_id = data.get("model_id")
                 
                 if model_manager and model_id:
-                    from .legacy.model_registry import get_model_config
-                    model_config = get_model_config(model_id)
-                    model_info = model_config.__dict__ if model_config else None
+                    # Use model_manager's get_model_info which has all the fields from JSON
+                    model_info = model_manager.get_model_info(model_id)
                     
-                    if model_info:
+                    if model_info and not model_info.get("error"):
                         # Check if model is loaded
                         location_info = model_manager.get_model_location(model_id)
                         
                         await websocket.send_json({
                             "type": "model_info",
                             "model_id": model_id,
-                            "display_name": model_info.get("name"),
+                            "display_name": model_info.get("display_name", model_info.get("name")),
                             "layer": model_info.get("layer"),
-                            "auto_batch_size_max": model_info.get("auto_batch_size_max"),
+                            "auto_batch_size_max": model_info.get("auto_batch_size_max", 16),
                             "generation_config": model_info.get("generation_config", {}),
                             "loaded": location_info is not None,
-                            "locations": location_info["locations"] if location_info else []
+                            "locations": location_info if location_info else [],
+                            # Add the checkpoint path for metadata display
+                            "checkpoint": model_info.get("checkpoint", "Unknown")
                         })
                     else:
                         await websocket.send_json({"type": "error", "error": f"Unknown model: {model_id}"})
@@ -1073,7 +1375,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         )
 
     except Exception as e:
+        import traceback
         logger.error(f"WebSocket error: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
     finally:
         # Cancel any pending/processing requests associated with this websocket
         if inference_service:

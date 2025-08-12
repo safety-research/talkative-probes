@@ -19,7 +19,7 @@ security = HTTPBearer(auto_error=False)
 
 # These will be set by main.py
 inference_service = None
-grouped_model_manager = None
+model_manager = None  # Changed from grouped_model_manager to unified model_manager
 settings = None
 
 
@@ -165,11 +165,17 @@ async def generate(
             model_id = request.model_id
         else:
             model_id = None
-            if grouped_model_manager:
+            if model_manager:
                 origin_header = req.headers.get('origin', '') if req else ''
                 host_header = req.headers.get('host', '') if req else ''
                 public_only = ("kitft.com" in origin_header) or ("kitft.com" in host_header)
-                groups = grouped_model_manager.get_model_list(public_only=public_only)
+                # Get groups from unified model manager
+                groups = []
+                for gid, group in model_manager.model_groups.items():
+                    groups.append({
+                        'group_id': gid,
+                        'models': [{'id': m['id']} for m in group.models]
+                    })
                 for group in groups:
                     if group['group_id'] == request.model_group:
                         if group['models']:
@@ -240,11 +246,17 @@ async def analyze(
             model_id = request.model_id
         else:
             model_id = None
-            if grouped_model_manager:
+            if model_manager:
                 origin_header = req.headers.get('origin', '') if req else ''
                 host_header = req.headers.get('host', '') if req else ''
                 public_only = ("kitft.com" in origin_header) or ("kitft.com" in host_header)
-                groups = grouped_model_manager.get_model_list(public_only=public_only)
+                # Get groups from unified model manager
+                groups = []
+                for gid, group in model_manager.model_groups.items():
+                    groups.append({
+                        'group_id': gid,
+                        'models': [{'id': m['id']} for m in group.models]
+                    })
                 for group in groups:
                     if group['group_id'] == request.model_group:
                         if group['models']:
@@ -336,11 +348,17 @@ async def send_message(
             model_id = request.model_id
         else:
             model_id = None
-            if grouped_model_manager:
+            if model_manager:
                 origin_header = req.headers.get('origin', '') if req else ''
                 host_header = req.headers.get('host', '') if req else ''
                 public_only = ("kitft.com" in origin_header) or ("kitft.com" in host_header)
-                groups = grouped_model_manager.get_model_list(public_only=public_only)
+                # Get groups from unified model manager
+                groups = []
+                for gid, group in model_manager.model_groups.items():
+                    groups.append({
+                        'group_id': gid,
+                        'models': [{'id': m['id']} for m in group.models]
+                    })
                 for group in groups:
                     if group['group_id'] == request.model_group:
                         if group['models']:
@@ -409,19 +427,47 @@ async def get_status(request_id: str, authorized: bool = Depends(verify_api_key)
 @router.get("/models")
 async def list_model_groups(req: Request):
     """List available model groups for the slim API."""
-    if not grouped_model_manager:
+    if not model_manager:
         return {"model_groups": []}
         
     origin_header = req.headers.get('origin', '')
     host_header = req.headers.get('host', '')
     public_only = ("kitft.com" in origin_header) or ("kitft.com" in host_header)
 
-    groups = grouped_model_manager.get_model_list(public_only=public_only)
+    # Get groups from unified model manager
+    groups = []
+    for gid, group in model_manager.model_groups.items():
+        group_data = {
+            'group_id': gid,
+            'group_name': group.group_name,
+            'models': []
+        }
+        for model in group.models:
+            # Get model info using the model manager's method
+            try:
+                model_info = model_manager.get_model_info(model['id'])
+                name = model_info.get('name', model['id'])
+                layer = model_info.get('layer', 0)
+            except:
+                # Fallback if model info not available
+                name = model['id']
+                layer = 0
+            
+            group_data['models'].append({
+                'id': model['id'],
+                'name': name,
+                'layer': layer
+            })
+        groups.append(group_data)
     
     # Get current loaded model info
     current_model_id = None
-    if grouped_model_manager and hasattr(grouped_model_manager, 'current_model_id'):
-        current_model_id = grouped_model_manager.current_model_id
+    if model_manager:
+        # Get the current model from any loaded device
+        for device_state in model_manager.device_states.values():
+            if device_state.loaded_models:
+                current_model_id = list(device_state.loaded_models.keys())[0]
+                break
     
     # Simplify the response for slim API
     return {
@@ -439,49 +485,88 @@ async def list_model_groups(req: Request):
     }
 
 
-@router.get("/models/{group_id}/layers")
-async def list_model_layers(group_id: str, req: Request):
-    """List available layers/sub-models for a specific model group."""
-    if not grouped_model_manager:
+@router.get("/models/{identifier}/layers")
+async def list_model_layers(identifier: str, req: Request):
+    """List available layers/sub-models for a specific model group or model.
+    
+    The identifier can be either a group_id or a model_id.
+    If it's a model_id, we'll find its group and return all models in that group.
+    """
+    if not model_manager:
         raise HTTPException(404, "Model manager not initialized")
+    
+    # First check if identifier is a group_id
+    target_group_id = None
+    if identifier in model_manager.model_groups:
+        target_group_id = identifier
+    else:
+        # Check if it's a model_id and find its group
+        for model_id in model_manager.model_to_groups.get(identifier, []):
+            target_group_id = model_id
+            break
         
-    origin_header = req.headers.get('origin', '')
-    host_header = req.headers.get('host', '')
-    public_only = ("kitft.com" in origin_header) or ("kitft.com" in host_header)
-    groups = grouped_model_manager.get_model_list(public_only=public_only)
+        # If still not found, check all groups for the model
+        if not target_group_id:
+            for gid, group in model_manager.model_groups.items():
+                for model in group.models:
+                    if model['id'] == identifier:
+                        target_group_id = gid
+                        break
+                if target_group_id:
+                    break
     
-    # Debug: Log available groups
-    available_groups = [g['group_id'] for g in groups]
-    logger.info(f"Available groups: {available_groups}")
-    logger.info(f"Requested group: {group_id}")
+    if not target_group_id:
+        logger.warning(f"Could not find group for identifier: {identifier}")
+        raise HTTPException(404, f"Model or group not found: {identifier}")
     
-    # Get current loaded model info
+    # Get the group
+    group = model_manager.model_groups[target_group_id]
+    
+    # Get current loaded model info from lens_cache
     current_model_id = None
-    if grouped_model_manager and hasattr(grouped_model_manager, 'current_model_id'):
-        current_model_id = grouped_model_manager.current_model_id
+    for device_state in model_manager.device_states.values():
+        if device_state.lens_cache:
+            current_model_id = list(device_state.lens_cache.keys())[0]
+            break
     
-    # Find the requested group
-    for group in groups:
-        if group['group_id'] == group_id:
-            # Return simplified layer information
-            return {
-                "group_id": group_id,
-                "group_name": group['group_name'],
-                "is_loaded": group.get('is_loaded', False),
-                "layers": [
-                    {
-                        "id": model['id'],
-                        "name": model['name'],
-                        "layer": model.get('layer'),
-                        "description": model.get('description', ''),
-                        "is_current": model['id'] == current_model_id
-                    }
-                    for model in group.get('models', [])
-                ],
-                "default_layer": group['models'][0]['id'] if group.get('models') else None
-            }
+    # Check if this group is loaded
+    is_loaded = False
+    for device_state in model_manager.device_states.values():
+        if device_state.current_group_id == target_group_id:
+            is_loaded = True
+            break
     
-    raise HTTPException(404, f"Model group '{group_id}' not found. Available groups: {available_groups}")
+    # Build layer information
+    layers = []
+    for model in group.models:
+        # Get model info using the model manager's method
+        try:
+            model_info = model_manager.get_model_info(model['id'])
+            name = model_info.get('name', model['id'])
+            layer = model_info.get('layer', 0)
+            description = model_info.get('description', '')
+        except:
+            # Fallback if model info not available
+            name = model['id']
+            layer = 0
+            description = ''
+        
+        layers.append({
+            "id": model['id'],
+            "name": name,
+            "layer": layer,
+            "description": description,
+            "is_current": model['id'] == current_model_id
+        })
+    
+    # Return the layer information
+    return {
+        "group_id": target_group_id,
+        "group_name": group.group_name,
+        "is_loaded": is_loaded,
+        "layers": layers,
+        "default_layer": layers[0]['id'] if layers else None
+    }
 
 
 @router.get("/debug")

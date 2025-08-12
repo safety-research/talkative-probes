@@ -358,6 +358,11 @@ class GroupedModelSwitcher {
             this.cachedModels = data.model_status.cache_info.models_cached || [];
         }
         
+        // Update device states for multi-GPU support
+        if (data.model_status?.device_states) {
+            this.deviceStates = data.model_status.device_states;
+        }
+        
         this.renderModelGroups();
         this.updateStatus();
         this.updateMemoryInfo(data.model_status);
@@ -367,9 +372,16 @@ class GroupedModelSwitcher {
             this.showWarning();
         }
         
-        // If we connected during a switch, emit the switch-started event
+        // If we connected during a switch, show the banner and emit event
         if (wasAlreadySwitching) {
-            console.log('Connected during model switch, emitting switch-started event');
+            console.log('Connected during model switch, showing banner and emitting event');
+            
+            // Show the active switch banner for new users
+            const switchingGroup = data.current_group || 'unknown';
+            const switchingDevice = data.system_state?.devices?.[0]?.device || '';
+            const deviceInfo = switchingDevice ? ` on ${switchingDevice.replace('cuda:', 'GPU ')}` : '';
+            this.showActiveSwitchBanner(switchingGroup, deviceInfo);
+            
             this.emit('switch-started', {
                 model_id: data.switching_to || this.currentModel,
                 status: 'in_progress'
@@ -397,12 +409,51 @@ class GroupedModelSwitcher {
             return;
         }
         
-        groupsListEl.innerHTML = this.modelGroups.map(group => {
+        // Add device status display if we have device info
+        let deviceStatusHtml = '';
+        if (this.deviceStates && Object.keys(this.deviceStates).length > 1) {
+            deviceStatusHtml = `
+                <div class="mb-3 p-2 bg-gray-50 rounded-lg">
+                    <div class="text-xs font-medium text-gray-600 mb-2">GPU Status:</div>
+                    <div class="flex flex-wrap gap-2">
+                        ${Object.entries(this.deviceStates).map(([device, state]) => {
+                            const gpuNum = device.replace('cuda:', 'GPU ');
+                            const groupName = state.current_group_id ? 
+                                this.modelGroups.find(g => g.group_id === state.current_group_id)?.group_name || state.current_group_id : 
+                                'Empty';
+                            const isLoading = state.is_switching;
+                            const statusColor = isLoading ? 'yellow' : (state.current_group_id ? 'green' : 'gray');
+                            
+                            return `
+                                <div class="flex items-center gap-1 px-2 py-1 bg-white rounded border border-gray-200">
+                                    <span class="text-xs font-medium">${gpuNum}:</span>
+                                    <span class="text-xs ${isLoading ? 'text-yellow-600' : (state.current_group_id ? 'text-green-600' : 'text-gray-500')}">
+                                        ${isLoading ? '⏳ Loading...' : groupName}
+                                    </span>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </div>
+            `;
+        }
+        
+        groupsListEl.innerHTML = deviceStatusHtml + this.modelGroups.map(group => {
             const isCurrentGroup = group.group_id === this.currentGroup;
             const groupCached = this.cachedGroups?.includes(group.group_id);
             const isGroupCollapsed = Object.prototype.hasOwnProperty.call(this.groupCollapseStates, group.group_id)
                 ? this.groupCollapseStates[group.group_id]
                 : true;
+            
+            // Find which devices have this group loaded
+            const devicesWithGroup = [];
+            if (this.deviceStates) {
+                Object.entries(this.deviceStates).forEach(([device, state]) => {
+                    if (state.current_group_id === group.group_id && !state.is_switching) {
+                        devicesWithGroup.push(device.replace('cuda:', 'GPU '));
+                    }
+                });
+            }
             
             return `
                 <div class="model-group border rounded-lg ${isCurrentGroup ? 'border-blue-500' : 'border-gray-300'}">
@@ -416,7 +467,8 @@ class GroupedModelSwitcher {
                                 </button>
                                 <h4 class="font-medium text-gray-900">
                                     ${group.group_name}
-                                    ${groupCached ? '<span class="ml-2 text-xs bg-green-100 text-green-800 px-1.5 py-0.5 rounded">Cached</span>' : ''}
+                                    ${devicesWithGroup.length > 0 ? `<span class="ml-2 text-xs bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded">${devicesWithGroup.join(', ')}</span>` : ''}
+                                    ${groupCached && devicesWithGroup.length === 0 ? '<span class="ml-2 text-xs bg-green-100 text-green-800 px-1.5 py-0.5 rounded">Cached</span>' : ''}
                                 </h4>
                                 <div class="flex items-center gap-1">
                                     ${group.group_id ? `<button class="queue-all-btn text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200 transition-colors disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed" data-group-id="${group.group_id}">
@@ -487,7 +539,9 @@ class GroupedModelSwitcher {
     renderModelOption(model, group) {
         const isSelected = model.id === this.currentModel;
         const isDisabled = this.isSwitching;
-        const isCached = model.is_loaded || this.cachedModels?.includes(model.id);
+        // Use new clearer flags
+        const isGpuLoaded = model.is_gpu_loaded || model.is_loaded;  // Fallback to is_loaded for compatibility
+        const isCpuCached = model.is_cpu_cached;
         
         return `
             <label class="flex items-start p-3 cursor-pointer transition-colors hover:bg-gray-50 ${
@@ -500,7 +554,8 @@ class GroupedModelSwitcher {
                 <div class="flex-1">
                     <div class="flex items-center gap-2">
                         <span class="font-medium text-gray-900">${model.name}</span>
-                        ${isCached ? '<span class="text-xs bg-green-100 text-green-800 px-1.5 py-0.5 rounded">Loaded</span>' : ''}
+                        ${isGpuLoaded ? '<span class="text-xs bg-green-100 text-green-800 px-1.5 py-0.5 rounded">GPU</span>' : ''}
+                        ${isCpuCached && !isGpuLoaded ? '<span class="text-xs bg-yellow-100 text-yellow-800 px-1.5 py-0.5 rounded">Cached</span>' : ''}
                         ${model.is_current ? '<span class="text-xs bg-blue-100 text-blue-800 px-1.5 py-0.5 rounded">Current</span>' : ''}
                     </div>
                     ${model.description ? `<div class="text-sm text-gray-600">${model.description}</div>` : ''}
@@ -876,18 +931,40 @@ class GroupedModelSwitcher {
     
     // Handle group switch status updates
     handleGroupSwitchStatus(data) {
+        const deviceInfo = data.device ? ` on ${data.device.replace('cuda:', 'GPU ')}` : '';
+        
         switch (data.status) {
             case 'starting':
                 this.isSwitching = true;
                 this.showProgress();
-                this.showStatus(`Switching to group ${data.group_id}... This affects all users.`, 'warning');
+                this.showStatus(`Switching to group ${data.group_id}${deviceInfo}... This affects all users.`, 'warning');
                 this.updateStatus();
+                
+                // Show active switch banner
+                this.showActiveSwitchBanner(data.group_id, deviceInfo);
+                
                 this.emit('group-switch-started', data);
+                break;
+                
+            case 'progress':
+                // Keep-alive progress update during long operations
+                this.isSwitching = true;  // Ensure switching state is set
+                this.showActiveSwitchBanner(data.group_id, deviceInfo);  // Show banner for users joining mid-switch
+                
+                if (data.message) {
+                    // Show the progress message
+                    this.showStatus(`${data.message}${deviceInfo}`, 'info');
+                } else if (data.error) {
+                    // The error field contains the progress message (backward compatibility)
+                    this.showStatus(`${data.error}${deviceInfo}`, 'info');
+                }
+                // This keeps the WebSocket connection alive
                 break;
                 
             case 'completed':
                 this.isSwitching = false;
                 this.hideProgress();
+                this.hideActiveSwitchBanner();  // Hide the banner
                 this.currentGroup = data.group_id;
                 // Update current model if we were switching to it
                 if (this.selectedModel && this.model_to_group.get(this.selectedModel) === data.group_id) {
@@ -895,7 +972,7 @@ class GroupedModelSwitcher {
                     this.selectedModel = null;
                     this.selectedGroup = null;
                 }
-                this.showStatus('Group switch completed!', 'success');
+                this.showStatus(`Group switch completed${deviceInfo}!`, 'success');
                 this.requestModelList();
                 this.updateStatus();
                 this.emit('group-switch-completed', data);
@@ -904,6 +981,7 @@ class GroupedModelSwitcher {
             case 'failed':
                 this.isSwitching = false;
                 this.hideProgress();
+                this.hideActiveSwitchBanner();  // Hide the banner
                 this.showStatus(data.error || 'Group switch failed', 'error');
                 this.updateStatus();
                 this.emit('group-switch-failed', data);
@@ -1049,6 +1127,47 @@ class GroupedModelSwitcher {
         
         // Update status in model switcher
         this.showStatus(`Group switch queued. Waiting for ${data.active_requests} active request(s)...`, 'warning');
+    }
+    
+    // Show active switch banner
+    showActiveSwitchBanner(groupId, deviceInfo) {
+        // Remove any existing banner
+        const existingBanner = document.getElementById('groupSwitchActiveWarning');
+        if (existingBanner) {
+            existingBanner.remove();
+        }
+        
+        // Create active switch banner
+        const activeWarning = document.createElement('div');
+        activeWarning.id = 'groupSwitchActiveWarning';
+        activeWarning.className = 'fixed top-4 right-4 z-50 max-w-md';
+        activeWarning.innerHTML = `
+            <div class="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-800 p-4 rounded shadow-lg">
+                <div class="flex items-start">
+                    <svg class="w-6 h-6 mr-3 flex-shrink-0 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                    </svg>
+                    <div class="flex-1">
+                        <p class="font-bold">⚠️ Group Switch in Progress</p>
+                        <p class="text-sm mt-1">Switching to ${groupId}${deviceInfo}</p>
+                        <p class="text-xs mt-2 text-yellow-700">This affects ALL users. The system may be temporarily unavailable.</p>
+                        <p class="text-xs mt-1 text-yellow-600">Estimated time: 1-2 minutes</p>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(activeWarning);
+        
+        // Auto-remove after switch completes (will be removed by hideActiveSwitchBanner)
+    }
+    
+    // Hide active switch banner
+    hideActiveSwitchBanner() {
+        const banner = document.getElementById('groupSwitchActiveWarning');
+        if (banner) {
+            banner.remove();
+        }
     }
     
     // Cancel queued group switch

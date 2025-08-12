@@ -1577,14 +1577,18 @@ const analyze = () => {
         }
     }, 10000); // 10 seconds
     
+    // Calculate batch size based on auto-batch or manual
+    const calculatedBatchSize = elements.autoBatchSize.checked 
+        ? Math.max(1, Math.floor(state.autoBatchSizeMax / parseInt(elements.kRollouts.value)))
+        : parseInt(elements.batchSize.value);
+    
     // Build options
     const options = {
+        batch_size: calculatedBatchSize,  // Add explicit batch_size for backend
         temperature: parseFloat(elements.temperature.value),
         optimize_explanations_config: {
             best_of_k: parseInt(elements.kRollouts.value),
-            n_groups_per_rollout: elements.autoBatchSize.checked 
-                ? Math.max(1, Math.floor(state.autoBatchSizeMax / parseInt(elements.kRollouts.value)))
-                : parseInt(elements.batchSize.value),
+            n_groups_per_rollout: calculatedBatchSize,  // Use same value
             use_batched: true,
             temperature: parseFloat(elements.temperature.value)  // Use the same temperature as main
         },
@@ -1600,10 +1604,7 @@ const analyze = () => {
         options.seed = parseInt(elements.seed.value);
     }
     
-    // Always set rollout_batch_size to match the main batch size
-    const calculatedBatchSize = elements.autoBatchSize.checked 
-        ? Math.max(1, Math.floor(state.autoBatchSizeMax / parseInt(elements.kRollouts.value)))
-        : parseInt(elements.batchSize.value);
+    // Always set rollout_batch_size to match the main batch size (already calculated above)
     options.optimize_explanations_config.rollout_batch_size = calculatedBatchSize;
     
     if (elements.numSamples.value && elements.numSamples.value !== '1') {
@@ -2997,19 +2998,21 @@ const initialize = () => {
                 if (!confirmed) return;
             }
             
+            // Calculate batch size
+            const calculatedBatchSize = elements.autoBatchSize.checked 
+                ? Math.max(1, Math.floor(state.autoBatchSizeMax / parseInt(elements.kRollouts.value)))
+                : parseInt(elements.batchSize.value);
+            
             // Get current options from UI
             const options = {
+                batch_size: calculatedBatchSize,  // Add explicit batch_size
                 temperature: parseFloat(elements.temperature.value),
                 optimize_explanations_config: {
                     best_of_k: parseInt(elements.kRollouts.value),
-                    n_groups_per_rollout: elements.autoBatchSize.checked 
-                        ? Math.max(1, Math.floor(state.autoBatchSizeMax / parseInt(elements.kRollouts.value)))
-                        : parseInt(elements.batchSize.value),
+                    n_groups_per_rollout: calculatedBatchSize,
                     use_batched: true,
                     temperature: parseFloat(elements.temperature.value),  // Use the same temperature as main
-                    rollout_batch_size: elements.autoBatchSize.checked 
-                        ? Math.max(1, Math.floor(state.autoBatchSizeMax / parseInt(elements.kRollouts.value)))
-                        : parseInt(elements.batchSize.value)
+                    rollout_batch_size: calculatedBatchSize
                 },
                 calculate_salience: elements.calculateSalience.checked,
                 use_tuned_lens: elements.tunedLens.checked,

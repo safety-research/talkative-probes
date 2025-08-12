@@ -255,10 +255,13 @@ const VisualizationCore = (function() {
             valueSpan.className = 'text-[#5D4037]';
             
             // Special formatting for certain fields
-            if (key === 'checkpoint_path' && typeof value === 'string' && value.length > 50) {
+            if (key === 'checkpoint_path' && typeof value === 'string') {
                 valueSpan.className += ' font-mono text-xs';
-                valueSpan.title = value;
-                valueSpan.textContent = '...' + value.slice(-47);
+                valueSpan.title = value; // Full path on hover
+                // Show just the last part of the path (the checkpoint name)
+                const parts = value.split('/');
+                const checkpointName = parts[parts.length - 1] || value;
+                valueSpan.textContent = checkpointName !== 'Unknown' ? checkpointName : 'Unknown';
             } else if (typeof value === 'boolean') {
                 valueSpan.textContent = value ? 'Yes' : 'No';
                 valueSpan.className += value ? ' text-green-700' : ' text-gray-600';

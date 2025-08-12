@@ -197,8 +197,17 @@ def print_verbose_sample_details(
     if sample_losses is not None:
         print("Loss Components for this sample:")
         print(f"  Total Loss: {sample_losses['total']:.4f}")
+        A_for_norm = sample_losses.get("A_single")
+        if isinstance(A_for_norm, torch.Tensor):
+            a_mean_sq = A_for_norm.pow(2).mean(dim=-1).mean().item()
+            a_mean_sq_str = f"{a_mean_sq:.4f}"
+        else:
+            a_mean_sq_str = "N/A"
         print(
-            f"  - MSE Loss (A_i vs A_hat): {sample_losses['mse']:.4f} (weighted: {sample_losses['mse_weighted']:.4f}) (squared norm of A_i: {torch.norm(sample_losses['A_single']) ** 2 if sample_losses.get('A_single') is not None else 'N/A'}:.4f)"
+            f"  - MSE (A_i vs A_hat, mean over feat, mean over batch): {sample_losses['mse_A_vs_Ahat']:.4f} (mean squared norm of A_i: {a_mean_sq_str})"
+        )
+        print(
+            f"  - Training MSE (normalized): {sample_losses['mse']:.4f} (weighted: {sample_losses['mse_weighted']:.4f})"
         )
         print(
             f"  - LM Loss (KL[P_Orig||P_Dec]): {sample_losses['lm']:.4f} (weighted: {sample_losses['lm_weighted']:.4f})"
@@ -423,16 +432,23 @@ def compute_single_sample_losses(
     del verbose_intermediate
 
     # Compute additional MSEs that train_step doesn't provide
-    mse_A_vs_zero = torch.nn.functional.mse_loss(A_single, torch.zeros_like(A_single)).item()
-    mse_A_vs_Ahat = (
-        torch.nn.functional.mse_loss(A_single, A_hat_A_single.to(A_single.device)).item()
-        if A_hat_A_single is not None
-        else 0.0
-    )
+    # Make MSEs comparable to activation norm: mean over feature dim, mean over batch dim (batch is 1 here)
+    per_sample_denom = A_single.pow(2).mean(dim=-1).clamp_min(1e-12)  # shape [B]
+    A_mean_sq_norm = per_sample_denom.mean().item()
+
+    mse_A_vs_zero = torch.nn.functional.mse_loss(A_single, torch.zeros_like(A_single), reduction="none").mean(dim=-1)
+    mse_A_vs_zero = (mse_A_vs_zero / per_sample_denom).mean().item()
+
+    if A_hat_A_single is not None:
+        mse_A_vs_Ahat = torch.nn.functional.mse_loss(A_single, A_hat_A_single.to(A_single.device), reduction="none").mean(dim=-1)
+        mse_A_vs_Ahat = (mse_A_vs_Ahat / per_sample_denom).mean().item()
+    else:
+        mse_A_vs_Ahat = 0.0
 
     mse_A_vs_aprime = None
     if A_prime_single is not None and not torch.equal(A_prime_single, A_single):
-        mse_A_vs_aprime = torch.nn.functional.mse_loss(A_single, A_prime_single).item()
+        mse_A_vs_aprime = torch.nn.functional.mse_loss(A_single, A_prime_single, reduction="none").mean(dim=-1)
+        mse_A_vs_aprime = (mse_A_vs_aprime / per_sample_denom).mean().item()
 
     # Build loss dictionary matching the original format
     loss_dict = {
@@ -452,7 +468,9 @@ def compute_single_sample_losses(
         "mse_A_vs_zero": mse_A_vs_zero,
         "mse_A_vs_aprime": mse_A_vs_aprime,
         "mse_A_vs_Ahat": mse_A_vs_Ahat,
+        # training MSE in train_step is already normalized per-sample by mean squared norm
         "mse_A_vs_A_train": losses["mse"].item() if torch.is_tensor(losses["mse"]) else losses["mse"],
+        "A_mean_sq_norm": A_mean_sq_norm,
     }
     del losses
 

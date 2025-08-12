@@ -104,8 +104,7 @@
         {
           "id": "gemma3-27b-wildchat-only",
           "name": "Gemma-3-27B-IT WildChat L45 (only)",
-          "22lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma3_CHAT_27b_frozen_nopostfix_GG32PAW1S_gemma-3-27b-pt_L45_e45_frozen_lr1e-3_t8_4ep_0723_074201_frozenenc_add_patch5_suffix1p0enc_NO_PROJ_WILD_CHATDIR_OTF_dist8",
-          "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma3_CHAT_27b_frozen_nopostfix_GG32PAW1S_gemma-3-27b-pt_L45_e45_frozen_lr1e-3_t8_4ep_resume_0731_183323_frozenenc_add_patch5_suffix1p0enc_NO_PROJ_WILD_CHATDIR_OTF_dist8",
+          "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma3_CHAT_27b_frozen_nopostfix_GG32PAW1S_gemma-3-27b-it_L45_e45_frozen_lr1e-3_t8_4ep_resume_0804_091446_frozenenc_add_patch5_suffix1p0enc_NO_PROJ_WILD_CHATDIR_OTF_dist8",
           "different_activations_orig_path": null,
           "layer": 45,
           "description": "Trained only on WildChat data",
@@ -117,7 +116,8 @@
         {
           "id": "gemma3-27b-chat-l30",
           "name": "Gemma-3-27B-IT Chat L30",
-          "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma3_CHAT_27b_frozen_nopostfix_GG32PAW1S_gemma-3-27b-it_L30_e30_frozen_lr3e-4_t8_4ep_resume_0730_195708_frozenenc_add_patch5_suffix1p0enc_NO_PROJ_IT_E_D_L30tune_OTF_dist8_slurm6704",
+          "OLDlens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma3_CHAT_27b_frozen_nopostfix_GG32PAW1S_gemma-3-27b-it_L30_e30_frozen_lr3e-4_t8_4ep_resume_0730_195708_frozenenc_add_patch5_suffix1p0enc_NO_PROJ_IT_E_D_L30tune_OTF_dist8_slurm6704",
+          "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma3_CHAT_27b_frozen_nopostfix_GG32PAW1S_gemma-3-27b-it_L30_e30_frozen_lr1e-3_t8_4ep_resume_0805_073520_frozenenc_add_patch5_suffix1p0enc_NO_PROJ_WILD_CHATDIR_30_OTF_dist8",
           "different_activations_orig_path": null,
           "layer": 30,
           "description": "Trained on FineWeb + finetuned on WildChat data (L30 finetuned from L45)",
@@ -343,7 +343,7 @@
           "lens_checkpoint_path": "/workspace/kitf/talkative-probes/talkative_autoencoder/outputs/checkpoints/gemma2_WILDCHAT_9b_frozen_nopostfix_GG29AW1S_gemma-2-9b-it_L30_e30_frozen_lr1e-4_t8_2ep_resume_0801_120554_NO_ENC_PROJ8_CHAT_DIR_LONGER_OTF_dist8_slurm6901",
           "different_activations_orig_path": "bcywinski/gemma-2-9b-it-secret1",
           "layer": 30,
-          "description": "Trained autoencoder on WildChat dataset (ONLY), layer 30 (42 total)",
+          "description": "Trained autoencoder on chat dataset (ONLY), layer 30 (42 total)",
           "batch_size": 48,
           "auto_batch_size_max": 768,
           "visible": true,

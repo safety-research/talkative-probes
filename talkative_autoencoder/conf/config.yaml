@@ -478,3 +478,6 @@ dataset:
 # activation_dumper.val_num_samples: 5000 # (already part of activation_dumper)
 do_soft_token_embeds: true
 mean_n_sequences: false
+unfreeze_encoder:
+  enabled: false
+  step: 10000

@@ -167,6 +167,12 @@ class OrigWrapper:
         grad_ctx = torch.no_grad() if no_grad else nullcontext()
         with grad_ctx:
             try:
+                # Ensure inputs are on the model's device
+                model_device = next(self.model.parameters()).device
+                input_ids = input_ids.to(model_device)
+                if attention_mask is not None:
+                    attention_mask = attention_mask.to(model_device)
+                
                 out = self.model(input_ids=input_ids, attention_mask=attention_mask)
             finally:
                 # Disable the hook after use (but keep it registered)
@@ -239,6 +245,13 @@ class OrigWrapper:
                     # which is appropriate to signal an unsupported model structure.
 
             handle = target_block.register_forward_hook(_vectorized_swap_hook)
+            
+            # Ensure inputs are on the model's device
+            model_device = next(self.model.parameters()).device
+            input_ids = input_ids.to(model_device)
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(model_device)
+            
             out = self.model(input_ids=input_ids, attention_mask=attention_mask)
             handle.remove()
             return out
@@ -395,6 +408,12 @@ class OrigWrapper:
 
         grad_ctx = torch.no_grad() if no_grad else nullcontext()
         with grad_ctx:
+            # Ensure inputs are on the model's device
+            model_device = next(self.model.parameters()).device
+            input_ids = input_ids.to(model_device)
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(model_device)
+            
             _ = self.model(  # We don't need the model's final output here
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -411,6 +430,8 @@ class OrigWrapper:
 
         # captured_activations is (B, seq_len, dim)
         batch_indices = torch.arange(batch_size, device=captured_activations.device)
+        # Ensure calculated_positions is on the same device as captured_activations for indexing
+        calculated_positions = calculated_positions.to(captured_activations.device)
         selected_activations = captured_activations[batch_indices, calculated_positions]  # (B, dim)
         # --- End hook-based activation extraction ---
 
@@ -559,6 +580,12 @@ class OrigWrapper:
 
         grad_ctx = torch.no_grad() if no_grad else nullcontext()
         with grad_ctx:
+            # Ensure inputs are on the model's device
+            model_device = next(self.model.parameters()).device
+            input_ids = input_ids.to(model_device)
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(model_device)
+            
             _ = self.model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
@@ -578,6 +605,8 @@ class OrigWrapper:
         batch_indices = (
             torch.arange(batch_size, device=captured_activations.device).unsqueeze(1).expand(-1, num_positions)
         )
+        # Ensure calculated_positions is on the same device as captured_activations for indexing
+        calculated_positions = calculated_positions.to(captured_activations.device)
         selected_activations = captured_activations[
             batch_indices, calculated_positions
         ]  # (B, num_positions, hidden_dim)
@@ -678,6 +707,12 @@ class OrigWrapper:
 
         grad_ctx = torch.no_grad() if no_grad else nullcontext()
         with grad_ctx:
+            # Ensure inputs are on the model's device
+            model_device = next(self.model.parameters()).device
+            _processed_input_ids = _processed_input_ids.to(model_device)
+            if _processed_attention_mask is not None:
+                _processed_attention_mask = _processed_attention_mask.to(model_device)
+            
             _ = self.model(
                 input_ids=_processed_input_ids,
                 attention_mask=_processed_attention_mask,

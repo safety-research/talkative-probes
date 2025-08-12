@@ -31,6 +31,12 @@ class WorkerState:
     queue: asyncio.Queue = field(default_factory=asyncio.Queue)
     current_request: Optional[str] = None
     is_busy: bool = False
+    # Load tracking metrics
+    total_requests: int = 0
+    avg_latency_ms: float = 0.0
+    last_request_time: Optional[float] = None
+    request_history: List[float] = field(default_factory=list)  # Last N request times
+    max_history_size: int = 10
 
 
 class RequestFileLogger:
@@ -155,6 +161,12 @@ class InferenceService:
         if self.dispatcher_task is None or self.dispatcher_task.done():
             self.dispatcher_task = asyncio.create_task(self._dispatch_requests())
             logger.info("Started request dispatcher")
+        
+        # Start load balancing monitor if multi-GPU
+        if len(self.devices) > 1:
+            if not hasattr(self, 'load_balancer_task') or self.load_balancer_task is None or self.load_balancer_task.done():
+                self.load_balancer_task = asyncio.create_task(self._load_balancing_monitor())
+                logger.info("Started load balancing monitor")
             
     async def stop_processing(self):
         """Stop all workers and the dispatcher"""
@@ -270,7 +282,32 @@ class InferenceService:
         # For regular inference requests
         model_id = options.get("model_id")
         if model_id:
-            # Find device with the best conditions for this model
+            # Find ALL devices with model's group loaded
+            candidate_devices = self.model_manager.find_all_devices_for_model(model_id)
+            
+            if candidate_devices:
+                # Find least busy worker across all candidate devices
+                best_worker = None
+                min_score = float('inf')
+                
+                for device in candidate_devices:
+                    workers_on_device = [
+                        (name, worker) for name, worker in self.workers.items()
+                        if worker.device == device
+                    ]
+                    
+                    for name, worker in workers_on_device:
+                        # Score based on queue size and average latency
+                        score = worker.queue.qsize() * 2 + (worker.avg_latency_ms / 100)
+                        if score < min_score:
+                            min_score = score
+                            best_worker = name
+                
+                if best_worker:
+                    logger.debug(f"Selected worker {best_worker} for model {model_id} (score={min_score:.2f})")
+                    return best_worker
+            
+            # Fallback: Find device with the best conditions for this model
             best_device = self.model_manager.find_best_device_for_model(
                 model_id, 
                 preferred_device=exclusive_gpu
@@ -306,15 +343,31 @@ class InferenceService:
                 # Get next request from worker's queue
                 request_id, text, options, request_type = await worker.queue.get()
                 
-                # Mark worker as busy
+                # Mark worker as busy and track start time
                 worker.is_busy = True
                 worker.current_request = request_id
+                start_time = time.time()
                 
                 try:
                     # Process the request on this worker's device
                     await self._handle_single_request(
                         request_id, text, options, request_type, worker.device
                     )
+                    
+                    # Track metrics on success
+                    elapsed_ms = (time.time() - start_time) * 1000
+                    worker.total_requests += 1
+                    worker.last_request_time = time.time()
+                    
+                    # Update request history
+                    worker.request_history.append(elapsed_ms)
+                    if len(worker.request_history) > worker.max_history_size:
+                        worker.request_history.pop(0)
+                    
+                    # Update average latency
+                    if worker.request_history:
+                        worker.avg_latency_ms = sum(worker.request_history) / len(worker.request_history)
+                    
                 finally:
                     # Mark worker as available
                     worker.is_busy = False
@@ -366,7 +419,7 @@ class InferenceService:
                 already_waiting = request and request.get("status") == "waiting_for_group_switch"
                 
                 if (target_group_id and device_state and 
-                    target_group_id != device_state.current_group_id and
+                    (target_group_id != device_state.current_group_id or device_state.is_switching) and
                     not already_waiting):
                     # Need to switch groups on this device
                     await self._handle_group_switch_for_request(
@@ -377,9 +430,9 @@ class InferenceService:
                 
                 # If we're waiting for a group switch, wait for it to complete
                 if already_waiting:
-                    # Check if the group is now loaded
-                    if device_state and device_state.current_group_id == target_group_id:
-                        # Group is now loaded, proceed with request
+                    # Check if the group is now loaded AND not switching
+                    if device_state and device_state.current_group_id == target_group_id and not device_state.is_switching:
+                        # Group is now loaded and ready, proceed with request
                         logger.info(f"Group {target_group_id} now loaded on {device}, proceeding with request {request_id}")
                         request["status"] = "processing"
                     else:
@@ -627,9 +680,11 @@ class InferenceService:
             messages_list = None
             if options.get("use_chat_format", False) and not used_prior_generated_text:
                 if isinstance(text, str):
-                    text_to_analyze = await self._parse_chat_format(text, model_id)
+                    # Use the analyzer's tokenizer directly
+                    text_to_analyze = await self._parse_chat_format(text, model_id, analyzer.tokenizer if hasattr(analyzer, 'tokenizer') else None)
                 elif isinstance(text, list):
-                    chat_tokenizer = self.model_manager.get_chat_tokenizer_for_model(model_id)
+                    # Use the analyzer's tokenizer directly
+                    chat_tokenizer = analyzer.tokenizer if hasattr(analyzer, 'tokenizer') else None
                     if chat_tokenizer and hasattr(chat_tokenizer, 'apply_chat_template'):
                         messages = text
                         messages_list = messages.copy()
@@ -1065,7 +1120,7 @@ class InferenceService:
             logger.warning(f"Failed to parse chat format: {e}")
             return [{"role": "user", "content": text}]
     
-    async def _parse_chat_format(self, text: str, model_id: str) -> str:
+    async def _parse_chat_format(self, text: str, model_id: str, tokenizer=None) -> str:
         """Parse chat format and apply chat template for analysis"""
         try:
             import json
@@ -1085,8 +1140,8 @@ class InferenceService:
                 logger.info(f"Converting plain text to chat format for analysis")
                 messages = [{"role": "user", "content": text}]
             
-            # Get chat tokenizer
-            chat_tokenizer = self.model_manager.get_chat_tokenizer_for_model(model_id)
+            # Use provided tokenizer or try to get it from model manager
+            chat_tokenizer = tokenizer if tokenizer else self.model_manager.get_chat_tokenizer_for_model(model_id)
             if chat_tokenizer and hasattr(chat_tokenizer, 'apply_chat_template'):
                 if 'gemma' in model_id and messages[0]["role"] == "system":
                     system_prompt = messages[0]["content"]
@@ -1126,3 +1181,73 @@ class InferenceService:
             "total_workers": len(self.workers),
             "busy_workers": sum(1 for w in self.workers.values() if w.is_busy)
         }
+    
+    def get_device_load_stats(self) -> Dict[str, Dict[str, Any]]:
+        """Get load statistics for each device"""
+        device_stats = {}
+        
+        for device in self.devices:
+            # Get all workers for this device
+            device_workers = [
+                w for w in self.workers.values() 
+                if w.device == device
+            ]
+            
+            if not device_workers:
+                continue
+            
+            # Aggregate stats for the device
+            total_queue_size = sum(w.queue.qsize() for w in device_workers)
+            busy_workers = sum(1 for w in device_workers if w.is_busy)
+            avg_latency = sum(w.avg_latency_ms for w in device_workers) / len(device_workers) if device_workers else 0
+            total_requests = sum(w.total_requests for w in device_workers)
+            
+            device_stats[device] = {
+                "queue_depth": total_queue_size,
+                "busy_workers": busy_workers,
+                "total_workers": len(device_workers),
+                "avg_latency_ms": avg_latency,
+                "total_requests": total_requests,
+                "utilization": busy_workers / len(device_workers) if device_workers else 0
+            }
+        
+        return device_stats
+    
+    async def _load_balancing_monitor(self):
+        """
+        Background task that monitors load and duplicates groups when needed.
+        Only runs in multi-GPU setups.
+        """
+        logger.info("Load balancing monitor started")
+        
+        while True:
+            try:
+                # Wait between checks
+                await asyncio.sleep(10)  # Check every 10 seconds
+                
+                # Get current load statistics
+                device_stats = self.get_device_load_stats()
+                
+                # Find heavily loaded groups
+                for device, stats in device_stats.items():
+                    # Check if device is heavily loaded
+                    if stats["queue_depth"] > 3 or stats["utilization"] > 0.7:
+                        # Get the group on this device
+                        device_state = self.model_manager.device_states.get(device)
+                        if device_state and device_state.current_group_id:
+                            group_id = device_state.current_group_id
+                            
+                            # Try to duplicate this group to an idle GPU
+                            logger.debug(f"Device {device} is busy (queue={stats['queue_depth']}, util={stats['utilization']:.2%}), considering duplication of group {group_id}")
+                            
+                            new_device = await self.model_manager.consider_duplicating_group(
+                                group_id,
+                                device_stats
+                            )
+                            
+                            if new_device:
+                                logger.info(f"Successfully duplicated group {group_id} to {new_device} for load balancing")
+                
+            except Exception as e:
+                logger.error(f"Error in load balancing monitor: {e}")
+                await asyncio.sleep(30)  # Wait longer on error
