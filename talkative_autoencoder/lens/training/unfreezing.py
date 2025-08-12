@@ -50,13 +50,21 @@ def unfreeze_encoder_and_rebuild_optim(
     decoder_base = decoder.module if hasattr(decoder, "module") else decoder
     encoder_base = encoder.module if hasattr(encoder, "module") else encoder
 
-    for p in encoder_base.parameters():
-        p.requires_grad = True
+    # Selectively unfreeze only the parameters that were planned to be trainable
+    planned_names = getattr(encoder_base, "_planned_trainable_param_names", None)
+    if planned_names is None:
+        planned_names = getattr(encoder, "_planned_trainable_param_names", [])
+    planned_names = set(planned_names)
+
+    for name, p in encoder_base.named_parameters():
+        p.requires_grad = name in planned_names
 
     old_state = optimizer.state_dict().get("state", {})
 
+    # Order models so that shared parameters deduplicate consistently;
+    # place encoder first so its overall multiplier applies where relevant.
     new_param_groups = param_groups(
-        [decoder_base, encoder_base],
+        [encoder_base, decoder_base],
         learning_rate,
         projection_lr_multiplier,
         embedding_lr_multiplier,

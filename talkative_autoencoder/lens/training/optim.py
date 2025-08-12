@@ -12,7 +12,7 @@ def get_param_category(param_name: str) -> str:
 
     Returns one of: "proj", "prompt", "embedding", "base", "other".
     """
-    is_adapter = (("proj" in param_name) or (".out" in param_name)) and not ("c_proj" in param_name)
+    is_adapter = (("proj" in param_name) or (".out" in param_name)) and "c_proj" not in param_name
     is_embedding = (
         ("embed" in param_name)
         or ("wte" in param_name)
@@ -24,7 +24,7 @@ def get_param_category(param_name: str) -> str:
         or ("prompt_right_emb" in param_name)
         or ("soft_prompt_embeddings" in param_name)
     )
-    is_base_model = ("base" in param_name)
+    is_base_model = "base" in param_name
 
     if is_adapter:
         return "proj"
@@ -69,10 +69,15 @@ def param_groups(
         models = [models]
 
     groups: List[dict] = []
-    for i,m in enumerate(models):
+    seen_param_ids = set()
+    for i, m in enumerate(models):
         for n, p in m.named_parameters():
             if not p.requires_grad:
                 continue
+            pid = id(p)
+            if pid in seen_param_ids:
+                continue
+            seen_param_ids.add(pid)
 
             decay = 0.0 if p.ndim == 1 else weight_decay
 
@@ -89,11 +94,9 @@ def param_groups(
                 lr_scale = 1.0
 
             if i == 0:
-                print("Decoder LR multiplier: 1")
-                lr_scale = 1* lr_scale
+                lr_scale = 1 * lr_scale
             else:
-                print(f"Overall encoder LR multiplier: {overall_encoder_lr_mult}")
-                lr_scale = overall_encoder_lr_mult*lr_scale
+                lr_scale = overall_encoder_lr_mult * lr_scale
 
             # Attach category for downstream logic (e.g., per-category schedulers)
             # Extra keys are supported by torch.optim param groups

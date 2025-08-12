@@ -29,7 +29,7 @@
     - Group-specific: `MODEL_GROUP_gemma2_9b_it_BATCH_SIZE=32`
     - Model-specific: `MODEL_gemma3_27b_chat_BATCH_SIZE=16`
 
-- JSON settings (`website/backend/app/model_groups.json`):
+- JSON settings (`website/backend/model_groups.json`):
   - Top-level `settings`: `preload_groups`, `default_group`, `max_cpu_models`, `use_bf16`, `no_orig`, `no_kl`, `comparison_tl_checkpoint`, `estimated_gpu_memory`
   - `max_cpu_models` controls CPU cache size. If not overridden, falls back to `MAX_CPU_CACHED_MODELS` infra env via `Settings.max_cpu_cached_models`.
 

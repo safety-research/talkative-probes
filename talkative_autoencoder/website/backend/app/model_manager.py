@@ -110,7 +110,8 @@ class UnifiedModelManager:
         
         # Load groups configuration
         if groups_config_path is None:
-            groups_config_path = Path(__file__).parent / "model_groups.json"
+            # model_groups.json is colocated with backend .env (one directory above app/)
+            groups_config_path = Path(__file__).parent.parent / "model_groups.json"
         self.groups_config_path = Path(groups_config_path)
         self._load_groups_config()
 

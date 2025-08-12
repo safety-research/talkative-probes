@@ -295,8 +295,8 @@ async def lifespan(app: FastAPI):
             default_group_id = settings.default_group  # From DEFAULT_GROUP env var if set
             
             if not default_group_id:
-                # Fall back to JSON configuration
-                groups_file = Path(__file__).parent / "model_groups.json"
+                # Fall back to JSON configuration (colocated with backend .env)
+                groups_file = Path(__file__).parent.parent / "model_groups.json"
                 if groups_file.exists():
                     with open(groups_file) as f:
                         groups_data = json.load(f)
@@ -999,8 +999,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 public_only = ("kitft.com" in origin_header) or ("kitft.com" in host_header)
                 
                 # Convert to old format for frontend compatibility
-                # Load JSON data once
-                groups_file = Path(__file__).parent / "model_groups.json"
+                # Load JSON data once (colocated with backend .env)
+                groups_file = Path(__file__).parent.parent / "model_groups.json"
                 json_groups_map = {}
                 if groups_file.exists():
                     with open(groups_file) as f:

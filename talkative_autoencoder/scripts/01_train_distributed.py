@@ -3107,17 +3107,19 @@ def main(cfg: DictConfig) -> None:
         # Apply encoder freeze/unfreeze policy based on optional unfreezing feature
         unfreeze_cfg = config.get("unfreeze_encoder", {}) or {}
         if unfreeze_cfg.get("enabled", False):
-            # Start with encoder frozen; it will be unfrozen later by the scheduler
+            # Record which encoder params were originally intended to be trainable
+            try:
+                planned_trainable = [n for n, p in encoder.named_parameters() if p.requires_grad]
+                setattr(encoder, "_planned_trainable_param_names", planned_trainable)
+            except Exception:
+                setattr(encoder, "_planned_trainable_param_names", [])
+            # Start with encoder frozen; it will be unfrozen later (selectively)
             for p in encoder.parameters():
                 p.requires_grad = False
             if is_main():
-                log.info("Encoder initially frozen (unfreeze_encoder.enabled=True). Will unfreeze later by schedule.")
-        else:
-            # Feature disabled: ensure encoder is fully trainable in the usual way
-            for p in encoder.parameters():
-                p.requires_grad = True
-            if is_main():
-                log.info("Unfreezing feature disabled. Encoder set to trainable from the start.")
+                log.info(
+                    "Encoder initially frozen (unfreeze_encoder.enabled=True). Will selectively unfreeze later by schedule."
+                )
 
         start_step, checkpoint_data, wandb_run_id_for_resumption, successful_preemption_checkpoint = (
             maybe_resume_from_checkpoint(

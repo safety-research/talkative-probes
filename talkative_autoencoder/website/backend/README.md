@@ -88,7 +88,7 @@ GLOBAL_AUTO_BATCH_SIZE_MAX=768
 
 At startup in non-lazy mode, the default group is selected by:
 1. `DEFAULT_GROUP` env (if set)
-2. Otherwise `app/model_groups.json` → `settings.default_group`
+2. Otherwise `website/backend/model_groups.json` → `settings.default_group`
 3. Otherwise no default is loaded
 
 #### CORS
