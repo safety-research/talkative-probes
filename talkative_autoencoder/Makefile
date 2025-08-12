@@ -81,12 +81,13 @@ setup:
 	@if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q "B200"; then \
 		echo "Detected B200 node - removing incompatible packages..."; \
 		. ./scripts/ensure_env.sh && \
-		uv remove bitsandbytes cairosvg || true; \
+		uv remove bitsandbytes cairosvg triton-kernels || true; \
 		echo "Removed bitsandbytes and cairosvg for B200 compatibility"; \
 		echo "Installing PyTorch and markupsafe..."; \
 		. ./scripts/ensure_env.sh && \
 		uv add "markupsafe==2.1.3" && \
-		uv add torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu128 ; \
+		uv add torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu128 && \
+		uv add git+https://github.com/triton-lang/triton.git@main#subdirectory=python/triton_kernels ; \
 	fi
 	@# Login to wandb if API key is available (source .env first)
 	@if [ -f .env ]; then \
