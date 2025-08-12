@@ -68,10 +68,10 @@ setup:
 	@# Configure shared cache
 	@mkdir -p /workspace/.uv_cache
 	@# Source ensure_env.sh and sync environment first
-    @echo "Sourcing environment setup..."
-    @. ./scripts/ensure_env.sh && \
-    echo "Creating/syncing uv environment..." && \
-    if [ -f uv.lock ]; then uv sync --frozen; else uv sync; fi
+	@echo "Sourcing environment setup..."
+	@. ./scripts/ensure_env.sh && \
+		echo "Creating/syncing uv environment..." && \
+		if [ -f uv.lock ]; then uv sync --frozen; else uv sync; fi
 	@$(MAKE) link-consistency-lens
 	@# Check if on B200 node and remove packages if needed
 	@if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L 2>/dev/null | grep -q "B200"; then \
