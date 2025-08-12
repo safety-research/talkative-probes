@@ -67,7 +67,7 @@ setup:
 	fi
 	@# Configure shared cache
 	@mkdir -p /workspace/.uv_cache
-    @echo ""# Source ensure_env.sh and sync environment first
+	@# Source ensure_env.sh and sync environment first
     @echo "Sourcing environment setup..."
     @. ./scripts/ensure_env.sh && \
     echo "Creating/syncing uv environment..." && \
