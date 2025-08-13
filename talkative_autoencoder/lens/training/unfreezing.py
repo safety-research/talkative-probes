@@ -55,16 +55,19 @@ def unfreeze_encoder_and_rebuild_optim(
     if planned_names is None:
         planned_names = getattr(encoder, "_planned_trainable_param_names", [])
     planned_names = set(planned_names)
+    # Debug-friendly print (kept minimal); consider gating under a verbose flag if needed
+    # print(f"Unfreezing encoder with {len(planned_names)} planned-trainable parameters")
 
     for name, p in encoder_base.named_parameters():
         p.requires_grad = name in planned_names
 
-    old_state = optimizer.state_dict().get("state", {})
+    # We intentionally do NOT carry over the old optimizer "state" here.
+    # Carrying state across a structural change in param_groups can mis-map
+    # states to new parameters (PyTorch remaps by position), causing shape errors.
 
-    # Order models so that shared parameters deduplicate consistently;
-    # place encoder first so its overall multiplier applies where relevant.
-    new_param_groups = param_groups(
-        [encoder_base, decoder_base],
+    # Build full param group spec in the original order so encoder gets overall multiplier
+    full_groups = param_groups(
+        [decoder_base, encoder_base],
         learning_rate,
         projection_lr_multiplier,
         embedding_lr_multiplier,
@@ -74,27 +77,39 @@ def unfreeze_encoder_and_rebuild_optim(
         weight_decay,
     )
 
-    new_optimizer = torch.optim.AdamW(new_param_groups, betas=(beta1, beta2))
-    # Ensure initial_lr exists for schedulers that expect it
-    for group in new_optimizer.param_groups:
-        group["initial_lr"] = group.get("initial_lr", group["lr"])  # set if missing
+    # Collect existing params to avoid duplicates
+    existing_param_ids = set()
+    for g in optimizer.param_groups:
+        for p in g.get("params", []):
+            existing_param_ids.add(id(p))
 
-    # Load only the internal state; keep the new param_groups structure
-    new_optimizer.load_state_dict(
-        {
-            "state": old_state,
-            "param_groups": new_optimizer.state_dict()["param_groups"],
-        }
-    )
+    # Add only new trainable encoder params to the existing optimizer
+    added = 0
+    for g in full_groups:
+        if not g.get("params"):
+            continue
+        p = g["params"][0]
+        if id(p) in existing_param_ids:
+            continue
+        if not p.requires_grad:
+            continue
+        g["initial_lr"] = g.get("initial_lr", g["lr"])  # scheduler compatibility
+        optimizer.add_param_group(g)
+        added += 1
 
+    # Ensure all groups have initial_lr set
+    for g in optimizer.param_groups:
+        g["initial_lr"] = g.get("initial_lr", g["lr"])
+
+    # Rebuild scheduler at the same step index
     current_optimizer_step = step // max(1, gradient_accumulation_steps)
     last_epoch = current_optimizer_step - 1 if current_optimizer_step > 0 else -1
     new_scheduler = get_lr_scheduler(
-        new_optimizer,
+        optimizer,
         config["lr_scheduler"],
         max_optimizer_steps,
         last_epoch=last_epoch,
         grad_accum_steps=gradient_accumulation_steps,
     )
 
-    return new_optimizer, new_scheduler
+    return optimizer, new_scheduler

@@ -3755,7 +3755,18 @@ def main(cfg: DictConfig) -> None:
     initial_encoder_state = None
     if drift_enabled and is_main():
         initial_decoder_state = get_initial_model_state(decoder_base_for_drift)
-        initial_encoder_state = get_initial_model_state(encoder_base_for_drift)
+        # For encoder, if we started with it frozen due to scheduled unfreeze,
+        # capture the planned-trainable params even if requires_grad=False now.
+        planned_names = getattr(encoder_base_for_drift, "_planned_trainable_param_names", None)
+        if planned_names:
+            planned_names_set = set(planned_names)
+            enc_state = {}
+            for name, p in encoder_base_for_drift.named_parameters():
+                if name in planned_names_set:
+                    enc_state[name] = p.detach().cpu().clone()
+            initial_encoder_state = enc_state
+        else:
+            initial_encoder_state = get_initial_model_state(encoder_base_for_drift)
         log.info(f"Captured initial model states for drift calculation (resume step={start_step}).")
 
     # Training loop
@@ -4482,14 +4493,17 @@ def main(cfg: DictConfig) -> None:
                     or (step == max_steps - 1 and max_steps > 0)
                     or (step > start_step and drift_log_interval > 0 and step % drift_log_interval == 0)
                 )
-                if log_now and initial_decoder_state and initial_encoder_state:
-                    log.info(f"Logging parameter drift at step {step} …")
-                    log_parameter_drift(
-                        decoder_base_for_drift, initial_decoder_state, "decoder", step, log_metrics, log, True
-                    )
-                    log_parameter_drift(
-                        encoder_base_for_drift, initial_encoder_state, "encoder", step, log_metrics, log, True
-                    )
+                if log_now:
+                    if initial_decoder_state:
+                        log.info(f"Logging decoder parameter drift at step {step} …")
+                        log_parameter_drift(
+                            decoder_base_for_drift, initial_decoder_state, "decoder", step, log_metrics, log, True
+                        )
+                    if initial_encoder_state:
+                        log.info(f"Logging encoder parameter drift at step {step} …")
+                        log_parameter_drift(
+                            encoder_base_for_drift, initial_encoder_state, "encoder", step, log_metrics, log, True
+                        )
 
             # Validation and Verbose Samples
             val_loss = None  # Reset val_loss for the current step
