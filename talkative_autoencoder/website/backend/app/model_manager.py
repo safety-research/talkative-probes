@@ -659,7 +659,9 @@ class UnifiedModelManager:
                 logger.info(f"About to broadcast switch starting, websocket_manager: {self.websocket_manager}")
                 if self.websocket_manager:
                     logger.info(f"Active connections: {len(self.websocket_manager.active_connections)}")
-                await self._broadcast_group_switch_status("starting", target_group_id, device)
+                # Include the source group if we're switching between groups
+                source_group = device_state.current_group_id if device_state.current_group_id else None
+                await self._broadcast_group_switch_status("starting", target_group_id, device, source_group_id=source_group)
                 
                 # Memory check: Only needed when no group is currently loaded
                 # When switching groups, we'll unload the current one first, so no check needed
@@ -678,12 +680,14 @@ class UnifiedModelManager:
                 if device_state.current_group_id:
                     logger.info(f"Moving group {device_state.current_group_id} from {device} to CPU cache")
                     # Send periodic keepalive updates during the long operation
-                    await self._move_group_to_cpu_with_keepalive(device_state.current_group_id, device)
+                    # Pass target_group_id so progress messages show "Switching from X to Y"
+                    await self._move_group_to_cpu_with_keepalive(device_state.current_group_id, device, target_group_id)
                 
                 # Load target group on this device
                 if target_group_id in self.cpu_cached_groups:
                     logger.info(f"Loading group {target_group_id} from CPU cache to {device}")
-                    await self._load_group_from_cpu_with_keepalive(target_group_id, device)
+                    # Pass source_group so progress messages show full switch context
+                    await self._load_group_from_cpu_with_keepalive(target_group_id, device, source_group)
                 else:
                     logger.info(f"Loading new group {target_group_id} on {device}")
                     group_config = self.model_groups[target_group_id]
@@ -728,7 +732,7 @@ class UnifiedModelManager:
                 device_state.is_switching = False
                 device_state.switch_start_time = None
 
-    async def _move_group_to_cpu_with_keepalive(self, group_id: str, device: str):
+    async def _move_group_to_cpu_with_keepalive(self, group_id: str, device: str, target_group_id: Optional[str] = None):
         """
         Move a group to CPU with periodic keepalive updates to prevent WebSocket timeout.
         """
@@ -743,9 +747,10 @@ class UnifiedModelManager:
                     if not keepalive_event.is_set():
                         await self._broadcast_group_switch_status(
                             "progress", 
-                            group_id, 
+                            target_group_id or group_id,  # Use target group for the main group_id field
                             device, 
-                            f"Moving group to CPU..."
+                            f"Moving group to CPU...",
+                            source_group_id=group_id  # Pass the group being moved as source
                         )
                     await asyncio.sleep(2)  # More frequent updates
                 except Exception as e:
@@ -804,7 +809,7 @@ class UnifiedModelManager:
                     torch.cuda.synchronize()
             await loop.run_in_executor(None, clear_gpu_memory)
 
-    async def _load_group_from_cpu_with_keepalive(self, group_id: str, device: str):
+    async def _load_group_from_cpu_with_keepalive(self, group_id: str, device: str, source_group_id: Optional[str] = None):
         """
         Load a group from CPU with periodic keepalive updates to prevent WebSocket timeout.
         """
@@ -821,7 +826,8 @@ class UnifiedModelManager:
                             "progress", 
                             group_id, 
                             device, 
-                            f"Loading group from CPU..."
+                            f"Loading group from CPU...",
+                            source_group_id=source_group_id  # Pass the source if switching between groups
                         )
                     await asyncio.sleep(2)  # More frequent updates
                 except Exception as e:
@@ -1034,7 +1040,7 @@ class UnifiedModelManager:
                 self.group_usage_order.remove(lru_group)
                 gc.collect()
 
-    async def _broadcast_group_switch_status(self, status: str, group_id: str, device: str, error: Optional[str] = None):
+    async def _broadcast_group_switch_status(self, status: str, group_id: str, device: str, error: Optional[str] = None, source_group_id: Optional[str] = None):
         """Broadcast group switch status to all connected clients"""
         message = {
             "type": "group_switch_status",
@@ -1045,6 +1051,8 @@ class UnifiedModelManager:
         }
         if error:
             message["error"] = error
+        if source_group_id:
+            message["source_group_id"] = source_group_id
         
         logger.info(f"Broadcasting group switch status: {status} for group {group_id} on device {device}")
         

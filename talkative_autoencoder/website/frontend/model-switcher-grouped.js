@@ -937,11 +937,18 @@ class GroupedModelSwitcher {
             case 'starting':
                 this.isSwitching = true;
                 this.showProgress();
-                this.showStatus(`Switching to group ${data.group_id}${deviceInfo}... This affects all users.`, 'warning');
+                // Show "Switching from X to Y" if source group is provided
+                let switchMessage;
+                if (data.source_group_id) {
+                    switchMessage = `Switching from ${data.source_group_id} to ${data.group_id}${deviceInfo}... This affects all users.`;
+                } else {
+                    switchMessage = `Loading group ${data.group_id}${deviceInfo}... This affects all users.`;
+                }
+                this.showStatus(switchMessage, 'warning');
                 this.updateStatus();
                 
-                // Show active switch banner
-                this.showActiveSwitchBanner(data.group_id, deviceInfo);
+                // Show active switch banner with source group info
+                this.showActiveSwitchBanner(data.group_id, deviceInfo, data.source_group_id);
                 
                 this.emit('group-switch-started', data);
                 break;
@@ -949,7 +956,7 @@ class GroupedModelSwitcher {
             case 'progress':
                 // Keep-alive progress update during long operations
                 this.isSwitching = true;  // Ensure switching state is set
-                this.showActiveSwitchBanner(data.group_id, deviceInfo);  // Show banner for users joining mid-switch
+                this.showActiveSwitchBanner(data.group_id, deviceInfo, data.source_group_id);  // Show banner for users joining mid-switch
                 
                 if (data.message) {
                     // Show the progress message
@@ -1130,11 +1137,19 @@ class GroupedModelSwitcher {
     }
     
     // Show active switch banner
-    showActiveSwitchBanner(groupId, deviceInfo) {
+    showActiveSwitchBanner(groupId, deviceInfo, sourceGroupId = null) {
         // Remove any existing banner
         const existingBanner = document.getElementById('groupSwitchActiveWarning');
         if (existingBanner) {
             existingBanner.remove();
+        }
+        
+        // Format the switch message based on whether we have a source group
+        let switchDescription;
+        if (sourceGroupId) {
+            switchDescription = `Switching from ${sourceGroupId} to ${groupId}${deviceInfo}`;
+        } else {
+            switchDescription = `Loading ${groupId}${deviceInfo}`;
         }
         
         // Create active switch banner
@@ -1149,7 +1164,7 @@ class GroupedModelSwitcher {
                     </svg>
                     <div class="flex-1">
                         <p class="font-bold">⚠️ Group Switch in Progress</p>
-                        <p class="text-sm mt-1">Switching to ${groupId}${deviceInfo}</p>
+                        <p class="text-sm mt-1">${switchDescription}</p>
                         <p class="text-xs mt-2 text-yellow-700">This affects ALL users. The system may be temporarily unavailable.</p>
                         <p class="text-xs mt-1 text-yellow-600">Estimated time: 1-2 minutes</p>
                     </div>
