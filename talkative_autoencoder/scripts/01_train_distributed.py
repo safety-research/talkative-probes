@@ -3603,9 +3603,19 @@ def main(cfg: DictConfig) -> None:
         beta1 = config.get("beta1", 0.9)
         beta2 = config.get("beta2", 0.999)
 
-        # Get base models for parameter groups
-        decoder_base = decoder.module if hasattr(decoder, "module") else decoder
-        encoder_base = encoder.module if hasattr(encoder, "module") else encoder
+        # Get base models for parameter groups (handle DDP and torch.compile wrappers)
+        if hasattr(decoder, "module"):
+            decoder_base = decoder.module
+        elif hasattr(decoder, "_orig_mod"):
+            decoder_base = decoder._orig_mod
+        else:
+            decoder_base = decoder
+        if hasattr(encoder, "module"):
+            encoder_base = encoder.module
+        elif hasattr(encoder, "_orig_mod"):
+            encoder_base = encoder._orig_mod
+        else:
+            encoder_base = encoder
 
         # Now create optimizer; pre-register encoder params even if frozen (lr=0 until unfreeze)
         all_groups = param_groups(
