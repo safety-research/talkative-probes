@@ -3730,7 +3730,7 @@ def main(cfg: DictConfig) -> None:
                 base_lr = g["lr"]
                 g["initial_lr"] = g.get("initial_lr", base_lr)
                 if param_id in currently_frozen_planned_ids:
-                    log.info(f"Setting lr=0 for {g['name']} as an encoder planned param and currently frozen")
+                    log.info(f"Setting lr=0 for {g.get('name', '?')} as an encoder planned param and currently frozen")
                     # This is an encoder planned param and currently frozen
                     # Keep in optimizer but disable updates until unfreeze
                     g["lr"] = 0.0
