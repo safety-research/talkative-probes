@@ -431,6 +431,12 @@ def distributed_train_step(
             disable_loss2_backward = not encoder_is_trainable_now
 
             if loss_fns["GRPO_weight"] > 0:
+                if step == 0:
+                    print(f"DEBUG: encoder_is_trainable_now: {encoder_is_trainable_now}")
+                if step == config.get("unfreeze_encoder").get("step", 0) and config.get("unfreeze_encoder").get(
+                    "enabled", False
+                ):
+                    print(f"DEBUG at unfreeze step: encoder_is_trainable_now: {encoder_is_trainable_now}")
                 if is_main() and step == 0:
                     print("Separate backward pass for loss1 and loss2")
                 if device.type == "cuda" and scaler is not None:
@@ -3957,7 +3963,8 @@ def main(cfg: DictConfig) -> None:
                 grad_accum_steps=gradient_accumulation_steps,
             ):
                 if is_main():
-                    log.info(f"Unfreezing encoder at step {step}")
+                    current_lr_display = optimizer.param_groups[0]["lr"] if optimizer.param_groups else 0.0
+                    log.info(f"Unfreezing encoder at step {step} | LR: {current_lr_display:.2e}")
                 optimizer, lr_scheduler = unfreeze_encoder_and_rebuild_optim(
                     step=step,
                     config=config,
@@ -3977,6 +3984,37 @@ def main(cfg: DictConfig) -> None:
                     beta1=beta1,
                     beta2=beta2,
                 )
+                # Sanity log: how many encoder params are now trainable
+                try:
+                    num_enc_trainable = sum(
+                        1
+                        for p in (encoder.module if hasattr(encoder, "module") else encoder).parameters()
+                        if p.requires_grad
+                    )
+                    if is_main():
+                        log.info(f"Encoder trainable parameter tensors after unfreeze: {num_enc_trainable}")
+                        if num_enc_trainable == 0:
+                            log.warning(
+                                "Encoder unfreeze triggered but no encoder parameters are trainable. Check encoder trainable_components (e.g., use_projection_layer, soft prompts, embedding_head, pos_embeddings, base_model)."
+                            )
+                except Exception:
+                    pass
+
+                # Optional: log encoder drift immediately at unfreeze
+                if drift_enabled and is_main() and initial_encoder_state:
+                    try:
+                        log.info(f"Logging encoder parameter drift immediately after unfreeze at step {step} …")
+                        log_parameter_drift(
+                            encoder_base_for_drift,
+                            initial_encoder_state,
+                            "encoder",
+                            step,
+                            log_metrics,
+                            log,
+                            True,
+                        )
+                    except Exception as _e:
+                        log.warning(f"Failed immediate drift log after unfreeze: {_e}")
                 already_unfrozen_encoder = True
             if world_size > 1:
                 if is_main():

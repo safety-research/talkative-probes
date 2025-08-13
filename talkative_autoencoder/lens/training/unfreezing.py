@@ -64,13 +64,17 @@ def unfreeze_encoder_and_rebuild_optim(
     # Carrying state across a structural change in param_groups can mis-map
     # states to new parameters (PyTorch remaps by position), causing shape errors.
 
-    # Flip lr from 0 -> scheduled lr for encoder params that are now trainable
-    # and already present in the optimizer param groups.
+    # Flip lr from 0 -> scheduled base lr for encoder groups whose params are now trainable
+    encoder_param_ids = {id(p) for p in encoder_base.parameters()}
     for g in optimizer.param_groups:
-        for p in g.get("params", []):
-            if p.requires_grad:
-                g["lr"] = g.get("lr", learning_rate)
-        g["initial_lr"] = g.get("initial_lr", g["lr"])  # scheduler compatibility
+        group_param_ids = {id(p) for p in g.get("params", [])}
+        is_encoder_group = any(pid in encoder_param_ids for pid in group_param_ids)
+        if is_encoder_group:
+            # If this encoder group is now trainable, restore its base lr from initial_lr
+            if any(p.requires_grad for p in g.get("params", [])):
+                g["lr"] = g.get("initial_lr", g.get("lr", learning_rate))
+        # Ensure initial_lr is set (kept as the base lr for schedulers)
+        g["initial_lr"] = g.get("initial_lr", g.get("lr", learning_rate))
 
     # Rebuild scheduler at the same step index
     current_optimizer_step = step // max(1, gradient_accumulation_steps)
