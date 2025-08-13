@@ -4,7 +4,6 @@ from typing import Any, Dict, Tuple
 
 import torch
 
-from .optim import param_groups
 from .schedules import get_lr_scheduler, parse_schedule_to_steps
 
 
@@ -65,41 +64,13 @@ def unfreeze_encoder_and_rebuild_optim(
     # Carrying state across a structural change in param_groups can mis-map
     # states to new parameters (PyTorch remaps by position), causing shape errors.
 
-    # Build full param group spec in the original order so encoder gets overall multiplier
-    full_groups = param_groups(
-        [decoder_base, encoder_base],
-        learning_rate,
-        projection_lr_multiplier,
-        embedding_lr_multiplier,
-        prompt_lr_multiplier,
-        base_model_lr_multiplier,
-        overall_encoder_lr_multiplier,
-        weight_decay,
-    )
-
-    # Collect existing params to avoid duplicates
-    existing_param_ids = set()
+    # Flip lr from 0 -> scheduled lr for encoder params that are now trainable
+    # and already present in the optimizer param groups.
     for g in optimizer.param_groups:
         for p in g.get("params", []):
-            existing_param_ids.add(id(p))
-
-    # Add only new trainable encoder params to the existing optimizer
-    added = 0
-    for g in full_groups:
-        if not g.get("params"):
-            continue
-        p = g["params"][0]
-        if id(p) in existing_param_ids:
-            continue
-        if not p.requires_grad:
-            continue
+            if p.requires_grad:
+                g["lr"] = g.get("lr", learning_rate)
         g["initial_lr"] = g.get("initial_lr", g["lr"])  # scheduler compatibility
-        optimizer.add_param_group(g)
-        added += 1
-
-    # Ensure all groups have initial_lr set
-    for g in optimizer.param_groups:
-        g["initial_lr"] = g.get("initial_lr", g["lr"])
 
     # Rebuild scheduler at the same step index
     current_optimizer_step = step // max(1, gradient_accumulation_steps)

@@ -46,6 +46,7 @@ def param_groups(
     base_model_lr_mult: float = 1.0,
     overall_encoder_lr_mult: float = 1.0,
     weight_decay: float = 0.01,
+    include_frozen: bool = False,
 ) -> List[dict]:  # noqa: D401
     """Create parameter groups for AdamW.
 
@@ -72,7 +73,7 @@ def param_groups(
     seen_param_ids = set()
     for i, m in enumerate(models):
         for n, p in m.named_parameters():
-            if not p.requires_grad:
+            if (not include_frozen) and (not p.requires_grad):
                 continue
             pid = id(p)
             if pid in seen_param_ids:

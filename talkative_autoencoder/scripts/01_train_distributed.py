@@ -3601,8 +3601,8 @@ def main(cfg: DictConfig) -> None:
         decoder_base = decoder.module if hasattr(decoder, "module") else decoder
         encoder_base = encoder.module if hasattr(encoder, "module") else encoder
 
-        # Now create optimizer with correctly set requires_grad states
-        params = param_groups(
+        # Now create optimizer; pre-register encoder params even if frozen (lr=0 until unfreeze)
+        all_groups = param_groups(
             [decoder_base, encoder_base],
             learning_rate,
             projection_lr_multiplier,
@@ -3611,8 +3611,48 @@ def main(cfg: DictConfig) -> None:
             base_model_lr_multiplier,
             overall_encoder_lr_multiplier,
             weight_decay,
+            include_frozen=True,
         )
-        optimizer = torch.optim.AdamW(params, betas=(beta1, beta2))
+
+        # If unfreezing is enabled, pre-register only ever-trainable params and set encoder-frozen LRs to 0
+        unfreeze_cfg = config.get("unfreeze_encoder", {}) or {}
+        if unfreeze_cfg.get("enabled", False):
+            # Decoder params that are trainable now
+            allowed_decoder_ids = {id(p) for p in decoder_base.parameters() if p.requires_grad}
+            # Encoder planned-trainable names captured earlier
+            planned_names = set(getattr(encoder_base, "_planned_trainable_param_names", []))
+            planned_encoder_ids = {id(p) for (n, p) in encoder_base.named_parameters() if n in planned_names}
+            allowed_ids = allowed_decoder_ids | planned_encoder_ids
+
+            filtered_groups = []
+            for g in all_groups:
+                if not g.get("params"):
+                    continue
+                param_id = id(g["params"][0])
+                if param_id not in allowed_ids:
+                    continue
+                # Store base (scheduled) LR for scheduler; then zero LR for currently-frozen planned encoder params
+                base_lr = g["lr"]
+                g["initial_lr"] = g.get("initial_lr", base_lr)
+                if param_id in planned_encoder_ids and param_id not in allowed_decoder_ids:
+                    # This is an encoder planned param and currently frozen
+                    # Keep in optimizer but disable updates until unfreeze
+                    g["lr"] = 0.0
+                filtered_groups.append(g)
+            optimizer = torch.optim.AdamW(filtered_groups, betas=(beta1, beta2))
+        else:
+            # Feature disabled: only include actually trainable params (skip always-frozen shared base)
+            trainable_ids = {id(p) for p in decoder_base.parameters() if p.requires_grad}
+            trainable_ids |= {id(p) for p in encoder_base.parameters() if p.requires_grad}
+            filtered_groups = []
+            for g in all_groups:
+                if not g.get("params"):
+                    continue
+                if id(g["params"][0]) not in trainable_ids:
+                    continue
+                g["initial_lr"] = g.get("initial_lr", g["lr"])  # scheduler compatibility
+                filtered_groups.append(g)
+            optimizer = torch.optim.AdamW(filtered_groups, betas=(beta1, beta2))
 
         # Learning rate scheduler
         # Initialize scheduler with max_optimizer_steps
