@@ -23,6 +23,7 @@ def get_param_category(param_name: str) -> str:
         ("prompt_left_emb" in param_name)
         or ("prompt_right_emb" in param_name)
         or ("soft_prompt_embeddings" in param_name)
+        or ("special_last_token_vector" in param_name)
     )
     is_base_model = "base" in param_name
 

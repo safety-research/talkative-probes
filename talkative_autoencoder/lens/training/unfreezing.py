@@ -75,17 +75,58 @@ def unfreeze_encoder_and_rebuild_optim(
     # Carrying state across a structural change in param_groups can mis-map
     # states to new parameters (PyTorch remaps by position), causing shape errors.
 
-    # Flip lr from 0 -> scheduled base lr for encoder groups whose params are now trainable
-    encoder_param_ids = {id(p) for p in encoder_base.parameters()}
+    # Flip lr from 0 -> computed lr for encoder groups whose params are now trainable
+    # Be robust to wrappers by unifying ids from encoder, encoder.module, and encoder._orig_mod
+    encoder_param_ids = set()
+    for m in (encoder_base, getattr(encoder, "module", None), getattr(encoder, "_orig_mod", None)):
+        if m is None:
+            continue
+        try:
+            for p in m.parameters():
+                encoder_param_ids.add(id(p))
+        except Exception:
+            pass
+    # Ensure initial_lr exists for all groups (encoder and decoder)
+    for g in optimizer.param_groups:
+        if "initial_lr" not in g:
+            # Compute from category to avoid inheriting a 0 lr
+            cat = g.get("category", "other")
+            if cat == "proj":
+                lr_mult_cat = projection_lr_multiplier
+            elif cat == "embedding":
+                lr_mult_cat = embedding_lr_multiplier
+            elif cat == "prompt":
+                lr_mult_cat = prompt_lr_multiplier
+            elif cat == "base":
+                lr_mult_cat = base_model_lr_multiplier
+            else:
+                lr_mult_cat = 1.0
+            # If this is an encoder group, apply overall encoder multiplier
+            is_encoder_group = any(id(p) in encoder_param_ids for p in g.get("params", []))
+            overall_mult = overall_encoder_lr_multiplier if is_encoder_group else 1.0
+            g["initial_lr"] = learning_rate * (overall_mult * lr_mult_cat)
     for g in optimizer.param_groups:
         group_param_ids = {id(p) for p in g.get("params", [])}
         is_encoder_group = any(pid in encoder_param_ids for pid in group_param_ids)
-        if is_encoder_group:
-            # If this encoder group is now trainable, restore its base lr from initial_lr
-            if any(p.requires_grad for p in g.get("params", [])):
-                g["lr"] = g.get("initial_lr", g.get("lr", learning_rate))
-        # Ensure initial_lr is set (kept as the base lr for schedulers)
-        g["initial_lr"] = g.get("initial_lr", g.get("lr", learning_rate))
+        if not is_encoder_group:
+            continue
+        if not any(p.requires_grad for p in g.get("params", [])):
+            continue
+        # Compute target LR deterministically from category and config multipliers
+        cat = g.get("category", "other")
+        if cat == "proj":
+            lr_mult = projection_lr_multiplier
+        elif cat == "embedding":
+            lr_mult = embedding_lr_multiplier
+        elif cat == "prompt":
+            lr_mult = prompt_lr_multiplier
+        elif cat == "base":
+            lr_mult = base_model_lr_multiplier
+        else:
+            lr_mult = 1.0
+        target_lr = learning_rate * (overall_encoder_lr_multiplier * lr_mult)
+        g["lr"] = target_lr
+        g["initial_lr"] = target_lr
 
     # Rebuild scheduler at the same step index
     current_optimizer_step = step // max(1, gradient_accumulation_steps)

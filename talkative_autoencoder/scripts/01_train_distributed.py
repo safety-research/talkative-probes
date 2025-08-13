@@ -2361,7 +2361,8 @@ def maybe_restore_optimizer_and_scheduler_from_checkpoint(
                     f"Rebuilding optimizer parameter groups with current config LR: {learning_rate:.2e} and current multipliers/WD."
                 )
 
-            new_optimizer_param_groups = param_groups_fn(
+            # Build all groups including frozen, then filter to include planned encoder params (lr=0 if currently frozen)
+            all_groups_restore = param_groups_fn(
                 [decoder_base, encoder_base],
                 learning_rate,
                 projection_lr_multiplier,
@@ -2370,9 +2371,53 @@ def maybe_restore_optimizer_and_scheduler_from_checkpoint(
                 base_model_lr_multiplier,
                 overall_encoder_lr_multiplier,
                 weight_decay,
+                include_frozen=True,
             )
 
-            optimizer = torch.optim.AdamW(new_optimizer_param_groups, betas=(beta1, beta2))
+            # Determine which encoder params were planned to be trainable
+            planned_names_restore = set(getattr(encoder_base, "_planned_trainable_param_names", []))
+            planned_encoder_restore = {n: p for (n, p) in encoder_base.named_parameters() if n in planned_names_restore}
+            planned_encoder_ids_restore = {id(p) for p in planned_encoder_restore.values()}
+            # Currently frozen planned params
+            currently_frozen_planned_ids_restore = {
+                id(p) for (n, p) in planned_encoder_restore.items() if not p.requires_grad
+            }
+            # Decoder trainable IDs
+            decoder_trainable_ids_restore = {id(p) for p in decoder_base.parameters() if p.requires_grad}
+            allowed_ids_restore = decoder_trainable_ids_restore | planned_encoder_ids_restore
+
+            filtered_groups_restore = []
+            for g in all_groups_restore:
+                if not g.get("params"):
+                    continue
+                param_obj = g["params"][0]
+                pid = id(param_obj)
+                if pid not in allowed_ids_restore:
+                    continue
+                # Compute deterministic initial_lr from category and multipliers
+                cat = g.get("category", "other")
+                if cat == "proj":
+                    lr_mult_cat = projection_lr_multiplier
+                elif cat == "embedding":
+                    lr_mult_cat = embedding_lr_multiplier
+                elif cat == "prompt":
+                    lr_mult_cat = prompt_lr_multiplier
+                elif cat == "base":
+                    lr_mult_cat = base_model_lr_multiplier
+                else:
+                    lr_mult_cat = 1.0
+                is_encoder_group = pid in planned_encoder_ids_restore
+                overall_mult = overall_encoder_lr_multiplier if is_encoder_group else 1.0
+                base_lr = learning_rate * (overall_mult * lr_mult_cat)
+                g["initial_lr"] = base_lr
+                # Zero LR only for currently-frozen planned encoder params
+                if pid in currently_frozen_planned_ids_restore:
+                    g["lr"] = 0.0
+                else:
+                    g["lr"] = base_lr
+                filtered_groups_restore.append(g)
+
+            optimizer = torch.optim.AdamW(filtered_groups_restore, betas=(beta1, beta2))
 
             if checkpoint_optim_internal_state:
                 if strict_opt_load:
@@ -3119,7 +3164,9 @@ def main(cfg: DictConfig) -> None:
             try:
                 planned_trainable = [n for n, p in encoder.named_parameters() if p.requires_grad]
                 setattr(encoder, "_planned_trainable_param_names", planned_trainable)
-            except Exception:
+                log.info(f"Encoder planned trainable parameters: {planned_trainable}")
+            except Exception as e:
+                log.info(f"Error getting encoder parameters: {e}")
                 setattr(encoder, "_planned_trainable_param_names", [])
             # Start with encoder frozen; it will be unfrozen later (selectively)
             for p in encoder.parameters():
@@ -3172,6 +3219,35 @@ def main(cfg: DictConfig) -> None:
                 )
                 log.warning("Compiling models anyway, but this is not recommended.")
             compile_models_flag = True
+
+        # If resuming beyond unfreeze step, ensure planned encoder params are enabled now
+        unfreeze_cfg = config.get("unfreeze_encoder", {}) or {}
+        if unfreeze_cfg.get("enabled", False):
+            try:
+                trigger_spec = unfreeze_cfg.get("at", unfreeze_cfg.get("step", -1))
+                trigger_steps = _resolve_schedule_to_steps(
+                    trigger_spec,  # supports "1000s" etc.
+                    steps_per_epoch if "steps_per_epoch" in locals() else 0,
+                    log,
+                    "unfreeze_encoder.step",
+                    gradient_accumulation_steps,
+                )
+            except Exception:
+                trigger_steps = -1
+            if trigger_steps >= 0 and start_step >= trigger_steps:
+                planned_names = set(getattr(encoder, "_planned_trainable_param_names", []))
+                enc_base_to_flip = (
+                    encoder.module
+                    if hasattr(encoder, "module")
+                    else (encoder._orig_mod if hasattr(encoder, "_orig_mod") else encoder)
+                )
+                for n, p in enc_base_to_flip.named_parameters():
+                    if n in planned_names:
+                        p.requires_grad = True
+                if is_main():
+                    log.info(
+                        f"Resuming beyond unfreeze step (start_step={start_step}, trigger={trigger_steps}). Enabled planned encoder params immediately."
+                    )
 
         # NOW move models to device and set up DDP
         decoder, encoder, orig_model = setup_distributed_models(
@@ -3637,7 +3713,10 @@ def main(cfg: DictConfig) -> None:
             allowed_decoder_ids = {id(p) for p in decoder_base.parameters() if p.requires_grad}
             # Encoder planned-trainable names captured earlier
             planned_names = set(getattr(encoder_base, "_planned_trainable_param_names", []))
-            planned_encoder_ids = {id(p) for (n, p) in encoder_base.named_parameters() if n in planned_names}
+            planned_encoder = {n: p for (n, p) in encoder_base.named_parameters() if n in planned_names}
+            planned_encoder_ids = {id(p) for p in planned_encoder.values()}
+            # Determine currently frozen planned params
+            currently_frozen_planned_ids = {id(p) for (n, p) in planned_encoder.items() if not p.requires_grad}
             allowed_ids = allowed_decoder_ids | planned_encoder_ids
 
             filtered_groups = []
@@ -3647,10 +3726,11 @@ def main(cfg: DictConfig) -> None:
                 param_id = id(g["params"][0])
                 if param_id not in allowed_ids:
                     continue
-                # Store base (scheduled) LR for scheduler; then zero LR for currently-frozen planned encoder params
+                # Store base (scheduled) LR for scheduler; then zero LR ONLY for currently-frozen planned encoder params
                 base_lr = g["lr"]
                 g["initial_lr"] = g.get("initial_lr", base_lr)
-                if param_id in planned_encoder_ids and param_id not in allowed_decoder_ids:
+                if param_id in currently_frozen_planned_ids:
+                    log.info(f"Setting lr=0 for {g['name']} as an encoder planned param and currently frozen")
                     # This is an encoder planned param and currently frozen
                     # Keep in optimizer but disable updates until unfreeze
                     g["lr"] = 0.0
@@ -4025,6 +4105,80 @@ def main(cfg: DictConfig) -> None:
                         )
                     except Exception as _e:
                         log.warning(f"Failed immediate drift log after unfreeze: {_e}")
+
+                # Debug: log LRs for encoder params after unfreeze and verify multipliers
+                try:
+                    enc_base_dbg = (
+                        encoder.module
+                        if hasattr(encoder, "module")
+                        else (encoder._orig_mod if hasattr(encoder, "_orig_mod") else encoder)
+                    )
+                    name_by_id = {id(p): n for n, p in enc_base_dbg.named_parameters()}
+                    if is_main():
+                        # Clear, grouped logging: first summarize counts per module
+                        total_groups = len(optimizer.param_groups)
+                        enc_ids = set(name_by_id.keys())
+                        enc_group_count = sum(
+                            1 for g in optimizer.param_groups if any(id(p) in enc_ids for p in g.get("params", []))
+                        )
+                        dec_group_count = total_groups - enc_group_count
+                        log.info(
+                            f"Param groups: total={total_groups} | encoder_groups={enc_group_count} | decoder_groups={dec_group_count}"
+                        )
+                        log.info("Detailed LR multiplier report (all groups):")
+                        for g in optimizer.param_groups:
+                            lr_g = g.get("lr", 0.0)
+                            cat = g.get("category", "?")
+                            for p in g.get("params", []):
+                                pid = id(p)
+                                name = name_by_id.get(pid)
+                                origin = "ENC" if name is not None else "DEC"
+                                label = "other"
+                                if name:
+                                    if "proj" in name:
+                                        label = "proj"
+                                    elif (
+                                        ("soft_prompt" in name)
+                                        or ("prompt" in name)
+                                        or name.endswith("embed_positions.weight")
+                                        or ("special_last_token_vector" in name)
+                                    ):
+                                        label = "prompt/pos"
+                                log.info(
+                                    f"[{origin}] {label}: name={name} lr={lr_g:.2e} cat={cat} req_grad={p.requires_grad}"
+                                )
+
+                        # If any encoder trainable groups still have lr=0, fix them explicitly from multipliers
+                        enc_param_ids = set(name_by_id.keys())
+                        adjusted_cnt = 0
+                        for g in optimizer.param_groups:
+                            if not any(id(p) in enc_param_ids for p in g.get("params", [])):
+                                continue
+                            if not any(p.requires_grad for p in g.get("params", [])):
+                                continue
+                            if g.get("lr", 0.0) > 0:
+                                continue
+                            cat = g.get("category", "other")
+                            if cat == "proj":
+                                lr_mult = projection_lr_multiplier
+                            elif cat == "embedding":
+                                lr_mult = embedding_lr_multiplier
+                            elif cat == "prompt":
+                                lr_mult = prompt_lr_multiplier
+                            elif cat == "base":
+                                lr_mult = base_model_lr_multiplier
+                            else:
+                                lr_mult = 1.0
+                            target_lr = learning_rate * (overall_encoder_lr_multiplier * lr_mult)
+                            old_lr = g.get("lr", 0.0)
+                            g["lr"] = target_lr
+                            adjusted_cnt += 1
+                            log.info(f"Adjusted encoder group lr from {old_lr:.2e} -> {target_lr:.2e} (cat={cat})")
+                        if adjusted_cnt > 0:
+                            log.info(f"Adjusted {adjusted_cnt} encoder groups with zero LR at unfreeze.")
+                except Exception as e:
+                    log.info(f"Error logging encoder parameters multipliers: {e}")
+                    pass
                 already_unfrozen_encoder = True
             if world_size > 1:
                 if is_main():
