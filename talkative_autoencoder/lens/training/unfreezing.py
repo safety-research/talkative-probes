@@ -75,6 +75,10 @@ def unfreeze_encoder_and_rebuild_optim(
     )
 
     new_optimizer = torch.optim.AdamW(new_param_groups, betas=(beta1, beta2))
+    # Ensure initial_lr exists for schedulers that expect it
+    for group in new_optimizer.param_groups:
+        group["initial_lr"] = group.get("initial_lr", group["lr"])  # set if missing
+
     # Load only the internal state; keep the new param_groups structure
     new_optimizer.load_state_dict(
         {

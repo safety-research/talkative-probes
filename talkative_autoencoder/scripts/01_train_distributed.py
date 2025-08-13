@@ -41,7 +41,7 @@ import torch.distributed as dist
 from omegaconf import DictConfig, OmegaConf
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from transformers import AutoModelForCausalLM, AutoTokenizer, Gemma3ForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer, Gemma3ForCausalLM, Mxfp4Config
 
 # Enable TF32 for better performance on Ampere GPUs (A100, H100)
 torch.set_float32_matmul_precision("high")
@@ -2867,6 +2867,7 @@ def main(cfg: DictConfig) -> None:
                 )
             elif "gpt-oss" in model_name:
                 log.info(f"Loading GPT-OSForCausalLM for model '{model_name}'")
+                quantization_config = Mxfp4Config(dequantize=config.get("dequantize", False))
                 shared_base_model_obj = AutoModelForCausalLM.from_pretrained(
                     model_name,
                     torch_dtype=torch_dtype,
@@ -2874,6 +2875,7 @@ def main(cfg: DictConfig) -> None:
                     load_in_8bit=False,
                     attn_implementation=config.get("attn_implementation", None),
                     use_kernels=config.get("use_kernels", False),
+                    quantization_config=quantization_config,
                 )
             else:
                 shared_base_model_obj = AutoModelForCausalLM.from_pretrained(
