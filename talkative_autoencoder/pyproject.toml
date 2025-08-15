@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "talkative-autoencoders"
 description = "Train and evaluate talkative autoencoders"
-requires-python = ">=3.10,<3.12"
+requires-python = ">=3.12,<3.13"
 version = "0.1.0"
 readme = "README.md"
 dependencies = [
     "bitsandbytes>=0.42",
     "deepspeed>=0.14",
     "wandb>=0.16",
-    "torch==2.8.0",
+    "torch>=2.8.0",
     "hf-transfer",
     "datasets",
     "pytest",
@@ -44,7 +44,7 @@ dependencies = [
 packages = ["lens", "website", "website.backend", "website.backend.app"]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 120
 
 [tool.ruff.lint]
@@ -69,6 +69,15 @@ exclude = '''
 
 [tool.uv.sources]
 triton-kernels = { git = "https://github.com/triton-lang/triton.git", subdirectory = "python/triton_kernels", rev = "main" }
+
+[[tool.uv.index]]
+url = "https://wheels.vllm.ai/gpt-oss/"
+
+[[tool.uv.index]]
+url = "https://pypi.org/simple"
+
+[[tool.uv.index]]
+url = "https://download.pytorch.org/whl/nightly/cu128"
 # tuned-lens = { path = "tuned-lens" }
 
 [dependency-groups]

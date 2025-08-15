@@ -1,0 +1,20 @@
+[ensure_env] Using cached venv: /home/kitf/.cache/uv/envs/consistency-lens
+[ensure_env] Installing Python 3.12 via uv...
+[ensure_env] Environment already exists at /home/kitf/.cache/uv/envs/consistency-lens
+[ensure_env] Running on SLURM node: node-1
+[ensure_env] Environment ready. Use 'uv run' (not uv_run) for all Python commands.
+[ensure_env] Note: The uv_run function is available as a shortcut in this shell.
+[ensure_env] .venv exists and is not a symlink; to align it with uv env, remove it or run 'make -C talkative_autoencoder link-venv'
+/var/lib/slurm-llnl/slurmd/job07506/slurm_script: line 11: vllm: command not found
+   Building examples @ file:///workspace/kitf/talkative-probes
+Downloading scikit-learn (9.0MiB)
+Downloading triton (148.5MiB)
+Downloading debugpy (4.0MiB)
+Downloading torchvision (7.1MiB)
+Downloading torch (783.0MiB)
+ Downloading debugpy
+ Downloading torchvision
+ Downloading triton
+ Downloading scikit-learn
+      Built examples @ file:///workspace/kitf/talkative-probes
+slurmstepd-node-1: error: *** JOB 7506 ON node-1 CANCELLED AT 2025-08-14T15:14:00 ***

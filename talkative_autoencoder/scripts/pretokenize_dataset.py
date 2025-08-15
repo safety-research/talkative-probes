@@ -6,7 +6,7 @@ from pathlib import Path
 
 import dotenv
 import hydra
-from datasets import Dataset, load_dataset
+from datasets import Dataset, load_dataset, load_from_disk
 from omegaconf import DictConfig
 
 from transformers import AutoTokenizer
@@ -122,15 +122,18 @@ def do_pretokenize(cfg: DictConfig):
         log.info(f"No separate validation split specified. Creating one from '{train_split_name}'.")
 
         try:
-            full_train_dataset = load_dataset(
-                dataset_name,
-                name=name_of_sub_dataset,
-                split=train_split_name,
-                trust_remote_code=True,
-                num_proc=num_proc,
-            )
+            if Path(dataset_name).exists():
+                full_train_dataset = load_from_disk(dataset_name)
+            else:
+                full_train_dataset = load_dataset(
+                    dataset_name,
+                    name=name_of_sub_dataset,
+                    split=train_split_name,
+                    trust_remote_code=True,
+                    num_proc=num_proc,
+                )
         except Exception as e:
-            log.error(f"Failed to load '{train_split_name}' split for '{dataset_name}': {e}")
+            log.error(f"Failed to load '{train_split_name}' for '{dataset_name}': {e}")
             raise
 
         validation_split_size = pretokenize_cfg.get("validation_split_size", 0.05)
@@ -154,6 +157,11 @@ def do_pretokenize(cfg: DictConfig):
     else:
         # Case: A separate validation split is specified. Load both.
         log.info(f"Using specified train ('{train_split_name}') and validation ('{val_split_name_from_cfg}') splits.")
+
+        if Path(dataset_name).exists():
+            raise ValueError(
+                "When providing a local dataset path (saved via save_to_disk), do not specify a separate validation split."
+            )
 
         try:
             train_dataset = load_dataset(
@@ -260,6 +268,28 @@ def do_pretokenize(cfg: DictConfig):
                         formatted_conv.append({"role": role, "content": message})
                     formatted_conversations.append(formatted_conv)
                 conversations = formatted_conversations
+
+            # If model does not support 'thinking' natively, inline it into content
+            if "gpt-oss" not in cfg.model_name:
+                prepared_conversations = []
+                for conv in conversations:
+                    prepared_conv = []
+                    for msg in conv:
+                        if (
+                            isinstance(msg, dict)
+                            and msg.get("role") == "assistant"
+                            and msg.get("thinking")
+                        ):
+                            thinking_text = msg.get("thinking") or ""
+                            content_text = msg.get("content") or ""
+                            merged_content = f"<think>{thinking_text}</think>\n{content_text}".strip()
+                            new_msg = {k: v for k, v in msg.items() if k != "thinking"}
+                            new_msg["content"] = merged_content
+                            prepared_conv.append(new_msg)
+                        else:
+                            prepared_conv.append(msg)
+                    prepared_conversations.append(prepared_conv)
+                conversations = prepared_conversations
 
             # apply_chat_template turns a list of dicts into a single string
             formatted_texts = [

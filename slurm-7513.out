@@ -1,0 +1,35 @@
+[ensure_env] Using cached venv: /home/kitf/.cache/uv/envs/consistency-lens
+[ensure_env] Installing Python 3.12 via uv...
+[ensure_env] Environment already exists at /home/kitf/.cache/uv/envs/consistency-lens
+[ensure_env] Running on SLURM node: node-1
+[ensure_env] Environment ready. Use 'uv run' (not uv_run) for all Python commands.
+[ensure_env] Note: The uv_run function is available as a shortcut in this shell.
+[ensure_env] Linked .venv -> /home/kitf/.cache/uv/envs/consistency-lens
+Traceback (most recent call last):
+  File "/home/kitf/.cache/uv/envs/consistency-lens/bin/vllm", line 4, in <module>
+    from vllm.entrypoints.cli.main import main
+  File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/__init__.py", line 14, in <module>
+    import vllm.env_override  # noqa: F401
+    ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/env_override.py", line 41, in <module>
+    torch._inductor.config.compile_threads = 1
+    ^^^^^^^^^^^^^^^
+AttributeError: module 'torch' has no attribute '_inductor'
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/workspace/kitf/talkative-probes/talkative_autoencoder/scripts/generate_thinking_dataset.py", line 229, in <module>
+    from transformers import AutoTokenizer
+  File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/transformers/__init__.py", line 27, in <module>
+    from . import dependency_versions_check
+  File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/transformers/dependency_versions_check.py", line 16, in <module>
+    from .utils.versions import require_version, require_version_core
+  File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/transformers/utils/__init__.py", line 24, in <module>
+    from .auto_docstring import (
+  File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/transformers/utils/auto_docstring.py", line 30, in <module>
+    from .generic import ModelOutput
+  File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/transformers/utils/generic.py", line 55, in <module>
+    from ..model_debugging_utils import model_addition_debugger_context
+  File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/transformers/model_debugging_utils.py", line 29, in <module>
+    import torch.distributed.tensor
+ModuleNotFoundError: No module named 'torch.distributed'

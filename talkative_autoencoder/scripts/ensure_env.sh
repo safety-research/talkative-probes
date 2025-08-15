@@ -24,16 +24,6 @@ else
 fi
 PROJECT_ROOT=$(dirname "$SCRIPT_DIR")
 
-# Ensure a stable symlink named 'consistency-lens'
-SYMLINK_PATH_DEFAULT="$(dirname "$PROJECT_ROOT")/consistency-lens"
-SYMLINK_PATH="${SYMLINK_PATH:-$SYMLINK_PATH_DEFAULT}"
-if [ -e "$SYMLINK_PATH" ] && [ ! -L "$SYMLINK_PATH" ]; then
-    echo "[ensure_env] Error: $SYMLINK_PATH exists and is not a symlink"
-    return 1 2>/dev/null || exit 1
-fi
-ln -sfn "$PROJECT_ROOT" "$SYMLINK_PATH"
-echo "[ensure_env] Symlink ready: $SYMLINK_PATH -> $PROJECT_ROOT"
-
 # Ensure uv is installed
 if ! command -v uv >/dev/null 2>&1; then
     echo "[ensure_env] Installing uv..."
@@ -61,18 +51,34 @@ else
     echo "[ensure_env] Using cached venv: $UV_PROJECT_ENVIRONMENT"
 fi
 
+# Ensure required Python version is available and used (needed for some deps like vllm gpt-oss)
+REQUIRED_PYTHON_MM="3.12"
+if ! uv python find "$REQUIRED_PYTHON_MM" >/dev/null 2>&1; then
+    echo "[ensure_env] Installing Python $REQUIRED_PYTHON_MM via uv..."
+    uv python install "$REQUIRED_PYTHON_MM"
+fi
+
+# If an environment exists but uses a different Python, recreate it
+if [ -x "$UV_PROJECT_ENVIRONMENT/bin/python3" ]; then
+    CURRENT_MM="$($UV_PROJECT_ENVIRONMENT/bin/python3 -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"
+    if [ "$CURRENT_MM" != "$REQUIRED_PYTHON_MM" ]; then
+        echo "[ensure_env] Existing env uses Python $CURRENT_MM; recreating with $REQUIRED_PYTHON_MM..."
+        rm -rf "$UV_PROJECT_ENVIRONMENT"
+    fi
+fi
+
 # Check if environment exists, create it if not
 if [ ! -d "$UV_PROJECT_ENVIRONMENT" ] || [ ! -f "$UV_PROJECT_ENVIRONMENT/pyvenv.cfg" ]; then
     echo "[ensure_env] Environment not found, creating it... from $UV_PROJECT_ROOT"
-    if [ -f "$UV_PROJECT_ROOT/uv.lock" ]; then
-        cd "$UV_PROJECT_ROOT" && PATH="$HOME/.local/bin:$PATH" UV_CACHE_DIR="$UV_CACHE_DIR" UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" uv sync --frozen
-    else
-        echo "[ensure_env] No uv.lock found, running 'uv sync'"
-        cd "$UV_PROJECT_ROOT" && PATH="$HOME/.local/bin:$PATH" UV_CACHE_DIR="$UV_CACHE_DIR" UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" uv sync
-    fi
+    PATH="$HOME/.local/bin:$PATH" UV_CACHE_DIR="$UV_CACHE_DIR" uv venv --python="$REQUIRED_PYTHON_MM" "$UV_PROJECT_ENVIRONMENT"
+    cd "$UV_PROJECT_ROOT" && PATH="$HOME/.local/bin:$PATH" UV_CACHE_DIR="$UV_CACHE_DIR" UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" uv lock --index-strategy unsafe-best-match --prerelease allow
+    cd "$UV_PROJECT_ROOT" && PATH="$HOME/.local/bin:$PATH" UV_CACHE_DIR="$UV_CACHE_DIR" UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" uv sync --group dev --frozen --index-strategy unsafe-best-match --prerelease allow
     echo "[ensure_env] Environment created successfully!"
 else
     echo "[ensure_env] Environment already exists at $UV_PROJECT_ENVIRONMENT"
+    # Re-lock with our flags to avoid pre-release/indices mismatch, then sync
+    cd "$UV_PROJECT_ROOT" && PATH="$HOME/.local/bin:$PATH" UV_CACHE_DIR="$UV_CACHE_DIR" UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" uv lock --index-strategy unsafe-best-match --prerelease allow || true
+    cd "$UV_PROJECT_ROOT" && PATH="$HOME/.local/bin:$PATH" UV_CACHE_DIR="$UV_CACHE_DIR" UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" uv sync --group dev --index-strategy unsafe-best-match --prerelease allow || true
 fi
 
 # Helper function that ensures we're in the project root and uses uv run
@@ -90,3 +96,11 @@ if [ -n "${SLURM_JOB_ID:-}" ]; then
 fi
 echo "[ensure_env] Environment ready. Use 'uv run' (not uv_run) for all Python commands."
 echo "[ensure_env] Note: The uv_run function is available as a shortcut in this shell."
+
+# Ensure an editor-friendly .venv symlink points to the active uv environment
+if [ -L "$UV_PROJECT_ROOT/.venv" ] || [ ! -e "$UV_PROJECT_ROOT/.venv" ]; then
+    ln -sfn "$UV_PROJECT_ENVIRONMENT" "$UV_PROJECT_ROOT/.venv"
+    echo "[ensure_env] Linked .venv -> $UV_PROJECT_ENVIRONMENT"
+else
+    echo "[ensure_env] .venv exists and is not a symlink; to align it with uv env, remove it or run 'make -C talkative_autoencoder link-venv'"
+fi

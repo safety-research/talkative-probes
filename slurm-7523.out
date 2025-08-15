@@ -1,0 +1,254 @@
+[ensure_env] Using cached venv: /home/kitf/.cache/uv/envs/consistency-lens
+[ensure_env] Installing Python 3.12 via uv...
+[ensure_env] Environment already exists at /home/kitf/.cache/uv/envs/consistency-lens
+[ensure_env] Running on SLURM node: node-0
+[ensure_env] Environment ready. Use 'uv run' (not uv_run) for all Python commands.
+[ensure_env] Note: The uv_run function is available as a shortcut in this shell.
+[ensure_env] Linked .venv -> /home/kitf/.cache/uv/envs/consistency-lens
+Resolved 286 packages in 17ms
+Uninstalled 1 package in 1ms
+warning: Failed to hardlink files; falling back to full copy. This may lead to degraded performance.
+         If the cache and target directories are on different filesystems, hardlinking may not be supported.
+         If this is intentional, set `export UV_LINK_MODE=copy` or use `--link-mode=copy` to suppress this warning.
+Installed 1 package in 78ms
+ ~ talkative-autoencoders==0.1.0 (from file:///workspace/kitf/talkative-probes/talkative_autoencoder)
+/home/kitf/.cache/uv/envs/consistency-lens/bin/python: No module named pip
+Waiting for vLLM server... (1)
+Waiting for vLLM server... (2)
+Waiting for vLLM server... (3)
+Waiting for vLLM server... (4)
+Waiting for vLLM server... (5)
+Waiting for vLLM server... (6)
+INFO 08-14 19:52:01 [__init__.py:241] Automatically detected platform cuda.
+Waiting for vLLM server... (7)
+Waiting for vLLM server... (8)
+Waiting for vLLM server... (9)
+Waiting for vLLM server... (10)
+Waiting for vLLM server... (11)
+[1;36m(APIServer pid=848115)[0;0m INFO 08-14 19:52:11 [api_server.py:1787] vLLM API server version 0.10.2.dev2+gf5635d62e.d20250807
+[1;36m(APIServer pid=848115)[0;0m INFO 08-14 19:52:11 [utils.py:326] non-default args: {'model_tag': 'openai/gpt-oss-20b', 'model': 'openai/gpt-oss-20b', 'max_model_len': 4096, 'tensor_parallel_size': 4}
+Waiting for vLLM server... (12)
+Waiting for vLLM server... (13)
+Waiting for vLLM server... (14)
+Waiting for vLLM server... (15)
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415] Error in inspecting model architecture 'GptOssForCausalLM'
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415] Traceback (most recent call last):
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/model_executor/models/registry.py", line 825, in _run_in_subprocess
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]     returned.check_returncode()
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "/home/kitf/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/subprocess.py", line 502, in check_returncode
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]     raise CalledProcessError(self.returncode, self.args, self.stdout,
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415] subprocess.CalledProcessError: Command '['/home/kitf/.cache/uv/envs/consistency-lens/bin/python3', '-m', 'vllm.model_executor.models.registry']' returned non-zero exit status 1.
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415] 
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415] The above exception was the direct cause of the following exception:
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415] 
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415] Traceback (most recent call last):
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/model_executor/models/registry.py", line 413, in _try_inspect_model_cls
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]     return model.inspect_model_cls()
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/model_executor/models/registry.py", line 384, in inspect_model_cls
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]     return _run_in_subprocess(
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]            ^^^^^^^^^^^^^^^^^^^
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/model_executor/models/registry.py", line 828, in _run_in_subprocess
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]     raise RuntimeError(f"Error raised in subprocess:\n"
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415] RuntimeError: Error raised in subprocess:
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415] <frozen runpy>:128: RuntimeWarning: 'vllm.model_executor.models.registry' found in sys.modules after import of package 'vllm.model_executor.models', but prior to execution of 'vllm.model_executor.models.registry'; this may result in unpredictable behaviour
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415] Traceback (most recent call last):
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "<frozen runpy>", line 198, in _run_module_as_main
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "<frozen runpy>", line 88, in _run_code
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/model_executor/models/registry.py", line 849, in <module>
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]     _run()
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/model_executor/models/registry.py", line 842, in _run
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]     result = fn()
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]              ^^^^
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/model_executor/models/registry.py", line 385, in <lambda>
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]     lambda: _ModelInfo.from_model_cls(self.load_model_cls()))
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]                                       ^^^^^^^^^^^^^^^^^^^^^
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/model_executor/models/registry.py", line 388, in load_model_cls
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]     mod = importlib.import_module(self.module_name)
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "/home/kitf/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/importlib/__init__.py", line 90, in import_module
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]     return _bootstrap._gcd_import(name[level:], package, level)
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "<frozen importlib._bootstrap>", line 1387, in _gcd_import
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "<frozen importlib._bootstrap_external>", line 999, in exec_module
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/model_executor/models/gpt_oss.py", line 16, in <module>
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]     from vllm.model_executor.layers.fused_moe import FusedMoE
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/model_executor/layers/fused_moe/__init__.py", line 8, in <module>
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]     from vllm.model_executor.layers.fused_moe.layer import (
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/model_executor/layers/fused_moe/layer.py", line 26, in <module>
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]     from vllm.model_executor.layers.fused_moe.modular_kernel import (
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/model_executor/layers/fused_moe/modular_kernel.py", line 13, in <module>
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]     from vllm.model_executor.layers.fused_moe.utils import (  # yapf: disable
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/model_executor/layers/fused_moe/utils.py", line 9, in <module>
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]     from vllm.model_executor.layers.quantization.utils.fp8_utils import (
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/model_executor/layers/quantization/utils/fp8_utils.py", line 21, in <module>
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]     from vllm.triton_utils import tl, triton
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/triton_utils/__init__.py", line 8, in <module>
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]     import triton
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/triton/__init__.py", line 22, in <module>
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]     from .compiler import compile, CompilationError
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/triton/compiler/__init__.py", line 1, in <module>
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]     from .compiler import CompiledKernel, ASTSource, IRSource, compile, make_backend, LazyDict, get_cache_key
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/triton/compiler/compiler.py", line 10, in <module>
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415]     from ..runtime.cache import get_cache_manager, get_dump_manager, get_override_manager, get_cache_key
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415] ImportError: cannot import name 'get_cache_key' from 'triton.runtime.cache' (/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/triton/runtime/cache.py)
+[1;36m(APIServer pid=848115)[0;0m ERROR 08-14 19:52:19 [registry.py:415] 
+[1;36m(APIServer pid=848115)[0;0m Traceback (most recent call last):
+[1;36m(APIServer pid=848115)[0;0m   File "/home/kitf/.cache/uv/envs/consistency-lens/bin/vllm", line 10, in <module>
+[1;36m(APIServer pid=848115)[0;0m     sys.exit(main())
+[1;36m(APIServer pid=848115)[0;0m              ^^^^^^
+[1;36m(APIServer pid=848115)[0;0m   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/entrypoints/cli/main.py", line 54, in main
+[1;36m(APIServer pid=848115)[0;0m     args.dispatch_function(args)
+[1;36m(APIServer pid=848115)[0;0m   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/entrypoints/cli/serve.py", line 50, in cmd
+[1;36m(APIServer pid=848115)[0;0m     uvloop.run(run_server(args))
+[1;36m(APIServer pid=848115)[0;0m   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/uvloop/__init__.py", line 109, in run
+[1;36m(APIServer pid=848115)[0;0m     return __asyncio.run(
+[1;36m(APIServer pid=848115)[0;0m            ^^^^^^^^^^^^^^
+[1;36m(APIServer pid=848115)[0;0m   File "/home/kitf/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/asyncio/runners.py", line 195, in run
+[1;36m(APIServer pid=848115)[0;0m     return runner.run(main)
+[1;36m(APIServer pid=848115)[0;0m            ^^^^^^^^^^^^^^^^
+[1;36m(APIServer pid=848115)[0;0m   File "/home/kitf/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/asyncio/runners.py", line 118, in run
+[1;36m(APIServer pid=848115)[0;0m     return self._loop.run_until_complete(task)
+[1;36m(APIServer pid=848115)[0;0m            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[1;36m(APIServer pid=848115)[0;0m   File "uvloop/loop.pyx", line 1518, in uvloop.loop.Loop.run_until_complete
+[1;36m(APIServer pid=848115)[0;0m   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/uvloop/__init__.py", line 61, in wrapper
+[1;36m(APIServer pid=848115)[0;0m     return await main
+[1;36m(APIServer pid=848115)[0;0m            ^^^^^^^^^^
+[1;36m(APIServer pid=848115)[0;0m   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/entrypoints/openai/api_server.py", line 1827, in run_server
+[1;36m(APIServer pid=848115)[0;0m     await run_server_worker(listen_address, sock, args, **uvicorn_kwargs)
+[1;36m(APIServer pid=848115)[0;0m   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/entrypoints/openai/api_server.py", line 1847, in run_server_worker
+[1;36m(APIServer pid=848115)[0;0m     async with build_async_engine_client(
+[1;36m(APIServer pid=848115)[0;0m                ^^^^^^^^^^^^^^^^^^^^^^^^^^
+[1;36m(APIServer pid=848115)[0;0m   File "/home/kitf/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/contextlib.py", line 210, in __aenter__
+[1;36m(APIServer pid=848115)[0;0m     return await anext(self.gen)
+[1;36m(APIServer pid=848115)[0;0m            ^^^^^^^^^^^^^^^^^^^^^
+[1;36m(APIServer pid=848115)[0;0m   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/entrypoints/openai/api_server.py", line 167, in build_async_engine_client
+[1;36m(APIServer pid=848115)[0;0m     async with build_async_engine_client_from_engine_args(
+[1;36m(APIServer pid=848115)[0;0m                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[1;36m(APIServer pid=848115)[0;0m   File "/home/kitf/.local/share/uv/python/cpython-3.12.11-linux-x86_64-gnu/lib/python3.12/contextlib.py", line 210, in __aenter__
+[1;36m(APIServer pid=848115)[0;0m     return await anext(self.gen)
+[1;36m(APIServer pid=848115)[0;0m            ^^^^^^^^^^^^^^^^^^^^^
+[1;36m(APIServer pid=848115)[0;0m   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/entrypoints/openai/api_server.py", line 193, in build_async_engine_client_from_engine_args
+[1;36m(APIServer pid=848115)[0;0m     vllm_config = engine_args.create_engine_config(usage_context=usage_context)
+[1;36m(APIServer pid=848115)[0;0m                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[1;36m(APIServer pid=848115)[0;0m   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/engine/arg_utils.py", line 1043, in create_engine_config
+[1;36m(APIServer pid=848115)[0;0m     model_config = self.create_model_config()
+[1;36m(APIServer pid=848115)[0;0m                    ^^^^^^^^^^^^^^^^^^^^^^^^^^
+[1;36m(APIServer pid=848115)[0;0m   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/vllm/engine/arg_utils.py", line 889, in create_model_config
+[1;36m(APIServer pid=848115)[0;0m     return ModelConfig(
+[1;36m(APIServer pid=848115)[0;0m            ^^^^^^^^^^^^
+[1;36m(APIServer pid=848115)[0;0m   File "/home/kitf/.cache/uv/envs/consistency-lens/lib/python3.12/site-packages/pydantic/_internal/_dataclasses.py", line 123, in __init__
+[1;36m(APIServer pid=848115)[0;0m     s.__pydantic_validator__.validate_python(ArgsKwargs(args, kwargs), self_instance=s)
+[1;36m(APIServer pid=848115)[0;0m pydantic_core._pydantic_core.ValidationError: 1 validation error for ModelConfig
+[1;36m(APIServer pid=848115)[0;0m   Value error, Model architectures ['GptOssForCausalLM'] failed to be inspected. Please check the logs for more details. [type=value_error, input_value=ArgsKwargs((), {'model': ...attention_dtype': None}), input_type=ArgsKwargs]
+[1;36m(APIServer pid=848115)[0;0m     For further information visit https://errors.pydantic.dev/2.11/v/value_error
+Waiting for vLLM server... (16)
+Waiting for vLLM server... (17)
+Waiting for vLLM server... (18)
+Waiting for vLLM server... (19)
+Waiting for vLLM server... (20)
+Waiting for vLLM server... (21)
+Waiting for vLLM server... (22)
+Waiting for vLLM server... (23)
+Waiting for vLLM server... (24)
+Waiting for vLLM server... (25)
+Waiting for vLLM server... (26)
+Waiting for vLLM server... (27)
+Waiting for vLLM server... (28)
+Waiting for vLLM server... (29)
+Waiting for vLLM server... (30)
+Waiting for vLLM server... (31)
+Waiting for vLLM server... (32)
+Waiting for vLLM server... (33)
+Waiting for vLLM server... (34)
+Waiting for vLLM server... (35)
+Waiting for vLLM server... (36)
+Waiting for vLLM server... (37)
+Waiting for vLLM server... (38)
+Waiting for vLLM server... (39)
+Waiting for vLLM server... (40)
+Waiting for vLLM server... (41)
+Waiting for vLLM server... (42)
+Waiting for vLLM server... (43)
+Waiting for vLLM server... (44)
+Waiting for vLLM server... (45)
+Waiting for vLLM server... (46)
+Waiting for vLLM server... (47)
+Waiting for vLLM server... (48)
+Waiting for vLLM server... (49)
+Waiting for vLLM server... (50)
+Waiting for vLLM server... (51)
+Waiting for vLLM server... (52)
+Waiting for vLLM server... (53)
+Waiting for vLLM server... (54)
+Waiting for vLLM server... (55)
+Waiting for vLLM server... (56)
+Waiting for vLLM server... (57)
+Waiting for vLLM server... (58)
+Waiting for vLLM server... (59)
+Waiting for vLLM server... (60)
+Waiting for vLLM server... (61)
+Waiting for vLLM server... (62)
+Waiting for vLLM server... (63)
+Waiting for vLLM server... (64)
+Waiting for vLLM server... (65)
+Waiting for vLLM server... (66)
+Waiting for vLLM server... (67)
+Waiting for vLLM server... (68)
+Waiting for vLLM server... (69)
+Waiting for vLLM server... (70)
+Waiting for vLLM server... (71)
+Waiting for vLLM server... (72)
+Waiting for vLLM server... (73)
+Waiting for vLLM server... (74)
+Waiting for vLLM server... (75)
+Waiting for vLLM server... (76)
+Waiting for vLLM server... (77)
+Waiting for vLLM server... (78)
+Waiting for vLLM server... (79)
+Waiting for vLLM server... (80)
+Waiting for vLLM server... (81)
+Waiting for vLLM server... (82)
+Waiting for vLLM server... (83)
+Waiting for vLLM server... (84)
+Waiting for vLLM server... (85)
+Waiting for vLLM server... (86)
+Waiting for vLLM server... (87)
+Waiting for vLLM server... (88)
+Waiting for vLLM server... (89)
+Waiting for vLLM server... (90)
+Waiting for vLLM server... (91)
+Waiting for vLLM server... (92)
+Waiting for vLLM server... (93)
+Waiting for vLLM server... (94)
+Waiting for vLLM server... (95)
+Waiting for vLLM server... (96)
+Waiting for vLLM server... (97)
+Waiting for vLLM server... (98)
+Waiting for vLLM server... (99)
+Waiting for vLLM server... (100)
+Waiting for vLLM server... (101)
+Waiting for vLLM server... (102)
+Waiting for vLLM server... (103)
+Waiting for vLLM server... (104)
+Waiting for vLLM server... (105)
+Waiting for vLLM server... (106)
+Waiting for vLLM server... (107)
+Waiting for vLLM server... (108)
+Waiting for vLLM server... (109)
+Waiting for vLLM server... (110)
+Waiting for vLLM server... (111)
+Waiting for vLLM server... (112)
+Waiting for vLLM server... (113)
+Waiting for vLLM server... (114)
+Waiting for vLLM server... (115)
+Waiting for vLLM server... (116)
+Waiting for vLLM server... (117)
+Waiting for vLLM server... (118)
+Waiting for vLLM server... (119)
+Waiting for vLLM server... (120)
+/home/kitf/.cache/uv/envs/consistency-lens/bin/python: Error while finding module specification for 'talkative_autoencoder.scripts.generate_thinking_dataset' (ModuleNotFoundError: No module named 'talkative_autoencoder')

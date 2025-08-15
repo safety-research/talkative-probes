@@ -4055,6 +4055,34 @@ def main(cfg: DictConfig) -> None:
                 if is_main():
                     current_lr_display = optimizer.param_groups[0]["lr"] if optimizer.param_groups else 0.0
                     log.info(f"Unfreezing encoder at step {step} | LR: {current_lr_display:.2e}")
+                    # Save a permanent checkpoint just before unfreezing
+                    try:
+                        current_epoch_num_for_ckpt_filename = (
+                            (step // steps_per_epoch) + 1 if steps_per_epoch > 0 else 1
+                        )
+                        checkpoint_manager.save_checkpoint(
+                            step=step,
+                            epoch=current_epoch_num_for_ckpt_filename,
+                            models={"decoder": decoder_base_for_init, "encoder": encoder_base_for_init},
+                            optimizer=optimizer,
+                            scheduler=lr_scheduler,
+                            metrics=None,
+                            config=config,
+                            val_loss=most_recent_val_loss,
+                            wandb_run_id=current_wandb_run_id,
+                            additional_name="pre_unfreeze",
+                            permanent=True,
+                            current_epoch=(step // steps_per_epoch if steps_per_epoch > 0 else 0),
+                            batch_within_epoch=step % steps_per_epoch if steps_per_epoch > 0 else step,
+                            steps_per_epoch=steps_per_epoch,
+                            scaler=scaler.state_dict() if scaler is not None else None,
+                            total_samples_seen_on_the_fly=total_samples_seen_on_the_fly
+                            if on_the_fly_generation_enabled
+                            else None,
+                        )
+                        log.info("Saved permanent checkpoint prior to unfreeze.")
+                    except Exception as _e:
+                        log.warning(f"Failed to save pre-unfreeze checkpoint: {_e}")
                 optimizer, lr_scheduler = unfreeze_encoder_and_rebuild_optim(
                     step=step,
                     config=config,
@@ -4867,6 +4895,58 @@ def main(cfg: DictConfig) -> None:
                         )
                 else:  # This means most_recent_val_loss was NaN
                     log.info(f"Checkpoint not saved at step {step} because validation loss is NaN.")
+
+            # Permanent checkpoint cadence (only on main process)
+            if is_main() and checkpoint_manager.should_save_permanent_step(step):
+                try:
+                    current_epoch_num_for_ckpt_filename = (step // steps_per_epoch) + 1 if steps_per_epoch > 0 else 1
+                    # Reuse computed schedule values when available; recompute if needed
+                    current_tau_keep = locals().get("current_tau_ckpt")
+                    current_alpha_keep = locals().get("current_alpha_ckpt")
+                    if current_tau_keep is None:
+                        current_tau_keep = get_schedule_value(
+                            config["gumbel_tau_schedule"],
+                            step,
+                            max_steps,
+                            current_epoch=current_epoch,
+                            steps_per_epoch=steps_per_epoch,
+                            grad_accum_steps=gradient_accumulation_steps,
+                        )
+                    if current_alpha_keep is None:
+                        current_alpha_keep = get_schedule_value(
+                            config["alpha_schedule"],
+                            step,
+                            max_steps,
+                            current_epoch=current_epoch,
+                            steps_per_epoch=steps_per_epoch,
+                            grad_accum_steps=gradient_accumulation_steps,
+                        )
+                    checkpoint_manager.save_checkpoint(
+                        step=step,
+                        epoch=current_epoch_num_for_ckpt_filename,
+                        models={"decoder": decoder_base_for_init, "encoder": encoder_base_for_init},
+                        optimizer=optimizer,
+                        scheduler=lr_scheduler,
+                        metrics=metrics if "metrics" in locals() else None,
+                        config=config,
+                        val_loss=most_recent_val_loss,
+                        tau=current_tau_keep,
+                        alpha=current_alpha_keep,
+                        wandb_run_id=current_wandb_run_id,
+                        additional_name="keep",
+                        permanent=True,
+                        current_epoch=current_epoch,
+                        batch_within_epoch=step % steps_per_epoch if steps_per_epoch > 0 else step,
+                        steps_per_epoch=steps_per_epoch,
+                        scaler=scaler.state_dict() if scaler is not None else None,
+                        accumulation_step=(step % gradient_accumulation_steps) + 1,
+                        total_samples_seen_on_the_fly=total_samples_seen_on_the_fly
+                        if on_the_fly_generation_enabled
+                        else None,
+                    )
+                    log.info("Saved permanent checkpoint by cadence.")
+                except Exception as _e:
+                    log.warning(f"Failed to save permanent cadence checkpoint: {_e}")
 
     except KeyboardInterrupt as e:
         if is_main():

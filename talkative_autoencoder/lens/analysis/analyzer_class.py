@@ -2707,6 +2707,7 @@ class LensAnalyzer:
         
         # Apply chat template with appropriate settings
         if is_assistant_prefill:
+            print(f"Assistant prefill detected, not adding generation prompt and continuing the final message")
             # For assistant prefill, don't add generation prompt and continue the final message
             input_dict = tokenizer.apply_chat_template(
                 messages,
@@ -2716,6 +2717,7 @@ class LensAnalyzer:
                 continue_final_message=True,
             )
         else:
+            print(f"No assistant prefill detected, adding generation prompt and continuing the final message")
             # Normal case: add generation prompt for assistant response
             input_dict = tokenizer.apply_chat_template(
                 messages,
@@ -2758,6 +2760,7 @@ class LensAnalyzer:
                 if token_ids and len(token_ids) == 1:  # Only single-token markers
                     assistant_end_tokens.append(token_ids[0])
             except:
+                logger.warning(f"Could not find end-of-turn token for {token_str}")
                 pass
         
         # Remove duplicates while preserving order
@@ -2791,16 +2794,16 @@ class LensAnalyzer:
         
         # Clean up any remaining role markers that might have slipped through
         # This handles cases where skip_special_tokens doesn't catch everything
-        cleanup_patterns = [
-            r"^assistant:\s*", r"^Assistant:\s*", r"^ASSISTANT:\s*",
-            r"^\[ASSISTANT\]\s*", r"^<\|assistant\|>\s*"
-        ]
+        # cleanup_patterns = [
+        #     r"^assistant:\s*", r"^Assistant:\s*", r"^ASSISTANT:\s*",
+        #     r"^\[ASSISTANT\]\s*", r"^<\|assistant\|>\s*"
+        # ]
         
-        import re
-        for pattern in cleanup_patterns:
-            response = re.sub(pattern, "", response, flags=re.IGNORECASE)
+        # import re
+        # for pattern in cleanup_patterns:
+        #     response = re.sub(pattern, "", response, flags=re.IGNORECASE)
         
-        return response.strip()
+        return response#.strip()
 
     def analyze_all_layers_at_position(
         self,

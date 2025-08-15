@@ -1,0 +1,10 @@
+[ensure_env] Using cached venv: /home/kitf/.cache/uv/envs/consistency-lens
+[ensure_env] Installing Python 3.12 via uv...
+[ensure_env] Environment already exists at /home/kitf/.cache/uv/envs/consistency-lens
+[ensure_env] Running on SLURM node: node-1
+[ensure_env] Environment ready. Use 'uv run' (not uv_run) for all Python commands.
+[ensure_env] Note: The uv_run function is available as a shortcut in this shell.
+[ensure_env] Linked .venv -> /home/kitf/.cache/uv/envs/consistency-lens
+warning: Indexes specified via `--extra-index-url` will not be persisted to the `pyproject.toml` file; use `--index` instead.
+Ignoring existing lockfile due to change in pre-release mode: `if-necessary-or-explicit` vs. `allow`
+slurmstepd-node-1: error: *** JOB 7518 ON node-1 CANCELLED AT 2025-08-14T16:34:20 ***

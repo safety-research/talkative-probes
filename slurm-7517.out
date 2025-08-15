@@ -1,0 +1,18 @@
+[ensure_env] Using cached venv: /home/kitf/.cache/uv/envs/consistency-lens
+[ensure_env] Installing Python 3.12 via uv...
+[ensure_env] Environment already exists at /home/kitf/.cache/uv/envs/consistency-lens
+[ensure_env] Running on SLURM node: node-1
+[ensure_env] Environment ready. Use 'uv run' (not uv_run) for all Python commands.
+[ensure_env] Note: The uv_run function is available as a shortcut in this shell.
+[ensure_env] Linked .venv -> /home/kitf/.cache/uv/envs/consistency-lens
+warning: Indexes specified via `--extra-index-url` will not be persisted to the `pyproject.toml` file; use `--index` instead.
+Ignoring existing lockfile due to change in pre-release mode: `if-necessary-or-explicit` vs. `allow`
+  × No solution found when resolving dependencies for split
+  │ (python_full_version < '3.12'):
+  ╰─▶ Because gpt-oss==0.1.0 requires Python >=3.12, <3.13 and
+      vllm==0.10.1+gptoss depends on gpt-oss==0.1.0, we can conclude that
+      vllm==0.10.1+gptoss cannot be used.
+      And because your project depends on vllm==0.10.1+gptoss, we can conclude
+      that your project's requirements are unsatisfiable.
+  help: If you want to add the package regardless of the failed resolution,
+        provide the `--frozen` flag to skip locking and syncing.

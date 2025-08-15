@@ -288,6 +288,7 @@ checkpoint:
   save_every_n_steps: "1000s"  # Save interval - Examples: "20000s", "5e", "10000steps", "2epochs" (use "0" to disable)
   save_every_n_epochs: 0        # Legacy: Save every N epochs (0 to disable) - prefer save_every_n_steps with "Ne"
   save_at_end: true             # Save final checkpoint when training completes
+  keep_every_n_steps: 0 # (any integer, schedule - 0 disables)
   
   # Best checkpoint tracking
   track_best_n: 3                 # Keep N best checkpoints based on validation loss (0 to disable)

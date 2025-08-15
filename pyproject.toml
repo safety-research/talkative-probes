@@ -21,14 +21,14 @@ dependencies = [
     "dotenv",
     "ipykernel",
     "hf_transfer",
-    "transformers>=4.51"
+    "transformers>=4.51",
 ]
 
 [tool.setuptools]
 packages = ["examples"]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 extend-include = ["*.ipynb"]
 extend-exclude = ["safety-tooling", "dictionary-learning"]
 

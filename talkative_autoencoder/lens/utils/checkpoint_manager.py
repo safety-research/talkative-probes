@@ -2,64 +2,73 @@
 
 from __future__ import annotations
 
-import os
-import shutil
+import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
-import logging
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import torch
-from lens.utils import checkpoint
+
 from lens.training.schedules import parse_schedule_to_steps
+from lens.utils import checkpoint
 
 
 class CheckpointManager:
     """Manages checkpoint saving, loading, and cleanup during training."""
 
-    def __init__(self, config: dict, logger: logging.Logger, steps_per_epoch: Optional[int] = None, grad_accum_steps: Optional[int] = None):
+    def __init__(
+        self,
+        config: dict,
+        logger: logging.Logger,
+        steps_per_epoch: Optional[int] = None,
+        grad_accum_steps: Optional[int] = None,
+    ):
         """Initialize checkpoint manager from config."""
-        self.checkpoint_config = config.get('checkpoint', {})
+        self.checkpoint_config = config.get("checkpoint", {})
         self.logger = logger
-        self.enabled = self.checkpoint_config.get('enabled', True)
-        
+        self.enabled = self.checkpoint_config.get("enabled", True)
+
         if not self.enabled:
             return
-            
-        self.output_dir = Path(self.checkpoint_config.get('output_dir', 'outputs/checkpoints'))
+
+        self.output_dir = Path(self.checkpoint_config.get("output_dir", "outputs/checkpoints"))
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Save strategies - parse flexible notation
-        save_steps_raw = self.checkpoint_config.get('save_every_n_steps', 0)
+        save_steps_raw = self.checkpoint_config.get("save_every_n_steps", 0)
         if isinstance(save_steps_raw, str) and save_steps_raw == "0":
             self.save_every_n_steps = 0
         else:
             self.save_every_n_steps = parse_schedule_to_steps(save_steps_raw, steps_per_epoch, grad_accum_steps)
-        
-        self.save_every_n_epochs = self.checkpoint_config.get('save_every_n_epochs', 0)
-        self.save_at_end = self.checkpoint_config.get('save_at_end', True)
-        
+
+        # Permanent (never delete) checkpoint cadence
+        keep_steps_raw = self.checkpoint_config.get("keep_every_n_steps", 0)
+        if isinstance(keep_steps_raw, str) and keep_steps_raw == "0":
+            self.keep_every_n_steps = 0
+        else:
+            self.keep_every_n_steps = parse_schedule_to_steps(keep_steps_raw, steps_per_epoch, grad_accum_steps)
+
+        self.save_every_n_epochs = self.checkpoint_config.get("save_every_n_epochs", 0)
+        self.save_at_end = self.checkpoint_config.get("save_at_end", True)
+
         # Best checkpoint tracking
-        self.track_best_n = self.checkpoint_config.get('track_best_n', 0)
-        self.best_metric = self.checkpoint_config.get('best_metric', 'val_loss')
-        self.best_mode = self.checkpoint_config.get('best_mode', 'min')
+        self.track_best_n = self.checkpoint_config.get("track_best_n", 0)
+        self.best_metric = self.checkpoint_config.get("best_metric", "val_loss")
+        self.best_mode = self.checkpoint_config.get("best_mode", "min")
         self.best_checkpoints: List[Tuple[float, Path]] = []  # (metric_value, path)
-        
+
         # Checkpoint management
-        self.max_checkpoints = self.checkpoint_config.get('max_checkpoints', -1)
-        self.delete_old = self.checkpoint_config.get('delete_old_checkpoints', True)
+        self.max_checkpoints = self.checkpoint_config.get("max_checkpoints", -1)
+        self.delete_old = self.checkpoint_config.get("delete_old_checkpoints", True)
         self.all_checkpoints: List[Path] = []  # Track all saved checkpoints
-        
+        self.permanent_checkpoints: Set[Path] = set()  # Track checkpoints that must never be deleted
+
         # Components to save
-        self.save_components = self.checkpoint_config.get('save_components', {
-            'models': True,
-            'optimizer': True,
-            'scheduler': False,
-            'config': True,
-            'metrics': True
-        })
-        
-        self.name_pattern = self.checkpoint_config.get('name_pattern', 'checkpoint_step{step}_epoch{epoch}')
+        self.save_components = self.checkpoint_config.get(
+            "save_components", {"models": True, "optimizer": True, "scheduler": False, "config": True, "metrics": True}
+        )
+
+        self.name_pattern = self.checkpoint_config.get("name_pattern", "checkpoint_step{step}_epoch{epoch}")
 
     def should_save_step(self, step: int) -> bool:
         """Check if checkpoint should be saved at this step."""
@@ -67,24 +76,27 @@ class CheckpointManager:
             return False
         return self.save_every_n_steps > 0 and step > 0 and step % self.save_every_n_steps == 0
 
+    def should_save_permanent_step(self, step: int) -> bool:
+        """Check if a permanent checkpoint should be saved at this step."""
+        if not self.enabled:
+            return False
+        return self.keep_every_n_steps > 0 and step > 0 and step % self.keep_every_n_steps == 0
+
     def should_save_epoch(self, epoch: int, epoch_just_finished: bool) -> bool:
         """Check if checkpoint should be saved at this epoch."""
         if not self.enabled:
             return False
-        return (self.save_every_n_epochs > 0 and 
-                epoch_just_finished and 
-                epoch % self.save_every_n_epochs == 0)
+        return self.save_every_n_epochs > 0 and epoch_just_finished and epoch % self.save_every_n_epochs == 0
 
-    def format_checkpoint_name(self, step: int, epoch: int = 0, val_loss: Optional[float] = None, additional_name: str = "") -> str:
+    def format_checkpoint_name(
+        self, step: int, epoch: int = 0, val_loss: Optional[float] = None, additional_name: str = ""
+    ) -> str:
         """Format checkpoint filename based on pattern."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         name = self.name_pattern.format(
-            step=step,
-            epoch=epoch,
-            val_loss=f"{val_loss:.4f}" if val_loss is not None else "none",
-            timestamp=timestamp
+            step=step, epoch=epoch, val_loss=f"{val_loss:.4f}" if val_loss is not None else "none", timestamp=timestamp
         )
-        
+
         return f"{name}_{additional_name}.pt"
 
     def save_checkpoint(
@@ -98,64 +110,72 @@ class CheckpointManager:
         config: Optional[dict] = None,
         val_loss: Optional[float] = None,
         additional_name: str = "",
-        **kwargs
+        *,
+        permanent: bool = False,
+        **kwargs,
     ) -> Optional[Path]:
         """Save a checkpoint with the specified components."""
         if not self.enabled:
             return None
-            
-        filename = self.format_checkpoint_name(step, epoch, val_loss, additional_name)
+
+        # Tag filename if permanent for easy identification on disk
+        add_name = additional_name
+        if permanent:
+            add_name = f"{additional_name + ('_' if additional_name else '')}permanent"
+        filename = self.format_checkpoint_name(step, epoch, val_loss, add_name)
         filepath = self.output_dir / filename
-        
+
         # Prepare checkpoint data
         checkpoint_data = {
-            'step': step,
-            'epoch': epoch,
-            **kwargs  # Additional data like tau, alpha, etc.
+            "step": step,
+            "epoch": epoch,
+            **kwargs,  # Additional data like tau, alpha, etc.
         }
-        
+
         # Add optional components
-        if self.save_components.get('metrics', True) and metrics is not None:
-            checkpoint_data['metrics'] = metrics
-            
-        if self.save_components.get('config', True) and config is not None:
-            checkpoint_data['config'] = config
-        
+        if self.save_components.get("metrics", True) and metrics is not None:
+            checkpoint_data["metrics"] = metrics
+
+        if self.save_components.get("config", True) and config is not None:
+            checkpoint_data["config"] = config
+
         # Save using the existing checkpoint utility
         checkpoint.save(
             path=str(filepath),
-            models=models if self.save_components.get('models', True) else {},
-            optim=optimizer if self.save_components.get('optimizer', True) else None,
-            scheduler=scheduler if self.save_components.get('scheduler', False) else None,
-            **checkpoint_data
+            models=models if self.save_components.get("models", True) else {},
+            optim=optimizer if self.save_components.get("optimizer", True) else None,
+            scheduler=scheduler if self.save_components.get("scheduler", False) else None,
+            **checkpoint_data,
         )
-        
+
         if val_loss is not None:
             self.logger.info(f"Saved checkpoint to {filepath} with val_loss {val_loss:.4f}")
         else:
             self.logger.info(f"Saved checkpoint to {filepath}")
-        
+
         # Track checkpoint
         self.all_checkpoints.append(filepath)
-        
+        if permanent:
+            self.permanent_checkpoints.add(filepath)
+
         # Handle best checkpoint tracking
         if self.track_best_n > 0 and val_loss is not None:
             self._update_best_checkpoints(val_loss, filepath)
-        
+
         # Cleanup old checkpoints
         self._cleanup_checkpoints()
-        
+
         return filepath
 
     def _update_best_checkpoints(self, metric_value: float, filepath: Path):
         """Update list of best checkpoints."""
         # Add new checkpoint
         self.best_checkpoints.append((metric_value, filepath))
-        
+
         # Sort based on mode
-        reverse = (self.best_mode == 'max')
+        reverse = self.best_mode == "max"
         self.best_checkpoints.sort(key=lambda x: x[0], reverse=reverse)
-        
+
         # Keep only top N
         if len(self.best_checkpoints) > self.track_best_n:
             # MODIFICATION START: Remove deletion from this method
@@ -165,11 +185,11 @@ class CheckpointManager:
             # for _, path in removed:
             #     if path not in [p for _, p in self.best_checkpoints]: # This check was also redundant
             #         self._safe_delete_checkpoint(path)
-            
+
             # New code: Just trim the list
-            self.best_checkpoints = self.best_checkpoints[:self.track_best_n]
+            self.best_checkpoints = self.best_checkpoints[: self.track_best_n]
             # MODIFICATION END
-                    
+
         # Log current best
         if self.best_checkpoints:
             best_val, best_path = self.best_checkpoints[0]
@@ -182,20 +202,24 @@ class CheckpointManager:
 
         # Always work with the list of checkpoints that currently exist on disk.
         existing_checkpoints = [p for p in self.all_checkpoints if p.exists()]
-            
+
         # Get checkpoints that should be kept
         keep_paths = set()
-        
+        # Keep permanent checkpoints regardless of recency
+        for path in self.permanent_checkpoints:
+            if path in existing_checkpoints:
+                keep_paths.add(path)
+
         # Keep best checkpoints
         for _, path in self.best_checkpoints:
-            if path in existing_checkpoints: # Ensure we only consider existing best CPs
+            if path in existing_checkpoints:  # Ensure we only consider existing best CPs
                 keep_paths.add(path)
-        
+
         # Keep most recent checkpoints up to max_checkpoints
         recent_checkpoints = sorted(existing_checkpoints, key=lambda p: p.stat().st_mtime, reverse=True)
-        for path in recent_checkpoints[:self.max_checkpoints]:
+        for path in recent_checkpoints[: self.max_checkpoints]:
             keep_paths.add(path)
-        
+
         # Delete checkpoints not in keep list
         # We iterate over existing_checkpoints, not self.all_checkpoints.
         # self.all_checkpoints remains a complete history of all checkpoints ever saved.
@@ -212,20 +236,30 @@ class CheckpointManager:
         except Exception as e:
             self.logger.warning(f"Failed to delete checkpoint {filepath}: {e}")
 
-    def load_checkpoint(self, checkpoint_path: str, models: Dict[str, torch.nn.Module], 
-                       optimizer: Optional[torch.optim.Optimizer] = None,
-                       map_location: Any = None) -> dict:
+    def load_checkpoint(
+        self,
+        checkpoint_path: str,
+        models: Dict[str, torch.nn.Module],
+        optimizer: Optional[torch.optim.Optimizer] = None,
+        map_location: Any = None,
+    ) -> dict:
         """Load a checkpoint and return the metadata."""
-        return checkpoint.load(checkpoint_path, models=models, optim=optimizer, map_location=map_location, strict_load=self.checkpoint_config['strict_load'])
+        return checkpoint.load(
+            checkpoint_path,
+            models=models,
+            optim=optimizer,
+            map_location=map_location,
+            strict_load=self.checkpoint_config["strict_load"],
+        )
 
     def get_best_checkpoint_path(self) -> Optional[Path]:
         """Get path to the best checkpoint."""
         if self.best_checkpoints:
             return self.best_checkpoints[0][1]
         return None
-    
+
     def get_latest_checkpoint_path(self) -> Optional[Path]:
         """Get path to the most recent checkpoint."""
         if self.all_checkpoints:
             return max(self.all_checkpoints, key=lambda p: p.stat().st_mtime)
-        return None 
+        return None

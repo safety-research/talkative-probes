@@ -15,7 +15,8 @@ torch.cuda.set_device(rank)
 tokenizer = AutoTokenizer.from_pretrained(model_id)
 model = AutoModelForCausalLM.from_pretrained(
     model_id,
-    device_map={"": rank}, #”auto” # either of these two choices leads to the issue!
+    #device_map={"": rank}, #”auto” # either of these two choices leads to the issue!
+    tp_plan="auto"
 )
 
 messages = [
