@@ -1,0 +1,43 @@
+[ensure_env] Using cached venv: /home/kitf/.cache/uv/envs/consistency-lens
+[ensure_env] Installing Python 3.12 via uv...
+[ensure_env] Environment already exists at /home/kitf/.cache/uv/envs/consistency-lens
+Resolved 224 packages in 14ms
+Resolved 224 packages in 15ms
+Audited 216 packages in 15ms
+[ensure_env] Running on SLURM node: node-0
+[ensure_env] Environment ready. Use 'uv run' (not uv_run) for all Python commands.
+[ensure_env] Note: The uv_run function is available as a shortcut in this shell.
+[ensure_env] Linked .venv -> /home/kitf/.cache/uv/envs/consistency-lens
+Resolved 224 packages in 18ms
+Audited 216 packages in 16ms
+/home/kitf/.cache/uv/envs/consistency-lens/bin/python: No module named pip
+/var/lib/slurm-llnl/slurmd/job07548/slurm_script: line 21: /home/kitf/.cache/uv/envs/consistency-lens/bin/vllm: No such file or directory
+Waiting for vLLM server... (1)
+Waiting for vLLM server... (2)
+Waiting for vLLM server... (3)
+Waiting for vLLM server... (4)
+Waiting for vLLM server... (5)
+Waiting for vLLM server... (6)
+Waiting for vLLM server... (7)
+Waiting for vLLM server... (8)
+Waiting for vLLM server... (9)
+Waiting for vLLM server... (10)
+Waiting for vLLM server... (11)
+Waiting for vLLM server... (12)
+Waiting for vLLM server... (13)
+Waiting for vLLM server... (14)
+Waiting for vLLM server... (15)
+Waiting for vLLM server... (16)
+Waiting for vLLM server... (17)
+Waiting for vLLM server... (18)
+Waiting for vLLM server... (19)
+Waiting for vLLM server... (20)
+Waiting for vLLM server... (21)
+Waiting for vLLM server... (22)
+Waiting for vLLM server... (23)
+Waiting for vLLM server... (24)
+Waiting for vLLM server... (25)
+Waiting for vLLM server... (26)
+Waiting for vLLM server... (27)
+Waiting for vLLM server... (28)
+slurmstepd-node-0: error: *** JOB 7548 ON node-0 CANCELLED AT 2025-08-17T17:34:49 ***

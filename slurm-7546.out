@@ -1,0 +1,6 @@
+[ensure_env] Using cached venv: /home/kitf/.cache/uv/envs/consistency-lens
+[ensure_env] Installing Python 3.12 via uv...
+[ensure_env] Environment already exists at /home/kitf/.cache/uv/envs/consistency-lens
+Ignoring existing lockfile due to change in pre-release mode: `if-necessary-or-explicit` vs. `allow`
+   Updating https://github.com/triton-lang/triton.git (main)
+slurmstepd-node-0: error: *** JOB 7546 ON node-0 CANCELLED AT 2025-08-17T17:08:07 ***
