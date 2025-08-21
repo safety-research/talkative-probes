@@ -40,6 +40,14 @@ export UV_PROJECT_ROOT="$PROJECT_ROOT"
 export UV_CACHE_DIR="/workspace/.uv_cache"
 mkdir -p "$UV_CACHE_DIR"
 
+# If running in isolated serving mode, skip project env creation/sync entirely
+if [ -n "${TAE_SERVE_ISOLATED:-}" ]; then
+    echo "[ensure_env] Isolated serve mode: skipping project env creation/sync"
+    echo "[ensure_env] UV cache: $UV_CACHE_DIR"
+    # When sourced, return; if executed, exit
+    return 0 2>/dev/null || exit 0
+fi
+
 # Set up node-local virtual environment location
 if [ -n "${SLURM_JOB_ID:-}" ] && [ -n "${SLURM_TMPDIR:-}" ]; then
     # On compute nodes, use fast local storage

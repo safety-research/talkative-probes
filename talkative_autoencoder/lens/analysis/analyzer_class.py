@@ -264,10 +264,11 @@ class LensAnalyzer:
                     print("Setting use_kernels to false")
                     print("Setting dequantize to false")
                     print(f"Setting attn_implementation to {self.config.get('attn_implementation', None)}")
+                    print(f"Setting torch_dtype to None, overriding {self.model_dtype}")
                     quantization_config = Mxfp4Config(dequantize=False)
                     shared_base_model = AutoModelForCausalLM.from_pretrained(
                         self.model_name,
-                        torch_dtype=self.model_dtype,
+                        torch_dtype=None,
                         device_map={"": self.device},
                         load_in_8bit=False,
                         attn_implementation=self.config.get("attn_implementation", None),

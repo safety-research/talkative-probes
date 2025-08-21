@@ -13,7 +13,7 @@ import os
 import pickle
 import random
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import hydra
 import numpy as np
@@ -686,6 +686,509 @@ class BestOfKEvaluator:
 
         # Concatenate all batches
         return (torch.cat(all_best_A_hat, dim=0), torch.cat(all_best_mses, dim=0), torch.cat(all_best_tokens, dim=0))
+
+    def generate_k_candidates_for_batch(
+        self,
+        A_targets: torch.Tensor,
+        positions: torch.Tensor,
+        k: int,
+        temperature: float = 1.0,
+        max_batch_size: int = 32,
+        current_token_ids_all: torch.Tensor = None,
+        log=None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Generate K candidates per position and return per-position tensors.
+
+        Returns:
+            A_hat_per_pos: (batch_size, k, hidden_dim)
+            mses_per_pos: (batch_size, k)
+        """
+        total_positions = A_targets.shape[0]
+        hidden_dim = A_targets.shape[-1]
+
+        with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16, enabled=self.use_bf16):
+            # Expand for K samples per position
+            A_expanded = A_targets.repeat_interleave(k, dim=0)
+            positions_expanded = positions.repeat_interleave(k)
+            current_token_ids_expanded = (
+                current_token_ids_all.repeat_interleave(k) if current_token_ids_all is not None else None
+            )
+
+            expanded_size = A_expanded.shape[0]
+            all_A_hat_expanded = []
+
+            for sub_start in range(0, expanded_size, max_batch_size):
+                sub_end = min(sub_start + max_batch_size, expanded_size)
+                gen_result = self.decoder.generate_soft_kv_cached_nondiff(
+                    A_expanded[sub_start:sub_end],
+                    max_length=self.t_text,
+                    gumbel_tau=self.tau,
+                    original_token_pos=positions_expanded[sub_start:sub_end],
+                    temperature=temperature,
+                )
+
+                A_hat_sub = self.encoder(
+                    gen_result.generated_text_embeddings,
+                    original_token_pos=positions_expanded[sub_start:sub_end],
+                    current_token_ids=current_token_ids_expanded[sub_start:sub_end]
+                    if (current_token_ids_expanded is not None and self.encoder.config.add_current_token)
+                    else None,
+                )
+
+                all_A_hat_expanded.append(A_hat_sub)
+
+            A_hat_expanded = torch.cat(all_A_hat_expanded, dim=0)
+
+            # Compute per-sample MSE across hidden dim
+            mses_expanded = torch.nn.functional.mse_loss(A_expanded, A_hat_expanded, reduction="none").mean(dim=1)
+
+            # Reshape to (batch, k, hidden_dim) and (batch, k)
+            A_hat_per_pos = A_hat_expanded.view(total_positions, k, hidden_dim)
+            mses_per_pos = mses_expanded.view(total_positions, k)
+
+        return A_hat_per_pos, mses_per_pos
+
+    def evaluate_multi_k_streaming(
+        self,
+        val_source,
+        k_values: List[int],
+        max_batches: Optional[int] = None,
+        temperature: float = 1.0,
+        max_generation_batch_size: int = 32,
+        sample_positions: bool = True,
+        num_positions: int = 1,
+        min_pos: Optional[int] = None,
+        position_selection_strategy: Optional[str] = None,
+        vector_extraction_batch_size: int = 8,
+        load_store: bool = False,
+        cache_dir: Optional[Path] = None,
+        model_name: Optional[str] = None,
+        dataset_cfg: Optional[Dict[str, Any]] = None,
+        rank: int = 0,
+        max_val_samples: int = 1000,
+        log=None,
+        compute_variance_by_role: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """
+        Compute results for multiple K values using a single generation with K=max(k_values).
+        Returns list of result dicts matching evaluate_with_k format, sorted by K.
+        """
+
+        if min_pos is not None:
+            self.min_pos = min_pos
+        if position_selection_strategy is not None:
+            self.position_selection_strategy = position_selection_strategy
+
+        k_values_sorted = sorted({int(x) for x in k_values})
+        if len(k_values_sorted) == 0:
+            raise ValueError("k_values must be non-empty")
+        k_max = max(k_values_sorted)
+
+        world_size = dist.get_world_size() if dist.is_initialized() else 1
+        # Detect cache
+        use_cached = False
+        cache_path = None
+        cached_data = None
+        if load_store and cache_dir and model_name and dataset_cfg:
+            seq_len = dataset_cfg.get("seq_len", 1024)
+            cache_path = get_cache_path(cache_dir, model_name, self.layer, seq_len, rank)
+            cached_data = load_cached_vectors(cache_path)
+            if cached_data is not None:
+                cached_num_vectors = cached_data["all_A"].shape[0]
+                expected_samples = max_val_samples
+                if cached_num_vectors >= expected_samples:
+                    use_cached = True
+                else:
+                    print(
+                        f"⚠️  Cache at {cache_path} only has {cached_num_vectors} vectors, but {expected_samples} required. Ignoring cache and regenerating."
+                    )
+            else:
+                if log:
+                    log.warning(f"No cache found at {cache_path} at rank {rank}")
+
+        # Common aggregators
+        sum_A_by_dim = None
+        sum_A_sq_by_dim = None
+        sum_A_scalar = torch.zeros(1, device=self.device, dtype=torch.float64)
+        sum_A_sq_scalar = torch.zeros(1, device=self.device, dtype=torch.float64)
+        count_samples = 0
+        activation_norms_list: List[float] = []
+        mse_values_by_k: Dict[int, List[float]] = {kk: [] for kk in k_values_sorted}
+        sum_res_by_dim: Dict[int, torch.Tensor] = {}
+        sum_res_sq_by_dim: Dict[int, torch.Tensor] = {}
+        sse_total_by_k: Dict[int, torch.Tensor] = {
+            kk: torch.zeros(1, device=self.device, dtype=torch.float64) for kk in k_values_sorted
+        }
+        role_mse_sum: Dict[int, Dict[str, float]] = {kk: {} for kk in k_values_sorted}
+        role_mse_sq_sum: Dict[int, Dict[str, float]] = {kk: {} for kk in k_values_sorted}
+        role_counts: Dict[int, Dict[str, int]] = {kk: {} for kk in k_values_sorted}
+
+        token_stats = None
+        local_token_stats = None
+        selected_token_stats = None
+        local_selected_stats = None
+
+        def update_role_stats(kk: int, best_mses: torch.Tensor, batch_roles: List[str]):
+            if not batch_roles:
+                return
+            for i, role in enumerate(batch_roles):
+                val = float(best_mses[i].item())
+                role_mse_sum[kk][role] = role_mse_sum[kk].get(role, 0.0) + val
+                role_mse_sq_sum[kk][role] = role_mse_sq_sum[kk].get(role, 0.0) + val * val
+                role_counts[kk][role] = role_counts[kk].get(role, 0) + 1
+
+        def process_batch(
+            A_flat: torch.Tensor,
+            positions: torch.Tensor,
+            current_token_ids: Optional[torch.Tensor],
+            input_ids_ref: Optional[torch.Tensor] = None,
+        ):
+            nonlocal sum_A_by_dim, sum_A_sq_by_dim, sum_A_scalar, sum_A_sq_scalar, count_samples
+            batch_A = A_flat
+            hidden_dim_local = batch_A.shape[-1]
+            if sum_A_by_dim is None:
+                sum_A_by_dim = torch.zeros(hidden_dim_local, device=self.device, dtype=torch.float64)
+                sum_A_sq_by_dim = torch.zeros(hidden_dim_local, device=self.device, dtype=torch.float64)
+                for kk in k_values_sorted:
+                    sum_res_by_dim[kk] = torch.zeros(hidden_dim_local, device=self.device, dtype=torch.float64)
+                    sum_res_sq_by_dim[kk] = torch.zeros(hidden_dim_local, device=self.device, dtype=torch.float64)
+
+            A_hat_per_pos, mses_per_pos = self.generate_k_candidates_for_batch(
+                batch_A,
+                positions,
+                k_max,
+                temperature,
+                max_batch_size=max_generation_batch_size,
+                current_token_ids_all=current_token_ids,
+                log=log,
+            )
+
+            # Update A stats
+            sum_A_by_dim += batch_A.sum(dim=0, dtype=torch.float64)
+            sum_A_sq_by_dim += (batch_A.to(torch.float64) ** 2).sum(dim=0)
+            sum_A_scalar += batch_A.sum(dtype=torch.float64)
+            sum_A_sq_scalar += (batch_A.to(torch.float64) ** 2).sum()
+            count_samples += batch_A.shape[0]
+            activation_norms_list.extend(batch_A.norm(dim=1).double().cpu().tolist())
+
+            # Batch roles if possible
+            batch_roles: List[str] = []
+            if input_ids_ref is not None:
+                try:
+                    batch_roles = get_token_roles_for_positions(input_ids_ref, positions, self.tokenizer)
+                except Exception:
+                    batch_roles = []
+
+            # For each prefix K, select best and accumulate
+            idx_arange = torch.arange(A_hat_per_pos.shape[0], device=A_hat_per_pos.device)
+            for kk in k_values_sorted:
+                prefix_mses = mses_per_pos[:, :kk]
+                best_idx = torch.argmin(prefix_mses, dim=1)
+                best_mses = prefix_mses[idx_arange, best_idx]
+                selected_A_hat = A_hat_per_pos[idx_arange, best_idx]
+
+                residuals = batch_A.to(torch.float64) - selected_A_hat.to(torch.float64)
+                mse_values_by_k[kk].extend(best_mses.double().cpu().tolist())
+                sse_total_by_k[kk] += (residuals**2).sum()
+                sum_res_by_dim[kk] += residuals.sum(dim=0)
+                sum_res_sq_by_dim[kk] += (residuals**2).sum(dim=0)
+                if compute_variance_by_role and batch_roles:
+                    update_role_stats(kk, best_mses, batch_roles)
+
+        if use_cached:
+            log.info(f"Using cached vectors from {cache_path} at rank {rank}")
+            cached_all_A = cached_data["all_A"].to(self.device)
+            cached_positions = cached_data["all_positions"].to(self.device)
+            cached_token_ids = cached_data["all_token_ids"].to(self.device)
+            cached_all_input_ids = cached_data["all_input_ids"].to(self.device)
+
+            cached_samples = cached_all_A.shape[0] // num_positions
+            if max_batches:
+                requested_samples = max_batches
+            else:
+                requested_samples = max_val_samples // world_size if world_size > 1 else max_val_samples
+
+            if cached_samples > requested_samples:
+                vectors_to_use = requested_samples * num_positions
+                start = rank * vectors_to_use
+                end = start + vectors_to_use
+                cached_all_A = cached_all_A[start:end]
+                cached_positions = cached_positions[start:end]
+                cached_token_ids = cached_token_ids[start:end]
+                cached_all_input_ids = cached_all_input_ids[start:end]
+            elif cached_samples == requested_samples:
+                start = rank * requested_samples * num_positions
+                end = start + requested_samples * num_positions
+                cached_all_A = cached_all_A[start:end]
+                cached_positions = cached_positions[start:end]
+                cached_token_ids = cached_token_ids[start:end]
+                cached_all_input_ids = cached_all_input_ids[start:end]
+
+            # Token stats (local)
+            if cached_all_input_ids is not None and cached_all_input_ids.shape[0] > 0:
+                local_token_stats = calculate_chat_token_stats(
+                    cached_all_input_ids, self.tokenizer, log=None, is_main=False
+                )
+                local_selected_stats = calculate_selected_token_stats(
+                    get_token_roles_for_positions(cached_all_input_ids, cached_positions, self.tokenizer),
+                    log=None,
+                    is_main=False,
+                )
+
+            # Process in chunks
+            pos_bs = max_generation_batch_size
+            total_positions_tensor = cached_all_A
+            for start_idx in tqdm(
+                range(0, total_positions_tensor.shape[0], pos_bs), desc=f"Gen candidates K={k_max}", leave=False
+            ):
+                end_idx = min(start_idx + pos_bs, total_positions_tensor.shape[0])
+                process_batch(
+                    cached_all_A[start_idx:end_idx],
+                    cached_positions[start_idx:end_idx],
+                    cached_token_ids[start_idx:end_idx] if cached_token_ids is not None else None,
+                    cached_all_input_ids[start_idx:end_idx] if cached_all_input_ids is not None else None,
+                )
+        else:
+            # Iterate dataloader
+            processed_batches = 0
+            for batch_idx, batch in enumerate(val_source):
+                if max_batches and batch_idx >= max_batches:
+                    break
+                input_ids_A = batch["input_ids_A"].to(self.device)
+                batch_size, seq_len = input_ids_A.shape
+
+                if sample_positions and seq_len > 5 and num_positions == 1 and "A" in batch:
+                    A_flat = batch["A"].to(self.device)
+                    positions = batch["token_pos_A"].to(self.device)
+                    current_token_ids = batch["input_ids_A"].to(self.device)[
+                        torch.arange(batch_size, device=self.device), positions
+                    ]
+                    input_ids_ref = input_ids_A
+                else:
+                    # Compute activations
+                    all_A_batch = []
+                    for start in range(0, batch_size, vector_extraction_batch_size):
+                        end = min(start + vector_extraction_batch_size, batch_size)
+                        input_ids_chunk = input_ids_A[start:end]
+                        A_chunk = self.orig_model.get_all_activations_at_layer(
+                            input_ids_chunk, self.layer, no_grad=True
+                        )
+                        all_A_batch.append(A_chunk)
+                    A_batch = torch.cat(all_A_batch, dim=0)
+                    batch_size2, seq_len2, hidden_dim = A_batch.shape
+                    attention_mask = batch.get("attention_mask", None)
+                    if attention_mask is None and self.tokenizer.pad_token_id is not None:
+                        attention_mask = batch["input_ids_A"].ne(self.tokenizer.pad_token_id).long()
+
+                    if sample_positions and seq_len2 > 5:
+                        all_sampled_A = []
+                        all_sampled_positions = []
+                        all_sampled_token_ids = []
+                        for b in range(batch_size2):
+                            input_ids_b = batch["input_ids_A"][b].to(self.device)
+                            if attention_mask is not None:
+                                attn_mask_b = attention_mask[b].to(self.device)
+                                start_idx = torch.argmax(attn_mask_b.int())
+                                end_idx = seq_len2 - 1 - torch.argmax(torch.flip(attn_mask_b, dims=[0]).int())
+                                if not torch.any(attn_mask_b):
+                                    continue
+                            else:
+                                start_idx = torch.tensor(0, device=self.device)
+                                end_idx = torch.tensor(seq_len2 - 1, device=self.device)
+
+                            lower_bound = start_idx + self.min_pos
+                            effective_lower_bound = torch.minimum(lower_bound, end_idx)
+                            upper_bound = end_idx
+
+                            if effective_lower_bound > upper_bound:
+                                continue
+
+                            # Sample a single position by strategy
+                            sampled_positions = []
+                            attempts = 0
+                            max_attempts = 10 * num_positions
+                            while len(set(sampled_positions)) < num_positions and attempts < max_attempts:
+                                if self.position_selection_strategy == "midpoint":
+                                    pos = (effective_lower_bound + upper_bound) // 2
+                                elif self.position_selection_strategy == "random":
+                                    rand_float = random.random()
+                                    valid_range = (upper_bound - effective_lower_bound + 1).clamp(min=1)
+                                    pos = effective_lower_bound + int(rand_float * valid_range.item())
+                                else:
+                                    raise ValueError(
+                                        f"Unknown position_selection_strategy: '{self.position_selection_strategy}'"
+                                    )
+                                pos = torch.clamp(torch.tensor(pos, device=self.device), min=0, max=seq_len2 - 1)
+                                sampled_positions.append(pos.item())
+                                attempts += 1
+                            sampled_positions = sorted(list(set(sampled_positions)))[:num_positions]
+                            if len(sampled_positions) == 0:
+                                continue
+                            sampled_positions_tensor = torch.tensor(sampled_positions, device=self.device)
+                            A_sampled = A_batch[b, sampled_positions, :]
+                            all_sampled_A.append(A_sampled)
+                            all_sampled_positions.append(sampled_positions_tensor)
+                            token_ids_sampled = input_ids_b[sampled_positions]
+                            all_sampled_token_ids.append(token_ids_sampled)
+
+                        if len(all_sampled_A) == 0:
+                            continue
+                        A_flat = torch.cat(all_sampled_A, dim=0)
+                        positions = torch.cat(all_sampled_positions, dim=0)
+                        current_token_ids = torch.cat(all_sampled_token_ids, dim=0)
+                        input_ids_ref = input_ids_A
+                    else:
+                        # All positions
+                        A_flat = A_batch.view(-1, hidden_dim)
+                        positions = torch.arange(seq_len2, device=self.device).repeat(batch_size2)
+                        batch_indices = (
+                            torch.arange(batch_size2, device=self.device).unsqueeze(1).expand(-1, seq_len2).reshape(-1)
+                        )
+                        position_indices = (
+                            torch.arange(seq_len2, device=self.device).unsqueeze(0).expand(batch_size2, -1).reshape(-1)
+                        )
+                        current_token_ids = batch["input_ids_A"].to(self.device)[batch_indices, position_indices]
+                        input_ids_ref = input_ids_A
+
+                process_batch(A_flat, positions, current_token_ids, input_ids_ref)
+                processed_batches += 1
+
+        # Distributed aggregation for sums
+        if dist.is_initialized() and dist.get_world_size() > 1:
+            for t in [sum_A_by_dim, sum_A_sq_by_dim]:
+                if t is not None:
+                    dist.all_reduce(t, op=dist.ReduceOp.SUM)
+            dist.all_reduce(sum_A_scalar, op=dist.ReduceOp.SUM)
+            dist.all_reduce(sum_A_sq_scalar, op=dist.ReduceOp.SUM)
+            count_tensor = torch.tensor([count_samples], device=self.device, dtype=torch.long)
+            dist.all_reduce(count_tensor, op=dist.ReduceOp.SUM)
+            count_samples = int(count_tensor.item())
+            for kk in k_values_sorted:
+                dist.all_reduce(sum_res_by_dim[kk], op=dist.ReduceOp.SUM)
+                dist.all_reduce(sum_res_sq_by_dim[kk], op=dist.ReduceOp.SUM)
+                dist.all_reduce(sse_total_by_k[kk], op=dist.ReduceOp.SUM)
+
+            # Gather lists on rank 0
+            world = dist.get_world_size()
+            gathered_norms = [None] * world
+            dist.gather_object(activation_norms_list, gathered_norms, dst=0)
+            if rank == 0:
+                activation_norms_list = [x for sub in gathered_norms if sub for x in sub]
+            for kk in k_values_sorted:
+                gathered = [None] * world
+                dist.gather_object(mse_values_by_k[kk], gathered, dst=0)
+                if rank == 0:
+                    mse_values_by_k[kk] = [x for sub in gathered if sub for x in sub]
+
+            # Token stats aggregation across GPUs
+            if local_token_stats is not None:
+                local_counts = local_token_stats["counts"]
+                gathered_counts = [None] * world
+                dist.all_gather_object(gathered_counts, local_counts)
+                total_counts = {
+                    "user": sum(c["user"] for c in gathered_counts),
+                    "assistant": sum(c["assistant"] for c in gathered_counts),
+                    "system": sum(c["system"] for c in gathered_counts),
+                    "special": sum(c["special"] for c in gathered_counts),
+                    "other": sum(c["other"] for c in gathered_counts),
+                    "pad": sum(c.get("pad", 0) for c in gathered_counts),
+                    "total": sum(c["total"] for c in gathered_counts),
+                }
+                total = total_counts["total"]
+                proportions = {r: (total_counts[r] / total if total > 0 else 0.0) for r in total_counts if r != "total"}
+                token_stats = {
+                    "counts": total_counts,
+                    "proportions": proportions,
+                    "model_type": local_token_stats.get("model_type", "unknown"),
+                    "total_sequences": sum(c.get("total_sequences", 0) for c in gathered_counts if isinstance(c, dict)),
+                }
+            if local_selected_stats is not None:
+                local_sel_counts = local_selected_stats["counts"]
+                gathered_sel_counts = [None] * world
+                dist.all_gather_object(gathered_sel_counts, local_sel_counts)
+                total_sel = {
+                    "user": sum(c["user"] for c in gathered_sel_counts),
+                    "assistant": sum(c["assistant"] for c in gathered_sel_counts),
+                    "system": sum(c["system"] for c in gathered_sel_counts),
+                    "special": sum(c["special"] for c in gathered_sel_counts),
+                    "other": sum(c["other"] for c in gathered_sel_counts),
+                    "pad": sum(c.get("pad", 0) for c in gathered_sel_counts),
+                    "total": sum(c["total"] for c in gathered_sel_counts),
+                }
+                tot = total_sel["total"]
+                sel_props = {r: (total_sel[r] / tot if tot > 0 else 0.0) for r in total_sel if r != "total"}
+                selected_token_stats = {"counts": total_sel, "proportions": sel_props, "total_positions": tot}
+        else:
+            token_stats = local_token_stats
+            selected_token_stats = local_selected_stats
+
+        # Compute totals
+        N = max(count_samples, 1)
+        hidden_dim_final = sum_A_by_dim.shape[0] if sum_A_by_dim is not None else 1
+        total_variance = ((sum_A_sq_by_dim - (sum_A_by_dim**2) / N) / max(N - 1, 1)).sum().item()
+        mean_A_scalar = (sum_A_scalar / (N * hidden_dim_final)).item()
+        ss_tot = (sum_A_sq_scalar - (N * hidden_dim_final) * (mean_A_scalar**2)).item()
+
+        # Build results per K
+        results_multi: List[Dict[str, Any]] = []
+        for kk in k_values_sorted:
+            residual_var_sum = ((sum_res_sq_by_dim[kk] - (sum_res_by_dim[kk] ** 2) / N) / max(N - 1, 1)).sum().item()
+            variance_recovery = 1 - (residual_var_sum / total_variance) if total_variance > 0 else 0.0
+            sse_total = sse_total_by_k[kk].item()
+            mse_for_new_variance = sse_total / N
+            mse_variance_recovery = 1 - (mse_for_new_variance / total_variance) if total_variance > 0 else 0.0
+            r_squared = 1 - (sse_total / ss_tot) if ss_tot > 0 else 0.0
+
+            mse_by_role: Dict[str, Dict[str, float]] = {}
+            if compute_variance_by_role:
+                for role, s in role_mse_sum[kk].items():
+                    cnt = role_counts[kk].get(role, 0)
+                    if cnt > 0:
+                        ss = role_mse_sq_sum[kk].get(role, 0.0)
+                        avg = s / cnt
+                        std = float(np.sqrt(max(ss / cnt - avg * avg, 0.0)))
+                        mse_by_role[role] = {"avg_mse": float(avg), "count": cnt, "std": std}
+
+            result_dict = {
+                "k": int(kk),
+                "avg_mse": float(np.mean(mse_values_by_k[kk])) if len(mse_values_by_k[kk]) > 0 else 0.0,
+                "variance_recovery": float(variance_recovery),
+                "variance_recovery_bias": 0.0,
+                "variance_recovery_bias_corrected": float(variance_recovery),
+                "variance_recovery_std": 0.0,
+                "variance_recovery_ci_lower": 0.0,
+                "variance_recovery_ci_upper": 0.0,
+                "variance_recovery_bca_ci_lower": 0.0,
+                "variance_recovery_bca_ci_upper": 0.0,
+                "mse_std": 0.0,
+                "mse_ci_lower": 0.0,
+                "mse_ci_upper": 0.0,
+                "r_squared": float(r_squared),
+                "r_squared_std": 0.0,
+                "r_squared_ci_lower": 0.0,
+                "r_squared_ci_upper": 0.0,
+                "total_positions": int(N),
+                "original_variance": float(total_variance),
+                "original_mean": float(mean_A_scalar),
+                "mean_variance_mean_over_hidden": float(mse_for_new_variance / hidden_dim_final),
+                "residual_variance_mean_over_hidden": float(mse_for_new_variance / hidden_dim_final),
+                "mse_values": mse_values_by_k[kk] if (not dist.is_initialized() or rank == 0) else [],
+                "activation_norms": activation_norms_list if (not dist.is_initialized() or rank == 0) else [],
+                "mse_for_new_variance": float(mse_for_new_variance),
+                "mse_variance_recovery": float(mse_variance_recovery),
+            }
+
+            if mse_by_role:
+                result_dict["mse_by_role"] = mse_by_role
+            if token_stats is not None:
+                result_dict["token_stats"] = token_stats
+            if selected_token_stats is not None:
+                result_dict["selected_token_stats"] = selected_token_stats
+
+            results_multi.append(result_dict)
+
+        return results_multi
 
     def evaluate_with_k(
         self,
@@ -2289,18 +2792,22 @@ def main(cfg: DictConfig) -> None:
             else:
                 return obj
 
-        for k in k_values:
+        if cfg.eval.get("constant_k_mode", True):
+            # One pass at K=max and aggregate for all Ks
             if is_main_process:
-                print(f"\nEvaluating with K={k}... and world size {world_size}")
-            log.info(f"starting rank {rank}")
-            results = evaluator.evaluate_with_k(
-                cached_all_A,
-                k=k,
+                print(f"\nEvaluating with K={max(k_values)} (constant-k mode) and world size {world_size}")
+            log.info(f"starting rank {rank} (constant-k mode)")
+            all_results = evaluator.evaluate_multi_k_streaming(
+                [],
+                k_values,
                 max_batches=cfg.eval.get("max_batches"),
                 temperature=cfg.eval.get("temperature", 1.0),
                 max_generation_batch_size=cfg.eval.get("max_generation_batch_size", 32),
+                sample_positions=True,
+                num_positions=cfg.eval.get("num_positions", 1),
+                min_pos=cfg.eval.get("min_pos", None),
+                position_selection_strategy=cfg.eval.get("position_selection_strategy", None),
                 vector_extraction_batch_size=cfg.eval.get("vector_extraction_batch_size", 8),
-                do_bootstrap=cfg.eval.get("do_bootstrap", False),
                 load_store=cfg.eval.get("load_store", False),
                 cache_dir=Path(cfg.eval.get("cache_dir", "eval_results/vector_cache")),
                 model_name=cfg.get("orig_model_name", cfg.get("model_name")),
@@ -2308,23 +2815,47 @@ def main(cfg: DictConfig) -> None:
                 rank=rank,
                 max_val_samples=max_val_samples_req,
                 log=log,
+                compute_variance_by_role=cfg.eval.get("compute_variance_by_role", False),
             )
-            if is_main_process:
-                all_results.append(results)
-                if "mse_std" in results:
-                    print(
-                        f"K={k}: MSE={results['avg_mse']:.6f}±{results['mse_std']:.6f}, Variance Recovered={results['variance_recovery']:.4f}±{results['variance_recovery_std']:.4f} with 95% CI [{results['variance_recovery_ci_lower']:.4f}, {results['variance_recovery_ci_upper']:.4f}] and confidence interval for bias [{results['variance_recovery_bca_ci_lower']:.4f}, {results['variance_recovery_bca_ci_upper']:.4f}]"
-                    )
-                else:
-                    print(
-                        f"K={k}: MSE={results['avg_mse']:.6f}, Variance Recovered={results['variance_recovery']:.4f}, R²={results['r_squared']:.4f}"
-                    )
-                if "mse_variance_recovery" in results:
-                    print(
-                        f"K={k}:Variance Recovered={results['mse_variance_recovery']} with MSE for new variance={results['mse_for_new_variance']:.6f}"
-                    )
             if dist.is_initialized() and world_size > 1:
                 dist.barrier()
+        else:
+            for k in k_values:
+                if is_main_process:
+                    print(f"\nEvaluating with K={k}... and world size {world_size}")
+                log.info(f"starting rank {rank}")
+                results = evaluator.evaluate_with_k(
+                    cached_all_A,
+                    k=k,
+                    max_batches=cfg.eval.get("max_batches"),
+                    temperature=cfg.eval.get("temperature", 1.0),
+                    max_generation_batch_size=cfg.eval.get("max_generation_batch_size", 32),
+                    vector_extraction_batch_size=cfg.eval.get("vector_extraction_batch_size", 8),
+                    do_bootstrap=cfg.eval.get("do_bootstrap", False),
+                    load_store=cfg.eval.get("load_store", False),
+                    cache_dir=Path(cfg.eval.get("cache_dir", "eval_results/vector_cache")),
+                    model_name=cfg.get("orig_model_name", cfg.get("model_name")),
+                    dataset_cfg=OmegaConf.to_container(cfg.dataset, resolve=True) if "dataset" in cfg else {},
+                    rank=rank,
+                    max_val_samples=max_val_samples_req,
+                    log=log,
+                )
+                if is_main_process:
+                    all_results.append(results)
+                    if "mse_std" in results:
+                        print(
+                            f"K={k}: MSE={results['avg_mse']:.6f}±{results['mse_std']:.6f}, Variance Recovered={results['variance_recovery']:.4f}±{results['variance_recovery_std']:.4f} with 95% CI [{results['variance_recovery_ci_lower']:.4f}, {results['variance_recovery_ci_upper']:.4f}] and confidence interval for bias [{results['variance_recovery_bca_ci_lower']:.4f}, {results['variance_recovery_bca_ci_upper']:.4f}]"
+                        )
+                    else:
+                        print(
+                            f"K={k}: MSE={results['avg_mse']:.6f}, Variance Recovered={results['variance_recovery']:.4f}, R²={results['r_squared']:.4f}"
+                        )
+                    if "mse_variance_recovery" in results:
+                        print(
+                            f"K={k}:Variance Recovered={results['mse_variance_recovery']} with MSE for new variance={results['mse_for_new_variance']:.6f}"
+                        )
+                if dist.is_initialized() and world_size > 1:
+                    dist.barrier()
         if is_main_process:
             output_dir = Path(cfg.eval.get("output_dir", "eval_results"))
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -2430,19 +2961,21 @@ def main(cfg: DictConfig) -> None:
         else:
             return obj
 
-    for k in k_values:
+    if cfg.eval.get("constant_k_mode", True):
         if is_main_process:
-            print(f"\nEvaluating with K={k}... and world size {world_size}")
-        log.info(f"starting rank {rank}")
-        val_loader_iter = iter(val_loader)
-        results = evaluator.evaluate_with_k(
-            val_loader_iter,
-            k=k,
+            print(f"\nEvaluating with K={max(k_values)} (constant-k mode) and world size {world_size}")
+        log.info(f"starting rank {rank} (constant-k mode)")
+        all_results = evaluator.evaluate_multi_k_streaming(
+            val_loader,
+            k_values,
             max_batches=cfg.eval.get("max_batches"),
             temperature=cfg.eval.get("temperature", 1.0),
             max_generation_batch_size=cfg.eval.get("max_generation_batch_size", 32),
+            sample_positions=True,
+            num_positions=cfg.eval.get("num_positions", 1),
+            min_pos=cfg.eval.get("min_pos", None),
+            position_selection_strategy=cfg.eval.get("position_selection_strategy", None),
             vector_extraction_batch_size=cfg.eval.get("vector_extraction_batch_size", 8),
-            do_bootstrap=cfg.eval.get("do_bootstrap", False),
             load_store=cfg.eval.get("load_store", False),
             cache_dir=Path(cfg.eval.get("cache_dir", "eval_results/vector_cache")),
             model_name=cfg.get("orig_model_name", cfg.get("model_name")),
@@ -2450,19 +2983,44 @@ def main(cfg: DictConfig) -> None:
             rank=rank,
             max_val_samples=max_val_samples_req,
             log=log,
+            compute_variance_by_role=cfg.eval.get("compute_variance_by_role", False),
         )
-        if is_main_process:
-            all_results.append(results)
-            if "mse_std" in results:
-                print(
-                    f"K={k}: MSE={results['avg_mse']:.6f}±{results['mse_std']:.6f}, Variance Recovered={results['variance_recovery']:.4f}±{results['variance_recovery_std']:.4f} with 95% CI [{results['variance_recovery_ci_lower']:.4f}, {results['variance_recovery_ci_upper']:.4f}] and confidence interval for bias [{results['variance_recovery_bca_ci_lower']:.4f}, {results['variance_recovery_bca_ci_upper']:.4f}]"
-                )
-            else:
-                print(
-                    f"K={k}: MSE={results['avg_mse']:.6f}, Variance Recovered={results['variance_recovery']:.4f}, R²={results['r_squared']:.4f}"
-                )
         if dist.is_initialized() and world_size > 1:
             dist.barrier()
+    else:
+        for k in k_values:
+            if is_main_process:
+                print(f"\nEvaluating with K={k}... and world size {world_size}")
+            log.info(f"starting rank {rank}")
+            val_loader_iter = iter(val_loader)
+            results = evaluator.evaluate_with_k(
+                val_loader_iter,
+                k=k,
+                max_batches=cfg.eval.get("max_batches"),
+                temperature=cfg.eval.get("temperature", 1.0),
+                max_generation_batch_size=cfg.eval.get("max_generation_batch_size", 32),
+                vector_extraction_batch_size=cfg.eval.get("vector_extraction_batch_size", 8),
+                do_bootstrap=cfg.eval.get("do_bootstrap", False),
+                load_store=cfg.eval.get("load_store", False),
+                cache_dir=Path(cfg.eval.get("cache_dir", "eval_results/vector_cache")),
+                model_name=cfg.get("orig_model_name", cfg.get("model_name")),
+                dataset_cfg=OmegaConf.to_container(cfg.dataset, resolve=True) if "dataset" in cfg else {},
+                rank=rank,
+                max_val_samples=max_val_samples_req,
+                log=log,
+            )
+            if is_main_process:
+                all_results.append(results)
+                if "mse_std" in results:
+                    print(
+                        f"K={k}: MSE={results['avg_mse']:.6f}±{results['mse_std']:.6f}, Variance Recovered={results['variance_recovery']:.4f}±{results['variance_recovery_std']:.4f} with 95% CI [{results['variance_recovery_ci_lower']:.4f}, {results['variance_recovery_ci_upper']:.4f}] and confidence interval for bias [{results['variance_recovery_bca_ci_lower']:.4f}, {results['variance_recovery_bca_ci_upper']:.4f}]"
+                    )
+                else:
+                    print(
+                        f"K={k}: MSE={results['avg_mse']:.6f}, Variance Recovered={results['variance_recovery']:.4f}, R²={results['r_squared']:.4f}"
+                    )
+            if dist.is_initialized() and world_size > 1:
+                dist.barrier()
 
     # Save results
     if is_main_process:

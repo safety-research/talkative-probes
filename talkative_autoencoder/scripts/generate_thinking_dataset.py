@@ -216,10 +216,31 @@ Model card: openai/gpt-oss-20b (install/serve guidance)
   - Reference: https://huggingface.co/openai/gpt-oss-20b
 """
 
+#
+# Usage summary (pause/resume + dynamic servers)
+# - To use dynamic server discovery, pass --server-registry <path/to/registry.txt>.
+#   The file should contain one base URL per line (e.g., http://host:8000/v1). This
+#   script reloads the file periodically and routes around dropped servers.
+# - Pause/resume: run with --resume. The script writes streaming outputs to
+#   <output-path>/data.jsonl (one record per line, including the original data index).
+#   Cancelling the job and re-running with --resume will skip completed indices
+#   and finalize the HF dataset again under <output-path>.
+# - Standalone example:
+#   uv run python -m talkative_autoencoder.scripts.generate_thinking_dataset \
+#     --input-dataset "allenai/WildChat-1M" --input-split train \
+#     --server-registry /abs/dir/registry.txt \
+#     --model openai/gpt-oss-20b \
+#     --output-path /abs/path/data/gpt_oss_generated/train \
+#     --target-total-tokens 4000 --anchor-prompt-tokens 3000 \
+#     --max-concurrency 64 --reasoning-level medium --max-samples 10000 \
+#     --resume
+
+
 import argparse
 import asyncio
 import json
 import logging
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -248,6 +269,18 @@ def parse_args() -> argparse.Namespace:
         default="http://localhost:8000/v1",
         help="Comma-separated OpenAI-compatible base URLs for DDP-style scaling",
     )
+    parser.add_argument(
+        "--server-registry",
+        type=str,
+        default=None,
+        help="Optional path to a text file containing one base URL per line. The file can change at runtime; servers will be added/removed dynamically.",
+    )
+    parser.add_argument(
+        "--registry-refresh-interval",
+        type=float,
+        default=5.0,
+        help="Seconds between reloads of --server-registry for dynamic scale-in/out.",
+    )
     parser.add_argument("--model", type=str, default="openai/gpt-oss-20b", help="Model name served by vLLM")
     parser.add_argument("--target-total-tokens", type=int, default=4000, help="Approx target total tokens")
     parser.add_argument("--anchor-prompt-tokens", type=int, default=3000, help="Prompt length to target")
@@ -259,6 +292,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reasoning-level", type=str, default="high", help="Reasoning level in system prompt")
     parser.add_argument("--system-prompt", type=str, default=None, help="Custom system prompt to prepend")
     parser.add_argument("--timeout", type=float, default=120.0, help="HTTP request timeout in seconds")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="If set, resume from partial outputs saved under --output-path. Writes one JSONL line per example for robustness.",
+    )
+    parser.add_argument(
+        "--partial-jsonl",
+        type=str,
+        default=None,
+        help="Override path for partial JSONL (defaults to <output-path>/data.jsonl)",
+    )
     return parser.parse_args()
 
 
@@ -440,9 +484,30 @@ async def generate_one(
     temperature: float,
     top_p: float,
 ) -> Dict[str, Any]:
+    # Sanitize messages to avoid non-JSON-serializable fields
+    def _sanitize_messages(msgs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        # Only pass role/content to the server to avoid 400s from unknown fields
+        allowed_keys = {"role", "content"}
+        cleaned: List[Dict[str, Any]] = []
+        for m in msgs:
+            nm: Dict[str, Any] = {}
+            for k in allowed_keys:
+                if k in m:
+                    v = m[k]
+                    if isinstance(v, (datetime, date)):
+                        v = v.isoformat()
+                    elif not isinstance(v, (str, type(None))):
+                        v = str(v)
+                    nm[k] = v if v is not None else ""
+            nm.setdefault("role", "user")
+            nm.setdefault("content", "")
+            cleaned.append(nm)
+        return cleaned
+
+    safe_messages = _sanitize_messages(messages)
     payload = {
         "model": model,
-        "messages": messages,
+        "messages": safe_messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
         "top_p": top_p,
@@ -468,14 +533,132 @@ async def main_async(args: argparse.Namespace) -> None:
     in_col = args.input_column or detect_chat_column(dset)
     log.info(f"Using input column: {in_col}")
 
-    # HTTP clients (support multiple servers)
+    # Output/Resume setup
+    out_dir = Path(args.output_path)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    partial_jsonl_path = Path(args.partial_jsonl) if args.partial_jsonl else out_dir / "data.jsonl"
+    progress_path = out_dir / "progress.json"
+
+    processed_indices: set[int] = set()
+    if args.resume and partial_jsonl_path.exists():
+        try:
+            with open(partial_jsonl_path, "r") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    try:
+                        obj = json.loads(line)
+                        if isinstance(obj, dict) and "index" in obj:
+                            processed_indices.add(int(obj["index"]))
+                    except Exception:
+                        # Skip malformed lines; keep going
+                        continue
+            log.info(f"Resume enabled: found {len(processed_indices)} completed examples in {partial_jsonl_path}")
+        except FileNotFoundError:
+            pass
+
+    # HTTP clients (support multiple servers; optionally dynamic registry)
     limits = httpx.Limits(max_keepalive_connections=args.max_concurrency, max_connections=args.max_concurrency)
     timeout = httpx.Timeout(args.timeout)
-    base_urls = [u.strip() for u in args.server_urls.split(",") if u.strip()]
-    clients: List[httpx.AsyncClient] = [
-        httpx.AsyncClient(base_url=base, timeout=timeout, limits=limits) for base in base_urls
-    ]
+
+    def _clean_urls(urls: List[str]) -> List[str]:
+        seen = set()
+        out: List[str] = []
+        for u in urls:
+            s = u.strip()
+            if not s:
+                continue
+            if s in seen:
+                continue
+            seen.add(s)
+            out.append(s)
+        return out
+
+    static_urls = _clean_urls(args.server_urls.split(",")) if args.server_urls else []
+    registry_file: Optional[Path] = Path(args.server_registry) if args.server_registry else None
+
+    def _read_registry_urls() -> List[str]:
+        if not registry_file or not registry_file.exists():
+            return []
+        try:
+            with open(registry_file, "r") as f:
+                lines = [ln.strip() for ln in f if ln.strip()]
+            return _clean_urls(lines)
+        except Exception:
+            return []
+
+    current_urls: List[str] = _clean_urls(static_urls + _read_registry_urls())
+    clients_by_url: Dict[str, httpx.AsyncClient] = {
+        url: httpx.AsyncClient(base_url=url, timeout=timeout, limits=limits) for url in current_urls
+    }
+    clients_lock = asyncio.Lock()
     semaphore = asyncio.Semaphore(args.max_concurrency)
+
+    async def _ensure_some_client_available():
+        nonlocal current_urls
+        while True:
+            async with clients_lock:
+                if len(current_urls) > 0:
+                    return
+            # Try to load from registry if available
+            await asyncio.sleep(max(1.0, args.registry_refresh_interval))
+            new_urls = _clean_urls(static_urls + _read_registry_urls())
+            if new_urls:
+                async with clients_lock:
+                    for u in new_urls:
+                        if u not in clients_by_url:
+                            clients_by_url[u] = httpx.AsyncClient(base_url=u, timeout=timeout, limits=limits)
+                    for u in list(clients_by_url.keys()):
+                        if u not in new_urls:
+                            await clients_by_url[u].aclose()
+                            del clients_by_url[u]
+                    current_urls = list(clients_by_url.keys())
+
+    async def _refresh_registry_periodically():
+        if not registry_file:
+            return
+        last_mtime: Optional[float] = None
+        while True:
+            try:
+                if registry_file.exists():
+                    mtime = registry_file.stat().st_mtime
+                    if last_mtime is None or mtime > last_mtime:
+                        last_mtime = mtime
+                        new_urls = _clean_urls(static_urls + _read_registry_urls())
+                        async with clients_lock:
+                            # Add new clients
+                            for u in new_urls:
+                                if u not in clients_by_url:
+                                    clients_by_url[u] = httpx.AsyncClient(base_url=u, timeout=timeout, limits=limits)
+                            # Remove missing clients
+                            for u in list(clients_by_url.keys()):
+                                if u not in new_urls:
+                                    try:
+                                        await clients_by_url[u].aclose()
+                                    finally:
+                                        del clients_by_url[u]
+                            # Update current_urls snapshot
+                            nonlocal current_urls
+                            current_urls = list(clients_by_url.keys())
+                await asyncio.sleep(max(1.0, args.registry_refresh_interval))
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                await asyncio.sleep(max(1.0, args.registry_refresh_interval))
+
+    async def _pick_client_for_index(idx: int) -> httpx.AsyncClient:
+        # Wait until at least one client is available
+        await _ensure_some_client_available()
+        async with clients_lock:
+            urls = list(current_urls)
+            if not urls:
+                # Fallback shouldn't happen due to ensure above
+                raise RuntimeError("No available servers to route request")
+            url = urls[idx % len(urls)]
+            return clients_by_url[url]
+
+    # Start registry refresher
+    refresh_task = asyncio.create_task(_refresh_registry_periodically())
 
     results: List[Dict[str, Any]] = []
     model_supports_thinking = "gpt-oss" in args.model
@@ -485,69 +668,170 @@ async def main_async(args: argparse.Namespace) -> None:
     thinking_tokens_stats: List[int] = []
     content_tokens_stats: List[int] = []
 
+    write_lock = asyncio.Lock()
+
+    async def _append_jsonl(obj: Dict[str, Any]) -> None:
+        # Append one line to partial JSONL with flush and fsync for robustness
+        import os
+        line = json.dumps(obj, ensure_ascii=False)
+        async with write_lock:
+            with open(partial_jsonl_path, "a") as f:
+                f.write(line + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+
     async def process_row(row_idx: int, row: Dict[str, Any]) -> None:
-        messages: List[Dict[str, Any]] = row[in_col]
-        if not model_supports_thinking:
-            messages = merge_assistant_thinking_inline(messages)
+        try:
+            if row_idx in processed_indices:
+                return
+            messages: List[Dict[str, Any]] = row[in_col]
+            if not model_supports_thinking:
+                messages = merge_assistant_thinking_inline(messages)
 
-        target_idx, prompt_tokens = choose_assistant_turn_index(
-            tokenizer=tokenizer,
-            messages=messages,
-            anchor_prompt_tokens=args.anchor_prompt_tokens,
-            target_total_tokens=args.target_total_tokens,
-        )
-
-        max_tokens = args.target_total_tokens - prompt_tokens
-        max_tokens = max(16, min(args.max_completion_tokens, max_tokens))
-
-        prompt_messages = messages[:target_idx]
-        orig_prompt_tokens_stats.append(prompt_tokens)
-        prompt_messages = ensure_system_prompt(prompt_messages, args.reasoning_level, args.system_prompt)
-        with_sys_prompt_tokens_stats.append(count_prompt_tokens_with_system(tokenizer, prompt_messages))
-
-        async with semaphore:
-            client = clients[row_idx % len(clients)]
-            gen = await generate_one(
-                client=client,
-                model=args.model,
-                messages=prompt_messages,
-                max_tokens=max_tokens,
-                temperature=args.temperature,
-                top_p=args.top_p,
+            target_idx, prompt_tokens = choose_assistant_turn_index(
+                tokenizer=tokenizer,
+                messages=messages,
+                anchor_prompt_tokens=args.anchor_prompt_tokens,
+                target_total_tokens=args.target_total_tokens,
             )
 
-        assistant_msg = {"role": "assistant", "content": gen["content"]}
-        if gen["thinking"]:
-            assistant_msg["thinking"] = gen["thinking"]
-        thinking_tokens_stats.append(count_text_tokens(tokenizer, gen["thinking"]))
-        content_tokens_stats.append(count_text_tokens(tokenizer, gen["content"]))
+            prompt_messages = messages[:target_idx]
+            prompt_messages = ensure_system_prompt(prompt_messages, args.reasoning_level, args.system_prompt)
+            with_sys_len = count_prompt_tokens_with_system(tokenizer, prompt_messages)
 
-        final_messages = messages[:target_idx] + [assistant_msg]
+            # Back off to earlier assistant turns if no generation budget remains
+            remaining_tokens = args.target_total_tokens - with_sys_len
+            if remaining_tokens < 1:
+                backoff_attempts = 0
+                while remaining_tokens < 1 and backoff_attempts < 8:
+                    prev_idx = None
+                    for i2 in range(target_idx - 1, -1, -1):
+                        if messages[i2].get("role") == "assistant":
+                            prev_idx = i2
+                            break
+                    if prev_idx is None:
+                        break
+                    target_idx = prev_idx
+                    prompt_messages = messages[:target_idx]
+                    prompt_messages = ensure_system_prompt(prompt_messages, args.reasoning_level, args.system_prompt)
+                    with_sys_len = count_prompt_tokens_with_system(tokenizer, prompt_messages)
+                    remaining_tokens = args.target_total_tokens - with_sys_len
+                    backoff_attempts += 1
 
-        results.append({"messages": final_messages})
+            if remaining_tokens < 1:
+                log.warning(f"Row {row_idx}: prompt exceeds target_total_tokens; skipping")
+                return
 
-        if len(results) == 1:
-            log.info("First server output (raw):\n" + json.dumps(gen["raw"], indent=2))
-            log.info("First finalized example (messages):\n" + json.dumps(final_messages, indent=2, ensure_ascii=False))
+            max_tokens = max(1, min(args.max_completion_tokens, remaining_tokens))
 
-    tasks: List[asyncio.Task] = []
+            # Stats
+            orig_len_final = compute_prompt_tokens_for_assistant_index(tokenizer, messages, target_idx)
+            orig_prompt_tokens_stats.append(orig_len_final)
+            with_sys_prompt_tokens_stats.append(with_sys_len)
+
+            async def _try_generate() -> Dict[str, Any]:
+                attempts = max(3, len(current_urls) * 2 or 3)
+                last_err: Optional[Exception] = None
+                for a in range(attempts):
+                    try:
+                        client = await _pick_client_for_index(row_idx + a)
+                        async with semaphore:
+                            return await generate_one(
+                                client=client,
+                                model=args.model,
+                                messages=prompt_messages,
+                                max_tokens=max_tokens,
+                                temperature=args.temperature,
+                                top_p=args.top_p,
+                            )
+                    except Exception as e:
+                        last_err = e
+                        await asyncio.sleep(0.5)
+                        continue
+                if last_err:
+                    raise last_err
+                raise RuntimeError("Generation failed with unknown error")
+
+            gen = await _try_generate()
+
+            assistant_msg = {"role": "assistant", "content": gen["content"]}
+            if gen["thinking"]:
+                assistant_msg["thinking"] = gen["thinking"]
+            thinking_tokens_stats.append(count_text_tokens(tokenizer, gen["thinking"]))
+            content_tokens_stats.append(count_text_tokens(tokenizer, gen["content"]))
+
+            final_messages = messages[:target_idx] + [assistant_msg]
+
+            # Stream to JSONL immediately for pause/resume
+            await _append_jsonl({"index": row_idx, "messages": final_messages})
+            results.append({"messages": final_messages})
+
+            if len(results) == 1:
+                log.info("First server output (raw):\n" + json.dumps(gen["raw"], indent=2))
+                log.info(
+                    "First finalized example (messages):\n" + json.dumps(final_messages, indent=2, ensure_ascii=False)
+                )
+        except httpx.HTTPStatusError as e:
+            try:
+                err_text = e.response.text
+            except Exception:
+                err_text = str(e)
+            log.error(f"Row {row_idx} HTTP {e.response.status_code if hasattr(e, 'response') else '??'}: {err_text}")
+        except Exception as e:
+            log.error(f"Row {row_idx} failed: {e}")
+
     total = len(dset) if args.max_samples is None else min(args.max_samples, len(dset))
-    for i in range(total):
-        row = dset[i]
-        tasks.append(asyncio.create_task(process_row(i, row)))
+    # Submit work in streaming batches to avoid creating millions of tasks
+    batch_submit = max(args.max_concurrency * 4, 64)
+    for start in range(0, total, batch_submit):
+        print(f"{start}/{total} completed")
+        end = min(start + batch_submit, total)
+        tasks: List[asyncio.Task] = []
+        for i in range(start, end):
+            row = dset[i]
+            tasks.append(asyncio.create_task(process_row(i, row)))
+        # Process in waves limited by max_concurrency
+        for j in range(0, len(tasks), args.max_concurrency):
+            await asyncio.gather(*tasks[j : j + args.max_concurrency])
 
-    for i in range(0, len(tasks), args.max_concurrency):
-        batch = tasks[i : i + args.max_concurrency]
-        await asyncio.gather(*batch)
+    # Close clients and refresher
+    try:
+        refresh_task.cancel()
+    except Exception:
+        pass
+    async with clients_lock:
+        await asyncio.gather(*[c.aclose() for c in clients_by_url.values()])
 
-    # Close clients
-    await asyncio.gather(*[c.aclose() for c in clients])
+    # Finalize: write HF dataset snapshot to output directory
+    # Build from the partial JSONL (includes previously completed examples if resume)
+    # Only include examples within the requested total range
+    jsonl_rows: List[Dict[str, Any]] = []
+    try:
+        with open(partial_jsonl_path, "r") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line)
+                    idx = int(obj.get("index", -1))
+                    if idx < 0:
+                        continue
+                    if idx >= len(dset):
+                        continue
+                    if args.max_samples is not None and idx >= args.max_samples:
+                        continue
+                    jsonl_rows.append({"messages": obj.get("messages", [])})
+                except Exception:
+                    continue
+    except FileNotFoundError:
+        pass
 
-    out_dir = Path(args.output_path)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_dset = Dataset.from_list(results)
-    out_dset.save_to_disk(str(out_dir))
-    log.info(f"Saved {len(out_dset)} records to {out_dir}")
+    if jsonl_rows:
+        out_dset = Dataset.from_list(jsonl_rows)
+        out_dset.save_to_disk(str(out_dir))
+        log.info(f"Saved {len(out_dset)} records to {out_dir}")
+    else:
+        log.info("No records to save (partial JSONL empty)")
 
     stats = {
         "original_prompt_tokens": summarize(orig_prompt_tokens_stats),
@@ -555,6 +839,12 @@ async def main_async(args: argparse.Namespace) -> None:
         "thinking_tokens": summarize(thinking_tokens_stats),
         "content_tokens": summarize(content_tokens_stats),
     }
+    # Persist progress snapshot
+    try:
+        with open(progress_path, "w") as f:
+            json.dump({"stats": stats, "completed": len(jsonl_rows)}, f, indent=2)
+    except Exception:
+        pass
     log.info("Token length stats (tokens):\n" + json.dumps(stats, indent=2))
 
 
