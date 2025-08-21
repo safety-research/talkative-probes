@@ -1232,6 +1232,12 @@ const handleWebSocketMessage = (data) => {
             // Use explicit context if provided, otherwise infer from message
             const processingContext = data.context || (processingMessage.includes('Generating') ? 'generation' : 'analysis');
             
+            // Update currentRequestId to the request that's actually processing
+            if (data.request_id) {
+                state.currentRequestId = data.request_id;
+                console.log('Setting currentRequestId to processing request:', data.request_id);
+            }
+            
             // Mark the request as processing in activeRequests
             if (data.request_id && state.activeRequests && state.activeRequests[data.request_id]) {
                 state.activeRequests[data.request_id].status = 'processing';
@@ -1288,6 +1294,12 @@ const handleWebSocketMessage = (data) => {
                 clearTimeout(state.loadingTimeout);
                 state.loadingTimeout = null;
             }
+            
+            // Clear currentRequestId if this was the current request
+            if (data.request_id === state.currentRequestId) {
+                state.currentRequestId = null;
+            }
+            
             // Clean up request tracking
             if (data.request_id && state.activeRequests) {
                 delete state.activeRequests[data.request_id];
@@ -1342,6 +1354,13 @@ const handleWebSocketMessage = (data) => {
                 clearTimeout(state.loadingTimeout);
                 state.loadingTimeout = null;
             }
+            
+            // Clear currentRequestId if this was the current request
+            if (data.request_id === state.currentRequestId) {
+                state.currentRequestId = null;
+                console.log('Cleared currentRequestId after completion');
+            }
+            
             // Don't check against currentRequestId - we handle multiple analyses now
             // Check if result has valid data
             if (!data.result || !data.result.data || data.result.data.length === 0) {
@@ -1359,6 +1378,12 @@ const handleWebSocketMessage = (data) => {
             
         case 'generation_error':
             showLoading(false, '', null, 'generation');
+            
+            // Clear currentRequestId if this was the current request
+            if (data.request_id === state.currentRequestId) {
+                state.currentRequestId = null;
+            }
+            
             // Clean up request tracking
             if (data.request_id && state.activeRequests) {
                 delete state.activeRequests[data.request_id];
@@ -1378,6 +1403,13 @@ const handleWebSocketMessage = (data) => {
             // Handle interrupt confirmation
             const interruptContext = data.context || 'analysis';
             showLoading(false, '', null, interruptContext);
+            
+            // Clear currentRequestId if this was the current request
+            if (data.request_id === state.currentRequestId) {
+                state.currentRequestId = null;
+                console.log('Cleared currentRequestId after interrupt');
+            }
+            
             // Clean up request tracking
             if (data.request_id && state.activeRequests) {
                 delete state.activeRequests[data.request_id];
@@ -1554,6 +1586,9 @@ const analyze = () => {
     
     // Show initial loading state
     showLoading(true, 'Preparing analysis...', null, 'analysis');
+    
+    // Clear current request ID when starting a new analysis
+    state.currentRequestId = null;
     
     // Generate a unique client-side ID for this request
     const clientRequestId = `client_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -2381,15 +2416,23 @@ const checkForChatFormat = () => {
     }
 };
 
-// Check if input starts with model tokens
+// Check if input contains model tokens
 const checkForModelTokens = () => {
     const text = elements.inputText.value.trim();
     
     // Common model tokens that indicate raw model input
-    const modelTokens = ['<bos>', '<|endoftext|>', '<|im_start|>', '<|begin_of_text|>', '<s>', '</s>', '<|system|>', '<|user|>', '<|assistant|>'];
-    const startsWithModelToken = modelTokens.some(token => text.startsWith(token));
+    const modelTokens = [
+        '<bos>', '<|endoftext|>', '<|im_start|>', '<|begin_of_text|>', 
+        '<s>', '</s>', '<|system|>', '<|user|>', '<|assistant|>',
+        '<|start|>', '<|end|>', '<|im_end|>', '<|eot|>',
+        '<|begin|>', '<|stop|>', '<|pad|>', '<|eos|>',
+        '<<SYS>>', '<</SYS>>', '[INST]', '[/INST]'
+    ];
     
-    if (startsWithModelToken && elements.autoConvertToChat.checked) {
+    // Check if text contains these tokens (not just starts with)
+    const containsModelToken = modelTokens.some(token => text.includes(token));
+    
+    if (containsModelToken && elements.autoConvertToChat.checked) {
         // Uncheck auto-convert when model tokens are detected
         elements.autoConvertToChat.checked = false;
         showGenerationStatus('Model tokens detected - disabled auto-convert to chat', 'info');

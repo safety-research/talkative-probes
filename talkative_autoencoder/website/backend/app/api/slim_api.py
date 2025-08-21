@@ -185,13 +185,15 @@ async def generate(
             if not model_id:
                 raise HTTPException(400, f"Model group '{request.model_group}' not found")
         
-        # Create generation options
+        # Create generation options (ensure chat mode for Harmony/thinking support)
         options = {
             "temperature": request.temperature,
-            "max_new_tokens": request.n_tokens,
-            "num_return_sequences": request.n_continuations,
-            "do_sample": request.temperature > 0,
-            "model_id": model_id
+            "num_tokens": request.n_tokens,
+            "num_completions": request.n_continuations,
+            "top_p": 1.0,
+            "model_id": model_id,
+            "is_chat": True,
+            "use_chat_format": True,
         }
         
         # Queue the request
@@ -292,7 +294,8 @@ async def analyze(
             "move_devices": False,
             "no_kl": True,
             "model_id": model_id,
-            "use_chat_format": True
+            "use_chat_format": True,
+            "is_chat": True,
         }
         
         # Add last_n_messages if specified
@@ -374,7 +377,8 @@ async def send_message(
             "temperature": request.temperature,
             "max_tokens": request.max_tokens,
             "model_id": model_id,
-            "use_cache": True
+            "use_cache": True,
+            "is_chat": True,
         }
         
         # Queue the request as send_message type

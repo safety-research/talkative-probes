@@ -1367,25 +1367,37 @@ async def websocket_endpoint(websocket: WebSocket):
                 if request_id and inference_service:
                     # Mark the request as cancelled
                     request = inference_service.queue.active_requests.get(request_id)
-                    if request and request["status"] == "processing":
-                        request["status"] = "cancelled"
-                        request["error"] = "Interrupted by user"
-
-                        logger.info(f"Interrupt requested for {context} request: {request_id}")
-
-                        # Send confirmation
-                        response = {"type": "interrupted", "request_id": request_id, "context": context}
+                    if request:
+                        current_status = request.get("status")
+                        logger.info(f"Interrupt requested for {context} request {request_id}, current status: {current_status}")
                         
-                        # Include client_request_id if available in the request
-                        if "options" in request and "client_request_id" in request["options"]:
-                            response["client_request_id"] = request["options"]["client_request_id"]
+                        # Allow interrupting requests that are processing or waiting
+                        if current_status in ["processing", "waiting_for_group_switch", "queued"]:
+                            request["status"] = "cancelled"
+                            request["error"] = "Interrupted by user"
+                            logger.info(f"Successfully interrupted {context} request: {request_id}")
+                            # Send confirmation
+                            response = {"type": "interrupted", "request_id": request_id, "context": context}
                             
-                        await websocket.send_json(response)
+                            # Include client_request_id if available in the request
+                            if "options" in request and "client_request_id" in request["options"]:
+                                response["client_request_id"] = request["options"]["client_request_id"]
+                                
+                            await websocket.send_json(response)
+                        else:
+                            logger.warning(f"Cannot interrupt request {request_id} with status: {current_status}")
+                            await websocket.send_json(
+                                {
+                                    "type": "error",
+                                    "error": f"Cannot interrupt request {request_id} - status is {current_status}, not processing",
+                                }
+                            )
                     else:
+                        logger.warning(f"Request {request_id} not found in active requests")
                         await websocket.send_json(
                             {
                                 "type": "error",
-                                "error": f"Cannot interrupt request {request_id} - not currently processing",
+                                "error": f"Request {request_id} not found",
                             }
                         )
 
