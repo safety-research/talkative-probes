@@ -554,6 +554,33 @@ def do_pretokenize(cfg: DictConfig):
     for split_name, dataset in datasets_to_process.items():
         log.info(f"\nProcessing split: {split_name} ({len(dataset)} samples)")
 
+        # Pre-filter invalid rows by format; log how many are skipped (no silent fallback)
+        num_before_filter = len(dataset)
+        if data_format == "gpt_oss_reasoning":
+            def _valid_reasoning(example):
+                return isinstance(example.get("user_content"), str) and isinstance(example.get("assistant_content"), str)
+
+            dataset = dataset.filter(
+                _valid_reasoning,
+                num_proc=num_proc,
+                desc=f"Filtering invalid {split_name} (gpt_oss_reasoning)",
+            )
+        elif data_format == "thinking":
+            def _valid_thinking(example):
+                return isinstance(example.get("question"), str) and isinstance(example.get("answer"), str)
+
+            dataset = dataset.filter(
+                _valid_thinking,
+                num_proc=num_proc,
+                desc=f"Filtering invalid {split_name} (thinking)",
+            )
+
+        num_after_filter = len(dataset)
+        skipped = num_before_filter - num_after_filter
+        if skipped > 0:
+            pct = (skipped / max(1, num_before_filter)) * 100.0
+            log.info(f"Skipped {skipped} invalid samples in {split_name} ({pct:.2f}%).")
+
         # Apply tokenization
         log.info("Tokenizing...")
         tokenized_dataset = dataset.map(
