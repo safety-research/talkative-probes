@@ -157,57 +157,46 @@ def do_pretokenize(cfg: DictConfig):
 
                         if len(cfg_names) > 3:
                             log.info(
-                                f"No sub-dataset specified and {len(cfg_names)} configs found; mixing all configs: {cfg_names}"
+                                f"No sub-dataset specified and {len(cfg_names)} configs found; mixing ALL configs and ALL splits: {cfg_names}"
                             )
                             mixed_list = []
                             # Use seed from config if present for deterministic shuffle
                             seed_for_mix = pretokenize_cfg.get("seed", 42)
+                            num_included_configs = 0
+                            num_included_splits = 0
                             for cn in cfg_names:
                                 try:
-                                    # Prefer 'train' split; if unavailable, mix across many splits
+                                    splits = []
                                     try:
-                                        ds_cn_train = load_dataset(
-                                            dataset_name,
-                                            name=cn,
-                                            split=train_split_name,
-                                            trust_remote_code=True,
-                                            num_proc=num_proc,
+                                        splits = get_dataset_split_names(dataset_name, cn)
+                                    except Exception as split_e:
+                                        log.warning(f"Unable to list splits for config '{cn}': {split_e}")
+                                        raise
+
+                                    if not splits:
+                                        log.warning(
+                                            f"No splits available for config '{cn}' in '{dataset_name}', skipping."
                                         )
-                                        mixed_list.append(ds_cn_train)
-                                    except Exception:
-                                        splits = []
+                                        continue
+
+                                    log.info(f"Config '{cn}' using splits: {splits}")
+                                    loaded_any_for_config = False
+                                    for s in splits:
                                         try:
-                                            splits = get_dataset_split_names(dataset_name, cn)
-                                        except Exception as split_e:
-                                            log.warning(f"Unable to list splits for config '{cn}': {split_e}")
-                                            raise
-
-                                        if not splits:
-                                            raise ValueError(
-                                                f"No splits available for config '{cn}' in '{dataset_name}'"
+                                            ds_part = load_dataset(
+                                                dataset_name,
+                                                name=cn,
+                                                split=s,
+                                                trust_remote_code=True,
+                                                num_proc=num_proc,
                                             )
-
-                                        # If many splits, include them all; otherwise, pick reasonable fallbacks
-                                        if len(splits) > 3:
-                                            splits_to_use = splits
-                                        else:
-                                            preferred_order = ["train", "validation", "val", "test"]
-                                            found = [s for s in preferred_order if s in splits]
-                                            splits_to_use = found if found else splits
-
-                                        log.info(f"Config '{cn}' using splits: {splits_to_use}")
-                                        for s in splits_to_use:
-                                            try:
-                                                ds_part = load_dataset(
-                                                    dataset_name,
-                                                    name=cn,
-                                                    split=s,
-                                                    trust_remote_code=True,
-                                                    num_proc=num_proc,
-                                                )
-                                                mixed_list.append(ds_part)
-                                            except Exception as part_e:
-                                                log.warning(f"Skipping split '{s}' for config '{cn}': {part_e}")
+                                            mixed_list.append(ds_part)
+                                            num_included_splits += 1
+                                            loaded_any_for_config = True
+                                        except Exception as part_e:
+                                            log.warning(f"Skipping split '{s}' for config '{cn}': {part_e}")
+                                    if loaded_any_for_config:
+                                        num_included_configs += 1
                                 except Exception as inner_e:
                                     log.warning(f"Skipping config '{cn}' due to load error: {inner_e}")
 
@@ -218,7 +207,11 @@ def do_pretokenize(cfg: DictConfig):
                                 raise
 
                             full_train_dataset = concatenate_datasets(mixed_list).shuffle(seed=seed_for_mix)
-                            log.info(f"Mixed dataset size after concat: {len(full_train_dataset)}")
+                            total_rows = sum(len(ds) for ds in mixed_list)
+                            log.info(
+                                f"Included {num_included_configs}/{len(cfg_names)} configs, {num_included_splits} splits; "
+                                f"rows before concat: {total_rows}, after concat+shuffle: {len(full_train_dataset)}"
+                            )
                         elif len(cfg_names) == 1:
                             log.info(f"Single config detected ('{cfg_names[0]}'); using it.")
                             full_train_dataset = load_dataset(
@@ -390,9 +383,7 @@ def do_pretokenize(cfg: DictConfig):
 
             n = len(users)
             if len(assistants) != n:
-                raise ValueError(
-                    f"Mismatched column lengths: user_content={n}, assistant_content={len(assistants)}"
-                )
+                raise ValueError(f"Mismatched column lengths: user_content={n}, assistant_content={len(assistants)}")
 
             chats = []
             effort_vals = []
@@ -423,9 +414,7 @@ def do_pretokenize(cfg: DictConfig):
                 else:
                     e = efforts[i]
                     if e is None:
-                        raise ValueError(
-                            f"Invalid 'system_reasoning_effort' at index {i}: cannot be None if provided"
-                        )
+                        raise ValueError(f"Invalid 'system_reasoning_effort' at index {i}: cannot be None if provided")
                     if not isinstance(e, str):
                         raise ValueError(
                             f"Invalid 'system_reasoning_effort' at index {i}: must be a string (got {type(e)})"
@@ -557,8 +546,11 @@ def do_pretokenize(cfg: DictConfig):
         # Pre-filter invalid rows by format; log how many are skipped (no silent fallback)
         num_before_filter = len(dataset)
         if data_format == "gpt_oss_reasoning":
+
             def _valid_reasoning(example):
-                return isinstance(example.get("user_content"), str) and isinstance(example.get("assistant_content"), str)
+                return isinstance(example.get("user_content"), str) and isinstance(
+                    example.get("assistant_content"), str
+                )
 
             dataset = dataset.filter(
                 _valid_reasoning,
@@ -566,6 +558,7 @@ def do_pretokenize(cfg: DictConfig):
                 desc=f"Filtering invalid {split_name} (gpt_oss_reasoning)",
             )
         elif data_format == "thinking":
+
             def _valid_thinking(example):
                 return isinstance(example.get("question"), str) and isinstance(example.get("answer"), str)
 
