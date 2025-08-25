@@ -22,6 +22,7 @@ dependencies = [
     "ipykernel",
     "hf_transfer",
     "transformers>=4.51",
+    "ninja>=1.13.0",
 ]
 
 [tool.setuptools]

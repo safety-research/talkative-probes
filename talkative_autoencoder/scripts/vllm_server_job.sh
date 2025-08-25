@@ -37,6 +37,25 @@ if [ -n "$COORD_SUBMIT_DIR" ]; then
   cd "$COORD_SUBMIT_DIR"
 fi
 
+# Resolve repo root robustly (works if job starts in a scratch directory)
+find_repo_root() {
+  local d
+  d="$(pwd)"
+  while [ "$d" != "/" ]; do
+    if [ -f "$d/talkative_autoencoder/scripts/ensure_env.sh" ]; then
+      echo "$d"; return 0
+    fi
+    d="$(dirname "$d")"
+  done
+  return 1
+}
+REPO_ROOT="$(find_repo_root || true)"
+if [ -z "$REPO_ROOT" ]; then
+  echo "ERROR: Could not find repo root from $(pwd)" >&2
+  exit 1
+fi
+cd "$REPO_ROOT"
+
 source talkative_autoencoder/scripts/ensure_env.sh
 
 MODEL_NAME=${MODEL_NAME:-openai/gpt-oss-20b}

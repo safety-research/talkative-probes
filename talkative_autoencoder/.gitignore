@@ -14,3 +14,4 @@ vector_cache/*
 vector_cache*/*
 uv.lock
 *.db
+*.out

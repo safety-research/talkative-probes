@@ -61,18 +61,28 @@ if [ -n "${SLURM_SUBMIT_DIR:-}" ]; then
   cd "$SLURM_SUBMIT_DIR"
 fi
 
-# Anchor helper scripts to the submission working directory (shared FS)
-SERVER_SCRIPT="$PWD/talkative_autoencoder/scripts/vllm_server_job.sh"
-ENSURE_ENV_SCRIPT="$PWD/talkative_autoencoder/scripts/ensure_env.sh"
+# Locate repository root containing talkative_autoencoder/scripts
+find_repo_root() {
+  local d
+  d="$(pwd)"
+  while [ "$d" != "/" ]; do
+    if [ -f "$d/talkative_autoencoder/scripts/vllm_server_job.sh" ] && \
+       [ -f "$d/talkative_autoencoder/scripts/ensure_env.sh" ]; then
+      echo "$d"; return 0
+    fi
+    d="$(dirname "$d")"
+  done
+  return 1
+}
 
-if [ ! -f "$SERVER_SCRIPT" ]; then
-  echo "ERROR: Cannot find server script at $SERVER_SCRIPT" >&2
+REPO_ROOT="$(find_repo_root || true)"
+if [ -z "$REPO_ROOT" ]; then
+  echo "ERROR: Could not locate repo root containing talkative_autoencoder/scripts from $(pwd)" >&2
   exit 1
 fi
-if [ ! -f "$ENSURE_ENV_SCRIPT" ]; then
-  echo "ERROR: Cannot find ensure_env script at $ENSURE_ENV_SCRIPT" >&2
-  exit 1
-fi
+
+SERVER_SCRIPT="$REPO_ROOT/talkative_autoencoder/scripts/vllm_server_job.sh"
+ENSURE_ENV_SCRIPT="$REPO_ROOT/talkative_autoencoder/scripts/ensure_env.sh"
 
 chmod +x "$SERVER_SCRIPT" 2>/dev/null || true
 source "$ENSURE_ENV_SCRIPT"

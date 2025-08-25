@@ -33,6 +33,11 @@ def find_input_column_and_format(dataset: Dataset) -> (str, str):
         # in the tokenize function. We return 'question' as a placeholder.
         return "question", "thinking"
 
+    # 0b. gpt-oss 4-column format (reasoning effort optional)
+    if "user_content" in column_names and "assistant_content" in column_names:
+        log.info("Detected 'gpt_oss_reasoning' format with 'user_content'/'assistant_*' columns.")
+        return "user_content", "gpt_oss_reasoning"
+
     # 1. Check for chat formats first by inspecting a few rows
     for i in range(min(10, len(dataset))):
         row = dataset[i]
@@ -246,6 +251,64 @@ def do_pretokenize(cfg: DictConfig):
                 add_special_tokens=False,
             )
 
+    elif data_format == "gpt_oss_reasoning":
+        if "gpt-oss" not in cfg.model_name:
+            log.warning(
+                f"Detected 'gpt_oss_reasoning' dataset format, but model name '{cfg.model_name}'"
+                " does not contain 'gpt-oss'. The chat template might not support the 'thinking' field."
+            )
+            raise ValueError(
+                f"Detected 'gpt_oss_reasoning' dataset format, but model name '{cfg.model_name}'"
+                " does not contain 'gpt-oss'. The chat template might not support the 'thinking' field."
+            )
+
+        if not tokenizer.chat_template:
+            log.warning("Tokenizer does not have a chat_template. A gpt-oss template is required.")
+            raise ValueError(
+                "Tokenizer does not have a chat_template. Please use a tokenizer that supports gpt-oss chat templates."
+            )
+
+        def tokenize_function(examples):
+            users = examples.get("user_content")
+            assistants = examples.get("assistant_content")
+            thinkings = examples.get("assistant_thinking")
+            efforts = examples.get("system_reasoning_effort")
+
+            chats = []
+            effort_vals = []
+            n = len(users)
+            for i in range(n):
+                user_msg = {"role": "user", "content": users[i]}
+                assistant_msg = {"role": "assistant", "content": assistants[i] if assistants else ""}
+                if thinkings and thinkings[i]:
+                    assistant_msg["thinking"] = thinkings[i]
+                chats.append([user_msg, assistant_msg])
+
+                val = None
+                if efforts:
+                    val = efforts[i]
+                effort_vals.append(val or "medium")
+
+            formatted_texts = [
+                tokenizer.apply_chat_template(
+                    chat,
+                    tokenize=False,
+                    add_generation_prompt=False,
+                    reasoning_effort=effort_vals[i],
+                )
+                for i, chat in enumerate(chats)
+            ]
+
+            return tokenizer(
+                formatted_texts,
+                padding="max_length",
+                truncation=True,
+                max_length=seq_len,
+                return_special_tokens_mask=False,
+                return_attention_mask=True,
+                add_special_tokens=False,
+            )
+
     elif data_format in ["chat", "chat_list"]:
         if not tokenizer.chat_template:
             log.warning("Tokenizer does not have a chat_template. Applying a default ChatML template.")
@@ -275,11 +338,7 @@ def do_pretokenize(cfg: DictConfig):
                 for conv in conversations:
                     prepared_conv = []
                     for msg in conv:
-                        if (
-                            isinstance(msg, dict)
-                            and msg.get("role") == "assistant"
-                            and msg.get("thinking")
-                        ):
+                        if isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("thinking"):
                             thinking_text = msg.get("thinking") or ""
                             content_text = msg.get("content") or ""
                             merged_content = f"<think>{thinking_text}</think>\n{content_text}".strip()
@@ -330,6 +389,16 @@ def do_pretokenize(cfg: DictConfig):
             example_tokenized = tokenize_function(batch)
         elif data_format == "chat_list":
             example_tokenized = tokenize_function({input_column: [example[input_column]]})
+        elif data_format == "gpt_oss_reasoning":
+            batch = {
+                "user_content": [example["user_content"]],
+                "assistant_content": [example["assistant_content"]],
+            }
+            if "assistant_thinking" in example:
+                batch["assistant_thinking"] = [example["assistant_thinking"]]
+            if "system_reasoning_effort" in example:
+                batch["system_reasoning_effort"] = [example["system_reasoning_effort"]]
+            example_tokenized = tokenize_function(batch)
         else:
             example_tokenized = tokenize_function({input_column: example[input_column]})
         log.info(f"Example tokenized output: {example_tokenized}")
