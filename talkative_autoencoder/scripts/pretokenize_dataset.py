@@ -317,6 +317,11 @@ def do_pretokenize(cfg: DictConfig):
                 question = examples["question"][i]
                 answer = examples["answer"][i]
 
+                if not isinstance(question, str) or not isinstance(answer, str):
+                    raise ValueError(
+                        f"Invalid sample at index {i}: 'question' and 'answer' must be strings (got types: {type(question)}, {type(answer)})"
+                    )
+
                 thinking = None
                 content = answer
 
@@ -338,7 +343,13 @@ def do_pretokenize(cfg: DictConfig):
 
             # `add_generation_prompt=False` is used for training
             formatted_texts = [
-                tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=False) for chat in chats
+                tokenizer.apply_chat_template(
+                    chat,
+                    tokenize=False,
+                    add_generation_prompt=False,
+                    tools=[],
+                )
+                for chat in chats
             ]
 
             return tokenizer(
@@ -374,26 +385,59 @@ def do_pretokenize(cfg: DictConfig):
             thinkings = examples.get("assistant_thinking")
             efforts = examples.get("system_reasoning_effort")
 
+            if users is None or assistants is None:
+                raise ValueError("'user_content' and 'assistant_content' columns are required for gpt_oss_reasoning.")
+
+            n = len(users)
+            if len(assistants) != n:
+                raise ValueError(
+                    f"Mismatched column lengths: user_content={n}, assistant_content={len(assistants)}"
+                )
+
             chats = []
             effort_vals = []
-            n = len(users)
             for i in range(n):
-                user_msg = {"role": "user", "content": users[i]}
-                assistant_msg = {"role": "assistant", "content": assistants[i] if assistants else ""}
-                if thinkings and thinkings[i]:
-                    assistant_msg["thinking"] = thinkings[i]
+                u = users[i]
+                a = assistants[i]
+                if not isinstance(u, str) or not isinstance(a, str):
+                    raise ValueError(
+                        f"Invalid sample at index {i}: 'user_content' and 'assistant_content' must be strings (got types: {type(u)}, {type(a)})"
+                    )
+
+                user_msg = {"role": "user", "content": u}
+                assistant_msg = {"role": "assistant", "content": a}
+
+                if thinkings is not None:
+                    t = thinkings[i]
+                    if t is not None and not isinstance(t, str):
+                        raise ValueError(
+                            f"Invalid 'assistant_thinking' at index {i}: must be string when present (got {type(t)})"
+                        )
+                    if isinstance(t, str) and t:
+                        assistant_msg["thinking"] = t
+
                 chats.append([user_msg, assistant_msg])
 
-                val = None
-                if efforts:
-                    val = efforts[i]
-                effort_vals.append(val or "medium")
+                if efforts is None:
+                    effort_vals.append("medium")
+                else:
+                    e = efforts[i]
+                    if e is None:
+                        raise ValueError(
+                            f"Invalid 'system_reasoning_effort' at index {i}: cannot be None if provided"
+                        )
+                    if not isinstance(e, str):
+                        raise ValueError(
+                            f"Invalid 'system_reasoning_effort' at index {i}: must be a string (got {type(e)})"
+                        )
+                    effort_vals.append(e)
 
             formatted_texts = [
                 tokenizer.apply_chat_template(
                     chat,
                     tokenize=False,
                     add_generation_prompt=False,
+                    tools=[],
                     reasoning_effort=effort_vals[i],
                 )
                 for i, chat in enumerate(chats)
