@@ -6,7 +6,14 @@ from pathlib import Path
 
 import dotenv
 import hydra
-from datasets import Dataset, load_dataset, load_from_disk
+from datasets import (
+    Dataset,
+    concatenate_datasets,
+    get_dataset_config_names,
+    get_dataset_split_names,
+    load_dataset,
+    load_from_disk,
+)
 from omegaconf import DictConfig
 
 from transformers import AutoTokenizer
@@ -130,13 +137,106 @@ def do_pretokenize(cfg: DictConfig):
             if Path(dataset_name).exists():
                 full_train_dataset = load_from_disk(dataset_name)
             else:
-                full_train_dataset = load_dataset(
-                    dataset_name,
-                    name=name_of_sub_dataset,
-                    split=train_split_name,
-                    trust_remote_code=True,
-                    num_proc=num_proc,
-                )
+                try:
+                    full_train_dataset = load_dataset(
+                        dataset_name,
+                        name=name_of_sub_dataset,
+                        split=train_split_name,
+                        trust_remote_code=True,
+                        num_proc=num_proc,
+                    )
+                except Exception as e:
+                    message = str(e).lower()
+                    if "config name is missing" in message and name_of_sub_dataset is None:
+                        cfg_names = []
+                        try:
+                            cfg_names = get_dataset_config_names(dataset_name)
+                        except Exception as cfg_e:
+                            log.error(f"Failed to list configs for '{dataset_name}': {cfg_e}")
+                            raise
+
+                        if len(cfg_names) > 3:
+                            log.info(
+                                f"No sub-dataset specified and {len(cfg_names)} configs found; mixing all configs: {cfg_names}"
+                            )
+                            mixed_list = []
+                            # Use seed from config if present for deterministic shuffle
+                            seed_for_mix = pretokenize_cfg.get("seed", 42)
+                            for cn in cfg_names:
+                                try:
+                                    # Prefer 'train' split; if unavailable, mix across many splits
+                                    try:
+                                        ds_cn_train = load_dataset(
+                                            dataset_name,
+                                            name=cn,
+                                            split=train_split_name,
+                                            trust_remote_code=True,
+                                            num_proc=num_proc,
+                                        )
+                                        mixed_list.append(ds_cn_train)
+                                    except Exception:
+                                        splits = []
+                                        try:
+                                            splits = get_dataset_split_names(dataset_name, cn)
+                                        except Exception as split_e:
+                                            log.warning(f"Unable to list splits for config '{cn}': {split_e}")
+                                            raise
+
+                                        if not splits:
+                                            raise ValueError(
+                                                f"No splits available for config '{cn}' in '{dataset_name}'"
+                                            )
+
+                                        # If many splits, include them all; otherwise, pick reasonable fallbacks
+                                        if len(splits) > 3:
+                                            splits_to_use = splits
+                                        else:
+                                            preferred_order = ["train", "validation", "val", "test"]
+                                            found = [s for s in preferred_order if s in splits]
+                                            splits_to_use = found if found else splits
+
+                                        log.info(f"Config '{cn}' using splits: {splits_to_use}")
+                                        for s in splits_to_use:
+                                            try:
+                                                ds_part = load_dataset(
+                                                    dataset_name,
+                                                    name=cn,
+                                                    split=s,
+                                                    trust_remote_code=True,
+                                                    num_proc=num_proc,
+                                                )
+                                                mixed_list.append(ds_part)
+                                            except Exception as part_e:
+                                                log.warning(f"Skipping split '{s}' for config '{cn}': {part_e}")
+                                except Exception as inner_e:
+                                    log.warning(f"Skipping config '{cn}' due to load error: {inner_e}")
+
+                            if not mixed_list:
+                                log.error(
+                                    f"All configs failed to load for '{dataset_name}'. Available configs: {cfg_names}"
+                                )
+                                raise
+
+                            full_train_dataset = concatenate_datasets(mixed_list).shuffle(seed=seed_for_mix)
+                            log.info(f"Mixed dataset size after concat: {len(full_train_dataset)}")
+                        elif len(cfg_names) == 1:
+                            log.info(f"Single config detected ('{cfg_names[0]}'); using it.")
+                            full_train_dataset = load_dataset(
+                                dataset_name,
+                                name=cfg_names[0],
+                                split=train_split_name,
+                                trust_remote_code=True,
+                                num_proc=num_proc,
+                            )
+                        else:
+                            raise ValueError(
+                                f"Dataset '{dataset_name}' exposes multiple configs: {cfg_names}. "
+                                "Set pretokenize.name_of_sub_dataset to select one."
+                            )
+                    else:
+                        log.error(f"Failed to load '{train_split_name}' for '{dataset_name}': {e}")
+                        raise
+
         except Exception as e:
             log.error(f"Failed to load '{train_split_name}' for '{dataset_name}': {e}")
             raise
