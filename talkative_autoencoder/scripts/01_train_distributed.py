@@ -3227,7 +3227,7 @@ def main(cfg: DictConfig) -> None:
                 trigger_spec = unfreeze_cfg.get("at", unfreeze_cfg.get("step", -1))
                 trigger_steps = _resolve_schedule_to_steps(
                     trigger_spec,  # supports "1000s" etc.
-                    locals().get("steps_per_epoch", 0),
+                    0,#steps per epoch is not defined yet
                     log,
                     "unfreeze_encoder.step",
                     gradient_accumulation_steps,
