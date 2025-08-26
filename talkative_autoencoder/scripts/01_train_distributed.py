@@ -756,7 +756,7 @@ def setup_distributed_models(
     return decoder, encoder, orig_model
 
 
-def get_dataloader_for_distributed(dataset, batch_size, world_size, rank, shuffle=True, **kwargs):
+def get_dataloader_for_distributed(dataset, batch_size, world_size, rank, shuffle=True, drop_last=False, **kwargs):
     """Create a DataLoader with DistributedSampler if needed."""
     # Check if dataset is already sharded (like RankInMemoryTrainingCache)
     is_pre_sharded = hasattr(dataset, "rank") and hasattr(dataset, "world_size")
@@ -764,9 +764,9 @@ def get_dataloader_for_distributed(dataset, batch_size, world_size, rank, shuffl
     if world_size > 1 and not is_pre_sharded:
         sampler = FastDistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=shuffle)
         kwargs.pop("shuffle", None)
-        dataloader = DataLoader(dataset, batch_size=batch_size, sampler=sampler, **kwargs)
+        dataloader = DataLoader(dataset, batch_size=batch_size, sampler=sampler, drop_last=drop_last, **kwargs)
     else:
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, **kwargs)
+        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last, **kwargs)
 
     return dataloader
 
@@ -3227,7 +3227,7 @@ def main(cfg: DictConfig) -> None:
                 trigger_spec = unfreeze_cfg.get("at", unfreeze_cfg.get("step", -1))
                 trigger_steps = _resolve_schedule_to_steps(
                     trigger_spec,  # supports "1000s" etc.
-                    steps_per_epoch if "steps_per_epoch" in locals() else 0,
+                    locals().get("steps_per_epoch", 0),
                     log,
                     "unfreeze_encoder.step",
                     gradient_accumulation_steps,
@@ -3459,6 +3459,7 @@ def main(cfg: DictConfig) -> None:
                 num_workers=num_dataloader_workers,
                 pin_memory=True,
                 persistent_workers=num_dataloader_workers > 0,
+                drop_last=True,
             )
         elif (train_ds is not None and len(train_ds) == 0 and on_the_fly_generation_enabled) or (train_ds is None):
             log.error(
@@ -3484,6 +3485,7 @@ def main(cfg: DictConfig) -> None:
                 num_workers=num_dataloader_workers,
                 pin_memory=True,
                 persistent_workers=num_dataloader_workers > 0,
+                drop_last=True,
             )
         else:
             log.warning("Validation dataset is None or empty (either not configured or 0 samples requested).")
@@ -3635,6 +3637,27 @@ def main(cfg: DictConfig) -> None:
             )
             if val_loader is None and val_interval > 0:
                 log.warning(f"val_interval is {val_interval} but val_loader is None. No validation will occur.")
+
+        # Initialize sampler epochs and log per-rank dataloader sizes
+        if world_size > 1 and hasattr(train_loader, "sampler") and hasattr(train_loader.sampler, "set_epoch"):
+            train_loader.sampler.set_epoch(0)
+        if world_size > 1 and val_loader is not None and hasattr(val_loader, "sampler") and hasattr(val_loader.sampler, "set_epoch"):
+            val_loader.sampler.set_epoch(0)
+
+        try:
+            train_len = len(train_loader)
+            train_ds_len = len(train_loader.dataset) if hasattr(train_loader, "dataset") else -1
+            log.info(
+                f"Rank {rank}: train_loader batches={train_len} dataset={train_ds_len} batch_size={batch_size} drop_last=True"
+            )
+            if val_loader is not None:
+                val_len = len(val_loader)
+                val_ds_len = len(val_loader.dataset) if hasattr(val_loader, "dataset") else -1
+                log.info(
+                    f"Rank {rank}: val_loader batches={val_len} dataset={val_ds_len} batch_size={batch_size} drop_last=True"
+                )
+        except Exception:
+            pass
 
         # -------- Drift-logging configuration --------
         drift_cfg = config.get("parameter_drift", {})
@@ -4010,6 +4033,7 @@ def main(cfg: DictConfig) -> None:
     max_consecutive_nan_losses = 5
     consecutive_nan_losses = 0
     val_loss = None
+    most_recent_val_loss = None
 
     # Main training loop
     # Create tqdm progress bar (only on main process)
@@ -4244,103 +4268,106 @@ def main(cfg: DictConfig) -> None:
             if (
                 on_the_fly_generation_enabled
                 and samples_per_regeneration_cycle > 0
-                and samples_processed_since_last_regen >= samples_per_regeneration_cycle
             ):
-                if is_main():
-                    log.info(
-                        f"Rank {rank}: Triggering training cache regeneration at step {step}. "
-                        f"Processed ~{samples_processed_since_last_regen} samples from cache."
-                    )
-
-                num_to_generate_this_cycle = samples_per_regeneration_cycle
-                orig_base = orig_model
-                decoder_base = decoder.module if hasattr(decoder, "module") else decoder
-                encoder_base = encoder.module if hasattr(encoder, "module") else encoder
-
-                with Timer(
-                    f"Rank {rank} Cache Regeneration", log, main_process=(is_main()), log_wandb=True, wandb_step=step
-                ):
-                    # Use the context manager to handle model device placement
-                    with (
-                        torch.no_grad(),
-                        manage_model_devices_for_generation(
-                            orig_model, decoder, encoder, config, device, log, is_main()
-                        ),
-                    ):
-                        train_ds.regenerate_cache(num_samples_to_generate=num_to_generate_this_cycle)
-
-                # Log cache regeneration statistics
-                if (
-                    hasattr(train_ds, "total_samples_in_pretokenised_dataset")
-                    and train_ds.total_samples_in_pretokenised_dataset > 0
-                ):
-                    shard_size = train_ds.total_samples_in_pretokenised_dataset // world_size
-                    if num_to_generate_this_cycle > shard_size:
-                        cycles_per_regen = num_to_generate_this_cycle / shard_size
-                        total_regens = step // (samples_per_regeneration_cycle // (batch_size * world_size))
-                        estimated_total_cycles = cycles_per_regen * total_regens
-                        if is_main():
-                            log_metrics(
-                                {
-                                    "cache/cycles_per_regeneration": cycles_per_regen,
-                                    "cache/total_regenerations": total_regens,
-                                    "cache/estimated_total_cycles": estimated_total_cycles,
-                                    "cache/shard_size_per_rank": shard_size,
-                                },
-                                step=step,
-                            )
-
-                if len(train_ds) == 0:
-                    log.error(f"Rank {rank}: Cache is empty after regeneration at step {step}. Stopping training.")
-                    if is_main() and current_wandb_run_id:
-                        summary_log_metrics({"training_status": "error_empty_cache_regen"}, current_wandb_run_id)
-                    break
-                samples_processed_since_last_regen = 0
-
-                if is_main():
-                    log.info(f"Rank {rank}: Re-initializing train_loader. New cache size: {len(train_ds)}")
-
-                if "iter_loader" in locals():
-                    del iter_loader
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                should_regen_local = samples_processed_since_last_regen >= samples_per_regeneration_cycle
+                flag = torch.tensor(1 if should_regen_local else 0, device=device)
                 if world_size > 1:
-                    dist.barrier()
+                    dist.all_reduce(flag, op=dist.ReduceOp.MIN)
+                should_regen_all = bool(flag.item())
 
-                train_loader = get_dataloader_for_distributed(
-                    train_ds,
-                    batch_size=batch_size,
-                    world_size=world_size,
-                    rank=rank,
-                    shuffle=True,
-                    collate_fn=collate,
-                    num_workers=num_dataloader_workers,
-                    pin_memory=True,
-                    persistent_workers=num_dataloader_workers > 0,
-                )
-                if hasattr(train_loader.dataset, "__len__") and len(train_loader.dataset) > 0:  # type: ignore
-                    if hasattr(train_loader, "batch_sampler") and train_loader.batch_sampler is not None:
-                        new_spe = len(train_loader.batch_sampler)
-                    else:
-                        new_spe = (len(train_loader.dataset) + batch_size - 1) // batch_size  # type: ignore
-                else:
-                    new_spe = 0
-
-                if new_spe != steps_per_epoch and is_main():
-                    log.info(f"Steps per epoch updated from {steps_per_epoch} to {new_spe} after cache regen.")
-                steps_per_epoch = new_spe if new_spe > 0 else 1
-                config["calculated_steps_per_epoch"] = steps_per_epoch
-
-                if world_size > 1 and hasattr(train_loader.sampler, "set_epoch"):
-                    train_loader.sampler.set_epoch(current_epoch)  # type: ignore # Use current main loop epoch
+                if should_regen_all:
+                    if world_size > 1:
+                        dist.barrier()
                     if is_main():
-                        log.info(f"Set FastDistributedSampler epoch to {current_epoch} after cache regeneration.")
+                        log.info(
+                            f"Rank {rank}: Triggering training cache regeneration at step {step}. "
+                            f"Processed ~{samples_processed_since_last_regen} samples from cache."
+                        )
 
-                iter_loader = iter(train_loader)
-                if decoder.device != device:
-                    decoder.to(device)
-                if encoder.device != device:
-                    encoder.to(device)
+                    num_to_generate_this_cycle = samples_per_regeneration_cycle
+                    with Timer(
+                        f"Rank {rank} Cache Regeneration", log, main_process=(is_main()), log_wandb=True, wandb_step=step
+                    ):
+                        with (
+                            torch.no_grad(),
+                            manage_model_devices_for_generation(
+                                orig_model, decoder, encoder, config, device, log, is_main()
+                            ),
+                        ):
+                            train_ds.regenerate_cache(num_samples_to_generate=num_to_generate_this_cycle)
+
+                    if (
+                        hasattr(train_ds, "total_samples_in_pretokenised_dataset")
+                        and train_ds.total_samples_in_pretokenised_dataset > 0
+                    ):
+                        shard_size = train_ds.total_samples_in_pretokenised_dataset // world_size
+                        if num_to_generate_this_cycle > shard_size:
+                            cycles_per_regen = num_to_generate_this_cycle / shard_size
+                            total_regens = step // (samples_per_regeneration_cycle // (batch_size * world_size))
+                            estimated_total_cycles = cycles_per_regen * total_regens
+                            if is_main():
+                                log_metrics(
+                                    {
+                                        "cache/cycles_per_regeneration": cycles_per_regen,
+                                        "cache/total_regenerations": total_regens,
+                                        "cache/estimated_total_cycles": estimated_total_cycles,
+                                        "cache/shard_size_per_rank": shard_size,
+                                    },
+                                    step=step,
+                                )
+
+                    if len(train_ds) == 0:
+                        log.error(f"Rank {rank}: Cache is empty after regeneration at step {step}. Stopping training.")
+                        if is_main() and current_wandb_run_id:
+                            summary_log_metrics({"training_status": "error_empty_cache_regen"}, current_wandb_run_id)
+                        break
+                    samples_processed_since_last_regen = 0
+
+                    if is_main():
+                        log.info(f"Rank {rank}: Re-initializing train_loader. New cache size: {len(train_ds)}")
+
+                    if "iter_loader" in locals():
+                        del iter_loader
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    if world_size > 1:
+                        dist.barrier()
+
+                    train_loader = get_dataloader_for_distributed(
+                        train_ds,
+                        batch_size=batch_size,
+                        world_size=world_size,
+                        rank=rank,
+                        shuffle=True,
+                        collate_fn=collate,
+                        num_workers=num_dataloader_workers,
+                        pin_memory=True,
+                        persistent_workers=num_dataloader_workers > 0,
+                        drop_last=True,
+                    )
+                    if hasattr(train_loader.dataset, "__len__") and len(train_loader.dataset) > 0:  # type: ignore
+                        if hasattr(train_loader, "batch_sampler") and train_loader.batch_sampler is not None:
+                            new_spe = len(train_loader.batch_sampler)
+                        else:
+                            new_spe = (len(train_loader.dataset) + batch_size - 1) // batch_size  # type: ignore
+                    else:
+                        new_spe = 0
+
+                    if new_spe != steps_per_epoch and is_main():
+                        log.info(f"Steps per epoch updated from {steps_per_epoch} to {new_spe} after cache regen.")
+                    steps_per_epoch = new_spe if new_spe > 0 else 1
+                    config["calculated_steps_per_epoch"] = steps_per_epoch
+
+                    if world_size > 1 and hasattr(train_loader.sampler, "set_epoch"):
+                        train_loader.sampler.set_epoch(current_epoch)  # type: ignore
+                        if is_main():
+                            log.info(f"Set FastDistributedSampler epoch to {current_epoch} after cache regeneration.")
+
+                    iter_loader = iter(train_loader)
+                    if decoder.device != device:
+                        decoder.to(device)
+                    if encoder.device != device:
+                        encoder.to(device)
 
             # Training step with optimized gradient accumulation
             # Advance iterator – restart when exhausted
