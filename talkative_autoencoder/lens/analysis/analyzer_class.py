@@ -55,13 +55,14 @@ from contextlib import nullcontext
 
 from lens.analysis.parsing_utils import (
     apply_chat_template_safe,
+    collapse_harmony_turn_start_positions,
     compute_tokens_to_analyze_mask,
-    extract_harmony_contents,
+    extract_harmony_contents_from_tokens,
     find_start_positions,
     fix_bos_eos,
     get_assistant_end_tokens,
+    get_harmony_stop_tokens,
     get_start_of_turn_tokens,
-    has_harmony_metadata,
     is_assistant_prefill,
     is_gpt_oss_model,
     normalize_gemma_messages,
@@ -1324,6 +1325,11 @@ class LensAnalyzer:
             input_ids_flat = input_ids[0].tolist()
             start_positions = find_start_positions(input_ids_flat, getattr(self, "start_of_turn_tokens", []))
 
+            # Collapse assistant analysis+final segments into a single assistant turn for Harmony
+            decoded_text_for_boundaries = self.tokenizer.decode(input_ids[0], skip_special_tokens=False)
+            if "<|start|>" in decoded_text_for_boundaries:
+                start_positions = collapse_harmony_turn_start_positions(start_positions, decoded_text_for_boundaries)
+
             tokens_to_analyze, start_idx, chosen_sot = compute_tokens_to_analyze_mask(
                 seq_len=seq_len,
                 start_positions=start_positions,
@@ -2249,6 +2255,7 @@ class LensAnalyzer:
         chat_tokenizer=None,
         use_cache: bool = True,
         cancellation_check=None,
+        return_thinking: bool = False,
     ) -> str:
         """
         Send a chat-formatted message and return a single assistant response.
@@ -2286,16 +2293,18 @@ class LensAnalyzer:
 
         is_prefill = is_assistant_prefill(messages)
 
-        if self.thinking_enabled and has_harmony_metadata(messages):
-            print("Using Harmony input rendering for gpt-oss with thinking/channel metadata")
-            harmony_prompt = render_harmony_from_messages(
+        if self.thinking_enabled and is_gpt_oss_model(self.model_name):  # and has_harmony_metadata(messages):
+            print("Using Harmony input rendering for gpt-oss with thinking/channel metadata (cookbook)")
+            prefill_ids = render_harmony_from_messages(
                 messages,
                 add_generation_prompt=not is_prefill,
                 continue_final_message=is_prefill,
             )
-            encoded = tokenizer(harmony_prompt, return_tensors="pt", add_special_tokens=False)
-            input_ids = encoded["input_ids"].to(self.orig_model.model.device)
-            attention_mask = encoded.get("attention_mask", torch.ones_like(input_ids)).to(self.orig_model.model.device)
+            if not isinstance(prefill_ids, list):
+                raise RuntimeError("Expected Harmony prefill token IDs list")
+            input_ids = torch.tensor([prefill_ids], dtype=torch.long, device=self.orig_model.model.device)
+            attention_mask = torch.ones_like(input_ids, dtype=torch.long, device=self.orig_model.model.device)
+            assistant_end_tokens = get_harmony_stop_tokens()
         else:
             if is_prefill:
                 print("Assistant prefill detected, not adding generation prompt and continuing the final message")
@@ -2319,9 +2328,10 @@ class LensAnalyzer:
                 self.orig_model.model.device
             )
 
-        assistant_end_tokens = get_assistant_end_tokens(tokenizer)
-        if not assistant_end_tokens and hasattr(tokenizer, "eos_token_id"):
-            assistant_end_tokens = [tokenizer.eos_token_id]
+        if not (self.thinking_enabled and is_gpt_oss_model(self.model_name)):
+            assistant_end_tokens = get_assistant_end_tokens(tokenizer)
+            if not assistant_end_tokens and hasattr(tokenizer, "eos_token_id"):
+                assistant_end_tokens = [tokenizer.eos_token_id]
 
         # Generate with early stopping at end-of-turn markers
         with torch.no_grad():
@@ -2341,11 +2351,12 @@ class LensAnalyzer:
 
         generated_tokens = generated[0][input_ids.shape[1] :]
 
-        if self.thinking_enabled:
-            raw = tokenizer.decode(generated_tokens, skip_special_tokens=False)
-            final_text, analysis_text = extract_harmony_contents(raw)
+        if self.thinking_enabled and is_gpt_oss_model(self.model_name):
+            final_text, analysis_text = extract_harmony_contents_from_tokens(generated_tokens.tolist())
             self.last_thinking = analysis_text or ""
-            response = final_text.strip()
+            response = final_text
+            if return_thinking:
+                return response, self.last_thinking
         else:
             response = tokenizer.decode(generated_tokens, skip_special_tokens=True)
 

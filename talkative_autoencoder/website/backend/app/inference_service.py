@@ -1013,6 +1013,8 @@ class InferenceService:
                 "top_p": top_p,
                 "use_cache": use_cache,
             }
+            if analyzer.thinking_enabled:
+                send_message_kwargs["return_thinking"] = True
             
             # Get chat tokenizer
             chat_tokenizer = self.model_manager.get_chat_tokenizer_for_model(model_id)
@@ -1022,10 +1024,15 @@ class InferenceService:
             
             # Run send_message in executor
             loop = asyncio.get_event_loop()
-            response_text = await loop.run_in_executor(
+            resp = await loop.run_in_executor(
                 None,
                 lambda: analyzer.send_message(messages, **send_message_kwargs)
             )
+            if analyzer.thinking_enabled:
+                response_text, thinking = resp
+            else:
+                response_text = resp
+                thinking = None 
             
             logger.info(f"Generated response for request {request_id}")
             
@@ -1035,6 +1042,7 @@ class InferenceService:
             # Complete the request
             request["result"] = {
                 "response": response_text,
+                "thinking": thinking,
                 "metadata": {
                     "model_id": model_info.get("model_id"),
                     "model_name": model_info.get("display_name"),

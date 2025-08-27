@@ -996,10 +996,10 @@ class Decoder(nn.Module):
             emb_t_input = ste_token_dist @ input_emb_table  # (B, d_model)
 
             # Use output embeddings for the encoder (or reuse input if tied)
-            if self.embeddings_tied:
-                emb_t_output = emb_t_input
-            else:
-                emb_t_output = ste_token_dist @ output_emb_table  # (B, d_model)
+            #if self.embeddings_tied:
+            emb_t_output = emb_t_input
+            #else:
+            #    emb_t_output = ste_token_dist @ output_emb_table  # (B, d_model)
 
             # need to do normalizer here
             if self.is_gemma3:
@@ -1436,18 +1436,18 @@ class Decoder(nn.Module):
 
                 # Get embeddings
                 emb_t_input = ste_token_dist @ input_emb_table
-                if not self.embeddings_tied and self.config.end_to_end:
-                    print("Warning - confusion between input/output emb table.")
-                    # raise ValueError("Warning - confusion between input/output emb table.")
-                    emb_t_output = ste_token_dist @ output_emb_table
+                #if not self.embeddings_tied and self.config.end_to_end:
+                #    print("Warning - confusion between input/output emb table.")
+                #    # raise ValueError("Warning - confusion between input/output emb table.")
+                #    emb_t_output = ste_token_dist @ output_emb_table
 
                 if self.is_gemma3:
                     hidden_states = hidden_states * self.normalizer
                     emb_t_input = emb_t_input * self.normalizer
-                    if not self.embeddings_tied and self.config.end_to_end:
-                        # raise ValueError("Sort this out")
-                        print("Sort htis out")
-                        emb_t_output = emb_t_output * self.normalizer
+                    #if not self.embeddings_tied and self.config.end_to_end:
+                    #    # raise ValueError("Sort this out")
+                    #    print("Sort htis out")
+                    #    emb_t_output = emb_t_output * self.normalizer
                 if self.embeddings_tied:
                     emb_t_output = emb_t_input
 
@@ -1812,12 +1812,12 @@ class Decoder(nn.Module):
                 if self.is_gemma3:
                     emb_t_input = emb_t_input * self.normalizer
 
-                if self.embeddings_tied:
-                    emb_t_output = emb_t_input
-                else:
-                    emb_t_output = output_emb_table[hard_token_indices]
-                    if self.is_gemma3:
-                        emb_t_output = emb_t_output * self.normalizer
+                # if self.embeddings_tied:
+                emb_t_output = emb_t_input
+                # else:
+                #     emb_t_output = output_emb_table[hard_token_indices]
+                #     if self.is_gemma3:
+                #         emb_t_output = emb_t_output * self.normalizer
 
                 if self.config.end_to_end:
                     output_embs_list.append(emb_t_output)
@@ -2265,10 +2265,11 @@ class Decoder(nn.Module):
                 if self.embeddings_tied:
                     emb_t_output = emb_t_input
                 else:
-                    emb_t_output = output_emb_table[hard_token_indices]
-                    if self.is_gemma3:
-                        # don't want to multiply twice! hence only in the not-tied case
-                        emb_t_output = emb_t_output * self.normalizer
+                    raise ValueError("Embeddings are not tied - this is not supported")
+                    # emb_t_output = output_emb_table[hard_token_indices]
+                    # if self.is_gemma3:
+                    #     # don't want to multiply twice! hence only in the not-tied case
+                    #     emb_t_output = emb_t_output * self.normalizer
 
                 # Store outputs
                 if self.config.end_to_end:
