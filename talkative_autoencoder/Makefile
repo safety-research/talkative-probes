@@ -111,8 +111,7 @@ setup:
 		echo "Installing PyTorch and markupsafe..."; \
 		. ./scripts/ensure_env.sh && \
 		uv add "markupsafe==2.1.3" && \
-		uv add torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu128 && \
-		uv add git+https://github.com/triton-lang/triton.git@main#subdirectory=python/triton_kernels ; \
+		uv add torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu128 ; \
 	fi
 	@# Login to wandb if API key is available (source .env first)
 	@if [ -f .env ]; then \

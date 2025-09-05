@@ -9,8 +9,10 @@ try:
         Conversation as _HarmonyConversation,
     )
     from openai_harmony import (
+        DeveloperContent,
         HarmonyEncodingName,
         StreamableParser,
+        SystemContent,
         load_harmony_encoding,
     )
     from openai_harmony import (
@@ -412,14 +414,37 @@ def render_harmony_from_messages(
             continue
         role_str = (m.get("role") or "").strip() or "user"
         content_str = m.get("content") or ""
+        thinking_str = m.get("thinking") or ""
         role_enum = {
             "system": _HarmonyRole.SYSTEM,
             "developer": _HarmonyRole.DEVELOPER,
             "user": _HarmonyRole.USER,
             "assistant": _HarmonyRole.ASSISTANT,
         }.get(role_str, _HarmonyRole.USER)
-        if content_str:
-            harmony_messages.append(_HarmonyMessage.from_role_and_content(role_enum, content_str))
+        if role_enum == _HarmonyRole.SYSTEM:
+            harmony_messages.append(_HarmonyMessage.from_role_and_content(_HarmonyRole.SYSTEM, SystemContent.new()))
+        elif role_enum == _HarmonyRole.DEVELOPER:
+            dev = DeveloperContent.new()
+            if content_str:
+                dev = dev.with_instructions(content_str)
+            harmony_messages.append(_HarmonyMessage.from_role_and_content(_HarmonyRole.DEVELOPER, dev))
+        elif role_enum == _HarmonyRole.USER:
+            harmony_messages.append(_HarmonyMessage.from_role_and_content(_HarmonyRole.USER, content_str))
+        elif role_enum == _HarmonyRole.ASSISTANT:
+            # If we have thinking metadata, include an analysis segment first
+            if thinking_str:
+                harmony_messages.append(
+                    _HarmonyMessage.from_role_and_content(
+                        _HarmonyRole.ASSISTANT, {"channel": "analysis", "content": thinking_str}
+                    )
+                )
+            # Prefill assistant final content only when we intend to continue the final message
+            if continue_final_message and content_str:
+                harmony_messages.append(
+                    _HarmonyMessage.from_role_and_content(
+                        _HarmonyRole.ASSISTANT, {"channel": "final", "content": content_str}
+                    )
+                )
 
     convo = _HarmonyConversation.from_messages(harmony_messages)
     render_fn = getattr(_HARMONY_ENCODING, "render_conversation_for_completion", None)
@@ -455,14 +480,35 @@ def harmony_prompt_string_from_messages(
             continue
         role_str = (m.get("role") or "").strip() or "user"
         content_str = m.get("content") or ""
+        thinking_str = m.get("thinking") or ""
         role_enum = {
             "system": _HarmonyRole.SYSTEM,
             "developer": _HarmonyRole.DEVELOPER,
             "user": _HarmonyRole.USER,
             "assistant": _HarmonyRole.ASSISTANT,
         }.get(role_str, _HarmonyRole.USER)
-        if content_str:
-            harmony_messages.append(_HarmonyMessage.from_role_and_content(role_enum, content_str))
+        if role_enum == _HarmonyRole.SYSTEM:
+            harmony_messages.append(_HarmonyMessage.from_role_and_content(_HarmonyRole.SYSTEM, SystemContent.new()))
+        elif role_enum == _HarmonyRole.DEVELOPER:
+            dev = DeveloperContent.new()
+            if content_str:
+                dev = dev.with_instructions(content_str)
+            harmony_messages.append(_HarmonyMessage.from_role_and_content(_HarmonyRole.DEVELOPER, dev))
+        elif role_enum == _HarmonyRole.USER:
+            harmony_messages.append(_HarmonyMessage.from_role_and_content(_HarmonyRole.USER, content_str))
+        elif role_enum == _HarmonyRole.ASSISTANT:
+            if thinking_str:
+                harmony_messages.append(
+                    _HarmonyMessage.from_role_and_content(
+                        _HarmonyRole.ASSISTANT, {"channel": "analysis", "content": thinking_str}
+                    )
+                )
+            if continue_final_message and content_str:
+                harmony_messages.append(
+                    _HarmonyMessage.from_role_and_content(
+                        _HarmonyRole.ASSISTANT, {"channel": "final", "content": content_str}
+                    )
+                )
 
     convo = _HarmonyConversation.from_messages(harmony_messages)
     render_fn = getattr(_HARMONY_ENCODING, "render_conversation_for_completion", None)

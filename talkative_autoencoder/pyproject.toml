@@ -46,6 +46,10 @@ dependencies = [
 [tool.setuptools]
 packages = ["lens", "website", "website.backend", "website.backend.app"]
 
+[tool.uv]
+index-strategy = "unsafe-best-match"
+prerelease = "allow"
+
 [tool.ruff]
 target-version = "py312"
 line-length = 120
@@ -71,14 +75,11 @@ exclude = '''
 '''
 
 [[tool.uv.index]]
-url = "https://wheels.vllm.ai/gpt-oss/"
-
-[[tool.uv.index]]
 url = "https://pypi.org/simple"
 
-[[tool.uv.index]]
-url = "https://download.pytorch.org/whl/nightly/cu128"
-# tuned-lens = { path = "tuned-lens" }
+[tool.uv.sources]
+transformers = { git = "https://github.com/huggingface/transformers" }
+
 
 [dependency-groups]
 dev = [

@@ -567,7 +567,13 @@ def initialize_consistency_lens_projection(
             for decoder_layer_idx in range(n_layers):
                 # Source is always the extraction layer (layer_l)
                 # Target is the current decoder layer where we're patching
-                tgt_layer_idx = decoder_layer_idx
+                if component_config["new_decoder"]:
+                    if decoder_layer_idx == 0:
+                        tgt_layer_idx = 0
+                    else:
+                        tgt_layer_idx = decoder_layer_idx - 1
+                else:
+                    tgt_layer_idx = decoder_layer_idx
 
                 # Allow override for specific layers if needed
                 tgt_override = component_config.get(f"projection_init_tl_comp_tgt_layer_{decoder_layer_idx}")
@@ -712,6 +718,15 @@ def initialize_consistency_lens_projection(
 
                 for decoder_layer_idx in range(n_layers):
                     tgt_layer_idx = decoder_layer_idx
+                    if component_config["new_decoder"]:
+                        if decoder_layer_idx == 0:
+                            log.info("Should use norms of embedding vectors here, probably - fix later")
+                            tgt_layer_idx = 0
+                        else:
+                            tgt_layer_idx = decoder_layer_idx - 1
+                    else:
+                        tgt_layer_idx = decoder_layer_idx
+
                     scale_factor = avg_norms[tgt_layer_idx] / (avg_norms[src_layer_idx] + 1e-9)
 
                     scaled_identity = identity * scale_factor

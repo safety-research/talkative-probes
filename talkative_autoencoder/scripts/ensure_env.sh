@@ -40,6 +40,8 @@ export UV_PROJECT_ROOT="$PROJECT_ROOT"
 export UV_CACHE_DIR="/workspace/.uv_cache"
 mkdir -p "$UV_CACHE_DIR"
 
+# uv behavior is configured in pyproject.toml [tool.uv]
+
 # If running in isolated serving mode, skip project env creation/sync entirely
 if [ -n "${TAE_SERVE_ISOLATED:-}" ]; then
     echo "[ensure_env] Isolated serve mode: skipping project env creation/sync"
@@ -59,7 +61,7 @@ else
     echo "[ensure_env] Using cached venv: $UV_PROJECT_ENVIRONMENT"
 fi
 
-# Ensure required Python version is available and used (needed for some deps like vllm gpt-oss)
+# Ensure required Python version is available and used
 REQUIRED_PYTHON_MM="3.12"
 if ! uv python find "$REQUIRED_PYTHON_MM" >/dev/null 2>&1; then
     echo "[ensure_env] Installing Python $REQUIRED_PYTHON_MM via uv..."
@@ -75,18 +77,16 @@ if [ -x "$UV_PROJECT_ENVIRONMENT/bin/python3" ]; then
     fi
 fi
 
-# Check if environment exists, create it if not
+# Check if environment exists
 if [ ! -d "$UV_PROJECT_ENVIRONMENT" ] || [ ! -f "$UV_PROJECT_ENVIRONMENT/pyvenv.cfg" ]; then
     echo "[ensure_env] Environment not found, creating it... from $UV_PROJECT_ROOT"
     PATH="$HOME/.local/bin:$PATH" UV_CACHE_DIR="$UV_CACHE_DIR" uv venv --python="$REQUIRED_PYTHON_MM" "$UV_PROJECT_ENVIRONMENT"
-    cd "$UV_PROJECT_ROOT" && PATH="$HOME/.local/bin:$PATH" UV_CACHE_DIR="$UV_CACHE_DIR" UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" uv lock --index-strategy unsafe-best-match --prerelease allow
-    cd "$UV_PROJECT_ROOT" && PATH="$HOME/.local/bin:$PATH" UV_CACHE_DIR="$UV_CACHE_DIR" UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" uv sync --group dev --frozen --index-strategy unsafe-best-match --prerelease allow
+    cd "$UV_PROJECT_ROOT" && PATH="$HOME/.local/bin:$PATH" UV_CACHE_DIR="$UV_CACHE_DIR" UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" uv sync --group dev --frozen
     echo "[ensure_env] Environment created successfully!"
 else
     echo "[ensure_env] Environment already exists at $UV_PROJECT_ENVIRONMENT"
-    # Re-lock with our flags to avoid pre-release/indices mismatch, then sync
-    cd "$UV_PROJECT_ROOT" && PATH="$HOME/.local/bin:$PATH" UV_CACHE_DIR="$UV_CACHE_DIR" UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" uv lock --index-strategy unsafe-best-match --prerelease allow || true
-    cd "$UV_PROJECT_ROOT" && PATH="$HOME/.local/bin:$PATH" UV_CACHE_DIR="$UV_CACHE_DIR" UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" uv sync --group dev --index-strategy unsafe-best-match --prerelease allow || true
+    # Fast validation; no-op if already in sync
+    cd "$UV_PROJECT_ROOT" && PATH="$HOME/.local/bin:$PATH" UV_CACHE_DIR="$UV_CACHE_DIR" UV_PROJECT_ENVIRONMENT="$UV_PROJECT_ENVIRONMENT" uv sync --group dev --frozen || true
 fi
 
 # Helper function that ensures we're in the project root and uses uv run

@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
 import torch
-from torch import nn
 import torch.nn.functional as F
+from torch import nn
 
 from transformers import AutoModelForCausalLM, PreTrainedModel
 from transformers.cache_utils import DynamicCache, HybridCache
@@ -87,13 +87,19 @@ class DecoderConfig:
     clamp_entropy: float = 999
     attn_implementation: str = None
     final_logit_softcapping: float = None
+    new_decoder: bool = False
 
     def __post_init__(self):
         """Validate configuration parameters."""
         if self.n_prompt_tokens < 0:
             raise ValueError(f"n_prompt_tokens must be non-negative, got {self.n_prompt_tokens}")
-        if self.per_layer_projections and not self.patch_all_layers:
-            raise ValueError("per_layer_projections requires patch_all_layers to be True or a positive integer")
+        # if self.per_layer_projections and (self.patch_all_layers == False):
+        #     raise ValueError(
+        #         "per_layer_projections requires patch_all_layers to be True or a positive integer, or zero, recieved {self.patch_all_layers}"
+        #     )
+        if self.patch_all_layers == "just_input":
+            print("patch_all_layers is just_input, setting to 0")
+            self.patch_all_layers = 0
         if isinstance(self.patch_all_layers, int) and self.patch_all_layers < 0:
             raise ValueError("If patch_all_layers is an integer, it must be non-negative.")
 
@@ -140,7 +146,7 @@ class Decoder(nn.Module):
         self.is_gemma3 = (
             hasattr(self.base.config, "model_type") and "gemma3" in self.base.config.model_type.lower()
         ) or (hasattr(self.base.config, "text_config") and "gemma3" in self.base.config.text_config.model_type.lower())
-        self.is_gptoss = 'gpt-oss' in cfg.model_name.lower()
+        self.is_gptoss = "gpt-oss" in cfg.model_name.lower()
         log.info(
             f"model_name: {cfg.model_name}, is_gemma2: {self.is_gemma2}, is_gemma3: {self.is_gemma3}, is_gptoss: {self.is_gptoss}"
         )
@@ -172,11 +178,18 @@ class Decoder(nn.Module):
             if isinstance(cfg.patch_all_layers, bool):
                 n_proj_layers = n_layers_base if cfg.patch_all_layers else 0
             else:  # is an int
-                n_proj_layers = cfg.patch_all_layers
+                if cfg.new_decoder:
+                    log.info(
+                        f"Using new decoder, so adding one additional projection layer: from {cfg.patch_all_layers} to {cfg.patch_all_layers + 1}"
+                    )
+                    n_proj_layers = cfg.patch_all_layers + 1
+                else:
+                    n_proj_layers = cfg.patch_all_layers
 
             if n_proj_layers > 0:
                 # Create a 3D parameter tensor for per-layer projections
                 # Shape: (n_proj_layers, d_model, d_model)
+
                 self.proj_weight = nn.Parameter(torch.empty(n_proj_layers, d_model, d_model, dtype=self.base.dtype))
                 self.proj_bias = nn.Parameter(torch.empty(n_proj_layers, d_model, dtype=self.base.dtype))
                 log.info(f"proj_weight dtype: {self.proj_weight.dtype}, proj_bias dtype: {self.proj_bias.dtype}")
@@ -303,6 +316,7 @@ class Decoder(nn.Module):
             log.info(f"Initialized activation positional embedder for Decoder with {num_pos_embeddings} embeddings.")
         if self.is_gemma:
             self.normalizer = torch.tensor(self.d_model**0.5, dtype=self.base.dtype)
+
     @property
     def device(self):
         # Return the device of the first parameter
@@ -350,7 +364,16 @@ class Decoder(nn.Module):
             # proj_weight[layer_idx]: (d_model, d_model)
             # proj_bias[layer_idx]: (d_model,)
             activation_input = activation_input.to(self.proj_weight.device)
-            return torch.nn.functional.linear(activation_input, self.proj_weight[layer_idx], self.proj_bias[layer_idx])
+            if self.config.new_decoder:
+                return torch.nn.functional.linear(
+                    activation_input, self.proj_weight[layer_idx + 1], self.proj_bias[layer_idx + 1]
+                )
+            else:
+                if layer_idx == -1:
+                    layer_idx = 0  # -1 is just the generic meaning that this is the input map
+                return torch.nn.functional.linear(
+                    activation_input, self.proj_weight[layer_idx], self.proj_bias[layer_idx]
+                )
         else:
             # Use single projection layer
             if self.proj is None:
@@ -599,7 +622,7 @@ class Decoder(nn.Module):
                 with self._maybe_disable_dropout():
                     layer_outputs = layer_module(
                         input_to_this_layer,
-                        past_key_value=past_key_values,
+                        past_key_values=past_key_values,  # depl
                         cache_position=gpt2_cache_position_for_mask,  # Pass the cache_position for KV updates
                         attention_mask=causal_mask,
                         use_cache=use_cache,
@@ -651,9 +674,11 @@ class Decoder(nn.Module):
             causal_mask_mapping = {
                 "full_attention": create_causal_mask(**mask_creation_kwargs),
             }
-            if not self.is_qwen2 or (
-                self.is_qwen2 and hasattr(model_core, "has_sliding_layers") and model_core.has_sliding_layers
-            ) or self.is_gptoss:
+            if (
+                not self.is_qwen2
+                or (self.is_qwen2 and hasattr(model_core, "has_sliding_layers") and model_core.has_sliding_layers)
+                or self.is_gptoss
+            ):
                 causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(**mask_creation_kwargs)
             # if hasattr(model_core, "has_sliding_layers") and model_core.has_sliding_layers:
             #    causal_mask_mapping["sliding_attention"] = create_sliding_window_causal_mask(**mask_creation_kwargs)
@@ -710,7 +735,7 @@ class Decoder(nn.Module):
                             position_embeddings_local=position_embeddings_local,
                             attention_mask=current_attention_mask,  # Pass the selected 4D mask
                             position_ids=position_ids,  # Pass original position_ids for RoPE in attention
-                            past_key_value=past_key_values,
+                            past_key_values=past_key_values,  # depl
                             use_cache=use_cache,
                             cache_position=model_cache_position,  # Pass the absolute cache_position
                         )
@@ -718,7 +743,7 @@ class Decoder(nn.Module):
                         layer_kwargs = {
                             "attention_mask": current_attention_mask,
                             "position_ids": position_ids,
-                            "past_key_value": past_key_values,
+                            "past_key_values": past_key_values,  # depl
                             "use_cache": use_cache,
                             "cache_position": model_cache_position,
                         }
@@ -780,7 +805,7 @@ class Decoder(nn.Module):
                         input_to_this_layer,
                         attention_mask=processed_attention_mask,  # Pass the processed 4D mask
                         position_ids=position_ids,  # Pass original position_ids
-                        past_key_value=past_key_values,
+                        past_key_values=past_key_values,  # depl
                         use_cache=use_cache,
                         cache_position=llama_cache_position,  # Pass absolute cache_position
                         # LLaMA attention layer takes position_embeddings directly
@@ -915,9 +940,14 @@ class Decoder(nn.Module):
 
         # Always insert activation as a token
         if use_projection:
-            if self.config.patch_all_layers and self.config.per_layer_projections:
+            if (
+                not (isinstance(self.config.patch_all_layers, bool) and not self.config.patch_all_layers)
+                and self.config.per_layer_projections
+            ):
                 # Use first layer's projection
-                a_proj = self._apply_projection(activation_input_modified, layer_idx=0).unsqueeze(1)
+                a_proj = self._apply_projection(activation_input_modified, layer_idx=-1).unsqueeze(
+                    1
+                )  # -1 indicates the very first layer
             else:
                 # Use single projection
                 a_proj = self._apply_projection(activation_input_modified).unsqueeze(1)
@@ -950,7 +980,7 @@ class Decoder(nn.Module):
         output_embs_list = []  # Store embeddings for encoder
 
         for gen_idx in range(max_length):
-            if self.config.patch_all_layers:
+            if not (isinstance(self.config.patch_all_layers, bool) and not self.config.patch_all_layers):
                 # Custom forward pass with activation patching at all layers
                 # we do the scaling by normalizer in patched forward
                 h_last, _, router_logits_list = self._patched_forward(
@@ -962,7 +992,9 @@ class Decoder(nn.Module):
                     prompt_left_emb=prompt_left_emb,
                     return_past_key_values=False,
                     use_cache=False,
-                    output_router_logits_patched_token=output_router_logits_patched_token if gen_idx == max_length - 1 else False,
+                    output_router_logits_patched_token=output_router_logits_patched_token
+                    if gen_idx == max_length - 1
+                    else False,
                 )
                 logits_t = main_out(h_last[:, -1])  # (B, V)
             else:
@@ -996,9 +1028,9 @@ class Decoder(nn.Module):
             emb_t_input = ste_token_dist @ input_emb_table  # (B, d_model)
 
             # Use output embeddings for the encoder (or reuse input if tied)
-            #if self.embeddings_tied:
+            # if self.embeddings_tied:
             emb_t_output = emb_t_input
-            #else:
+            # else:
             #    emb_t_output = ste_token_dist @ output_emb_table  # (B, d_model)
 
             # need to do normalizer here
@@ -1052,7 +1084,11 @@ class Decoder(nn.Module):
         ids_tensor = torch.tensor(ids, dtype=torch.long, device=self.prompt_ids.device)
         self.prompt_ids.resize_(len(ids))
         self.prompt_ids.copy_(ids_tensor)
-        self.prompt_text = tokenizer.decode(left_ids, skip_special_tokens=False) + "<embed>" + tokenizer.decode(right_ids, skip_special_tokens=False)
+        self.prompt_text = (
+            tokenizer.decode(left_ids, skip_special_tokens=False)
+            + "<embed>"
+            + tokenizer.decode(right_ids, skip_special_tokens=False)
+        )
         self.test_prompt_text = [tokenizer.decode(t, skip_special_tokens=False) for t in ids]
 
         # Delete old parameters if they exist to avoid memory leaks
@@ -1233,9 +1269,12 @@ class Decoder(nn.Module):
 
         # Always insert activation as a token
         if use_projection:
-            if self.config.patch_all_layers and self.config.per_layer_projections:
+            if (
+                not (isinstance(self.config.patch_all_layers, bool) and not self.config.patch_all_layers)
+                and self.config.per_layer_projections
+            ):
                 # Use first layer's projection
-                a_proj = self._apply_projection(activation_input_modified, layer_idx=0).unsqueeze(1)
+                a_proj = self._apply_projection(activation_input_modified, layer_idx=-1).unsqueeze(1)
             else:
                 # Use single projection
                 a_proj = self._apply_projection(activation_input_modified).unsqueeze(1)
@@ -1290,7 +1329,7 @@ class Decoder(nn.Module):
             raise ValueError("Unknown model architecture. Expected transformer or model attribute.")
 
         # Process initial sequence (prompt + activation)
-        if self.config.patch_all_layers:
+        if not (isinstance(self.config.patch_all_layers, bool) and (not self.config.patch_all_layers)):
             # Use _patched_forward for patching logic
             # Determine max_total_len for cache, needed if _patched_forward creates it
             max_total_length_for_cache = seq_embs.size(1) + max_length
@@ -1436,7 +1475,7 @@ class Decoder(nn.Module):
 
                 # Get embeddings
                 emb_t_input = ste_token_dist @ input_emb_table
-                #if not self.embeddings_tied and self.config.end_to_end:
+                # if not self.embeddings_tied and self.config.end_to_end:
                 #    print("Warning - confusion between input/output emb table.")
                 #    # raise ValueError("Warning - confusion between input/output emb table.")
                 #    emb_t_output = ste_token_dist @ output_emb_table
@@ -1444,7 +1483,7 @@ class Decoder(nn.Module):
                 if self.is_gemma3:
                     hidden_states = hidden_states * self.normalizer
                     emb_t_input = emb_t_input * self.normalizer
-                    #if not self.embeddings_tied and self.config.end_to_end:
+                    # if not self.embeddings_tied and self.config.end_to_end:
                     #    # raise ValueError("Sort this out")
                     #    print("Sort htis out")
                     #    emb_t_output = emb_t_output * self.normalizer
@@ -1661,8 +1700,11 @@ class Decoder(nn.Module):
             parts.append(prompt_left_emb.expand(B, -1, -1))
 
         if use_projection:
-            if self.config.patch_all_layers and self.config.per_layer_projections:
-                a_proj = self._apply_projection(activation_input_modified, layer_idx=0).unsqueeze(1)
+            if (
+                not (isinstance(self.config.patch_all_layers, bool) and not self.config.patch_all_layers)
+                and self.config.per_layer_projections
+            ):
+                a_proj = self._apply_projection(activation_input_modified, layer_idx=-1).unsqueeze(1)
             else:
                 a_proj = self._apply_projection(activation_input_modified).unsqueeze(1)
         else:
@@ -1690,7 +1732,7 @@ class Decoder(nn.Module):
 
         seq_embs = torch.cat(parts, dim=1)
 
-        if self.config.patch_all_layers:
+        if not (isinstance(self.config.patch_all_layers, bool) and not self.config.patch_all_layers):
             max_total_length_for_cache = seq_embs.size(1) + max_length
             hidden_states, past_key_values, router_logits_list = self._patched_forward(
                 main_base=main_base,
@@ -1956,7 +1998,7 @@ class Decoder(nn.Module):
 
         # The context items are shared across all K samples, no need to expand them.
 
-        output =  self._generate_from_state(
+        output = self._generate_from_state(
             hidden_states=expanded_hidden_states,
             past_key_values=expanded_kv_cache,
             context=context,
@@ -2096,9 +2138,12 @@ class Decoder(nn.Module):
 
         # Always insert activation as a token
         if use_projection:
-            if self.config.patch_all_layers and self.config.per_layer_projections:
+            if (
+                not (isinstance(self.config.patch_all_layers, bool) and not self.config.patch_all_layers)
+                and self.config.per_layer_projections
+            ):
                 # Use first layer's projection
-                a_proj = self._apply_projection(activation_input_modified, layer_idx=0).unsqueeze(1)
+                a_proj = self._apply_projection(activation_input_modified, layer_idx=-1).unsqueeze(1)
             else:
                 # Use single projection
                 a_proj = self._apply_projection(activation_input_modified).unsqueeze(1)
@@ -2163,25 +2208,27 @@ class Decoder(nn.Module):
             raise ValueError("Unknown model architecture. Expected transformer or model attribute.")
 
         # Process initial sequence (prompt + activation)
-        if self.config.patch_all_layers:
+        if not (isinstance(self.config.patch_all_layers, bool) and not self.config.patch_all_layers):
             # Use _patched_forward for patching logic
             # Determine max_total_len for cache, needed if _patched_forward creates it
             max_total_length_for_cache = seq_embs.size(1) + max_length
 
-            hidden_states, past_key_values, router_logits_list = self._patched_forward(  # does scaling for us for gemma3!
-                main_base=main_base,
-                seq_embs=seq_embs,
-                activation_input_modified=activation_input_modified,
-                use_projection=use_projection,
-                do_patching=do_patching,
-                prompt_left_emb=prompt_left_emb,
-                past_key_values=past_key_values,  # Initially None
-                use_cache=True,  # KV caching is the point of this function
-                attention_mask=None,  # Assuming causal mask is handled internally by model
-                # cache_position=cache_position if is_gemma2 else None,
-                max_total_len_for_cache=max_total_length_for_cache if self.is_gemma else None,  # Pass for Gemma2
-                return_past_key_values=True,
-                output_router_logits_patched_token=output_router_logits_patched_token,
+            hidden_states, past_key_values, router_logits_list = (
+                self._patched_forward(  # does scaling for us for gemma3!
+                    main_base=main_base,
+                    seq_embs=seq_embs,
+                    activation_input_modified=activation_input_modified,
+                    use_projection=use_projection,
+                    do_patching=do_patching,
+                    prompt_left_emb=prompt_left_emb,
+                    past_key_values=past_key_values,  # Initially None
+                    use_cache=True,  # KV caching is the point of this function
+                    attention_mask=None,  # Assuming causal mask is handled internally by model
+                    # cache_position=cache_position if is_gemma2 else None,
+                    max_total_len_for_cache=max_total_length_for_cache if self.is_gemma else None,  # Pass for Gemma2
+                    return_past_key_values=True,
+                    output_router_logits_patched_token=output_router_logits_patched_token,
+                )
             )
         else:
             # Original behavior - use standard forward pass with caching
@@ -2419,9 +2466,12 @@ class Decoder(nn.Module):
 
         # Always insert activation as a token
         if use_projection:
-            if self.config.patch_all_layers and self.config.per_layer_projections:
+            if (
+                not (isinstance(self.config.patch_all_layers, bool) and not self.config.patch_all_layers)
+                and self.config.per_layer_projections
+            ):
                 # Use first layer's projection
-                a_proj = self._apply_projection(activation_input_modified, layer_idx=0).unsqueeze(1)
+                a_proj = self._apply_projection(activation_input_modified, layer_idx=-1).unsqueeze(1)
             else:
                 # Use single projection
                 a_proj = self._apply_projection(activation_input_modified).unsqueeze(1)
@@ -2443,7 +2493,7 @@ class Decoder(nn.Module):
         seq_embs = torch.cat(parts, dim=1)
 
         # A single forward pass through the model.
-        if self.config.patch_all_layers:
+        if not (isinstance(self.config.patch_all_layers, bool) and not self.config.patch_all_layers):
             # Custom forward pass with activation patching at all layers
             # normalizer is done here
             hidden_states, _, _ = self._patched_forward(
@@ -2482,9 +2532,9 @@ class Decoder(nn.Module):
 
         # Calculate probabilities over the vocabulary in float32
         with torch.amp.autocast("cuda", enabled=False):
-            probs = torch.nn.functional.softmax(
-                logits_for_input_tokens.float(), dim=-1
-            ).to(logits_for_input_tokens.dtype)
+            probs = torch.nn.functional.softmax(logits_for_input_tokens.float(), dim=-1).to(
+                logits_for_input_tokens.dtype
+            )
 
         # Gather the probabilities of the actual `input_tokens` that occurred.
         probs_of_interest = probs.gather(dim=2, index=input_tokens.unsqueeze(-1)).squeeze(-1)
@@ -2495,9 +2545,9 @@ class Decoder(nn.Module):
             context = torch.no_grad() if detach_entropy else nullcontext()
             with context:
                 with torch.amp.autocast("cuda", enabled=False):
-                    log_probs = torch.nn.functional.log_softmax(
-                        logits_for_input_tokens.float(), dim=-1
-                    ).to(logits_for_input_tokens.dtype)
+                    log_probs = torch.nn.functional.log_softmax(logits_for_input_tokens.float(), dim=-1).to(
+                        logits_for_input_tokens.dtype
+                    )
                 entropies = (-probs * log_probs).sum(dim=-1)
         else:
             entropies = None
@@ -2506,6 +2556,7 @@ class Decoder(nn.Module):
             return probs_of_interest, entropies  # , logits_for_input_tokens
         else:
             return probs_of_interest, entropies
+
 
 class DynamicCacheEnableDisable(DynamicCache):
     """
